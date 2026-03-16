@@ -443,18 +443,14 @@ class PLEModel(nn.Module):
 
         # 1. Stacked CGC extraction layers
         task_representations = [features] * len(self.task_names)
+        shared_concat = None
         for layer in self.extraction_layers:
-            task_representations = layer(features, task_representations)
+            task_representations, shared_concat = layer(features, task_representations)
 
         # 2. Per-task expert processing
         task_expert_outputs: Dict[str, torch.Tensor] = {}
         for i, task_name in enumerate(self.task_names):
             task_repr = task_representations[i]
-
-            # Apply CGC attention if enabled
-            # (This re-uses the extraction output -- in a full implementation
-            # with heterogeneous shared experts, you'd pass the concatenated
-            # shared expert outputs here.)
             task_expert_outputs[task_name] = self.task_expert_networks[task_name](task_repr)
 
         # 3. Task towers with logit transfer (in dependency order)
@@ -515,10 +511,8 @@ class PLEModel(nn.Module):
             # CGC entropy regularization
             if (self.training
                     and self.cgc_attention is not None
+                    and shared_concat is not None
                     and self.config.cgc.entropy_lambda > 0):
-                # We need the shared expert concat for entropy -- use the
-                # extraction layer output stacked as a proxy
-                shared_concat = torch.cat(task_representations, dim=-1)
                 ent_loss = self.cgc_attention.entropy_regularization(shared_concat)
                 ent_lambda = self.config.cgc.entropy_lambda
                 total_loss = total_loss + ent_lambda * ent_loss
@@ -526,8 +520,7 @@ class PLEModel(nn.Module):
 
         # CGC attention weights for monitoring (inference only)
         cgc_weights = None
-        if not self.training and self.cgc_attention is not None:
-            shared_concat = torch.cat(task_representations, dim=-1)
+        if not self.training and self.cgc_attention is not None and shared_concat is not None:
             cgc_weights = self.cgc_attention.get_attention_weights(shared_concat)
 
         return PLEOutput(

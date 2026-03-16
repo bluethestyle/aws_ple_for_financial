@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import math
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Optional, Tuple, Type
 
 import torch
 import torch.nn as nn
@@ -274,7 +274,7 @@ class CGCLayer(nn.Module):
         self,
         shared_input: torch.Tensor,
         task_inputs: List[torch.Tensor],
-    ) -> List[torch.Tensor]:
+    ) -> Tuple[List[torch.Tensor], torch.Tensor]:
         """Forward pass through one CGC layer.
 
         Args:
@@ -282,13 +282,17 @@ class CGCLayer(nn.Module):
             task_inputs: List of ``(batch, input_dim)`` per task.
 
         Returns:
-            List of ``(batch, expert_hidden_dim)`` per task.
+            Tuple of:
+              - List of ``(batch, expert_hidden_dim)`` per task (gated outputs).
+              - ``(batch, num_shared * expert_hidden_dim)`` concatenated shared
+                expert outputs (for downstream CGC attention / monitoring).
         """
         # Shared expert outputs: (batch, num_shared, hidden)
-        shared_outs = torch.stack(
-            [expert(shared_input) for expert in self.shared_experts],
-            dim=1,
-        )
+        shared_expert_outputs = [expert(shared_input) for expert in self.shared_experts]
+        shared_outs = torch.stack(shared_expert_outputs, dim=1)
+
+        # Concatenated shared outputs for downstream use
+        shared_concat = torch.cat(shared_expert_outputs, dim=-1)
 
         outputs: List[torch.Tensor] = []
         for task_idx in range(self.num_tasks):
@@ -308,7 +312,7 @@ class CGCLayer(nn.Module):
             gated = (gate_weights.unsqueeze(-1) * all_outs).sum(dim=1)
             outputs.append(gated)
 
-        return outputs
+        return outputs, shared_concat
 
 
 # ============================================================================

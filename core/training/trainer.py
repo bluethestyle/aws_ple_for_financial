@@ -1,0 +1,919 @@
+"""
+PLE Trainer with 2-phase training, AMP, gradient accumulation, and callbacks.
+
+Implements a production-quality training loop for multi-task PLE models:
+
+* **Phase 1** -- Train shared experts (task experts optionally frozen).
+* **Phase 2** -- Fine-tune task heads (shared experts optionally frozen).
+
+The trainer is environment-agnostic: it works identically on a local GPU
+and on SageMaker, with experiment tracking abstracted behind
+:class:`~core.training.experiment.ExperimentTracker`.
+
+Usage::
+
+    from core.model.ple import PLEModel, PLEConfig, PLEInput
+    from core.training import PLETrainer, TrainingConfig
+
+    config = TrainingConfig.from_yaml("training.yaml")
+    model = PLEModel(ple_config)
+    trainer = PLETrainer(model, config, device=torch.device("cuda"))
+    results = trainer.train(train_loader, val_loader)
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+
+# AMP imports -- PyTorch 2.0+ uses torch.amp, older uses torch.cuda.amp
+try:
+    from torch.amp import GradScaler, autocast
+except ImportError:
+    from torch.cuda.amp import GradScaler, autocast  # type: ignore[no-redef]
+
+from core.model.ple.model import PLEModel, PLEInput, PLEOutput
+
+from .callbacks import (
+    CallbackList,
+    CheckpointCallback,
+    EarlyStoppingCallback,
+    LRSchedulerCallback,
+    MetricLoggerCallback,
+    TrainingCallback,
+)
+from .config import TrainingConfig
+from .experiment import ExperimentTracker, auto_tracker
+
+logger = logging.getLogger(__name__)
+
+
+class PLETrainer:
+    """Two-phase trainer for PLE multi-task models.
+
+    Handles the full training lifecycle:
+
+    1. GPU configuration (TF32, cuDNN benchmark).
+    2. Optimizer and scheduler creation with per-expert LR overrides.
+    3. Two-phase training with proper freeze/unfreeze semantics.
+    4. AMP with dynamic loss scaling.
+    5. Gradient accumulation and clipping.
+    6. Validation with per-task metric computation.
+    7. Checkpoint save/load.
+    8. Experiment tracking via pluggable :class:`ExperimentTracker`.
+
+    Args:
+        model: The :class:`PLEModel` to train.
+        config: Training configuration.
+        device: Torch device (auto-detected if ``None``).
+        tracker: Experiment tracker (auto-detected if ``None``).
+        callbacks: Additional training callbacks.
+    """
+
+    def __init__(
+        self,
+        model: PLEModel,
+        config: TrainingConfig,
+        device: Optional[torch.device] = None,
+        tracker: Optional[ExperimentTracker] = None,
+        callbacks: Optional[List[TrainingCallback]] = None,
+    ) -> None:
+        self.model = model
+        self.config = config
+        self.device = device or torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+
+        self.model.to(self.device)
+
+        # GPU optimizations
+        if self.device.type == "cuda":
+            if config.enable_tf32:
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+            if config.cudnn_benchmark:
+                torch.backends.cudnn.benchmark = True
+
+        # Optimizer
+        self.optimizer = self._create_optimizer()
+
+        # Scheduler
+        self.scheduler = self._create_scheduler()
+
+        # AMP scaler
+        self.scaler = self._create_grad_scaler() if config.amp.enabled else None
+
+        # State
+        self.global_step = 0
+        self.current_epoch = 0
+        self.best_val_loss = float("inf")
+        self.best_val_metrics: Dict[str, float] = {}
+
+        # Experiment tracker
+        if tracker is None:
+            tracker = auto_tracker(
+                experiment_name=config.experiment_name,
+                run_name=config.run_name,
+                tags=config.tags,
+            )
+        self.tracker = tracker
+
+        # Callbacks
+        default_callbacks: List[TrainingCallback] = [
+            EarlyStoppingCallback(
+                patience=config.early_stopping.patience,
+                min_delta=config.early_stopping.min_delta,
+                auc_decline_patience=config.early_stopping.auc_decline_patience,
+            ),
+            CheckpointCallback(
+                checkpoint_dir=config.checkpoint.dir,
+                save_every_n_epochs=config.checkpoint.save_every_n_epochs,
+                max_to_keep=config.checkpoint.max_to_keep,
+                save_optimizer=config.checkpoint.save_optimizer,
+                save_scheduler=config.checkpoint.save_scheduler,
+            ),
+            MetricLoggerCallback(
+                tracker=self.tracker,
+                log_every_n_steps=config.logging.log_every_n_steps,
+            ),
+            LRSchedulerCallback(scheduler=self.scheduler),
+        ]
+        all_callbacks = default_callbacks + (callbacks or [])
+        self.callbacks = CallbackList(all_callbacks)
+
+        # Quick reference to specific callbacks for phase transitions
+        self._lr_callback = next(
+            (cb for cb in all_callbacks if isinstance(cb, LRSchedulerCallback)), None
+        )
+        self._es_callback = next(
+            (cb for cb in all_callbacks if isinstance(cb, EarlyStoppingCallback)), None
+        )
+
+        logger.info(
+            "PLETrainer initialised: device=%s, AMP=%s, phases=%d+%d epochs",
+            self.device, config.amp.enabled,
+            config.phase1.epochs, config.phase2.epochs,
+        )
+
+    # ------------------------------------------------------------------
+    # Optimizer creation
+    # ------------------------------------------------------------------
+
+    def _create_optimizer(self) -> torch.optim.Optimizer:
+        """Create AdamW optimizer with optional per-expert LR overrides.
+
+        When ``config.optimizer.expert_lr_overrides`` is provided, creates
+        separate param groups for each named expert module, allowing
+        different learning rates and weight decay values per expert.
+        """
+        opt_cfg = self.config.optimizer
+        overrides = opt_cfg.expert_lr_overrides
+
+        # Attempt to find named expert submodules for per-expert LR
+        has_experts = (
+            overrides
+            and hasattr(self.model, "extraction_layers")
+        )
+
+        if not has_experts:
+            # Simple: single param group
+            trainable = [p for p in self.model.parameters() if p.requires_grad]
+            if not trainable:
+                logger.warning("No trainable parameters found in model.")
+                trainable = list(self.model.parameters())
+            return torch.optim.AdamW(
+                trainable,
+                lr=opt_cfg.learning_rate,
+                weight_decay=opt_cfg.weight_decay,
+                betas=opt_cfg.betas,
+                eps=opt_cfg.eps,
+            )
+
+        # Per-expert param groups
+        param_groups: List[Dict[str, Any]] = []
+        assigned_ids: set = set()
+
+        # Match override keys against model's named children
+        for name, module in self.model.named_modules():
+            short_name = name.split(".")[-1]
+            if short_name in overrides:
+                expert_params = [p for p in module.parameters() if p.requires_grad]
+                if not expert_params:
+                    continue
+                assigned_ids.update(id(p) for p in expert_params)
+                cfg = overrides[short_name]
+                param_groups.append({
+                    "params": expert_params,
+                    "lr": cfg.get("lr", opt_cfg.learning_rate),
+                    "weight_decay": cfg.get("weight_decay", opt_cfg.weight_decay),
+                })
+                logger.info(
+                    "Expert param group '%s': lr=%s, wd=%s, params=%d",
+                    short_name, cfg.get("lr"), cfg.get("weight_decay"),
+                    len(expert_params),
+                )
+
+        # Remaining parameters
+        rest_params = [
+            p for p in self.model.parameters()
+            if p.requires_grad and id(p) not in assigned_ids
+        ]
+        if rest_params:
+            param_groups.append({
+                "params": rest_params,
+                "lr": opt_cfg.learning_rate,
+                "weight_decay": opt_cfg.weight_decay,
+            })
+
+        logger.info("Optimizer: %d param groups", len(param_groups))
+        return torch.optim.AdamW(
+            param_groups,
+            betas=opt_cfg.betas,
+            eps=opt_cfg.eps,
+        )
+
+    # ------------------------------------------------------------------
+    # Scheduler creation
+    # ------------------------------------------------------------------
+
+    def _create_scheduler(
+        self,
+        warmup_epochs: Optional[int] = None,
+        cosine_t0: Optional[int] = None,
+    ) -> Optional[torch.optim.lr_scheduler.LRScheduler]:
+        """Create learning rate scheduler.
+
+        Supports:
+        - ``"cosine"``: CosineAnnealingWarmRestarts with optional linear warmup.
+        - ``"linear"``: Linear decay from start_factor to 1.0.
+        - ``"none"``: No scheduler.
+
+        Args:
+            warmup_epochs: Override warmup epochs (used for Phase 2).
+            cosine_t0: Override cosine T_0 (used for Phase 2).
+        """
+        sched_cfg = self.config.scheduler
+        if sched_cfg.name == "none":
+            return None
+
+        _warmup = warmup_epochs if warmup_epochs is not None else sched_cfg.warmup_epochs
+        _t0 = cosine_t0 if cosine_t0 is not None else sched_cfg.cosine_t0
+
+        if sched_cfg.name == "cosine":
+            if _warmup > 0:
+                warmup_sched = torch.optim.lr_scheduler.LinearLR(
+                    self.optimizer,
+                    start_factor=sched_cfg.warmup_start_factor,
+                    total_iters=_warmup,
+                )
+                cosine_sched = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    self.optimizer,
+                    T_0=_t0,
+                    T_mult=sched_cfg.cosine_t_mult,
+                    eta_min=sched_cfg.cosine_eta_min,
+                )
+                logger.info(
+                    "Scheduler: LinearWarmup(%d epochs) -> "
+                    "CosineAnnealingWarmRestarts(T_0=%d, T_mult=%d)",
+                    _warmup, _t0, sched_cfg.cosine_t_mult,
+                )
+                return torch.optim.lr_scheduler.SequentialLR(
+                    self.optimizer,
+                    schedulers=[warmup_sched, cosine_sched],
+                    milestones=[_warmup],
+                )
+            else:
+                logger.info(
+                    "Scheduler: CosineAnnealingWarmRestarts(T_0=%d)", _t0,
+                )
+                return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    self.optimizer,
+                    T_0=_t0,
+                    T_mult=sched_cfg.cosine_t_mult,
+                    eta_min=sched_cfg.cosine_eta_min,
+                )
+
+        elif sched_cfg.name == "linear":
+            return torch.optim.lr_scheduler.LinearLR(
+                self.optimizer,
+                start_factor=sched_cfg.warmup_start_factor,
+                total_iters=_warmup,
+            )
+
+        logger.warning("Unknown scheduler '%s', disabling.", sched_cfg.name)
+        return None
+
+    # ------------------------------------------------------------------
+    # GradScaler
+    # ------------------------------------------------------------------
+
+    def _create_grad_scaler(self) -> GradScaler:
+        """Create AMP GradScaler with device-type awareness."""
+        device_type = getattr(self.device, "type", "cuda")
+        try:
+            return GradScaler(device_type)
+        except TypeError:
+            # PyTorch < 2.0 fallback
+            return GradScaler()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def train(
+        self,
+        train_loader: DataLoader,
+        val_loader: Optional[DataLoader] = None,
+        phase: str = "full",
+    ) -> Dict[str, float]:
+        """Run training.
+
+        Args:
+            train_loader: Training data loader.
+            val_loader: Optional validation data loader.
+            phase: Training mode:
+                - ``"full"``: Run both Phase 1 and Phase 2.
+                - ``"phase1"``: Only shared expert training.
+                - ``"phase2"``: Only task head fine-tuning.
+
+        Returns:
+            Dict with ``best_val_loss`` and any validation metrics from
+            the best epoch.
+        """
+        state = self._make_state()
+        self.callbacks.on_train_begin(state)
+
+        try:
+            if phase == "full":
+                # Phase 1: Shared experts
+                logger.info("=== Phase 1: Shared Expert Training ===")
+                self._train_phase(
+                    train_loader, val_loader,
+                    max_epochs=self.config.phase1.epochs,
+                    phase_name="phase1",
+                )
+
+                # Phase 2: Task heads
+                logger.info("=== Phase 2: Task Head Fine-tuning ===")
+                self._setup_phase2()
+                try:
+                    self._train_phase(
+                        train_loader, val_loader,
+                        max_epochs=self.config.phase2.epochs,
+                        phase_name="phase2",
+                    )
+                finally:
+                    self._teardown_phase2()
+
+            elif phase == "phase1":
+                self._train_phase(
+                    train_loader, val_loader,
+                    max_epochs=self.config.phase1.epochs,
+                    phase_name="phase1",
+                )
+
+            elif phase == "phase2":
+                self._setup_phase2()
+                try:
+                    self._train_phase(
+                        train_loader, val_loader,
+                        max_epochs=self.config.phase2.epochs,
+                        phase_name="phase2",
+                    )
+                finally:
+                    self._teardown_phase2()
+
+            else:
+                raise ValueError(f"Unknown phase '{phase}'. Use 'full', 'phase1', or 'phase2'.")
+
+        finally:
+            self.callbacks.on_train_end(self._make_state())
+
+        return {"best_val_loss": self.best_val_loss, **self.best_val_metrics}
+
+    # ------------------------------------------------------------------
+    # Phase setup / teardown
+    # ------------------------------------------------------------------
+
+    def _setup_phase2(self) -> None:
+        """Prepare for Phase 2: freeze shared, reset optimizer/scheduler."""
+        p2 = self.config.phase2
+
+        # Freeze shared experts
+        if p2.freeze_shared_experts:
+            self._freeze_module_group("extraction_layers")
+            logger.info("Shared extraction layers frozen for Phase 2.")
+
+        # Freeze CGC attention
+        if p2.freeze_cgc and hasattr(self.model, "cgc_attention"):
+            if self.model.cgc_attention is not None:
+                for param in self.model.cgc_attention.parameters():
+                    param.requires_grad = False
+                logger.info("CGC attention frozen for Phase 2.")
+
+        # Disable adaTT (meaningless when shared experts are frozen)
+        if p2.disable_adatt and hasattr(self.model, "adatt") and self.model.adatt is not None:
+            if hasattr(self.model.adatt, "disable"):
+                self.model.adatt.disable()
+            else:
+                for param in self.model.adatt.parameters():
+                    param.requires_grad = False
+            logger.info("adaTT disabled for Phase 2.")
+
+        # Recreate optimizer (frozen params are excluded)
+        self.optimizer = self._create_optimizer()
+        logger.info("Optimizer recreated for Phase 2.")
+
+        # Recreate scheduler with Phase 2 settings
+        sched_cfg = self.config.scheduler
+        self.scheduler = self._create_scheduler(
+            warmup_epochs=sched_cfg.phase2_warmup_epochs,
+            cosine_t0=sched_cfg.phase2_cosine_t0,
+        )
+        if self._lr_callback is not None:
+            self._lr_callback.set_scheduler(self.scheduler)
+        logger.info(
+            "Scheduler recreated for Phase 2 (warmup=%d, T_0=%d).",
+            sched_cfg.phase2_warmup_epochs, sched_cfg.phase2_cosine_t0,
+        )
+
+        # Recreate GradScaler
+        if self.config.amp.enabled:
+            self.scaler = self._create_grad_scaler()
+
+        # Reset early stopping
+        if self._es_callback is not None:
+            self._es_callback.reset()
+
+    def _teardown_phase2(self) -> None:
+        """Restore model to full-trainable state after Phase 2."""
+        # Unfreeze shared experts
+        if self.config.phase2.freeze_shared_experts:
+            self._unfreeze_module_group("extraction_layers")
+
+        # Unfreeze CGC
+        if self.config.phase2.freeze_cgc and hasattr(self.model, "cgc_attention"):
+            if self.model.cgc_attention is not None:
+                for param in self.model.cgc_attention.parameters():
+                    param.requires_grad = True
+
+        # Re-enable adaTT
+        if (self.config.phase2.disable_adatt
+                and hasattr(self.model, "adatt")
+                and self.model.adatt is not None):
+            if hasattr(self.model.adatt, "enable"):
+                self.model.adatt.enable()
+            else:
+                for param in self.model.adatt.parameters():
+                    param.requires_grad = True
+
+    # ------------------------------------------------------------------
+    # Training loop
+    # ------------------------------------------------------------------
+
+    def _train_phase(
+        self,
+        train_loader: DataLoader,
+        val_loader: Optional[DataLoader],
+        max_epochs: int,
+        phase_name: str,
+    ) -> None:
+        """Run one training phase (Phase 1 or Phase 2)."""
+        phase_state = self._make_state(phase_name=phase_name)
+        self.callbacks.on_phase_begin(phase_state)
+
+        for epoch_idx in range(max_epochs):
+            self.current_epoch += 1
+
+            epoch_state = self._make_state(phase_name=phase_name)
+            self.callbacks.on_epoch_begin(epoch_state)
+
+            # Train one epoch
+            train_loss = self._train_epoch(train_loader, phase_name)
+
+            # Validate
+            val_loss = None
+            val_metrics: Dict[str, float] = {}
+            if val_loader is not None:
+                val_loss, val_metrics = self._validate(val_loader)
+
+            # Update model epoch state (adaTT, loss weighting)
+            self.model.set_epoch(self.current_epoch)
+            if hasattr(self.model, "update_loss_weights") and val_loss is not None:
+                # Pass latest task losses if available
+                pass  # Loss weight update happens in _train_epoch per-batch
+
+            # Track best
+            if val_loss is not None and val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                self.best_val_metrics = val_metrics
+
+            # Epoch end callbacks (includes scheduler step, early stopping, checkpointing)
+            epoch_end_state = self._make_state(
+                phase_name=phase_name,
+                train_loss=train_loss,
+                val_loss=val_loss,
+                val_metrics=val_metrics,
+            )
+            should_stop = self.callbacks.on_epoch_end(epoch_end_state)
+
+            # Logging
+            self._log_epoch(epoch_idx, train_loss, val_loss, phase_name, val_metrics)
+
+            if should_stop:
+                logger.info(
+                    "Training stopped at epoch %d (phase: %s).",
+                    self.current_epoch, phase_name,
+                )
+                break
+
+        self.callbacks.on_phase_end(self._make_state(phase_name=phase_name))
+
+    def _train_epoch(self, train_loader: DataLoader, phase_name: str) -> float:
+        """Train for one epoch. Returns average loss."""
+        self.model.train()
+        total_loss = 0.0
+        num_batches = 0
+        epoch_start = time.time()
+        accum_steps = self.config.gradient.accumulation_steps
+        device_type = getattr(self.device, "type", "cuda")
+
+        self.optimizer.zero_grad()
+
+        for batch_idx, batch in enumerate(train_loader):
+            inputs = self._prepare_inputs(batch)
+
+            # Forward pass
+            try:
+                if self.config.amp.enabled:
+                    with autocast(device_type=device_type):
+                        outputs: PLEOutput = self.model(inputs, compute_loss=True)
+                        loss = outputs.total_loss / accum_steps
+                else:
+                    outputs = self.model(inputs, compute_loss=True)
+                    loss = outputs.total_loss / accum_steps
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    logger.error(
+                        "CUDA OOM at batch %d. Skipping batch.", batch_idx,
+                    )
+                    if self.device.type == "cuda":
+                        torch.cuda.empty_cache()
+                    self.optimizer.zero_grad()
+                    continue
+                raise
+
+            # NaN/Inf check before backward
+            loss_val = outputs.total_loss.item()
+            if not math.isfinite(loss_val):
+                logger.warning(
+                    "[%s] Batch %d: NaN/Inf loss (%.4f), skipping.",
+                    phase_name, batch_idx, loss_val,
+                )
+                self.optimizer.zero_grad()
+                continue
+
+            # Backward pass
+            if self.config.amp.enabled and self.scaler is not None:
+                self.scaler.scale(loss).backward()
+
+                if (batch_idx + 1) % accum_steps == 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config.gradient.clip_norm,
+                    )
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    self.optimizer.zero_grad()
+            else:
+                loss.backward()
+
+                if (batch_idx + 1) % accum_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config.gradient.clip_norm,
+                    )
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+
+            total_loss += loss_val
+            num_batches += 1
+            self.global_step += 1
+
+            # Sync global step with model (for adaTT gradient interval)
+            self.model.set_global_step(self.global_step)
+
+            # Update loss weights
+            if outputs.task_losses is not None:
+                self.model.update_loss_weights(
+                    outputs.task_losses,
+                    epoch=self.current_epoch,
+                )
+
+            # Step-level callback
+            step_state = self._make_state(
+                phase_name=phase_name,
+                train_loss=loss_val,
+                task_losses=outputs.task_losses,
+                aux_losses=outputs.aux_losses,
+            )
+            self.callbacks.on_step_end(step_state)
+
+        elapsed = time.time() - epoch_start
+        avg_loss = total_loss / max(num_batches, 1)
+        logger.info(
+            "[%s] Epoch %d: avg_loss=%.6f, batches=%d, time=%.1fs",
+            phase_name, self.current_epoch, avg_loss, num_batches, elapsed,
+        )
+        return avg_loss
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def _validate(self, val_loader: DataLoader) -> Tuple[float, Dict[str, float]]:
+        """Run validation and compute per-task metrics.
+
+        Returns:
+            ``(avg_loss, metrics_dict)`` where ``metrics_dict`` contains
+            per-task and aggregate metrics.
+        """
+        self.model.eval()
+        total_loss = 0.0
+        num_batches = 0
+
+        all_predictions: Dict[str, List[torch.Tensor]] = {}
+        all_labels: Dict[str, List[torch.Tensor]] = {}
+        device_type = getattr(self.device, "type", "cuda")
+
+        for batch in val_loader:
+            inputs = self._prepare_inputs(batch)
+
+            if self.config.amp.enabled:
+                with autocast(device_type=device_type):
+                    outputs = self.model(inputs, compute_loss=True)
+            else:
+                outputs = self.model(inputs, compute_loss=True)
+
+            if outputs.total_loss is not None:
+                total_loss += outputs.total_loss.item()
+                num_batches += 1
+
+            # Collect predictions and labels for metric computation
+            if outputs.predictions:
+                for task_name, pred in outputs.predictions.items():
+                    if pred is not None:
+                        all_predictions.setdefault(task_name, []).append(pred.cpu())
+
+            if inputs.targets:
+                for task_name, label in inputs.targets.items():
+                    if label is not None:
+                        all_labels.setdefault(task_name, []).append(label.cpu())
+
+        self.model.train()
+
+        avg_loss = total_loss / max(num_batches, 1)
+        metrics = self._compute_val_metrics(all_predictions, all_labels)
+        metrics["val_loss"] = avg_loss
+
+        return avg_loss, metrics
+
+    def _compute_val_metrics(
+        self,
+        predictions: Dict[str, List[torch.Tensor]],
+        labels: Dict[str, List[torch.Tensor]],
+    ) -> Dict[str, float]:
+        """Compute per-task validation metrics.
+
+        Detects task types from ``PLEConfig.task_overrides`` and computes
+        appropriate metrics:
+
+        * Binary: AUC (ROC)
+        * Multiclass: Accuracy, Macro F1
+        * Regression: MAE, RMSE, R-squared
+        """
+        metrics: Dict[str, float] = {}
+
+        try:
+            import numpy as np
+            from sklearn.metrics import (
+                accuracy_score,
+                f1_score,
+                mean_absolute_error,
+                r2_score,
+                roc_auc_score,
+            )
+        except ImportError:
+            logger.debug("sklearn not available, skipping validation metrics.")
+            return metrics
+
+        aucs: List[float] = []
+        accuracies: List[float] = []
+        f1s: List[float] = []
+        maes: List[float] = []
+
+        for task_name, pred_list in predictions.items():
+            label_list = labels.get(task_name)
+            if not pred_list or not label_list:
+                continue
+
+            preds_cat = torch.cat(pred_list)
+            labs_cat = torch.cat(label_list)
+
+            if torch.isnan(preds_cat).any() or torch.isnan(labs_cat).any():
+                logger.warning("NaN in %s predictions/labels, skipping.", task_name)
+                continue
+
+            preds_np = preds_cat.numpy()
+            labs_np = labs_cat.numpy()
+
+            task_type = self.model.config.get_task_type(task_name)
+
+            try:
+                if task_type == "regression":
+                    preds_flat = preds_np.flatten()
+                    labs_flat = labs_np.flatten()
+                    mae = float(mean_absolute_error(labs_flat, preds_flat))
+                    rmse = float(np.sqrt(np.mean((preds_flat - labs_flat) ** 2)))
+                    r2 = float(r2_score(labs_flat, preds_flat)) if np.var(labs_flat) > 1e-10 else 0.0
+                    metrics[f"{task_name}_mae"] = mae
+                    metrics[f"{task_name}_rmse"] = rmse
+                    metrics[f"{task_name}_r2"] = r2
+                    maes.append(mae)
+
+                elif task_type == "multiclass":
+                    pred_classes = np.argmax(preds_np, axis=-1)
+                    true_classes = labs_np.flatten().astype(int)
+                    valid = true_classes >= 0
+                    if valid.sum() < 2:
+                        continue
+                    acc = float(accuracy_score(true_classes[valid], pred_classes[valid]))
+                    f1 = float(f1_score(
+                        true_classes[valid], pred_classes[valid],
+                        average="macro", zero_division=0,
+                    ))
+                    metrics[f"{task_name}_accuracy"] = acc
+                    metrics[f"{task_name}_f1_macro"] = f1
+                    accuracies.append(acc)
+                    f1s.append(f1)
+
+                else:  # binary
+                    unique = set(labs_np.flatten().tolist())
+                    if unique <= {0.0, 1.0} and len(unique) == 2:
+                        auc = float(roc_auc_score(labs_np, preds_np))
+                        metrics[f"{task_name}_auc"] = auc
+                        aucs.append(auc)
+
+            except Exception as e:
+                logger.debug("Metric computation failed for %s: %s", task_name, e)
+
+        # Aggregate metrics
+        if aucs:
+            metrics["avg_auc"] = sum(aucs) / len(aucs)
+        if accuracies:
+            metrics["avg_accuracy"] = sum(accuracies) / len(accuracies)
+        if f1s:
+            metrics["avg_f1_macro"] = sum(f1s) / len(f1s)
+        if maes:
+            metrics["avg_mae"] = sum(maes) / len(maes)
+
+        return metrics
+
+    # ------------------------------------------------------------------
+    # Input preparation
+    # ------------------------------------------------------------------
+
+    def _prepare_inputs(self, batch: Any) -> PLEInput:
+        """Convert a batch to :class:`PLEInput` and move to device.
+
+        Supports three input formats:
+
+        1. ``PLEInput`` -- moved to device directly.
+        2. Object with ``.to_ple_input()`` method -- converted and moved.
+        3. ``Dict[str, Tensor]`` -- mapped to ``PLEInput`` fields.
+        """
+        if isinstance(batch, PLEInput):
+            return batch.to(self.device)
+
+        if hasattr(batch, "to_ple_input"):
+            return batch.to_ple_input().to(self.device)
+
+        # Dict fallback
+        if isinstance(batch, dict):
+            return PLEInput(
+                features=batch["features"],
+                cluster_ids=batch.get("cluster_ids"),
+                cluster_probs=batch.get("cluster_probs"),
+                targets=batch.get("targets"),
+            ).to(self.device)
+
+        raise TypeError(
+            f"Unsupported batch type: {type(batch)}. "
+            f"Expected PLEInput, dict, or object with to_ple_input()."
+        )
+
+    # ------------------------------------------------------------------
+    # Freeze / unfreeze helpers
+    # ------------------------------------------------------------------
+
+    def _freeze_module_group(self, attr_name: str) -> None:
+        """Freeze all parameters in a named module attribute."""
+        module = getattr(self.model, attr_name, None)
+        if module is None:
+            return
+        for param in module.parameters():
+            param.requires_grad = False
+
+    def _unfreeze_module_group(self, attr_name: str) -> None:
+        """Unfreeze all parameters in a named module attribute."""
+        module = getattr(self.model, attr_name, None)
+        if module is None:
+            return
+        for param in module.parameters():
+            param.requires_grad = True
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
+
+    def _log_epoch(
+        self,
+        epoch_idx: int,
+        train_loss: float,
+        val_loss: Optional[float],
+        phase_name: str,
+        val_metrics: Optional[Dict[str, float]] = None,
+    ) -> None:
+        """Log epoch summary."""
+        parts = [f"Epoch {self.current_epoch}: train_loss={train_loss:.6f}"]
+        if val_loss is not None:
+            parts.append(f"val_loss={val_loss:.6f}")
+
+        if val_metrics:
+            for key in ("avg_auc", "avg_accuracy", "avg_f1_macro", "avg_mae"):
+                val = val_metrics.get(key)
+                if val is not None:
+                    parts.append(f"{key}={val:.4f}")
+
+        logger.info("  ".join(parts))
+
+        # Log loss weights for monitoring
+        if self.config.logging.log_loss_weights:
+            weights = self.model.get_loss_weights()
+            if weights:
+                w_str = ", ".join(f"{k}={v:.4f}" for k, v in weights.items())
+                logger.debug("  loss_weights: %s", w_str)
+
+    # ------------------------------------------------------------------
+    # Checkpoint load
+    # ------------------------------------------------------------------
+
+    def load_checkpoint(self, path: Union[str, Path]) -> Dict[str, Any]:
+        """Load a checkpoint and restore trainer state.
+
+        Args:
+            path: Path to the checkpoint ``.pt`` file.
+
+        Returns:
+            The full checkpoint dict.
+        """
+        checkpoint = CheckpointCallback.load_checkpoint(
+            str(path),
+            model=self.model,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler,
+            device=self.device,
+        )
+        self.current_epoch = checkpoint.get("epoch", 0)
+        self.global_step = checkpoint.get("global_step", 0)
+        self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        return checkpoint
+
+    # ------------------------------------------------------------------
+    # State dict for callbacks
+    # ------------------------------------------------------------------
+
+    def _make_state(self, **extras: Any) -> Dict[str, Any]:
+        """Build a state dict for callback dispatch."""
+        state = {
+            "model": self.model,
+            "optimizer": self.optimizer,
+            "scheduler": self.scheduler,
+            "config": self.config,
+            "tracker": self.tracker,
+            "device": self.device,
+            "epoch": self.current_epoch,
+            "global_step": self.global_step,
+            "best_val_loss": self.best_val_loss,
+        }
+        state.update(extras)
+        return state
