@@ -108,6 +108,27 @@ class ClusterConfig:
 
 
 @dataclass
+class ExpertInputConfig:
+    """Defines which feature groups a specific expert receives.
+
+    When used in ``PLEConfig.expert_input_routing``, this controls which
+    subset of the concatenated feature tensor is routed to each expert.
+    Experts not listed in the routing config (or with an empty
+    ``input_groups`` list) receive **all** features -- preserving backward
+    compatibility.
+
+    Args:
+        expert_name: Identifier matching the expert name in the CGC layer
+            (e.g. ``"shared_0"``, ``"shared_1"``).
+        input_groups: List of feature group names that this expert should
+            receive (e.g. ``["base_profile", "tda_topology"]``).
+            If empty, the expert receives ALL features.
+    """
+    expert_name: str = ""
+    input_groups: List[str] = field(default_factory=list)
+
+
+@dataclass
 class LogitTransferDef:
     """A single source->target logit transfer relationship."""
     source: str = ""
@@ -177,6 +198,16 @@ class PLEConfig:
 
     # -- Training knobs ------------------------------------------------------
     dropout: float = 0.1
+
+    # -- Expert input routing ------------------------------------------------
+    # Maps each expert to the feature groups it receives.
+    # If empty, all experts receive all features (backward compatible).
+    expert_input_routing: List[ExpertInputConfig] = field(default_factory=list)
+
+    # Feature group ranges: {group_name: (start_col, end_col)} in the
+    # concatenated feature tensor.  Set by the FeatureGroupPipeline before
+    # model construction.  Required if expert_input_routing is non-empty.
+    feature_group_ranges: Optional[Dict[str, tuple]] = None
 
     # -- Per-task overrides --------------------------------------------------
     # Maps task_name -> {output_dim, activation, task_type, domain_experts, ...}

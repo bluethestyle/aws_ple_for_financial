@@ -36,8 +36,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import PLEConfig
+from .config import PLEConfig, ExpertInputConfig
 from .experts import CGCLayer, CGCAttention, MLPExpert, ExpertRegistry
+from .feature_router import FeatureRouter
 from .adatt import AdaptiveTaskTransfer
 from .loss_weighting import (
     BaseLossWeighting,
@@ -58,11 +59,22 @@ class PLEInput:
 
     Args:
         features: ``(batch, input_dim)`` feature tensor.
+        feature_group_ranges: Optional mapping from feature group name to
+            ``(start_col, end_col)`` index range within ``features``.
+            When provided together with a configured ``FeatureRouter``,
+            enables expert-specific feature routing.  When ``None``, all
+            experts receive the full feature tensor (backward compatible).
+        expert_routing: Optional runtime override for expert-to-group
+            mapping.  ``{expert_name: [group_names]}``.  Typically set by
+            the ``FeatureGroupPipeline`` when dynamic routing is needed.
+            When ``None``, the static config from ``PLEConfig`` is used.
         cluster_ids: ``(batch,)`` cluster assignment (or zeros if no clustering).
         cluster_probs: ``(batch, n_clusters)`` soft cluster probabilities.
         targets: ``{task_name: label_tensor}`` for training.
     """
     features: torch.Tensor
+    feature_group_ranges: Optional[Dict[str, Tuple[int, int]]] = None
+    expert_routing: Optional[Dict[str, List[str]]] = None
     cluster_ids: Optional[torch.Tensor] = None
     cluster_probs: Optional[torch.Tensor] = None
     targets: Optional[Dict[str, torch.Tensor]] = None
@@ -81,6 +93,8 @@ class PLEInput:
 
         return PLEInput(
             features=self.features.to(device),
+            feature_group_ranges=self.feature_group_ranges,
+            expert_routing=self.expert_routing,
             cluster_ids=_to(self.cluster_ids),
             cluster_probs=_to(self.cluster_probs),
             targets={k: v.to(device) for k, v in self.targets.items()}
@@ -229,12 +243,58 @@ class PLEModel(nn.Module):
     # ------------------------------------------------------------------
 
     def _build_extraction_layers(self) -> None:
-        """Build stacked CGC extraction layers."""
+        """Build stacked CGC extraction layers.
+
+        If ``config.expert_input_routing`` is configured, creates a
+        ``FeatureRouter`` and passes it to the first CGC layer so that
+        each shared expert receives only its designated feature groups.
+
+        Subsequent stacked layers always receive the full expert output
+        dimension (routing only applies to the raw feature input in layer 0).
+        """
         cfg = self.config
         self.extraction_layers = nn.ModuleList()
 
+        # Build FeatureRouter for the first layer if routing is configured.
+        # Routing only applies to layer 0 (raw features). Deeper layers
+        # operate on expert output vectors where group structure no longer
+        # exists.
+        self.feature_router: Optional[FeatureRouter] = None
+        shared_expert_names = [
+            f"shared_{i}" for i in range(cfg.num_shared_experts)
+        ]
+
+        if cfg.expert_input_routing:
+            # We need group_ranges at build time.  If the config provides
+            # them statically (common for fixed pipelines), we use them.
+            # Otherwise we defer routing to forward() via PLEInput.
+            #
+            # For build-time routing, we need group_ranges from config or
+            # a default that covers the full input_dim.
+            # The FeatureRouter will be initialised in forward() if
+            # group_ranges are only available at runtime.
+            #
+            # However, to set expert input_dims at build time we must have
+            # group_ranges.  We accept a ``feature_group_ranges`` dict on
+            # PLEConfig (set by the pipeline before model construction).
+            group_ranges = getattr(cfg, "feature_group_ranges", None)
+            if group_ranges:
+                self.feature_router = FeatureRouter(
+                    expert_names=shared_expert_names,
+                    routing_config=cfg.expert_input_routing,
+                    group_ranges=group_ranges,
+                )
+                logger.info(
+                    f"FeatureRouter created for {len(cfg.expert_input_routing)} "
+                    f"routing rules"
+                )
+
         in_dim = cfg.input_dim
         for layer_idx in range(cfg.num_extraction_layers):
+            # Only the first layer gets the feature router
+            router = self.feature_router if layer_idx == 0 else None
+            expert_names = shared_expert_names if layer_idx == 0 else None
+
             layer = CGCLayer(
                 input_dim=in_dim,
                 num_tasks=len(self.task_names),
@@ -243,6 +303,8 @@ class PLEModel(nn.Module):
                 expert_hidden_dim=cfg.shared_expert.output_dim,
                 dropout=cfg.dropout,
                 expert_hidden_dims=cfg.shared_expert.hidden_dims,
+                feature_router=router,
+                shared_expert_names=expert_names,
             )
             self.extraction_layers.append(layer)
             in_dim = cfg.shared_expert.output_dim  # next layer input = previous output
@@ -653,6 +715,16 @@ class PLEModel(nn.Module):
             f"  Logit transfers: {self.logit_transfer_sources or 'none'}",
             f"  Loss weighting: {self.config.loss_weighting.strategy}",
         ]
+        # Feature routing summary
+        if self.feature_router is not None:
+            lines.append(f"  Feature routing: enabled ({len(self.config.expert_input_routing)} rules)")
+            for name in self.feature_router.expert_names:
+                dim = self.feature_router.get_expert_input_dim(name)
+                routed = "routed" if self.feature_router.has_routing(name) else "full"
+                lines.append(f"    {name}: dim={dim} ({routed})")
+        else:
+            lines.append("  Feature routing: disabled (all experts receive full input)")
+
         n_params = sum(p.numel() for p in self.parameters())
         n_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         lines.append(f"  Parameters: {n_params:,} total, {n_trainable:,} trainable")

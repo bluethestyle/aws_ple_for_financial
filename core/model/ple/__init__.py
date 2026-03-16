@@ -12,6 +12,10 @@ Expert components:
   - ``CGCLayer``: Customized Gate Control layer (PLE building block).
   - ``CGCAttention``: Per-task attention over shared expert outputs.
 
+Feature routing:
+  - ``FeatureRouter``: Routes feature subsets to specific experts.
+  - ``ExpertInputConfig``: Per-expert feature group assignment config.
+
 Gating:
   - ``SoftmaxGate``, ``AttentionGate``, ``MLPGate``: Gating network variants.
 
@@ -34,6 +38,7 @@ from .config import (
     TaskTowerConfig,
     ClusterConfig,
     LogitTransferDef,
+    ExpertInputConfig,
 )
 from .model import PLEModel, PLEInput, PLEOutput, TaskTower
 from .experts import (
@@ -43,6 +48,7 @@ from .experts import (
     CGCLayer,
     CGCAttention,
 )
+from .feature_router import FeatureRouter
 from .gating import SoftmaxGate, AttentionGate, MLPGate, build_gate
 from .adatt import AdaptiveTaskTransfer, TaskAffinityComputer
 from .loss_weighting import (
@@ -64,6 +70,7 @@ __all__ = [
     "TaskTowerConfig",
     "ClusterConfig",
     "LogitTransferDef",
+    "ExpertInputConfig",
     # Model
     "PLEModel",
     "PLEInput",
@@ -75,6 +82,8 @@ __all__ = [
     "ExpertRegistry",
     "CGCLayer",
     "CGCAttention",
+    # Feature routing
+    "FeatureRouter",
     # Gating
     "SoftmaxGate",
     "AttentionGate",

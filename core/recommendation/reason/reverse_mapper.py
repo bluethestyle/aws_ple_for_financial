@@ -64,9 +64,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Tuple
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from core.feature.group_config import FeatureGroupConfig
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +162,115 @@ class ReverseMapper:
             len(self.feature_groups),
             len(self.range_labels),
         )
+
+    # ------------------------------------------------------------------
+    # Auto-configuration from FeatureGroupConfig
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_feature_groups(
+        cls,
+        groups: List["FeatureGroupConfig"],
+        feature_names: Optional[List[str]] = None,
+        range_labels: Optional[List[Dict[str, Any]]] = None,
+        interpretation_templates: Optional[Dict[str, str]] = None,
+    ) -> "ReverseMapper":
+        """Auto-build a ReverseMapper from feature group definitions.
+
+        Instead of manually defining ranges and templates in config YAML,
+        this reads FeatureGroupConfig objects (the single source of truth)
+        and generates:
+
+        * Feature group ranges (start_idx, end_idx per group).
+        * Per-group interpretation templates and labels.
+        * Task relevance mapping for task-aware re-weighting.
+
+        This ensures the feature pipeline and interpretation layer are
+        always in sync -- no manual config duplication needed.
+
+        Args:
+            groups: Ordered list of FeatureGroupConfig instances.
+            feature_names: Optional feature name list aligned with the
+                           concatenated feature vector.  If ``None``,
+                           auto-generated from group output_columns.
+            range_labels: Optional custom range classification bins.
+                          Uses sensible defaults if not provided.
+            interpretation_templates: Optional custom templates keyed by
+                                      range label.  Uses defaults if not
+                                      provided.
+
+        Returns:
+            A fully configured ReverseMapper instance.
+        """
+        from core.feature.group_config import FeatureGroupConfig
+
+        # Build feature_groups config section
+        feature_groups_cfg: Dict[str, Dict[str, Any]] = {}
+        task_weights: Dict[str, Dict[str, float]] = {}
+        offset = 0
+        all_feature_names: List[str] = []
+
+        for group in groups:
+            if not group.enabled:
+                continue
+
+            start = offset
+            end = offset + group.output_dim
+
+            feature_groups_cfg[group.name] = {
+                "start": start,
+                "end": end,
+                "label": group.interpretation.category.replace("_", " ").title(),
+                "description": group.interpretation.template,
+                "template": group.interpretation.template,
+                "category": group.interpretation.category,
+                "narrative_lens": group.interpretation.narrative_lens,
+            }
+
+            # Build task-specific weights: each group has primary_tasks where
+            # it is most relevant (weight=1.5); other tasks get default (1.0).
+            for task in group.interpretation.primary_tasks:
+                if task not in task_weights:
+                    task_weights[task] = {}
+                task_weights[task][group.name] = 1.5
+
+            # Collect feature names from output_columns
+            all_feature_names.extend(group.output_columns)
+
+            offset = end
+
+        # Assemble the config dict in the format ReverseMapper expects
+        config: Dict[str, Any] = {
+            "reason": {
+                "reverse_mapper": {
+                    "feature_groups": feature_groups_cfg,
+                    "task_interpretation_weights": task_weights,
+                },
+            },
+        }
+
+        if range_labels is not None:
+            config["reason"]["reverse_mapper"]["range_labels"] = range_labels
+
+        if interpretation_templates is not None:
+            config["reason"]["reverse_mapper"][
+                "interpretation_templates"
+            ] = interpretation_templates
+
+        # Use provided feature_names, or auto-generated ones
+        resolved_names = feature_names if feature_names is not None else (
+            all_feature_names if all_feature_names else None
+        )
+
+        instance = cls(config=config, feature_names=resolved_names)
+        logger.info(
+            "ReverseMapper.from_feature_groups: %d groups, total_dim=%d, "
+            "%d task weight sets",
+            len(feature_groups_cfg),
+            offset,
+            len(task_weights),
+        )
+        return instance
 
     # ------------------------------------------------------------------
     # Public API

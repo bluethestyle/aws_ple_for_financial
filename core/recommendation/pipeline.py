@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import numpy as np
 
@@ -41,6 +41,9 @@ from .reason.template_engine import TemplateEngine
 from .reason.reverse_mapper import ReverseMapper
 from .reason.self_checker import SelfChecker, CheckResult
 from .reason.llm_provider import LLMProviderFactory, AbstractLLMProvider
+
+if TYPE_CHECKING:
+    from core.feature.group_config import FeatureGroupConfig
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +171,69 @@ class RecommendationPipeline:
             scorer_name, self.enable_reasons, self.enable_self_check,
             self.enable_reverse_mapping,
         )
+
+    # ------------------------------------------------------------------
+    # Auto-configuration from FeatureGroupConfig
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_feature_groups(
+        cls,
+        groups: List["FeatureGroupConfig"],
+        config: Dict[str, Any],
+        template_pool: Optional[Dict[str, List[str]]] = None,
+        task_frames: Optional[Dict[str, Dict[str, str]]] = None,
+    ) -> "RecommendationPipeline":
+        """Build a recommendation pipeline with auto-configured interpretation.
+
+        The ``reverse_mapper`` and ``template_engine`` are auto-configured
+        from feature group definitions (the single source of truth),
+        ensuring that feature pipeline changes automatically propagate to
+        the recommendation reason generation layer.
+
+        Scoring, constraint engine, selector, and self-checker are still
+        configured via the standard *config* dict.
+
+        Args:
+            groups: Ordered list of FeatureGroupConfig instances.
+            config: Full pipeline config dict (for scorer, filters, selector,
+                    self-checker, and LLM provider settings).
+            template_pool: Optional additional templates for the template
+                           engine.  Merged with auto-generated templates.
+            task_frames: Optional task-specific narrative frames for the
+                         template engine.
+
+        Returns:
+            A fully configured RecommendationPipeline with auto-wired
+            interpretation components.
+        """
+        from core.feature.group_config import FeatureGroupConfig
+
+        # Build the pipeline with standard config first
+        instance = cls(config)
+
+        # Override the reverse_mapper and template_engine with
+        # auto-configured versions from FeatureGroupConfig
+        pipe_cfg = config.get("pipeline", {})
+
+        if pipe_cfg.get("enable_reverse_mapping", False):
+            instance.reverse_mapper = ReverseMapper.from_feature_groups(groups)
+            instance.enable_reverse_mapping = True
+
+        if pipe_cfg.get("enable_reasons", True):
+            instance.template_engine = TemplateEngine.from_feature_groups(
+                groups,
+                template_pool=template_pool,
+                task_frames=task_frames,
+            )
+            instance.enable_reasons = True
+
+        logger.info(
+            "RecommendationPipeline.from_feature_groups: auto-configured "
+            "reverse_mapper and template_engine from %d feature groups",
+            len([g for g in groups if g.enabled]),
+        )
+        return instance
 
     # ------------------------------------------------------------------
     # Public API

@@ -52,7 +52,10 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.feature.group_config import FeatureGroupConfig
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +102,129 @@ class TemplateEngine:
             len(self.template_pool),
             len(self.task_frames),
         )
+
+    # ------------------------------------------------------------------
+    # Auto-configuration from FeatureGroupConfig
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_feature_groups(
+        cls,
+        groups: List["FeatureGroupConfig"],
+        template_pool: Optional[Dict[str, List[str]]] = None,
+        task_frames: Optional[Dict[str, Dict[str, str]]] = None,
+        top_k_features: int = 3,
+    ) -> "TemplateEngine":
+        """Build a TemplateEngine with auto-generated feature-to-category mapping.
+
+        Instead of manually listing feature prefix -> category mappings in
+        the config YAML, this reads FeatureGroupConfig objects and derives
+        the mapping from each group's output columns and interpretation
+        category.
+
+        A per-group template is also auto-registered in the template pool
+        (using the group's ``interpretation.template``), so even without a
+        manually curated template pool, every feature group has at least one
+        template available.
+
+        Manual config still works -- pass ``template_pool`` and
+        ``task_frames`` to supplement or override the auto-generated entries.
+
+        Args:
+            groups: Ordered list of FeatureGroupConfig instances.
+            template_pool: Optional additional templates keyed by category.
+                           Merged with (and overrides) auto-generated
+                           templates.
+            task_frames: Optional task-specific narrative frames.
+            top_k_features: Number of top IG features to use for reasons.
+
+        Returns:
+            A fully configured TemplateEngine instance.
+        """
+        from core.feature.group_config import FeatureGroupConfig
+
+        # Auto-generate feature_category_map from output columns
+        feature_category_map: Dict[str, str] = {}
+        auto_template_pool: Dict[str, List[str]] = {}
+        auto_task_frames: Dict[str, Dict[str, str]] = {}
+
+        for group in groups:
+            if not group.enabled:
+                continue
+
+            category = group.interpretation.category
+
+            # Map each output column prefix to the group's category.
+            # We use the column name itself as the prefix key, so exact
+            # prefix matching in _classify_feature will work.
+            for col in group.output_columns:
+                # Use the column name as a prefix key.  Since the
+                # template engine uses startswith matching, the full
+                # column name is the most specific prefix possible.
+                feature_category_map[col] = category
+
+            # Also add the group name as a prefix (catches any features
+            # that start with the group name but aren't in output_columns).
+            feature_category_map[f"{group.name}_"] = category
+
+            # Register the group's interpretation template in the pool
+            if category not in auto_template_pool:
+                auto_template_pool[category] = []
+            # Convert group template to the template engine format
+            # (replace {feature}/{value}/{direction}/{pattern} with
+            # {item_name}/{category} placeholders for compatibility).
+            auto_template_pool[category].append(
+                group.interpretation.template,
+            )
+
+            # Build task frames from primary_tasks
+            for task in group.interpretation.primary_tasks:
+                if task not in auto_task_frames:
+                    auto_task_frames[task] = {
+                        "frame": group.interpretation.narrative_lens,
+                        "narrative": (
+                            f"Based on {category.replace('_', ' ')} analysis, "
+                            f"this recommendation is tailored to your profile."
+                        ),
+                    }
+
+        # Ensure fallback categories always exist
+        for fallback in ("popularity", "minimum_safe"):
+            if fallback not in auto_template_pool:
+                auto_template_pool[fallback] = [
+                    "{item_name} is recommended based on your overall profile."
+                ]
+
+        # Merge: user-provided template_pool overrides auto-generated
+        if template_pool:
+            for cat, templates in template_pool.items():
+                auto_template_pool[cat] = templates
+
+        # Merge: user-provided task_frames overrides auto-generated
+        if task_frames:
+            auto_task_frames.update(task_frames)
+
+        # Build config dict in the format TemplateEngine expects
+        config: Dict[str, Any] = {
+            "reason": {
+                "template_engine": {
+                    "top_k_features": top_k_features,
+                    "feature_category_map": feature_category_map,
+                    "template_pool": auto_template_pool,
+                    "task_frames": auto_task_frames,
+                },
+            },
+        }
+
+        instance = cls(config=config)
+        logger.info(
+            "TemplateEngine.from_feature_groups: %d feature prefixes mapped, "
+            "%d categories in pool, %d task frames",
+            len(feature_category_map),
+            len(auto_template_pool),
+            len(auto_task_frames),
+        )
+        return instance
 
     # ------------------------------------------------------------------
     # Public API

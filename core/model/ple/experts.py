@@ -21,11 +21,14 @@ from __future__ import annotations
 import logging
 import math
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Type
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+if TYPE_CHECKING:
+    from .feature_router import FeatureRouter
 
 logger = logging.getLogger(__name__)
 
@@ -210,8 +213,13 @@ class CGCLayer(nn.Module):
     The output for each task is a weighted sum of all expert outputs,
     preserving the expert hidden dimension.
 
+    Optionally accepts a ``FeatureRouter`` to route different feature
+    subsets to different experts. When no router is provided, all experts
+    receive the full input tensor (backward compatible).
+
     Args:
-        input_dim: Input feature width for this layer.
+        input_dim: Input feature width for this layer (used for gating
+            and as the default expert input width when no router is used).
         num_tasks: Number of tasks.
         num_shared_experts: Number of shared experts.
         num_task_experts: Number of per-task experts.
@@ -219,6 +227,12 @@ class CGCLayer(nn.Module):
         dropout: Dropout probability.
         expert_type: Key into ``ExpertRegistry`` (default ``"mlp"``).
         expert_hidden_dims: Hidden layer widths within each expert.
+        feature_router: Optional ``FeatureRouter`` for expert-specific
+            feature routing. When ``None``, all experts receive the full
+            input tensor.
+        shared_expert_names: Names for shared experts (required when
+            ``feature_router`` is provided). Defaults to
+            ``["shared_0", "shared_1", ...]``.
     """
 
     def __init__(
@@ -231,39 +245,61 @@ class CGCLayer(nn.Module):
         dropout: float = 0.1,
         expert_type: str = "mlp",
         expert_hidden_dims: Optional[List[int]] = None,
+        feature_router: Optional["FeatureRouter"] = None,
+        shared_expert_names: Optional[List[str]] = None,
     ):
         super().__init__()
         self.num_tasks = num_tasks
         self.num_shared_experts = num_shared_experts
         self.num_task_experts = num_task_experts
         self.expert_hidden_dim = expert_hidden_dim
+        self.feature_router = feature_router
 
         if expert_hidden_dims is None:
             expert_hidden_dims = [expert_hidden_dim]
 
-        expert_kwargs = dict(
+        # Generate expert names
+        if shared_expert_names is None:
+            shared_expert_names = [f"shared_{i}" for i in range(num_shared_experts)]
+        self.shared_expert_names = shared_expert_names
+
+        # Build shared experts -- each may have a different input_dim if routed
+        self.shared_experts = nn.ModuleList()
+        for i in range(num_shared_experts):
+            expert_name = self.shared_expert_names[i]
+            if feature_router is not None and expert_name in feature_router.expert_names:
+                expert_in_dim = feature_router.get_expert_input_dim(expert_name)
+            else:
+                expert_in_dim = input_dim
+
+            self.shared_experts.append(
+                ExpertRegistry.build(
+                    expert_type,
+                    input_dim=expert_in_dim,
+                    output_dim=expert_hidden_dim,
+                    hidden_dims=expert_hidden_dims,
+                    dropout=dropout,
+                )
+            )
+
+        # Per-task experts (these always receive the full input -- routing
+        # is only for shared experts, which represent domain-specific
+        # feature extractors like PersLay, HGCN, Mamba, etc.)
+        task_expert_kwargs = dict(
             input_dim=input_dim,
             output_dim=expert_hidden_dim,
             hidden_dims=expert_hidden_dims,
             dropout=dropout,
         )
-
-        # Shared experts
-        self.shared_experts = nn.ModuleList([
-            ExpertRegistry.build(expert_type, **expert_kwargs)
-            for _ in range(num_shared_experts)
-        ])
-
-        # Per-task experts
         self.task_experts = nn.ModuleList([
             nn.ModuleList([
-                ExpertRegistry.build(expert_type, **expert_kwargs)
+                ExpertRegistry.build(expert_type, **task_expert_kwargs)
                 for _ in range(num_task_experts)
             ])
             for _ in range(num_tasks)
         ])
 
-        # Per-task gating networks
+        # Per-task gating networks (gate always receives full input_dim)
         num_total_experts = num_shared_experts + num_task_experts
         self.gating = nn.ModuleList([
             nn.Linear(input_dim, num_total_experts)
@@ -279,6 +315,8 @@ class CGCLayer(nn.Module):
 
         Args:
             shared_input: ``(batch, input_dim)`` -- input to shared experts.
+                When a ``FeatureRouter`` is configured, this is the full
+                concatenated feature tensor; the router handles slicing.
             task_inputs: List of ``(batch, input_dim)`` per task.
 
         Returns:
@@ -287,8 +325,17 @@ class CGCLayer(nn.Module):
               - ``(batch, num_shared * expert_hidden_dim)`` concatenated shared
                 expert outputs (for downstream CGC attention / monitoring).
         """
-        # Shared expert outputs: (batch, num_shared, hidden)
-        shared_expert_outputs = [expert(shared_input) for expert in self.shared_experts]
+        # Shared expert outputs: route features if router is available
+        shared_expert_outputs: List[torch.Tensor] = []
+        for i, expert in enumerate(self.shared_experts):
+            expert_name = self.shared_expert_names[i]
+            if (self.feature_router is not None
+                    and expert_name in self.feature_router.expert_names):
+                expert_input = self.feature_router.route(shared_input, expert_name)
+            else:
+                expert_input = shared_input
+            shared_expert_outputs.append(expert(expert_input))
+
         shared_outs = torch.stack(shared_expert_outputs, dim=1)
 
         # Concatenated shared outputs for downstream use
@@ -296,7 +343,7 @@ class CGCLayer(nn.Module):
 
         outputs: List[torch.Tensor] = []
         for task_idx in range(self.num_tasks):
-            # Task-specific expert outputs
+            # Task-specific expert outputs (always full input)
             task_outs = torch.stack(
                 [expert(task_inputs[task_idx]) for expert in self.task_experts[task_idx]],
                 dim=1,

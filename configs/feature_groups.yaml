@@ -1,0 +1,126 @@
+# Feature Group Definitions — Single Source of Truth
+#
+# This file defines every feature group in the pipeline.  Downstream systems
+# (reverse mapper, template engine, distillation) auto-configure themselves
+# from these definitions, eliminating manual config duplication.
+#
+# Usage:
+#   from core.feature.group_config import load_feature_groups
+#   groups = load_feature_groups("configs/feature_groups.yaml")
+#
+#   # Auto-configure downstream systems:
+#   reverse_mapper = ReverseMapper.from_feature_groups(groups)
+#   template_engine = TemplateEngine.from_feature_groups(groups)
+#   fg_distill = FeatureGroupDistillation(groups)
+#   pipeline = RecommendationPipeline.from_feature_groups(groups, config)
+
+feature_groups:
+
+  # -------------------------------------------------------------------------
+  # 1. Base customer profile (transform-type: modifies existing columns)
+  # -------------------------------------------------------------------------
+  - name: base_profile
+    type: transform
+    transformers: [standard_scaler]
+    columns: [age, income, tenure, total_spend]
+    output_dim: 4
+    target_experts: [deepfm, mlp]
+    interpretation:
+      category: demographics
+      template: "{feature} is {value}, indicating a {direction} customer profile"
+      narrative_lens: lifecycle
+      primary_tasks: [churn, ltv]
+    distill: true
+    distill_weight: 1.0
+
+  # -------------------------------------------------------------------------
+  # 2. TDA topological features (generate-type: creates new columns)
+  # -------------------------------------------------------------------------
+  - name: tda_topology
+    type: generate
+    generator: tda_extractor
+    generator_params:
+      short_window_days: 90
+      long_window_days: 365
+    output_dim: 70
+    target_experts: [temporal]
+    interpretation:
+      category: domain_topology
+      template: "Transaction topology shows {pattern} pattern"
+      narrative_lens: engagement
+      primary_tasks: [ctr, cvr]
+    distill: true
+    distill_weight: 0.5           # Hard to distill to LGBM
+
+  # -------------------------------------------------------------------------
+  # 3. HMM behavioural states
+  # -------------------------------------------------------------------------
+  - name: hmm_states
+    type: generate
+    generator: hmm_triple_mode
+    generator_params:
+      modes: [journey, lifecycle, behavior]
+      state_dim: 16
+    output_dim: 48
+    target_experts: [temporal]
+    interpretation:
+      category: behavioral_state
+      template: "Customer {mode} state indicates {state}"
+      narrative_lens: lifecycle
+      primary_tasks: [churn, retention, life_stage]
+    distill: false                 # Not distillable to LGBM
+
+  # -------------------------------------------------------------------------
+  # 4. Hyperbolic graph embeddings
+  # -------------------------------------------------------------------------
+  - name: graph_embeddings
+    type: generate
+    generator: hyperbolic_embedding
+    generator_params:
+      hierarchy_sources: [category, product, region]
+      curvature: 1.0
+    output_dim: 20
+    target_experts: []             # Plugin expert (HGCN) if available
+    interpretation:
+      category: graph_structure
+      template: "Position in {hierarchy} hierarchy suggests {insight}"
+      narrative_lens: consumption
+      primary_tasks: [nba, brand_prediction]
+    distill: false                 # Graph structure not distillable
+
+  # -------------------------------------------------------------------------
+  # 5. Multidisciplinary features (chemical kinetics, epidemics, etc.)
+  # -------------------------------------------------------------------------
+  - name: multidisciplinary
+    type: generate
+    generator: multidisciplinary
+    generator_params:
+      modules: [chemical_kinetics, epidemic_diffusion, interference, crime_pattern]
+    output_dim: 24
+    target_experts: [deepfm]
+    interpretation:
+      category: cross_domain
+      template: "{module}: {insight}"
+      narrative_lens: engagement
+      primary_tasks: [spending_category, merchant_affinity]
+    distill: true
+    distill_weight: 0.7
+
+  # -------------------------------------------------------------------------
+  # 6. Temporal pattern features
+  # -------------------------------------------------------------------------
+  - name: temporal_patterns
+    type: generate
+    generator: temporal_pattern
+    generator_params:
+      windows: [7, 30, 90]
+      features: [amount, count]
+    output_dim: 30
+    target_experts: [temporal, mamba]
+    interpretation:
+      category: temporal
+      template: "{window}-day {metric} trend is {direction}"
+      narrative_lens: engagement
+      primary_tasks: [engagement, timing]
+    distill: true
+    distill_weight: 1.0
