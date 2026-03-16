@@ -383,9 +383,7 @@ class TemporalEnsembleExpert(AbstractExpert):
             return None
 
         with torch.no_grad():
-            # Forward just enough to get gate weights
-            out = self.forward(x, **kwargs)  # noqa: F841 -- side-effect free
-            # Re-compute gate weights (lightweight)
+            # Compute gate weights directly without a full forward pass
             parts: list[torch.Tensor] = []
             aux_seq = kwargs.get("aux_seq")
             if self.mamba_enabled:

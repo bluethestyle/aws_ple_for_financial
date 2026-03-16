@@ -11,6 +11,10 @@ Provides:
 - Governance report generation
 - Data lineage tracking
 - Regulatory compliance checking
+- Financial Risk Impact Assessment (FRIA)
+- Privacy Impact Assessment (PIA)
+- EU AI Act compliance mapping
+- XAI quality evaluation
 """
 
 from core.monitoring.audit_logger import AuditLogger
@@ -26,6 +30,15 @@ from core.monitoring.incident_reporter import (
 from core.monitoring.governance_report import GovernanceReportGenerator, GovernanceReport
 from core.monitoring.lineage_tracker import DataLineageTracker, LineageRecord
 from core.monitoring.compliance_checker import ComplianceChecker, ComplianceItem
+from core.monitoring.fria_evaluator import FRIAEvaluator, FRIAReport, TaskRiskProfile
+from core.monitoring.pia_evaluator import PIAEvaluator, PIAReport, PIIInventoryItem, DomainRiskAssessment
+from core.monitoring.eu_ai_act_mapper import EUAIActMapper, EUAIActComplianceReport, ArticleComplianceItem
+from core.monitoring.xai_quality_evaluator import (
+    XAIQualityEvaluator,
+    XAIQualityReport,
+    ExplanationQualityMetrics,
+    ConsistencyResult,
+)
 
 __all__ = [
     "AuditLogger",
@@ -46,4 +59,18 @@ __all__ = [
     "LineageRecord",
     "ComplianceChecker",
     "ComplianceItem",
+    "FRIAEvaluator",
+    "FRIAReport",
+    "TaskRiskProfile",
+    "PIAEvaluator",
+    "PIAReport",
+    "PIIInventoryItem",
+    "DomainRiskAssessment",
+    "EUAIActMapper",
+    "EUAIActComplianceReport",
+    "ArticleComplianceItem",
+    "XAIQualityEvaluator",
+    "XAIQualityReport",
+    "ExplanationQualityMetrics",
+    "ConsistencyResult",
 ]

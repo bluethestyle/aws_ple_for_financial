@@ -1,14 +1,20 @@
 """
 Expert Networks for PLE.
 
-Provides the base expert abstraction, concrete MLP expert, and the
+Provides the base expert abstraction, concrete MLP expert, the
 Customized Gate Control (CGC) layer that combines shared + task-specific
-expert outputs per task.
+expert outputs per task, and the Expert Basket for config-driven expert
+subset selection.
 
 Architecture (per CGC layer, per task *k*):
     shared_experts  -> [E_s1, E_s2, ...]   -> stack -> \\
     task_experts[k] -> [E_tk1, E_tk2, ...] -> stack ->  > gate_k -> task_output_k
     input_x  ------------------------------------------/
+
+3-tier expert selection:
+    Expert Pool   -- all experts registered via @ExpertRegistry.register
+    Expert Basket -- config-defined subset selected from the pool
+    CGC Gating    -- runtime weighted selection from the basket
 
 Design decisions:
   - Expert types are loaded from ``ExpertRegistry`` (not hardcoded).
@@ -21,13 +27,14 @@ from __future__ import annotations
 import logging
 import math
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 if TYPE_CHECKING:
+    from .config import ExpertBasketConfig
     from .feature_router import FeatureRouter
 
 logger = logging.getLogger(__name__)
@@ -490,3 +497,230 @@ class CGCAttention(nn.Module):
             entropy = -(w * log_w).sum(dim=-1).mean()
             total = total - entropy
         return total / max(len(self.attention_modules), 1)
+
+
+# ============================================================================
+# Expert Basket
+# ============================================================================
+
+class ExpertBasket:
+    """Config-driven expert subset selection from the Expert Pool.
+
+    The Expert Basket implements the middle tier of the 3-tier expert
+    selection architecture:
+
+    1. **Expert Pool** -- all experts registered via
+       ``@ExpertRegistry.register`` in ``core.model.experts.registry``
+       (e.g. 11 total).  Uses ``AbstractExpert(input_dim, config)``.
+    2. **Expert Basket** -- a config-defined subset selected from the
+       pool for a specific pipeline (this class).
+    3. **CGC Gating** -- runtime weighted selection from the basket
+       (handled by :class:`CGCLayer`).
+
+    .. note:: Dual-registry architecture
+
+       There are two ``ExpertRegistry`` classes in the codebase:
+
+       - ``core.model.experts.registry.ExpertRegistry`` (the **Pool
+         Registry**) -- uses ``AbstractExpert(input_dim, config)`` and
+         is where new experts (HGCN, PersLay, etc.) are registered.
+       - ``core.model.ple.experts.ExpertRegistry`` (the **PLE
+         Registry**) -- uses ``BaseExpert(input_dim, output_dim,
+         dropout)`` and is used by :class:`CGCLayer` for default expert
+         construction.
+
+       The Expert Basket bridges these two registries: it builds
+       heterogeneous experts from the Pool Registry and assigns them to
+       ``CGCLayer.shared_experts``.  This works because
+       ``CGCLayer.forward()`` only calls ``expert(input)`` on each
+       shared expert, which is satisfied by both ``AbstractExpert``
+       and ``BaseExpert`` subclasses (both are ``nn.Module`` with a
+       ``forward(x) -> Tensor`` method).
+
+    The basket validates that all requested expert names exist in the
+    pool, builds only the selected experts with their config overrides,
+    and provides introspection methods for monitoring.
+
+    Args:
+        basket_config: :class:`ExpertBasketConfig` defining which experts
+            to select and how to configure them.
+        input_dim: Default input dimension for expert construction.
+        default_output_dim: Default output dimension when not overridden.
+        default_hidden_dims: Default hidden layer sizes for experts that
+            accept ``hidden_dims``.
+        dropout: Default dropout rate.
+
+    Usage::
+
+        from core.model.ple.config import ExpertBasketConfig
+        from core.model.ple.experts import ExpertBasket
+
+        basket_cfg = ExpertBasketConfig(
+            shared_experts=["deepfm", "hgcn", "perslay"],
+            task_experts=["mlp", "deepfm"],
+            expert_configs={"hgcn": {"output_dim": 128}},
+        )
+        basket = ExpertBasket(basket_cfg, input_dim=644, default_output_dim=64)
+        shared = basket.build_shared_experts()  # nn.ModuleList of 3 experts
+        task = basket.build_task_expert("mlp")   # single expert instance
+    """
+
+    def __init__(
+        self,
+        basket_config: "ExpertBasketConfig",
+        input_dim: int,
+        default_output_dim: int = 64,
+        default_hidden_dims: Optional[List[int]] = None,
+        dropout: float = 0.1,
+    ):
+        from core.model.experts import ExpertRegistry as PoolRegistry
+
+        self._config = basket_config
+        self._input_dim = input_dim
+        self._default_output_dim = default_output_dim
+        self._default_hidden_dims = default_hidden_dims or [256, 256]
+        self._dropout = dropout
+        self._pool_registry = PoolRegistry
+
+        # Validate all requested experts exist in the pool
+        pool_names = set(PoolRegistry.list_available())
+        all_requested = set(basket_config.shared_experts) | set(basket_config.task_experts)
+        missing = all_requested - pool_names
+        if missing:
+            raise ValueError(
+                f"Expert Basket references unregistered experts: {sorted(missing)}. "
+                f"Expert Pool contains: {sorted(pool_names)}"
+            )
+
+        # Log the basket selection summary
+        logger.info(
+            "Expert Pool: %d registered %s -> Basket: %d shared + %d task selected",
+            len(pool_names),
+            sorted(pool_names),
+            len(basket_config.shared_experts),
+            len(basket_config.task_experts),
+        )
+        logger.info(
+            "  Shared basket: %s",
+            basket_config.shared_experts,
+        )
+        logger.info(
+            "  Task basket: %s",
+            basket_config.task_experts,
+        )
+        if basket_config.expert_configs:
+            logger.info(
+                "  Config overrides for: %s",
+                list(basket_config.expert_configs.keys()),
+            )
+
+    def _get_expert_config(self, expert_name: str) -> Dict[str, Any]:
+        """Build the config dict for a specific expert.
+
+        Merges default values with any per-expert overrides from
+        ``ExpertBasketConfig.expert_configs``.
+        """
+        base_cfg: Dict[str, Any] = {
+            "output_dim": self._default_output_dim,
+            "hidden_dims": list(self._default_hidden_dims),
+            "dropout": self._dropout,
+        }
+        overrides = self._config.expert_configs.get(expert_name, {})
+        base_cfg.update(overrides)
+        return base_cfg
+
+    def build_shared_experts(self) -> nn.ModuleList:
+        """Build all shared experts defined in the basket.
+
+        All shared experts are forced to use ``self._default_output_dim``
+        regardless of any per-expert ``output_dim`` override in
+        ``expert_configs``.  This is required because
+        :meth:`CGCLayer.forward` stacks all shared expert outputs with
+        ``torch.stack``, which requires identical tensor shapes.
+
+        Returns:
+            ``nn.ModuleList`` of expert modules, one per entry in
+            ``ExpertBasketConfig.shared_experts``.
+        """
+        experts = nn.ModuleList()
+        for name in self._config.shared_experts:
+            cfg = self._get_expert_config(name)
+            # Force uniform output_dim so torch.stack in CGCLayer.forward()
+            # does not fail with a shape mismatch (CRITICAL: all shared
+            # experts must produce (batch, default_output_dim) tensors).
+            cfg["output_dim"] = self._default_output_dim
+            expert = self._pool_registry.create(
+                name,
+                input_dim=self._input_dim,
+                config=cfg,
+            )
+            experts.append(expert)
+        return experts
+
+    def build_task_expert(self, expert_name: str) -> nn.Module:
+        """Build a single task expert by name.
+
+        Args:
+            expert_name: Registered expert name from the basket's
+                ``task_experts`` list.
+
+        Returns:
+            An instantiated expert module.
+        """
+        cfg = self._get_expert_config(expert_name)
+        return self._pool_registry.create(
+            expert_name,
+            input_dim=self._input_dim,
+            config=cfg,
+        )
+
+    def build_task_experts_for_task(self) -> nn.ModuleList:
+        """Build one expert for each entry in the task expert list.
+
+        Returns:
+            ``nn.ModuleList`` of task expert modules.
+        """
+        experts = nn.ModuleList()
+        for name in self._config.task_experts:
+            experts.append(self.build_task_expert(name))
+        return experts
+
+    # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
+
+    def list_pool(self) -> List[str]:
+        """Return all expert names registered in the Expert Pool."""
+        return self._pool_registry.list_available()
+
+    def list_basket(self) -> Dict[str, List[str]]:
+        """Return the basket selection as ``{shared: [...], task: [...]}``.
+
+        Returns:
+            Dict with ``"shared"`` and ``"task"`` keys mapping to lists
+            of expert names selected for this pipeline.
+        """
+        return {
+            "shared": list(self._config.shared_experts),
+            "task": list(self._config.task_experts),
+        }
+
+    @property
+    def num_shared_experts(self) -> int:
+        """Number of shared experts in the basket."""
+        return len(self._config.shared_experts)
+
+    @property
+    def num_task_experts(self) -> int:
+        """Number of task expert types in the basket."""
+        return len(self._config.task_experts)
+
+    @property
+    def shared_expert_names(self) -> List[str]:
+        """Names of shared experts in the basket."""
+        return list(self._config.shared_experts)
+
+    @property
+    def task_expert_names(self) -> List[str]:
+        """Names of task experts in the basket."""
+        return list(self._config.task_experts)

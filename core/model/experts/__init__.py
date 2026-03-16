@@ -13,6 +13,11 @@ Registered experts
 * ``temporal_ensemble`` -- :class:`TemporalEnsembleExpert` (Mamba + Transformer)
 * ``causal``            -- :class:`CausalExpert` (NOTEARS DAG)
 * ``optimal_transport`` -- :class:`OptimalTransportExpert` (Sinkhorn)
+* ``hgcn``              -- :class:`UnifiedHGCNExpert` (Hyperbolic GCN)
+* ``perslay``           -- :class:`PersLayExpert` (Topological PersLay)
+* ``lightgcn``          -- :class:`LightGCNExpert` (Light Graph Conv)
+* ``autoint``           -- :class:`AutoIntExpert` (Self-Attention Interaction)
+* ``xdeepfm``           -- :class:`XDeepFMExpert` (CIN + Deep)
 
 Usage::
 
@@ -51,6 +56,11 @@ from .mamba import MambaBlock, MambaExpert, StackedMambaBlocks
 from .temporal import TemporalEnsembleExpert
 from .causal import CausalExpert
 from .ot import OptimalTransportExpert
+from .hgcn import UnifiedHGCNExpert
+from .perslay import PersLayExpert
+from .lightgcn import LightGCNExpert
+from .autoint import AutoIntExpert
+from .xdeepfm import XDeepFMExpert
 
 __all__ = [
     # Base
@@ -68,4 +78,9 @@ __all__ = [
     "TemporalEnsembleExpert",
     "CausalExpert",
     "OptimalTransportExpert",
+    "UnifiedHGCNExpert",
+    "PersLayExpert",
+    "LightGCNExpert",
+    "AutoIntExpert",
+    "XDeepFMExpert",
 ]

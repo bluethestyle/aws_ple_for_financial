@@ -1,0 +1,536 @@
+# =============================================================================
+# Financial Recommendation Pipeline Configuration
+# =============================================================================
+# Converted from gotothemoon on-prem PLE-adaTT + Cluster Head system.
+# Original: 644D features, 16 active tasks, 50+ Hive tables, 20 GMM clusters.
+# AWS version: config-driven, SageMaker-native.
+#
+# This file conforms to PipelineConfig (core/pipeline/config.py):
+#   task_name, tasks[], data{}, features{}, model{}, training{}, aws{}
+# =============================================================================
+
+task_name: financial_recommendation_ple
+
+# ---------------------------------------------------------------------------
+# Tasks -- 16 active tasks matching original gotothemoon system
+# ---------------------------------------------------------------------------
+tasks:
+  # ===== Engagement Group =====
+  - name: ctr
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: label_ctr
+
+  - name: cvr
+    type: binary
+    loss: focal
+    loss_weight: 1.5
+    label_col: label_cvr
+
+  # ===== Lifecycle Group =====
+  - name: churn
+    type: binary
+    loss: focal
+    loss_weight: 1.2
+    label_col: label_churn
+
+  - name: retention
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: label_retention
+
+  - name: life_stage
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_life_stage
+    num_classes: 6
+
+  - name: ltv
+    type: regression
+    loss: huber
+    loss_weight: 1.5
+    label_col: label_ltv
+
+  # ===== Value Group =====
+  - name: balance_util
+    type: regression
+    loss: huber
+    loss_weight: 1.0
+    label_col: label_balance_util
+
+  - name: engagement
+    type: regression
+    loss: mse
+    loss_weight: 0.8
+    label_col: label_engagement
+
+  - name: channel
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_channel
+    num_classes: 3
+
+  - name: timing
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_timing
+    num_classes: 28
+
+  # ===== Consumption Group =====
+  - name: nba
+    type: multiclass
+    loss: ce
+    loss_weight: 2.0
+    label_col: label_nba
+    num_classes: 12
+
+  - name: spending_category
+    type: multiclass
+    loss: ce
+    loss_weight: 1.2
+    label_col: label_spending_category
+    num_classes: 12
+
+  - name: consumption_cycle
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_consumption_cycle
+    num_classes: 7
+
+  - name: spending_bucket
+    type: regression
+    loss: huber
+    loss_weight: 0.8
+    label_col: label_spending_amount
+
+  - name: merchant_affinity
+    type: regression
+    loss: huber
+    loss_weight: 1.0
+    label_col: label_merchant_affinity
+
+  - name: brand_prediction
+    type: multiclass
+    loss: ce
+    loss_weight: 2.0
+    label_col: label_next_brand
+    num_classes: 128
+
+# ---------------------------------------------------------------------------
+# Task Groups -- single source of truth for adaTT, loss weighting, monitoring
+# ---------------------------------------------------------------------------
+task_groups:
+  - name: engagement
+    tasks: [ctr, cvr]
+    adatt_intra_strength: 0.8
+    adatt_inter_strength: 0.3
+    description: "User engagement prediction tasks"
+  - name: lifecycle
+    tasks: [churn, retention, life_stage, ltv]
+    adatt_intra_strength: 0.6
+    adatt_inter_strength: 0.3
+    description: "Customer lifecycle management tasks"
+  - name: value
+    tasks: [balance_util, channel, timing]
+    adatt_intra_strength: 0.7
+    adatt_inter_strength: 0.3
+    description: "Customer value optimization tasks"
+  - name: consumption
+    tasks: [nba, spending_category, consumption_cycle, spending_bucket, merchant_affinity, brand_prediction]
+    adatt_intra_strength: 0.7
+    adatt_inter_strength: 0.3
+    description: "Consumption pattern and product recommendation tasks"
+
+# ---------------------------------------------------------------------------
+# Data source
+# ---------------------------------------------------------------------------
+data:
+  source: s3://aiops-ple-financial/data/train/
+  format: parquet
+  train_split: 0.8
+  val_split: 0.1
+
+# ---------------------------------------------------------------------------
+# Features -- 644D normalized feature space
+# ---------------------------------------------------------------------------
+features:
+  numeric:
+    # Base features -- demographics, account, card (34 RFM)
+    - rfm_001
+    - rfm_002
+    - rfm_003
+    - rfm_004
+    - rfm_005
+    - rfm_006
+    - rfm_007
+    - rfm_008
+    - rfm_009
+    - rfm_010
+    - rfm_011
+    - rfm_012
+    - rfm_013
+    - rfm_014
+    - rfm_015
+    - rfm_016
+    - rfm_017
+    - rfm_018
+    - rfm_019
+    - rfm_020
+    - rfm_021
+    - rfm_022
+    - rfm_023
+    - rfm_024
+    - rfm_025
+    - rfm_026
+    - rfm_027
+    - rfm_028
+    - rfm_029
+    - rfm_030
+    - rfm_031
+    - rfm_032
+    - rfm_033
+    - rfm_034
+    # Category features (64D)
+    - category_001
+    - category_002
+    - category_003
+    - category_004
+    - category_005
+    - category_006
+    - category_007
+    - category_008
+    - category_009
+    - category_010
+    - category_011
+    - category_012
+    - category_013
+    - category_014
+    - category_015
+    - category_016
+    - category_017
+    - category_018
+    - category_019
+    - category_020
+    - category_021
+    - category_022
+    - category_023
+    - category_024
+    - category_025
+    - category_026
+    - category_027
+    - category_028
+    - category_029
+    - category_030
+    - category_031
+    - category_032
+    - category_033
+    - category_034
+    - category_035
+    - category_036
+    - category_037
+    - category_038
+    - category_039
+    - category_040
+    - category_041
+    - category_042
+    - category_043
+    - category_044
+    - category_045
+    - category_046
+    - category_047
+    - category_048
+    - category_049
+    - category_050
+    - category_051
+    - category_052
+    - category_053
+    - category_054
+    - category_055
+    - category_056
+    - category_057
+    - category_058
+    - category_059
+    - category_060
+    - category_061
+    - category_062
+    - category_063
+    - category_064
+    # Transaction statistics (80D)
+    - transaction_stats_001
+    - transaction_stats_002
+    - transaction_stats_003
+    - transaction_stats_004
+    - transaction_stats_005
+    - transaction_stats_006
+    - transaction_stats_007
+    - transaction_stats_008
+    - transaction_stats_009
+    - transaction_stats_010
+    - transaction_stats_011
+    - transaction_stats_012
+    - transaction_stats_013
+    - transaction_stats_014
+    - transaction_stats_015
+    - transaction_stats_016
+    - transaction_stats_017
+    - transaction_stats_018
+    - transaction_stats_019
+    - transaction_stats_020
+    - transaction_stats_021
+    - transaction_stats_022
+    - transaction_stats_023
+    - transaction_stats_024
+    - transaction_stats_025
+    - transaction_stats_026
+    - transaction_stats_027
+    - transaction_stats_028
+    - transaction_stats_029
+    - transaction_stats_030
+    - transaction_stats_031
+    - transaction_stats_032
+    - transaction_stats_033
+    - transaction_stats_034
+    - transaction_stats_035
+    - transaction_stats_036
+    - transaction_stats_037
+    - transaction_stats_038
+    - transaction_stats_039
+    - transaction_stats_040
+    - transaction_stats_041
+    - transaction_stats_042
+    - transaction_stats_043
+    - transaction_stats_044
+    - transaction_stats_045
+    - transaction_stats_046
+    - transaction_stats_047
+    - transaction_stats_048
+    - transaction_stats_049
+    - transaction_stats_050
+    - transaction_stats_051
+    - transaction_stats_052
+    - transaction_stats_053
+    - transaction_stats_054
+    - transaction_stats_055
+    - transaction_stats_056
+    - transaction_stats_057
+    - transaction_stats_058
+    - transaction_stats_059
+    - transaction_stats_060
+    - transaction_stats_061
+    - transaction_stats_062
+    - transaction_stats_063
+    - transaction_stats_064
+    - transaction_stats_065
+    - transaction_stats_066
+    - transaction_stats_067
+    - transaction_stats_068
+    - transaction_stats_069
+    - transaction_stats_070
+    - transaction_stats_071
+    - transaction_stats_072
+    - transaction_stats_073
+    - transaction_stats_074
+    - transaction_stats_075
+    - transaction_stats_076
+    - transaction_stats_077
+    - transaction_stats_078
+    - transaction_stats_079
+    - transaction_stats_080
+    # Temporal features (60D)
+    - temporal_001
+    - temporal_002
+    - temporal_003
+    - temporal_004
+    - temporal_005
+    - temporal_006
+    - temporal_007
+    - temporal_008
+    - temporal_009
+    - temporal_010
+    - temporal_011
+    - temporal_012
+    - temporal_013
+    - temporal_014
+    - temporal_015
+    - temporal_016
+    - temporal_017
+    - temporal_018
+    - temporal_019
+    - temporal_020
+    - temporal_021
+    - temporal_022
+    - temporal_023
+    - temporal_024
+    - temporal_025
+    - temporal_026
+    - temporal_027
+    - temporal_028
+    - temporal_029
+    - temporal_030
+    - temporal_031
+    - temporal_032
+    - temporal_033
+    - temporal_034
+    - temporal_035
+    - temporal_036
+    - temporal_037
+    - temporal_038
+    - temporal_039
+    - temporal_040
+    - temporal_041
+    - temporal_042
+    - temporal_043
+    - temporal_044
+    - temporal_045
+    - temporal_046
+    - temporal_047
+    - temporal_048
+    - temporal_049
+    - temporal_050
+    - temporal_051
+    - temporal_052
+    - temporal_053
+    - temporal_054
+    - temporal_055
+    - temporal_056
+    - temporal_057
+    - temporal_058
+    - temporal_059
+    - temporal_060
+    # TDA features (70D = short 24 + long 36 + phase_transition 10)
+    - tda_short_001
+    - tda_short_024
+    - tda_long_001
+    - tda_long_036
+    - pt_W1_distance_h0
+    - pt_W1_distance_h1
+    - pt_total_topological_change
+    - pt_max_structural_shift
+    - pt_transition_probability
+    - pt_transition_imminence
+    - pt_transition_frequency
+    - pt_transition_direction
+    - pt_transition_magnitude
+    - pt_phase_confidence
+    # GMM cluster features (22D)
+    - gmm_cluster_001
+    - gmm_cluster_022
+    # Mamba temporal (50D)
+    - mamba_temporal_001
+    - mamba_temporal_050
+    # Economics (17D)
+    - income_decomposition_001
+    - income_decomposition_008
+    - financial_behavior_001
+    - financial_behavior_009
+    # Multidisciplinary (24D)
+    - chemical_kinetics_001
+    - chemical_kinetics_006
+    - epidemic_diffusion_001
+    - epidemic_diffusion_005
+    - interference_001
+    - interference_008
+    - crime_pattern_001
+    - crime_pattern_005
+    # Model-derived (27D = HMM 5 + Bandit 4 + LNN 18)
+    - hmm_dominant_state
+    - hmm_state_duration
+    - hmm_transition_stability
+    - hmm_transition_entropy
+    - hmm_state_change_rate
+    - bandit_model_001
+    - bandit_model_004
+    - lnn_dist_amount_skewness
+    - lnn_complex_permutation_entropy
+    # Merchant hierarchy (21D)
+    - merchant_mcc_level1_x
+    - merchant_brand_embed_0
+    - merchant_brand_diversity
+    - merchant_brand_concentration
+    - merchant_brand_loyalty
+    - merchant_brand_exploration
+    - merchant_hierarchy_radius
+  categorical: []
+  embedding_dim: 16
+  id_cols:
+    - customer_id
+    - snapshot_date
+  transformers:
+    - name: quantile_transformer
+      cols: [rfm_001, rfm_002, rfm_003, rfm_004, rfm_005, rfm_006, rfm_007, rfm_008, rfm_009, rfm_010]
+    - name: standard_scaler
+      cols: [transaction_stats_001, transaction_stats_002, transaction_stats_003, transaction_stats_004, transaction_stats_005]
+
+# ---------------------------------------------------------------------------
+# Model -- PLE architecture with shared experts
+# ---------------------------------------------------------------------------
+model:
+  architecture: ple
+  num_shared_experts: 7
+  num_task_experts: 2
+  expert_hidden_dim: 256
+  num_layers: 2
+  tower_dims: [128, 64]
+  dropout: 0.2
+  # -------------------------------------------------------------------------
+  # Expert Basket -- subset selection from Expert Pool (11 registered)
+  # 3-tier: Pool (all registered) -> Basket (selected below) -> CGC Gating
+  # Note: output_dim overrides per expert are ignored by ExpertBasket -- it
+  # forces all shared experts to use the same output_dim (expert_hidden_dim/4
+  # or 64) so that torch.stack in CGCLayer.forward() succeeds.
+  # -------------------------------------------------------------------------
+  expert_basket:
+    shared_experts:
+      - hgcn
+      - perslay
+      - deepfm
+      - temporal_ensemble
+      - lightgcn
+      - causal
+      - optimal_transport
+    task_experts:
+      - mlp
+      - deepfm
+    expert_configs:
+      hgcn:
+        hidden_dim: 128
+        dropout: 0.2
+      perslay:
+        use_raw_diagram: false
+        tda_dim: 70
+      deepfm:
+        embedding_dim: 16
+        hidden_dims: [256, 128, 64]
+      temporal_ensemble: {}
+      lightgcn:
+        hidden_dim: 128
+        num_layers: 3
+      causal: {}
+      optimal_transport: {}
+
+# ---------------------------------------------------------------------------
+# Training -- 2-phase setup matching original
+# ---------------------------------------------------------------------------
+training:
+  batch_size: 4096
+  epochs: 100
+  learning_rate: 0.0005
+  early_stopping_patience: 7
+  seed: 42
+
+# ---------------------------------------------------------------------------
+# AWS / SageMaker configuration
+# ---------------------------------------------------------------------------
+aws:
+  region: ap-northeast-2
+  s3_bucket: aiops-ple-financial
+  instance_type: ml.g4dn.xlarge
+  use_spot: true
+  max_run_seconds: 28800
+  role_arn: arn:aws:iam::ACCOUNT_ID:role/SageMakerExecutionRole

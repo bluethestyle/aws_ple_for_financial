@@ -18,6 +18,7 @@ from .scorer import (
     ScorerRegistry,
     ScoringResult,
     WeightedSumScorer,
+    FDTVSScorer,
 )
 from .constraint_engine import (
     AbstractFilter,
@@ -26,7 +27,7 @@ from .constraint_engine import (
     FilterResult,
 )
 from .selector import TopKSelector, DiversityMethod
-from .pipeline import RecommendationPipeline, RecommendationResult
+from .pipeline import RecommendationPipeline, RecommendationResult, RecommendationItem
 
 __all__ = [
     # scorer
@@ -45,4 +46,7 @@ __all__ = [
     # pipeline
     "RecommendationPipeline",
     "RecommendationResult",
+    "RecommendationItem",
+    # additional exports
+    "FDTVSScorer",
 ]

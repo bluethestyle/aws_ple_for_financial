@@ -19,9 +19,9 @@ from .feature_store import (
     DynamoDBFeatureStore,
     FeatureStoreFactory,
 )
-from .predict import RecommendationService, PredictionResponse
-from .kill_switch import KillSwitch, KillSwitchState
-from .ab_test import ABTestManager
+from .predict import RecommendationService, PredictionResponse, OutputNormalizer
+from .kill_switch import KillSwitch, KillSwitchState, FallbackStrategy
+from .ab_test import ABTestManager, VariantAssignment
 
 __all__ = [
     # config
@@ -37,9 +37,12 @@ __all__ = [
     # predict
     "RecommendationService",
     "PredictionResponse",
+    "OutputNormalizer",
     # kill_switch
     "KillSwitch",
     "KillSwitchState",
+    "FallbackStrategy",
     # ab_test
     "ABTestManager",
+    "VariantAssignment",
 ]

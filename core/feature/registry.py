@@ -167,5 +167,5 @@ class FeatureRegistry:
 
     def __repr__(self) -> str:  # pragma: no cover
         return (
-            f"FeatureRegistry(registered={cls.list_registered()})"
+            f"FeatureRegistry(registered={FeatureRegistry.list_registered()})"
         )

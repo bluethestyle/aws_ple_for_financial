@@ -327,7 +327,7 @@ class PipelineRunner:
         import torch
         from torch.utils.data import DataLoader, TensorDataset
 
-        from ..model.ple.config import PLEConfig, ExpertConfig, TaskTowerConfig
+        from ..model.ple.config import PLEConfig, ExpertConfig, TaskTowerConfig, ExpertBasketConfig, AdaTTConfig
         from ..model.ple.model import PLEModel
         from ..training.trainer import PLETrainer
         from ..training.config import TrainingConfig
@@ -358,6 +358,26 @@ class PipelineRunner:
             task_overrides[t.name] = override
 
         expert_output_dim = max(self.config.model.expert_hidden_dim // 4, 64)
+
+        # Build ExpertBasketConfig if expert_basket is defined in model spec
+        expert_basket_cfg: Optional[ExpertBasketConfig] = None
+        if self.config.model.expert_basket is not None:
+            eb = self.config.model.expert_basket
+            expert_basket_cfg = ExpertBasketConfig(
+                shared_experts=eb.get("shared_experts", []),
+                task_experts=eb.get("task_experts", []),
+                expert_configs=eb.get("expert_configs", {}),
+            )
+
+        # -- adaTT config from pipeline task_groups (single source of truth) --
+        adatt_cfg: Optional[AdaTTConfig] = None
+        if self.config.task_groups:
+            adatt_cfg = AdaTTConfig.from_pipeline_groups(self.config.task_groups)
+            logger.info(
+                "[PLE] adaTT task_groups from pipeline config: %d groups",
+                len(self.config.task_groups),
+            )
+
         ple_config = PLEConfig(
             input_dim=input_dim,
             task_names=task_names,
@@ -374,6 +394,8 @@ class PipelineRunner:
             ),
             dropout=self.config.model.dropout,
             task_overrides=task_overrides,
+            expert_basket=expert_basket_cfg,
+            **({"adatt": adatt_cfg} if adatt_cfg is not None else {}),
         )
 
         model = PLEModel(ple_config)

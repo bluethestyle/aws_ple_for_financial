@@ -388,7 +388,10 @@ def _download_pretrained_from_s3(s3_uri: str) -> None:
     s3.download_file(bucket, key, local_tar)
 
     with tarfile.open(local_tar, "r:gz") as tar:
-        tar.extractall(local_dir)
+        try:
+            tar.extractall(local_dir, filter="data")
+        except TypeError:
+            tar.extractall(local_dir)
 
     logger.info(f"Extracted pre-trained model to {local_dir}")
 

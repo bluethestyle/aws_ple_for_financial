@@ -1,0 +1,1249 @@
+# =============================================================================
+# Financial Recommendation System -- Data Schema
+# =============================================================================
+# Matches original gotothemoon 644D feature space organized by extraction group.
+# Conforms to SchemaRegistry (core/data/schema_registry.py):
+#   sources -> {name -> {columns, primary_key, version, description, tags}}
+#
+# Feature dimension breakdown (644D normalized):
+#   Base features:           238D (RFM 34 + Category 64 + Transaction Stats 80 + Temporal 60)
+#   Multi-source features:    91D (deposit 20 + membership 15 + investment 18 + credit 12 + digital 14 + product 12)
+#   Extended source features: 84D (insurance 15 + refund_loan 10 + consultation 8 + STT 6 + product_interest 4 + campaign 6 + marketing 6 + overseas 6 + open_banking 8 + e_finance 7 + merchant_pref 8)
+#   Domain features:         159D (TDA 70 + GMM 22 + Mamba 50 + Economics 17)
+#   Multidisciplinary:        24D (chemical 6 + epidemic 5 + interference 8 + crime 5)
+#   Model-derived:            27D (HMM 5 + Bandit 4 + LNN 18)
+#   Merchant hierarchy:       21D
+#   -------------------------------------------------
+#   Total:                   644D
+# =============================================================================
+
+sources:
+
+  # -------------------------------------------------------------------------
+  # Customer master data
+  # -------------------------------------------------------------------------
+  customer_master:
+    description: "Customer master data with demographics and account info"
+    version: 1
+    primary_key: [customer_id]
+    tags: [core, regulated, pii]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+        description: "Encrypted unique customer identifier"
+      name:
+        type: string
+        nullable: false
+        pii: true
+        description: "Full legal name (PII)"
+      date_of_birth:
+        type: date
+        nullable: true
+        pii: true
+        description: "Date of birth (PII, used for age derivation)"
+      age_group:
+        type: string
+        nullable: true
+        allowed_values: ["18-24", "25-34", "35-44", "45-54", "55-64", "65+"]
+        description: "Age bracket for fairness monitoring"
+      gender:
+        type: string
+        nullable: true
+        allowed_values: ["M", "F", "NB", "undisclosed"]
+        description: "Gender for fairness monitoring"
+      income_bracket:
+        type: string
+        nullable: true
+        allowed_values: ["low", "medium", "high", "very_high"]
+        description: "Income bracket for segmentation and fairness"
+      region_type:
+        type: string
+        nullable: true
+        allowed_values: ["urban", "suburban", "rural"]
+        description: "Geographic region classification"
+      credit_grade:
+        type: string
+        nullable: true
+        allowed_values: ["poor", "fair", "good", "excellent"]
+        description: "Credit score bracket"
+      kyc_verified:
+        type: bool
+        nullable: false
+        description: "KYC verification status"
+      onboarding_date:
+        type: date
+        nullable: false
+        description: "Customer onboarding date"
+      customer_segment:
+        type: int64
+        nullable: true
+        min: 0
+        max: 2
+        description: "0=ANONYMOUS, 1=COLDSTART, 2=WARMSTART"
+
+  # -------------------------------------------------------------------------
+  # Product holdings
+  # -------------------------------------------------------------------------
+  product_holdings:
+    description: "Current product holdings per customer"
+    version: 1
+    primary_key: [customer_id, product_id]
+    tags: [core, portfolio]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      product_id:
+        type: string
+        nullable: false
+        description: "Financial product identifier"
+      product_type:
+        type: string
+        nullable: false
+        allowed_values: ["savings", "checking", "credit_card", "debit_card", "loan", "insurance", "investment", "mortgage", "fund", "forex"]
+        description: "Product category"
+      open_date:
+        type: date
+        nullable: false
+        description: "Account/product open date"
+      balance:
+        type: float64
+        nullable: true
+        description: "Current balance or outstanding amount"
+      is_active:
+        type: bool
+        nullable: false
+        description: "Whether the product is currently active"
+
+  # -------------------------------------------------------------------------
+  # Transaction history
+  # -------------------------------------------------------------------------
+  transactions:
+    description: "Financial transaction records (card + deposit)"
+    version: 1
+    primary_key: [transaction_id]
+    tags: [core, transactional, regulated]
+    columns:
+      transaction_id:
+        type: string
+        nullable: false
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      product_id:
+        type: string
+        nullable: false
+      amount:
+        type: float64
+        nullable: false
+        description: "Transaction amount (positive=credit, negative=debit)"
+      transaction_type:
+        type: string
+        nullable: false
+        allowed_values: ["deposit", "withdrawal", "transfer", "payment", "purchase", "refund", "fee", "interest"]
+      transaction_ts:
+        type: timestamp
+        nullable: false
+        description: "Transaction timestamp (UTC)"
+      merchant_category:
+        type: string
+        nullable: true
+        description: "Merchant category code (MCC) description"
+      channel:
+        type: string
+        nullable: true
+        allowed_values: ["branch", "atm", "online", "mobile_app", "phone"]
+      merchant_brand_id:
+        type: string
+        nullable: true
+        description: "Brand identifier (BRNO) for merchant affinity"
+
+  # -------------------------------------------------------------------------
+  # Base features (238D)
+  #   RFM 34D + Category 64D + Transaction Stats 80D + Temporal 60D
+  # -------------------------------------------------------------------------
+  base_features:
+    description: "Base customer features: demographics, RFM, category spending, transaction stats, temporal patterns"
+    version: 1
+    primary_key: [customer_id, snapshot_date]
+    tags: [feature, derived, base]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      snapshot_date:
+        type: date
+        nullable: false
+        description: "Feature snapshot date"
+      # -- RFM features (34D) --
+      rfm_001:
+        type: float64
+        nullable: true
+        description: "Recency score"
+      rfm_002:
+        type: float64
+        nullable: true
+        description: "Frequency score"
+      rfm_003:
+        type: float64
+        nullable: true
+        description: "Monetary score"
+      rfm_004:
+        type: float64
+        nullable: true
+        description: "Tenure days normalized"
+      rfm_005:
+        type: float64
+        nullable: true
+        description: "Account count"
+      rfm_006:
+        type: float64
+        nullable: true
+        description: "Total balance normalized"
+      rfm_007:
+        type: float64
+        nullable: true
+        description: "Average monthly spend"
+      rfm_008:
+        type: float64
+        nullable: true
+        description: "Transaction count 30d"
+      rfm_009:
+        type: float64
+        nullable: true
+        description: "Days since last transaction"
+      rfm_010:
+        type: float64
+        nullable: true
+        description: "Credit utilization ratio"
+      rfm_011:
+        type: float64
+        nullable: true
+        description: "RFM derived feature 11"
+      rfm_012:
+        type: float64
+        nullable: true
+        description: "RFM derived feature 12"
+      rfm_013:
+        type: float64
+        nullable: true
+        description: "RFM derived feature 13"
+      rfm_014:
+        type: float64
+        nullable: true
+        description: "RFM derived feature 14"
+      rfm_015:
+        type: float64
+        nullable: true
+        description: "RFM derived feature 15"
+      rfm_016:
+        type: float64
+        nullable: true
+        description: "RFM derived feature 16"
+      rfm_017:
+        type: float64
+        nullable: true
+        description: "RFM derived feature 17"
+      rfm_018:
+        type: float64
+        nullable: true
+        description: "RFM derived feature 18"
+      rfm_019:
+        type: float64
+        nullable: true
+        description: "RFM derived feature 19"
+      rfm_020:
+        type: float64
+        nullable: true
+        description: "RFM derived feature 20"
+      rfm_021:
+        type: float64
+        nullable: true
+        description: "RFM cross-product score"
+      rfm_022:
+        type: float64
+        nullable: true
+        description: "RFM interaction feature 22"
+      rfm_023:
+        type: float64
+        nullable: true
+        description: "RFM interaction feature 23"
+      rfm_024:
+        type: float64
+        nullable: true
+        description: "RFM interaction feature 24"
+      rfm_025:
+        type: float64
+        nullable: true
+        description: "RFM transition feature 25"
+      rfm_026:
+        type: float64
+        nullable: true
+        description: "RFM transition feature 26"
+      rfm_027:
+        type: float64
+        nullable: true
+        description: "RFM transition feature 27"
+      rfm_028:
+        type: float64
+        nullable: true
+        description: "RFM transition feature 28"
+      rfm_029:
+        type: float64
+        nullable: true
+        description: "RFM transition feature 29"
+      rfm_030:
+        type: float64
+        nullable: true
+        description: "RFM transition feature 30"
+      rfm_031:
+        type: float64
+        nullable: true
+        description: "RFM transition feature 31"
+      rfm_032:
+        type: float64
+        nullable: true
+        description: "RFM transition feature 32"
+      rfm_033:
+        type: float64
+        nullable: true
+        description: "RFM transition feature 33"
+      rfm_034:
+        type: float64
+        nullable: true
+        description: "RFM transition feature 34"
+      # -- Category spending features (64D) --
+      category_001:
+        type: float64
+        nullable: true
+        description: "Category spending ratio 001"
+      category_064:
+        type: float64
+        nullable: true
+        description: "Category spending ratio 064"
+      # -- Transaction statistics (80D) --
+      transaction_stats_001:
+        type: float64
+        nullable: true
+        description: "Transaction amount mean"
+      transaction_stats_080:
+        type: float64
+        nullable: true
+        description: "Transaction cross-statistic 080"
+      # -- Temporal features (60D) --
+      temporal_001:
+        type: float64
+        nullable: true
+        description: "Temporal pattern 001"
+      temporal_060:
+        type: float64
+        nullable: true
+        description: "Temporal pattern 060"
+
+  # -------------------------------------------------------------------------
+  # Multi-source features (91D)
+  #   deposit 20 + membership 15 + investment 18 + credit 12 + digital 14 + product 12
+  # -------------------------------------------------------------------------
+  multi_source_features:
+    description: "Cross-domain aggregation features from deposit, membership, investment, credit, digital engagement, product diversity"
+    version: 1
+    primary_key: [customer_id, snapshot_date]
+    tags: [feature, derived, multi_source]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      snapshot_date:
+        type: date
+        nullable: false
+      # -- Deposit behavior (20D) --
+      deposit_behavior_001:
+        type: float64
+        nullable: true
+        description: "Deposit amount mean"
+      deposit_behavior_020:
+        type: float64
+        nullable: true
+        description: "Deposit behavior feature 020"
+      # -- Membership utilization (15D) --
+      membership_utilization_001:
+        type: float64
+        nullable: true
+        description: "Membership utilization score"
+      membership_utilization_015:
+        type: float64
+        nullable: true
+        description: "Membership feature 015"
+      # -- Investment propensity (18D) --
+      investment_propensity_001:
+        type: float64
+        nullable: true
+        description: "Investment risk tolerance"
+      investment_propensity_018:
+        type: float64
+        nullable: true
+        description: "Investment feature 018"
+      # -- Credit risk (12D) --
+      credit_risk_001:
+        type: float64
+        nullable: true
+        description: "Credit risk score"
+      credit_risk_012:
+        type: float64
+        nullable: true
+        description: "Credit risk feature 012"
+      # -- Digital engagement (14D) --
+      digital_engagement_001:
+        type: float64
+        nullable: true
+        description: "App session frequency"
+      digital_engagement_014:
+        type: float64
+        nullable: true
+        description: "Digital engagement feature 014"
+      # -- Product diversity (12D) --
+      product_diversity_001:
+        type: float64
+        nullable: true
+        description: "Product holding diversity index"
+      product_diversity_012:
+        type: float64
+        nullable: true
+        description: "Product diversity feature 012"
+
+  # -------------------------------------------------------------------------
+  # Extended source features (84D)
+  #   insurance 15 + refund_loan 10 + consultation 8 + STT 6 +
+  #   product_interest 4 + campaign 6 + marketing 6 + overseas 6 +
+  #   open_banking 8 + e_finance 7 + merchant_pref 8
+  # -------------------------------------------------------------------------
+  extended_source_features:
+    description: "Extended features from insurance, loans, campaigns, consultation, overseas, open banking, e-finance, merchant preferences"
+    version: 1
+    primary_key: [customer_id, snapshot_date]
+    tags: [feature, derived, extended]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      snapshot_date:
+        type: date
+        nullable: false
+      # -- Insurance holding (8D) + claim (7D) = 15D --
+      insurance_holding_001:
+        type: float64
+        nullable: true
+        description: "Insurance holding feature"
+      insurance_claim_007:
+        type: float64
+        nullable: true
+        description: "Insurance claim feature"
+      # -- Refund/Loan (10D) --
+      refund_loan_001:
+        type: float64
+        nullable: true
+        description: "Refund loan feature"
+      refund_loan_010:
+        type: float64
+        nullable: true
+        description: "Refund loan feature 010"
+      # -- Consultation (8D) --
+      consultation_history_001:
+        type: float64
+        nullable: true
+        description: "Consultation history feature"
+      consultation_history_008:
+        type: float64
+        nullable: true
+        description: "Consultation history feature 008"
+      # -- STT analysis (6D) --
+      stt_analysis_001:
+        type: float64
+        nullable: true
+        description: "Speech-to-text sentiment score"
+      stt_analysis_006:
+        type: float64
+        nullable: true
+        description: "STT analysis feature 006"
+      # -- Product interest (4D) --
+      product_interest_001:
+        type: float64
+        nullable: true
+        description: "Product interest signal"
+      product_interest_004:
+        type: float64
+        nullable: true
+        description: "Product interest feature 004"
+      # -- Campaign participation (6D) --
+      campaign_participation_001:
+        type: float64
+        nullable: true
+        description: "Campaign response rate"
+      campaign_participation_006:
+        type: float64
+        nullable: true
+        description: "Campaign feature 006"
+      # -- Marketing response (6D) --
+      marketing_response_001:
+        type: float64
+        nullable: true
+        description: "Marketing response score"
+      marketing_response_006:
+        type: float64
+        nullable: true
+        description: "Marketing response feature 006"
+      # -- Overseas payment (6D) --
+      overseas_payment_001:
+        type: float64
+        nullable: true
+        description: "Overseas payment frequency"
+      overseas_payment_006:
+        type: float64
+        nullable: true
+        description: "Overseas payment feature 006"
+      # -- Open banking (8D) --
+      open_banking_001:
+        type: float64
+        nullable: true
+        description: "Open banking activity score"
+      open_banking_008:
+        type: float64
+        nullable: true
+        description: "Open banking feature 008"
+      # -- E-finance (7D) --
+      e_finance_001:
+        type: float64
+        nullable: true
+        description: "E-finance usage score"
+      e_finance_007:
+        type: float64
+        nullable: true
+        description: "E-finance feature 007"
+      # -- Merchant preference (8D) --
+      merchant_preference_001:
+        type: float64
+        nullable: true
+        description: "Top merchant category preference"
+      merchant_preference_008:
+        type: float64
+        nullable: true
+        description: "Merchant preference feature 008"
+
+  # -------------------------------------------------------------------------
+  # Domain features (159D)
+  #   TDA 70D + GMM 22D + Mamba 50D + Economics 17D
+  # -------------------------------------------------------------------------
+  domain_features:
+    description: "Domain-specific features: TDA topology (70D), GMM clustering (22D), Mamba temporal (50D), Economics (17D)"
+    version: 1
+    primary_key: [customer_id, snapshot_date]
+    tags: [feature, derived, domain]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      snapshot_date:
+        type: date
+        nullable: false
+      # -- TDA short window (24D) --
+      tda_short_001:
+        type: float64
+        nullable: true
+        description: "TDA short-window persistence feature (90-day)"
+      tda_short_024:
+        type: float64
+        nullable: true
+        description: "TDA short-window feature 024"
+      # -- TDA long window (36D) --
+      tda_long_001:
+        type: float64
+        nullable: true
+        description: "TDA long-window persistence feature (365-day)"
+      tda_long_036:
+        type: float64
+        nullable: true
+        description: "TDA long-window feature 036"
+      # -- Phase transition (10D) --
+      pt_W1_distance_h0:
+        type: float64
+        nullable: true
+        description: "Wasserstein-1 distance for H0 persistence"
+      pt_W1_distance_h1:
+        type: float64
+        nullable: true
+        description: "Wasserstein-1 distance for H1 persistence"
+      pt_total_topological_change:
+        type: float64
+        nullable: true
+        description: "Total topological change metric"
+      pt_max_structural_shift:
+        type: float64
+        nullable: true
+        description: "Maximum structural shift"
+      pt_transition_probability:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Phase transition probability"
+      pt_transition_imminence:
+        type: float64
+        nullable: true
+        description: "Phase transition imminence score"
+      pt_transition_frequency:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "Phase transition frequency"
+      pt_transition_direction:
+        type: float64
+        nullable: true
+        description: "Phase transition direction indicator"
+      pt_transition_magnitude:
+        type: float64
+        nullable: true
+        description: "Phase transition magnitude"
+      pt_phase_confidence:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Phase transition confidence"
+      # -- GMM cluster (22D: 20 soft assignments + 2 meta) --
+      gmm_cluster_001:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "GMM cluster 1 membership probability"
+      gmm_cluster_020:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "GMM cluster 20 membership probability"
+      gmm_cluster_021:
+        type: float64
+        nullable: true
+        description: "GMM cluster entropy"
+      gmm_cluster_022:
+        type: float64
+        nullable: true
+        description: "GMM dominant cluster index"
+      # -- Mamba temporal (50D) --
+      mamba_temporal_001:
+        type: float64
+        nullable: true
+        description: "Mamba temporal state feature 001"
+      mamba_temporal_050:
+        type: float64
+        nullable: true
+        description: "Mamba temporal state feature 050"
+      # -- Economics: income decomposition (8D) --
+      income_decomposition_001:
+        type: float64
+        nullable: true
+        description: "Income trend component"
+      income_decomposition_008:
+        type: float64
+        nullable: true
+        description: "Income decomposition feature 008"
+      # -- Economics: financial behavior (9D) --
+      financial_behavior_001:
+        type: float64
+        nullable: true
+        description: "Savings rate"
+      financial_behavior_009:
+        type: float64
+        nullable: true
+        description: "Financial behavior feature 009"
+
+  # -------------------------------------------------------------------------
+  # Multidisciplinary features (24D)
+  #   chemical_kinetics 6 + epidemic_diffusion 5 + interference 8 + crime_pattern 5
+  # -------------------------------------------------------------------------
+  multidisciplinary_features:
+    description: "Cross-domain synthesis features: chemical kinetics, epidemic diffusion, interference, crime pattern"
+    version: 1
+    primary_key: [customer_id, snapshot_date]
+    tags: [feature, derived, multidisciplinary]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      snapshot_date:
+        type: date
+        nullable: false
+      # -- Chemical kinetics (6D) --
+      chemical_kinetics_001:
+        type: float64
+        nullable: true
+        description: "Consumption change velocity"
+      chemical_kinetics_006:
+        type: float64
+        nullable: true
+        description: "Chemical kinetics feature 006"
+      # -- Epidemic diffusion (5D) --
+      epidemic_diffusion_001:
+        type: float64
+        nullable: true
+        description: "Category adoption SIR susceptible ratio"
+      epidemic_diffusion_005:
+        type: float64
+        nullable: true
+        description: "Epidemic diffusion feature 005"
+      # -- Interference (8D) --
+      interference_001:
+        type: float64
+        nullable: true
+        description: "FFT spectral entropy"
+      interference_008:
+        type: float64
+        nullable: true
+        description: "Interference feature 008"
+      # -- Crime pattern (5D) --
+      crime_pattern_001:
+        type: float64
+        nullable: true
+        description: "Consumption burstiness"
+      crime_pattern_005:
+        type: float64
+        nullable: true
+        description: "Crime pattern feature 005"
+
+  # -------------------------------------------------------------------------
+  # Model-derived features (27D)
+  #   HMM summary 5D + Bandit/MAB 4D + LNN 18D
+  # -------------------------------------------------------------------------
+  model_derived_features:
+    description: "Features derived from auxiliary models: HMM state summary, Multi-Armed Bandit, LNN time series statistics"
+    version: 1
+    primary_key: [customer_id, snapshot_date]
+    tags: [feature, derived, model]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      snapshot_date:
+        type: date
+        nullable: false
+      # -- HMM summary (5D) --
+      hmm_dominant_state:
+        type: float64
+        nullable: true
+        description: "Dominant HMM state ID"
+      hmm_state_duration:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "Current HMM state duration"
+      hmm_transition_stability:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "HMM state transition stability"
+      hmm_transition_entropy:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "HMM state transition entropy"
+      hmm_state_change_rate:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "HMM state change frequency"
+      # -- Bandit/MAB (4D) --
+      bandit_model_001:
+        type: float64
+        nullable: true
+        description: "Exploration/exploitation ratio"
+      bandit_model_002:
+        type: float64
+        nullable: true
+        description: "Bandit reward estimate"
+      bandit_model_003:
+        type: float64
+        nullable: true
+        description: "Bandit arm selection entropy"
+      bandit_model_004:
+        type: float64
+        nullable: true
+        description: "Bandit UCB score"
+      # -- LNN time series statistics (18D) --
+      lnn_dist_amount_skewness:
+        type: float64
+        nullable: true
+        description: "Transaction amount skewness"
+      lnn_dist_amount_kurtosis:
+        type: float64
+        nullable: true
+        description: "Transaction amount kurtosis"
+      lnn_dist_interval_skewness:
+        type: float64
+        nullable: true
+        description: "Transaction interval skewness"
+      lnn_dist_interval_kurtosis:
+        type: float64
+        nullable: true
+        description: "Transaction interval kurtosis"
+      lnn_freq_dominant_frequency:
+        type: float64
+        nullable: true
+        description: "FFT dominant frequency"
+      lnn_freq_spectral_entropy:
+        type: float64
+        nullable: true
+        description: "Spectral entropy"
+      lnn_freq_spectral_centroid:
+        type: float64
+        nullable: true
+        description: "Spectral centroid"
+      lnn_freq_bandwidth:
+        type: float64
+        nullable: true
+        description: "Spectral bandwidth"
+      lnn_changepoint_n_changepoints:
+        type: int64
+        nullable: true
+        min: 0
+        description: "Number of change points"
+      lnn_changepoint_max_shift_magnitude:
+        type: float64
+        nullable: true
+        description: "Maximum change point shift magnitude"
+      lnn_changepoint_mean_segment_length:
+        type: float64
+        nullable: true
+        description: "Mean segment length between change points"
+      lnn_ar_lag1_autocorr:
+        type: float64
+        nullable: true
+        description: "Lag-1 autocorrelation"
+      lnn_ar_lag7_autocorr:
+        type: float64
+        nullable: true
+        description: "Lag-7 autocorrelation"
+      lnn_ar_partial_autocorr_lag1:
+        type: float64
+        nullable: true
+        description: "Partial autocorrelation lag-1"
+      lnn_ar_ljung_box_stat:
+        type: float64
+        nullable: true
+        description: "Ljung-Box test statistic"
+      lnn_complex_approx_entropy:
+        type: float64
+        nullable: true
+        description: "Approximate entropy"
+      lnn_complex_sample_entropy:
+        type: float64
+        nullable: true
+        description: "Sample entropy"
+      lnn_complex_permutation_entropy:
+        type: float64
+        nullable: true
+        description: "Permutation entropy"
+
+  # -------------------------------------------------------------------------
+  # Merchant hierarchy features (21D)
+  # -------------------------------------------------------------------------
+  merchant_hierarchy_features:
+    description: "Merchant hierarchy embeddings: MCC Level1/2 coordinates, brand embeddings, diversity stats"
+    version: 1
+    primary_key: [customer_id, snapshot_date]
+    tags: [feature, derived, merchant]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      snapshot_date:
+        type: date
+        nullable: false
+      # -- MCC Level 1 coordinates (4D) --
+      merchant_mcc_level1_x:
+        type: float64
+        nullable: true
+        description: "MCC level 1 Poincare x-coordinate"
+      merchant_mcc_level1_y:
+        type: float64
+        nullable: true
+        description: "MCC level 1 Poincare y-coordinate"
+      merchant_mcc_level1_z:
+        type: float64
+        nullable: true
+        description: "MCC level 1 Poincare z-coordinate"
+      merchant_mcc_level1_w:
+        type: float64
+        nullable: true
+        description: "MCC level 1 Poincare w-coordinate"
+      # -- MCC Level 2 coordinates (4D) --
+      merchant_mcc_level2_x:
+        type: float64
+        nullable: true
+        description: "MCC level 2 Poincare x-coordinate"
+      merchant_mcc_level2_y:
+        type: float64
+        nullable: true
+        description: "MCC level 2 Poincare y-coordinate"
+      merchant_mcc_level2_z:
+        type: float64
+        nullable: true
+        description: "MCC level 2 Poincare z-coordinate"
+      merchant_mcc_level2_w:
+        type: float64
+        nullable: true
+        description: "MCC level 2 Poincare w-coordinate"
+      # -- Brand embedding (8D) --
+      merchant_brand_embed_0:
+        type: float64
+        nullable: true
+        description: "Brand embedding dimension 0"
+      merchant_brand_embed_1:
+        type: float64
+        nullable: true
+        description: "Brand embedding dimension 1"
+      merchant_brand_embed_2:
+        type: float64
+        nullable: true
+        description: "Brand embedding dimension 2"
+      merchant_brand_embed_3:
+        type: float64
+        nullable: true
+        description: "Brand embedding dimension 3"
+      merchant_brand_embed_4:
+        type: float64
+        nullable: true
+        description: "Brand embedding dimension 4"
+      merchant_brand_embed_5:
+        type: float64
+        nullable: true
+        description: "Brand embedding dimension 5"
+      merchant_brand_embed_6:
+        type: float64
+        nullable: true
+        description: "Brand embedding dimension 6"
+      merchant_brand_embed_7:
+        type: float64
+        nullable: true
+        description: "Brand embedding dimension 7"
+      # -- Aggregation stats (4D) --
+      merchant_brand_diversity:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "Brand diversity entropy"
+      merchant_brand_concentration:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Top brand concentration ratio"
+      merchant_brand_loyalty:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Brand revisit loyalty rate"
+      merchant_brand_exploration:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "New brand exploration propensity"
+      # -- Hierarchy depth (1D) --
+      merchant_hierarchy_radius:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "Poincare ball radius (hierarchy depth)"
+
+  # -------------------------------------------------------------------------
+  # Separate inputs (not in main 644D tensor)
+  # -------------------------------------------------------------------------
+  separate_inputs:
+    description: "Features passed as separate model inputs: hyperbolic embeddings (20D), HMM triple-mode (48D), coldstart signal (6D)"
+    version: 1
+    primary_key: [customer_id, snapshot_date]
+    tags: [feature, derived, separate]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      snapshot_date:
+        type: date
+        nullable: false
+      # -- Hyperbolic embeddings (20D) --
+      hyperbolic_mcc_level1_x:
+        type: float64
+        nullable: true
+        description: "Hyperbolic MCC L1 x"
+      hyperbolic_mcc_level1_y:
+        type: float64
+        nullable: true
+        description: "Hyperbolic MCC L1 y"
+      hyperbolic_mcc_level2_x:
+        type: float64
+        nullable: true
+        description: "Hyperbolic MCC L2 x"
+      hyperbolic_mcc_level2_y:
+        type: float64
+        nullable: true
+        description: "Hyperbolic MCC L2 y"
+      hyperbolic_mcc_level3_x:
+        type: float64
+        nullable: true
+        description: "Hyperbolic MCC L3 x"
+      hyperbolic_mcc_level3_y:
+        type: float64
+        nullable: true
+        description: "Hyperbolic MCC L3 y"
+      hyperbolic_mcc_depth:
+        type: float64
+        nullable: true
+        description: "MCC hierarchy depth"
+      hyperbolic_mcc_radius:
+        type: float64
+        nullable: true
+        description: "MCC Poincare ball radius"
+      hyperbolic_product_level1_x:
+        type: float64
+        nullable: true
+        description: "Hyperbolic product L1 x"
+      hyperbolic_product_level1_y:
+        type: float64
+        nullable: true
+        description: "Hyperbolic product L1 y"
+      hyperbolic_product_level2_x:
+        type: float64
+        nullable: true
+        description: "Hyperbolic product L2 x"
+      hyperbolic_product_level2_y:
+        type: float64
+        nullable: true
+        description: "Hyperbolic product L2 y"
+      hyperbolic_product_level3_x:
+        type: float64
+        nullable: true
+        description: "Hyperbolic product L3 x"
+      hyperbolic_product_level3_y:
+        type: float64
+        nullable: true
+        description: "Hyperbolic product L3 y"
+      hyperbolic_product_depth:
+        type: float64
+        nullable: true
+        description: "Product hierarchy depth"
+      hyperbolic_product_radius:
+        type: float64
+        nullable: true
+        description: "Product Poincare ball radius"
+      hyperbolic_region_level1_x:
+        type: float64
+        nullable: true
+        description: "Hyperbolic region L1 x"
+      hyperbolic_region_level1_y:
+        type: float64
+        nullable: true
+        description: "Hyperbolic region L1 y"
+      hyperbolic_region_depth:
+        type: float64
+        nullable: true
+        description: "Region hierarchy depth"
+      hyperbolic_region_radius:
+        type: float64
+        nullable: true
+        description: "Region Poincare ball radius"
+      # -- Coldstart signal (6D) --
+      coldstart_confidence:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Overall coldstart confidence"
+      coldstart_seq_confidence:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Sequence-length-based confidence"
+      coldstart_feature_confidence:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Feature availability confidence"
+      coldstart_confidence_decay:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Time-decay confidence"
+      is_coldstart:
+        type: int64
+        nullable: true
+        min: 0
+        max: 1
+        description: "Coldstart flag (0/1)"
+      customer_segment:
+        type: int64
+        nullable: true
+        min: 0
+        max: 2
+        description: "Customer segment (0=ANONYMOUS, 1=COLDSTART, 2=WARMSTART)"
+
+  # -------------------------------------------------------------------------
+  # Labels (task targets)
+  # -------------------------------------------------------------------------
+  labels:
+    description: "Task-specific labels for 16 active tasks"
+    version: 1
+    primary_key: [customer_id, snapshot_date]
+    tags: [label, training]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      snapshot_date:
+        type: date
+        nullable: false
+      label_ctr:
+        type: int64
+        nullable: true
+        min: 0
+        max: 1
+        description: "Click-through label (binary)"
+      label_cvr:
+        type: int64
+        nullable: true
+        min: 0
+        max: 1
+        description: "Conversion label (binary)"
+      label_churn:
+        type: int64
+        nullable: true
+        min: 0
+        max: 1
+        description: "Churn label (binary)"
+      label_retention:
+        type: int64
+        nullable: true
+        min: 0
+        max: 1
+        description: "Retention label (binary)"
+      label_nba:
+        type: int64
+        nullable: true
+        min: 0
+        max: 11
+        description: "Next-best-action label (12 classes)"
+      label_life_stage:
+        type: int64
+        nullable: true
+        min: 0
+        max: 5
+        description: "Life stage label (6 classes)"
+      label_ltv:
+        type: float64
+        nullable: true
+        description: "Lifetime value (regression)"
+      label_engagement:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Engagement score (regression 0-1)"
+      label_balance_util:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Balance utilization ratio (regression 0-1)"
+      label_channel:
+        type: int64
+        nullable: true
+        min: 0
+        max: 2
+        description: "Preferred channel (3 classes: app, web, offline)"
+      label_timing:
+        type: int64
+        nullable: true
+        min: 0
+        max: 27
+        description: "Preferred timing (28 classes: 4 periods x 7 days)"
+      label_spending_category:
+        type: int64
+        nullable: true
+        min: 0
+        max: 11
+        description: "Primary spending category (12 classes)"
+      label_consumption_cycle:
+        type: int64
+        nullable: true
+        min: 0
+        max: 6
+        description: "Consumption cycle (7 classes)"
+      label_spending_amount:
+        type: float64
+        nullable: true
+        description: "Spending amount log1p (regression)"
+      label_merchant_affinity:
+        type: float64
+        nullable: true
+        description: "Merchant affinity score (regression)"
+      label_next_brand:
+        type: int64
+        nullable: true
+        description: "Next brand prediction (contrastive embedding)"
+
+  # -------------------------------------------------------------------------
+  # Product catalogue
+  # -------------------------------------------------------------------------
+  products:
+    description: "Financial product catalogue"
+    version: 1
+    primary_key: [product_id]
+    tags: [core, catalogue]
+    columns:
+      product_id:
+        type: string
+        nullable: false
+      product_name:
+        type: string
+        nullable: false
+        description: "Display name of the product"
+      product_type:
+        type: string
+        nullable: false
+        allowed_values: ["savings", "checking", "credit_card", "debit_card", "loan", "insurance", "investment", "mortgage", "fund", "forex"]
+      benefit_type:
+        type: string
+        nullable: true
+        description: "Primary benefit category (cashback, miles, interest, etc.)"
+      annual_fee:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "Annual fee in local currency"
+      eligibility_min_income:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "Minimum income requirement"
+      is_active:
+        type: bool
+        nullable: false
+        description: "Whether the product is currently offered"

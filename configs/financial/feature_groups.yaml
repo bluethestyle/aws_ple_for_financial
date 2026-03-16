@@ -1,0 +1,476 @@
+# =============================================================================
+# Financial Recommendation -- Feature Group Definitions
+# =============================================================================
+# Matches original gotothemoon 13 extraction strategies, mapped to
+# FeatureGroupConfig (core/feature/group.py).
+#
+# Each group defines: name, type, columns/generator, output_dim,
+# target_experts, interpretation, distillation, and optional container config.
+#
+# Usage:
+#   from core.feature.group import FeatureGroupRegistry, FeatureGroupConfig
+#   groups = [FeatureGroupConfig.from_dict(g) for g in yaml_data["feature_groups"]]
+#   registry = FeatureGroupRegistry(groups)
+#
+# Total dimensions (644D normalized):
+#   base_rfm(34) + base_category(64) + base_txn_stats(80) + base_temporal(60)
+#   + multi_source_deposit(20) + multi_source_membership(15) + multi_source_investment(18)
+#   + multi_source_credit(12) + multi_source_digital(14) + multi_source_product(12)
+#   + extended_insurance(15) + extended_campaign_consultation(69)
+#   + tda_topology(70) + gmm_clustering(22) + mamba_temporal(50) + economics(17)
+#   + multidisciplinary(24) + model_hmm(5) + model_bandit(4) + model_lnn(18)
+#   + merchant_hierarchy(21)
+# =============================================================================
+
+feature_groups:
+
+  # -------------------------------------------------------------------------
+  # 1. Base RFM profile (34D) -- transform
+  # -------------------------------------------------------------------------
+  - name: base_rfm
+    group_type: transform
+    transformers: [quantile_transformer]
+    columns:
+      - rfm_001
+      - rfm_002
+      - rfm_003
+      - rfm_004
+      - rfm_005
+      - rfm_006
+      - rfm_007
+      - rfm_008
+      - rfm_009
+      - rfm_010
+      - rfm_011
+      - rfm_012
+      - rfm_013
+      - rfm_014
+      - rfm_015
+      - rfm_016
+      - rfm_017
+      - rfm_018
+      - rfm_019
+      - rfm_020
+      - rfm_021
+      - rfm_022
+      - rfm_023
+      - rfm_024
+      - rfm_025
+      - rfm_026
+      - rfm_027
+      - rfm_028
+      - rfm_029
+      - rfm_030
+      - rfm_031
+      - rfm_032
+      - rfm_033
+      - rfm_034
+    output_dim: 34
+    target_experts: [deepfm, mlp]
+    interpretation:
+      category: demographics
+      template: "{feature} is {value}, indicating a {direction} customer profile"
+      narrative_lens: lifecycle
+      primary_tasks: [churn, ltv, retention]
+    distill: true
+    distill_weight: 1.0
+
+  # -------------------------------------------------------------------------
+  # 2. Base category spending (64D) -- transform
+  # -------------------------------------------------------------------------
+  - name: base_category
+    group_type: transform
+    transformers: [standard_scaler]
+    columns:
+      - category_001
+      - category_002
+      - category_003
+      - category_004
+      - category_005
+      - category_006
+      - category_007
+      - category_008
+      - category_009
+      - category_010
+      - category_011
+      - category_012
+      - category_013
+      - category_014
+      - category_015
+      - category_016
+      - category_017
+      - category_018
+      - category_019
+      - category_020
+      - category_021
+      - category_022
+      - category_023
+      - category_024
+      - category_025
+      - category_026
+      - category_027
+      - category_028
+      - category_029
+      - category_030
+      - category_031
+      - category_032
+      - category_033
+      - category_034
+      - category_035
+      - category_036
+      - category_037
+      - category_038
+      - category_039
+      - category_040
+      - category_041
+      - category_042
+      - category_043
+      - category_044
+      - category_045
+      - category_046
+      - category_047
+      - category_048
+      - category_049
+      - category_050
+      - category_051
+      - category_052
+      - category_053
+      - category_054
+      - category_055
+      - category_056
+      - category_057
+      - category_058
+      - category_059
+      - category_060
+      - category_061
+      - category_062
+      - category_063
+      - category_064
+    output_dim: 64
+    target_experts: [deepfm]
+    interpretation:
+      category: spending_pattern
+      template: "Spending in {feature} category is {value}, showing {direction} pattern"
+      narrative_lens: consumption
+      primary_tasks: [spending_category, nba, merchant_affinity]
+    distill: true
+    distill_weight: 1.0
+
+  # -------------------------------------------------------------------------
+  # 3. Base transaction statistics (80D) -- transform
+  # -------------------------------------------------------------------------
+  - name: base_txn_stats
+    group_type: transform
+    transformers: [quantile_transformer]
+    columns:
+      - transaction_stats_001
+      - transaction_stats_010
+      - transaction_stats_020
+      - transaction_stats_030
+      - transaction_stats_040
+      - transaction_stats_050
+      - transaction_stats_060
+      - transaction_stats_070
+      - transaction_stats_080
+    output_dim: 80
+    target_experts: [deepfm, temporal_ensemble]
+    interpretation:
+      category: transaction_behavior
+      template: "{feature} shows {direction} transaction behavior at {value}"
+      narrative_lens: engagement
+      primary_tasks: [ctr, cvr, engagement, balance_util]
+    distill: true
+    distill_weight: 1.0
+
+  # -------------------------------------------------------------------------
+  # 4. Base temporal patterns (60D) -- transform
+  # -------------------------------------------------------------------------
+  - name: base_temporal
+    group_type: transform
+    transformers: [standard_scaler]
+    columns:
+      - temporal_001
+      - temporal_010
+      - temporal_020
+      - temporal_030
+      - temporal_040
+      - temporal_050
+      - temporal_060
+    output_dim: 60
+    target_experts: [temporal_ensemble]
+    interpretation:
+      category: temporal
+      template: "Temporal pattern {feature} at level {value} suggests {direction} activity"
+      narrative_lens: engagement
+      primary_tasks: [timing, engagement, consumption_cycle]
+    distill: true
+    distill_weight: 1.0
+
+  # -------------------------------------------------------------------------
+  # 5. Multi-source features (91D) -- transform
+  #    deposit(20) + membership(15) + investment(18) + credit(12) + digital(14) + product(12)
+  # -------------------------------------------------------------------------
+  - name: multi_source
+    group_type: transform
+    transformers: [quantile_transformer]
+    columns:
+      - deposit_behavior_001
+      - deposit_behavior_020
+      - membership_utilization_001
+      - membership_utilization_015
+      - investment_propensity_001
+      - investment_propensity_018
+      - credit_risk_001
+      - credit_risk_012
+      - digital_engagement_001
+      - digital_engagement_014
+      - product_diversity_001
+      - product_diversity_012
+    output_dim: 91
+    target_experts: [deepfm, mlp]
+    interpretation:
+      category: cross_domain
+      template: "{feature} cross-domain aggregation is {value}, indicating {direction}"
+      narrative_lens: value
+      primary_tasks: [ltv, churn, nba, channel]
+    distill: true
+    distill_weight: 0.8
+
+  # -------------------------------------------------------------------------
+  # 6. Extended source features (84D) -- transform
+  #    insurance, consultation, campaign, overseas, open_banking, etc.
+  # -------------------------------------------------------------------------
+  - name: extended_source
+    group_type: transform
+    transformers: [standard_scaler]
+    columns:
+      - insurance_holding_001
+      - insurance_claim_007
+      - refund_loan_001
+      - refund_loan_010
+      - consultation_history_001
+      - consultation_history_008
+      - stt_analysis_001
+      - stt_analysis_006
+      - product_interest_001
+      - product_interest_004
+      - campaign_participation_001
+      - campaign_participation_006
+      - marketing_response_001
+      - marketing_response_006
+      - overseas_payment_001
+      - overseas_payment_006
+      - open_banking_001
+      - open_banking_008
+      - e_finance_001
+      - e_finance_007
+      - merchant_preference_001
+      - merchant_preference_008
+    output_dim: 84
+    target_experts: [deepfm]
+    interpretation:
+      category: extended_services
+      template: "{feature} service interaction at {value} suggests {direction} engagement"
+      narrative_lens: lifecycle
+      primary_tasks: [nba, life_stage, ctr]
+    distill: true
+    distill_weight: 0.7
+
+  # -------------------------------------------------------------------------
+  # 7. TDA topological features (70D) -- generate
+  #    short(24) + long(36) + phase_transition(10)
+  # -------------------------------------------------------------------------
+  - name: tda_topology
+    group_type: generate
+    generator: tda_extractor
+    generator_params:
+      short_window_days: 90
+      long_window_days: 365
+      short_dim: 24
+      long_dim: 36
+      phase_transition_dim: 10
+    output_dim: 70
+    target_experts: [temporal_ensemble]
+    interpretation:
+      category: domain_topology
+      template: "Transaction topology shows {pattern} pattern with {value} persistence"
+      narrative_lens: engagement
+      primary_tasks: [ctr, cvr, spending_category]
+    # Container execution: ACCOUNT_ID.dkr.ecr.ap-northeast-2.amazonaws.com/feature-tda:latest
+    # instance: ml.m5.xlarge, requirements: [ripser, persim, scikit-tda]
+    # staging: s3://aiops-ple-financial/feature-pipeline/staging/tda
+    distill: true
+    distill_weight: 0.5
+
+  # -------------------------------------------------------------------------
+  # 8. GMM clustering features (22D) -- generate
+  #    20 soft assignments + entropy + dominant cluster
+  # -------------------------------------------------------------------------
+  - name: gmm_clustering
+    group_type: generate
+    generator: gmm_clusterer
+    generator_params:
+      n_clusters: 20
+      covariance_type: full
+      max_iter: 200
+    output_dim: 22
+    target_experts: [deepfm, mlp]
+    interpretation:
+      category: customer_segment
+      template: "Customer belongs to cluster pattern {value}, suggesting {direction} segment"
+      narrative_lens: lifecycle
+      primary_tasks: [nba, life_stage, spending_category]
+    distill: true
+    distill_weight: 0.8
+
+  # -------------------------------------------------------------------------
+  # 9. Mamba temporal state features (50D) -- generate
+  # -------------------------------------------------------------------------
+  - name: mamba_temporal
+    group_type: generate
+    generator: mamba_state_extractor
+    generator_params:
+      d_model: 128
+      d_state: 16
+      expand: 2
+      output_dim: 50
+    output_dim: 50
+    target_experts: [temporal_ensemble]
+    interpretation:
+      category: temporal_state
+      template: "Mamba temporal state indicates {direction} trend at {value}"
+      narrative_lens: engagement
+      primary_tasks: [timing, engagement, consumption_cycle]
+    # Container execution: ACCOUNT_ID.dkr.ecr.ap-northeast-2.amazonaws.com/feature-mamba:latest
+    # instance: ml.g4dn.xlarge, requirements: [mamba-ssm, causal-conv1d]
+    # staging: s3://aiops-ple-financial/feature-pipeline/staging/mamba
+    distill: false
+
+  # -------------------------------------------------------------------------
+  # 10. Economics features (17D) -- generate
+  #     income_decomposition(8) + financial_behavior(9)
+  # -------------------------------------------------------------------------
+  - name: economics
+    group_type: generate
+    generator: economics_extractor
+    generator_params:
+      income_decomposition_dim: 8
+      financial_behavior_dim: 9
+    output_dim: 17
+    target_experts: [deepfm]
+    interpretation:
+      category: economic_behavior
+      template: "Economic indicator {feature} at {value} suggests {direction} financial behavior"
+      narrative_lens: value
+      primary_tasks: [ltv, balance_util, spending_bucket]
+    distill: true
+    distill_weight: 0.9
+
+  # -------------------------------------------------------------------------
+  # 11. Multidisciplinary features (24D) -- generate
+  #     chemical_kinetics(6) + epidemic_diffusion(5) + interference(8) + crime_pattern(5)
+  # -------------------------------------------------------------------------
+  - name: multidisciplinary
+    group_type: generate
+    generator: multidisciplinary
+    generator_params:
+      modules: [chemical_kinetics, epidemic_diffusion, interference, crime_pattern]
+    output_dim: 24
+    target_experts: [deepfm]
+    interpretation:
+      category: cross_domain
+      template: "{module}: {insight} at level {value}"
+      narrative_lens: engagement
+      primary_tasks: [spending_category, merchant_affinity, nba]
+    distill: true
+    distill_weight: 0.7
+
+  # -------------------------------------------------------------------------
+  # 12. Model-derived features (27D) -- generate
+  #     HMM summary(5) + Bandit/MAB(4) + LNN(18)
+  # -------------------------------------------------------------------------
+  - name: model_derived
+    group_type: generate
+    generator: model_feature_extractor
+    generator_params:
+      hmm_dim: 5
+      bandit_dim: 4
+      lnn_dim: 18
+    output_dim: 27
+    target_experts: [temporal_ensemble, deepfm]
+    interpretation:
+      category: model_insight
+      template: "Model-derived {feature} at {value} indicates {direction} behavioral pattern"
+      narrative_lens: lifecycle
+      primary_tasks: [churn, retention, life_stage, engagement]
+    distill: false
+
+  # -------------------------------------------------------------------------
+  # 13. Merchant hierarchy features (21D) -- generate
+  #     MCC L1(4) + MCC L2(4) + Brand embed(8) + Agg stats(4) + Radius(1)
+  # -------------------------------------------------------------------------
+  - name: merchant_hierarchy
+    group_type: generate
+    generator: merchant_hierarchy_encoder
+    generator_params:
+      mcc_level1_dim: 4
+      mcc_level2_dim: 4
+      brand_embed_dim: 8
+      agg_stats_dim: 4
+      hierarchy_radius_dim: 1
+    output_dim: 21
+    target_experts: []
+    interpretation:
+      category: merchant_structure
+      template: "Merchant hierarchy position shows {direction} preference at {value}"
+      narrative_lens: consumption
+      primary_tasks: [merchant_affinity, brand_prediction, spending_category]
+    # Container execution: ACCOUNT_ID.dkr.ecr.ap-northeast-2.amazonaws.com/feature-merchant:latest
+    # instance: ml.m5.xlarge, requirements: [torch-geometric, geoopt]
+    # staging: s3://aiops-ple-financial/feature-pipeline/staging/merchant
+    distill: false
+
+  # -------------------------------------------------------------------------
+  # 14. HMM Triple-Mode states (48D) -- generate (separate input, not in 644D)
+  # -------------------------------------------------------------------------
+  - name: hmm_states
+    group_type: generate
+    generator: hmm_triple_mode
+    generator_params:
+      modes: [journey, lifecycle, behavior]
+      state_dim: 16
+    output_dim: 48
+    target_experts: [temporal_ensemble]
+    interpretation:
+      category: behavioral_state
+      template: "Customer {mode} state indicates {state} at confidence {value}"
+      narrative_lens: lifecycle
+      primary_tasks: [churn, retention, life_stage, nba]
+    # Container execution: ACCOUNT_ID.dkr.ecr.ap-northeast-2.amazonaws.com/feature-hmm:latest
+    # instance: ml.m5.xlarge, requirements: [hmmlearn, torchdiffeq]
+    # staging: s3://aiops-ple-financial/feature-pipeline/staging/hmm
+    distill: false
+
+  # -------------------------------------------------------------------------
+  # 15. Hyperbolic graph embeddings (20D) -- generate (separate input)
+  # -------------------------------------------------------------------------
+  - name: graph_embeddings
+    group_type: generate
+    generator: hyperbolic_embedding
+    generator_params:
+      hierarchy_sources: [mcc, product, region]
+      curvature: 1.0
+      mcc_dim: 8
+      product_dim: 8
+      region_dim: 4
+    output_dim: 20
+    target_experts: []
+    interpretation:
+      category: graph_structure
+      template: "Position in {hierarchy} hierarchy suggests {insight} at depth {value}"
+      narrative_lens: consumption
+      primary_tasks: [nba, brand_prediction, merchant_affinity]
+    # Container execution: ACCOUNT_ID.dkr.ecr.ap-northeast-2.amazonaws.com/feature-hyperbolic:latest
+    # instance: ml.m5.xlarge, requirements: [geoopt, torch-geometric]
+    # staging: s3://aiops-ple-financial/feature-pipeline/staging/hyperbolic
+    distill: false

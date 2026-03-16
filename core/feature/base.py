@@ -205,7 +205,7 @@ class FeatureSchema:
                 numeric.append(col)
             elif pd.api.types.is_datetime64_any_dtype(dtype):
                 timestamp.append(col)
-            elif pd.api.types.is_object_dtype(dtype) or pd.api.types.is_categorical_dtype(dtype):
+            elif pd.api.types.is_object_dtype(dtype) or isinstance(dtype, pd.CategoricalDtype):
                 cardinality = df[col].nunique()
                 if cardinality <= categorical_max_cardinality:
                     categorical.append(col)

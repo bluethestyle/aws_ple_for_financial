@@ -36,8 +36,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import PLEConfig, ExpertInputConfig
-from .experts import CGCLayer, CGCAttention, MLPExpert, ExpertRegistry
+from .config import PLEConfig, ExpertInputConfig, ExpertBasketConfig
+from .experts import CGCLayer, CGCAttention, MLPExpert, ExpertRegistry, ExpertBasket
 from .feature_router import FeatureRouter
 from .adatt import AdaptiveTaskTransfer
 from .loss_weighting import (
@@ -220,6 +220,23 @@ class PLEModel(nn.Module):
         if not self.task_names:
             raise ValueError("PLEConfig.task_names must not be empty")
 
+        # -- Expert Basket (optional) ----------------------------------------
+        # When expert_basket is configured, build an ExpertBasket that
+        # selects a subset of experts from the pool.  Otherwise, fall back
+        # to legacy behaviour where all shared experts use the same type.
+        self.expert_basket: Optional[ExpertBasket] = None
+        if config.expert_basket is not None:
+            # Ensure expert modules are imported (triggers registration)
+            import core.model.experts  # noqa: F401
+
+            self.expert_basket = ExpertBasket(
+                basket_config=config.expert_basket,
+                input_dim=config.input_dim,
+                default_output_dim=config.shared_expert.output_dim,
+                default_hidden_dims=config.shared_expert.hidden_dims,
+                dropout=config.dropout,
+            )
+
         # -- Build components ------------------------------------------------
         self._build_extraction_layers()
         self._build_cgc_attention()
@@ -245,6 +262,11 @@ class PLEModel(nn.Module):
     def _build_extraction_layers(self) -> None:
         """Build stacked CGC extraction layers.
 
+        When an Expert Basket is configured, the first CGC layer's shared
+        experts are replaced with the basket-built experts (heterogeneous
+        types from the Expert Pool).  The CGC gating logic is unchanged --
+        it simply receives whatever experts the basket provides.
+
         If ``config.expert_input_routing`` is configured, creates a
         ``FeatureRouter`` and passes it to the first CGC layer so that
         each shared expert receives only its designated feature groups.
@@ -255,28 +277,22 @@ class PLEModel(nn.Module):
         cfg = self.config
         self.extraction_layers = nn.ModuleList()
 
+        # Determine number of shared experts and their names
+        if self.expert_basket is not None:
+            num_shared = self.expert_basket.num_shared_experts
+            shared_expert_names = [
+                f"shared_{i}" for i in range(num_shared)
+            ]
+        else:
+            num_shared = cfg.num_shared_experts
+            shared_expert_names = [
+                f"shared_{i}" for i in range(num_shared)
+            ]
+
         # Build FeatureRouter for the first layer if routing is configured.
-        # Routing only applies to layer 0 (raw features). Deeper layers
-        # operate on expert output vectors where group structure no longer
-        # exists.
         self.feature_router: Optional[FeatureRouter] = None
-        shared_expert_names = [
-            f"shared_{i}" for i in range(cfg.num_shared_experts)
-        ]
 
         if cfg.expert_input_routing:
-            # We need group_ranges at build time.  If the config provides
-            # them statically (common for fixed pipelines), we use them.
-            # Otherwise we defer routing to forward() via PLEInput.
-            #
-            # For build-time routing, we need group_ranges from config or
-            # a default that covers the full input_dim.
-            # The FeatureRouter will be initialised in forward() if
-            # group_ranges are only available at runtime.
-            #
-            # However, to set expert input_dims at build time we must have
-            # group_ranges.  We accept a ``feature_group_ranges`` dict on
-            # PLEConfig (set by the pipeline before model construction).
             group_ranges = getattr(cfg, "feature_group_ranges", None)
             if group_ranges:
                 self.feature_router = FeatureRouter(
@@ -298,7 +314,7 @@ class PLEModel(nn.Module):
             layer = CGCLayer(
                 input_dim=in_dim,
                 num_tasks=len(self.task_names),
-                num_shared_experts=cfg.num_shared_experts,
+                num_shared_experts=num_shared,
                 num_task_experts=cfg.num_task_experts_per_task,
                 expert_hidden_dim=cfg.shared_expert.output_dim,
                 dropout=cfg.dropout,
@@ -306,6 +322,22 @@ class PLEModel(nn.Module):
                 feature_router=router,
                 shared_expert_names=expert_names,
             )
+
+            # When Expert Basket is configured, replace the first layer's
+            # shared experts with the basket-built heterogeneous experts.
+            # Subsequent stacked layers keep the default homogeneous MLP
+            # experts (they operate on expert output vectors, not raw features).
+            if self.expert_basket is not None and layer_idx == 0:
+                basket_experts = self.expert_basket.build_shared_experts()
+                layer.shared_experts = basket_experts
+                layer.num_shared_experts = len(basket_experts)
+                logger.info(
+                    "CGC layer 0: replaced shared experts with Expert Basket "
+                    "(%d experts: %s)",
+                    len(basket_experts),
+                    self.expert_basket.shared_expert_names,
+                )
+
             self.extraction_layers.append(layer)
             in_dim = cfg.shared_expert.output_dim  # next layer input = previous output
 
@@ -318,10 +350,19 @@ class PLEModel(nn.Module):
             self.cgc_attention = None
             return
 
+        # Determine number of shared experts (basket or legacy)
+        if self.expert_basket is not None:
+            num_shared = self.expert_basket.num_shared_experts
+            expert_names = [
+                f"shared_{i}" for i in range(num_shared)
+            ]
+        else:
+            num_shared = cfg.num_shared_experts
+            expert_names = [f"shared_{i}" for i in range(num_shared)]
+
         # In stacked PLE, attention operates on the final extraction output
         # Each expert output has the same dimension
-        expert_dims = [cfg.shared_expert.output_dim] * cfg.num_shared_experts
-        expert_names = [f"shared_{i}" for i in range(cfg.num_shared_experts)]
+        expert_dims = [cfg.shared_expert.output_dim] * num_shared
 
         domain_map = {
             task_name: cfg.get_domain_experts(task_name)
@@ -505,9 +546,11 @@ class PLEModel(nn.Module):
 
         # 1. Stacked CGC extraction layers
         task_representations = [features] * len(self.task_names)
+        shared_input = features
         shared_concat = None
         for layer in self.extraction_layers:
-            task_representations, shared_concat = layer(features, task_representations)
+            task_representations, shared_concat = layer(shared_input, task_representations)
+            shared_input = shared_concat
 
         # 2. Per-task expert processing
         task_expert_outputs: Dict[str, torch.Tensor] = {}
@@ -706,7 +749,23 @@ class PLEModel(nn.Module):
             f"  Tasks: {self.task_names}",
             f"  Input dim: {self.config.input_dim}",
             f"  Extraction layers: {self.config.num_extraction_layers}",
-            f"  Shared experts: {self.config.num_shared_experts}",
+        ]
+
+        # Expert basket summary
+        if self.expert_basket is not None:
+            basket = self.expert_basket.list_basket()
+            pool = self.expert_basket.list_pool()
+            lines.append(
+                f"  Expert Pool: {len(pool)} registered {pool}"
+            )
+            lines.append(
+                f"  Expert Basket: {len(basket['shared'])} shared {basket['shared']} "
+                f"+ {len(basket['task'])} task {basket['task']}"
+            )
+        else:
+            lines.append(f"  Shared experts: {self.config.num_shared_experts} (legacy mode)")
+
+        lines.extend([
             f"  Task experts per task: {self.config.num_task_experts_per_task}",
             f"  Expert hidden dim: {self.config.shared_expert.output_dim}",
             f"  Task expert output dim: {self.config.task_expert_output_dim}",
@@ -714,7 +773,8 @@ class PLEModel(nn.Module):
             f"  CGC attention: {'enabled' if self.cgc_attention is not None else 'disabled'}",
             f"  Logit transfers: {self.logit_transfer_sources or 'none'}",
             f"  Loss weighting: {self.config.loss_weighting.strategy}",
-        ]
+        ])
+
         # Feature routing summary
         if self.feature_router is not None:
             lines.append(f"  Feature routing: enabled ({len(self.config.expert_input_routing)} rules)")

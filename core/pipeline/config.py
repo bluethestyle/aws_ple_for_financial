@@ -7,9 +7,24 @@ task definitions, training parameters, and AWS deployment settings.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
+
+
+@dataclass
+class TaskGroupConfig:
+    """Definition of a task group for adaTT transfer and monitoring.
+
+    Task groups are defined once in pipeline.yaml and propagated to adaTT
+    (intra/inter transfer strengths), loss weighting, and monitoring.
+    """
+
+    name: str = ""
+    tasks: list[str] = field(default_factory=list)
+    adatt_intra_strength: float = 0.8   # intra-group transfer strength
+    adatt_inter_strength: float = 0.3   # inter-group transfer strength
+    description: str = ""
 
 
 @dataclass
@@ -58,6 +73,9 @@ class ModelSpec:
     When ``architecture`` is ``"ple"``, the PLE-specific fields
     (num_shared_experts, tower_dims, etc.) are forwarded to PLEConfig.
     When ``architecture`` is ``"lgbm"``, they are ignored.
+
+    The optional ``expert_basket`` dict, when present, is forwarded to
+    :class:`ExpertBasketConfig` during PLE model construction.
     """
 
     architecture: str = "ple"   # ple | lgbm
@@ -67,6 +85,7 @@ class ModelSpec:
     num_layers: int = 2
     tower_dims: list[int] = field(default_factory=lambda: [128, 64])
     dropout: float = 0.1
+    expert_basket: dict | None = None
 
 
 @dataclass
@@ -113,6 +132,14 @@ class PipelineConfig:
     model: ModelSpec
     training: TrainingSpec
     aws: AWSSpec
+    task_groups: list[TaskGroupConfig] = field(default_factory=list)
+
+    def get_task_group(self, task_name: str) -> Optional[str]:
+        """Return the group name that *task_name* belongs to, or ``None``."""
+        for group in self.task_groups:
+            if task_name in group.tasks:
+                return group.name
+        return None
 
 
 def load_config(path: str | Path) -> PipelineConfig:
@@ -135,6 +162,7 @@ def load_config(path: str | Path) -> PipelineConfig:
         if k in TrainingSpec.__dataclass_fields__
     })
     aws = AWSSpec(**raw.get("aws", {}))
+    task_groups = [TaskGroupConfig(**tg) for tg in raw.get("task_groups", [])]
 
     return PipelineConfig(
         task_name=raw["task_name"],
@@ -144,4 +172,5 @@ def load_config(path: str | Path) -> PipelineConfig:
         model=model,
         training=training,
         aws=aws,
+        task_groups=task_groups,
     )

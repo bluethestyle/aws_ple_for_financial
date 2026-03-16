@@ -1,0 +1,328 @@
+# =============================================================================
+# Financial Recommendation -- Monitoring Configuration
+# =============================================================================
+# Stricter thresholds for financial services regulatory compliance.
+# Conforms to the monitoring subsystem structure (configs/monitoring.yaml).
+#
+# Key differences from generic monitoring:
+#   - Tighter PSI drift thresholds (0.08 warning, 0.20 critical)
+#   - Five protected attributes for fairness (age, gender, region, income, credit)
+#   - Financial regulatory compliance checks (FCRA, ECOA, fair lending)
+#   - Faster incident response times
+#   - Daily governance reporting
+# =============================================================================
+
+# ===========================================================================
+# Fairness monitoring -- stricter for financial services
+# ===========================================================================
+fairness:
+  thresholds:
+    di_lower: 0.85                     # Disparate Impact lower bound (stricter than generic 0.8)
+    di_upper: 1.20                     # Disparate Impact upper bound (stricter than generic 1.25)
+    spd_max: 0.08                      # Statistical Parity Difference max (stricter than 0.1)
+    eod_max: 0.08                      # Equal Opportunity Difference max (stricter than 0.1)
+
+  # Protected attributes -- five dimensions for financial fairness
+  protected_attributes:
+    - age_group
+    - gender
+    - region_type
+    - income_bracket
+    - credit_grade
+
+  # Group pairs for pairwise fairness comparison (privileged, unprivileged)
+  group_pairs:
+    age_group:
+      - ["25-34", "65+"]
+      - ["25-34", "18-24"]
+      - ["35-44", "65+"]
+      - ["45-54", "18-24"]
+    gender:
+      - ["M", "F"]
+      - ["M", "NB"]
+      - ["F", "NB"]
+    region_type:
+      - ["urban", "rural"]
+      - ["urban", "suburban"]
+      - ["suburban", "rural"]
+    income_bracket:
+      - ["high", "low"]
+      - ["very_high", "low"]
+      - ["high", "medium"]
+      - ["very_high", "medium"]
+    credit_grade:
+      - ["excellent", "poor"]
+      - ["excellent", "fair"]
+      - ["good", "poor"]
+      - ["good", "fair"]
+
+  auto_incident: true
+
+  schedule:
+    frequency: daily
+    time: "05:00"
+    timezone: Asia/Seoul
+
+# ===========================================================================
+# Drift detection -- tighter thresholds for financial data
+# ===========================================================================
+drift:
+  # Stricter PSI thresholds for financial stability
+  psi_threshold_warning: 0.08          # PSI >= 0.08 triggers warning (generic: 0.1)
+  psi_threshold_critical: 0.20         # PSI >= 0.20 triggers critical (generic: 0.25)
+
+  n_bins: 20                           # More bins for finer distribution tracking
+
+  # Key financial features to monitor with priority
+  feature_columns:
+    # Base features -- high business impact
+    - rfm_001
+    - rfm_002
+    - rfm_003
+    - rfm_004
+    - rfm_005
+    - rfm_006
+    - rfm_007
+    - rfm_008
+    - rfm_009
+    - rfm_010
+    # Transaction stats -- drift-sensitive
+    - transaction_stats_001
+    - transaction_stats_010
+    - transaction_stats_020
+    - transaction_stats_030
+    - transaction_stats_040
+    - transaction_stats_050
+    # Credit and deposit behavior
+    - credit_risk_001
+    - credit_risk_005
+    - deposit_behavior_001
+    - deposit_behavior_010
+    # Domain features
+    - gmm_cluster_001
+    - gmm_cluster_010
+    - gmm_cluster_021
+    # Model-derived
+    - hmm_dominant_state
+    - hmm_transition_stability
+    - hmm_state_change_rate
+
+  # Consecutive drift tracking -- faster retrain trigger for financial
+  consecutive_tracker:
+    monitoring_dir: monitoring/drift_results
+    consecutive_threshold: 2           # Retrain after 2 consecutive critical days (generic: 3)
+    critical_feature_threshold: 3      # Min critical features for a "critical day" (generic: 5)
+
+  baseline:
+    source: s3://aiops-ple-financial/baselines/latest/
+    format: parquet
+
+# ===========================================================================
+# Incident management -- faster response for financial
+# ===========================================================================
+incidents:
+  severity_criteria:
+    critical:
+      conditions:
+        - kill_switch_activation
+        - di_below_0.6
+        - security_breach
+        - regulatory_violation
+        - pii_exposure
+        - model_serving_failure
+      response_time: "30 minutes"
+      escalate: true
+    major:
+      conditions:
+        - di_below_0.8
+        - herding_critical
+        - model_rollback
+        - consecutive_drift_retrain
+        - fairness_threshold_breach
+        - credit_grade_disparity
+      response_time: "2 hours"
+      escalate: true
+    minor:
+      conditions:
+        - drift_warning
+        - quality_drop
+        - herding_high
+        - single_feature_critical
+        - fairness_warning
+      response_time: "12 hours"
+      escalate: false
+
+  sns_topic_arn: ""
+  region: ap-northeast-2
+
+  s3_bucket: aiops-ple-financial
+  s3_prefix: incidents
+
+# ===========================================================================
+# Herding detection -- financial product concentration monitoring
+# ===========================================================================
+herding:
+  hhi_warning: 0.12                    # Stricter than generic 0.15
+  hhi_critical: 0.20                   # Stricter than generic 0.25
+
+  top_k_items: 10
+  top_k_concentration_warning: 0.40    # Warning if top-K > 40% (generic: 50%)
+  top_k_concentration_critical: 0.60   # Critical if top-K > 60% (generic: 70%)
+
+  window_hours: 24
+
+# ===========================================================================
+# Financial regulatory compliance checks
+# ===========================================================================
+compliance:
+  # Fair lending checks (ECOA/FCRA inspired)
+  fair_lending:
+    enabled: true
+    # Maximum allowed approval rate disparity between groups
+    max_approval_rate_disparity: 0.15
+    # Maximum allowed score disparity between groups (mean score gap)
+    max_score_disparity: 0.10
+    # Protected attributes to check
+    protected_attributes:
+      - age_group
+      - gender
+      - region_type
+      - income_bracket
+      - credit_grade
+    # Products requiring enhanced fairness monitoring
+    high_scrutiny_products:
+      - credit_card
+      - loan
+      - mortgage
+      - insurance
+
+  # Recommendation diversity checks
+  diversity:
+    enabled: true
+    # Minimum product type diversity in top-K recommendations
+    min_product_type_diversity: 2
+    # Maximum single product type share in recommendations
+    max_single_type_share: 0.6
+    # Ensure recommendations span at least N benefit types
+    min_benefit_type_coverage: 2
+
+  # Suitability checks
+  suitability:
+    enabled: true
+    # Products must match customer risk profile
+    enforce_risk_matching: true
+    # Products must match minimum income eligibility
+    enforce_income_eligibility: true
+    # Age-appropriate product checks
+    enforce_age_appropriateness: true
+
+  # Audit logging
+  audit:
+    enabled: true
+    log_all_recommendations: true
+    log_filtered_products: true
+    log_fairness_scores: true
+    retention_days: 2555                # ~7 years for financial record keeping
+    s3_audit_prefix: s3://aiops-ple-financial/audit/
+
+# ===========================================================================
+# Task-specific monitoring thresholds
+# ===========================================================================
+task_monitoring:
+  # Per-task performance thresholds (below these triggers alert)
+  performance_thresholds:
+    ctr:
+      metric: auc_roc
+      warning: 0.70
+      critical: 0.65
+    cvr:
+      metric: auc_roc
+      warning: 0.72
+      critical: 0.67
+    churn:
+      metric: auc_roc
+      warning: 0.75
+      critical: 0.70
+    retention:
+      metric: auc_roc
+      warning: 0.73
+      critical: 0.68
+    nba:
+      metric: accuracy
+      warning: 0.55
+      critical: 0.45
+    life_stage:
+      metric: accuracy
+      warning: 0.60
+      critical: 0.50
+    ltv:
+      metric: rmse_normalized
+      warning: 0.30
+      critical: 0.40
+    engagement:
+      metric: rmse_normalized
+      warning: 0.25
+      critical: 0.35
+    balance_util:
+      metric: rmse_normalized
+      warning: 0.20
+      critical: 0.30
+    channel:
+      metric: accuracy
+      warning: 0.65
+      critical: 0.55
+    timing:
+      metric: accuracy
+      warning: 0.35
+      critical: 0.25
+    spending_category:
+      metric: accuracy
+      warning: 0.50
+      critical: 0.40
+    consumption_cycle:
+      metric: accuracy
+      warning: 0.55
+      critical: 0.45
+    spending_bucket:
+      metric: rmse_normalized
+      warning: 0.30
+      critical: 0.40
+    merchant_affinity:
+      metric: rmse_normalized
+      warning: 0.25
+      critical: 0.35
+    brand_prediction:
+      metric: recall_at_10
+      warning: 0.15
+      critical: 0.10
+
+  # Prediction distribution monitoring
+  prediction_distribution:
+    enabled: true
+    check_frequency: daily
+    # Alert if prediction distribution shifts significantly from training
+    kl_divergence_warning: 0.1
+    kl_divergence_critical: 0.3
+
+# ===========================================================================
+# General monitoring settings
+# ===========================================================================
+general:
+  log_level: INFO
+
+  output_dir: monitoring/reports
+
+  governance_report:
+    enabled: true
+    frequency: daily                   # Daily for financial (generic: weekly)
+    include_fairness: true
+    include_drift: true
+    include_incidents: true
+    include_herding: true
+    include_compliance: true
+    include_task_performance: true
+    output_format: json
+    recipients:
+      - compliance-team
+      - model-governance
+      - risk-management

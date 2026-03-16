@@ -75,6 +75,43 @@ class AdaTTConfig:
     grad_interval: int = 10
     max_transfer_ratio: float = 0.5
 
+    @classmethod
+    def from_pipeline_groups(
+        cls,
+        pipeline_groups: list,
+        **kwargs,
+    ) -> "AdaTTConfig":
+        """Create an AdaTTConfig from pipeline-level TaskGroupConfig list.
+
+        Args:
+            pipeline_groups: List of
+                :class:`~core.pipeline.config.TaskGroupConfig` instances.
+            **kwargs: Additional AdaTTConfig fields to override.
+
+        Returns:
+            A new ``AdaTTConfig`` with ``task_groups`` and
+            ``inter_group_strength`` derived from *pipeline_groups*.
+        """
+        if not pipeline_groups:
+            return cls(**kwargs)
+
+        task_groups: Dict[str, TaskGroupDef] = {}
+        # Use the first group's inter strength as the default; all groups
+        # share the same inter_group_strength at the AdaTT level.
+        inter_strength = pipeline_groups[0].adatt_inter_strength
+
+        for pg in pipeline_groups:
+            task_groups[pg.name] = TaskGroupDef(
+                members=list(pg.tasks),
+                intra_strength=pg.adatt_intra_strength,
+            )
+
+        return cls(
+            task_groups=task_groups,
+            inter_group_strength=inter_strength,
+            **kwargs,
+        )
+
 
 @dataclass
 class LossWeightingConfig:
@@ -134,6 +171,30 @@ class LogitTransferDef:
     source: str = ""
     target: str = ""
     enabled: bool = True
+
+
+@dataclass
+class ExpertBasketConfig:
+    """Expert Basket configuration -- selects a subset from the Expert Pool.
+
+    The Expert Basket sits between the full Expert Pool (all experts
+    registered via ``@ExpertRegistry.register``) and the CGC runtime
+    gating.  It defines *which* experts are included in a specific
+    pipeline and with what configuration overrides.
+
+    Args:
+        shared_experts: List of registered expert names to use as shared
+            experts in the CGC layer (e.g. ``["deepfm", "hgcn", "perslay"]``).
+        task_experts: List of registered expert names to use as per-task
+            experts (e.g. ``["mlp", "deepfm"]``).
+        expert_configs: Per-expert configuration overrides.  Keys are
+            expert names from ``shared_experts`` or ``task_experts``;
+            values are dicts forwarded to the expert constructor's
+            ``config`` parameter (e.g. ``{"hgcn": {"output_dim": 128}}``).
+    """
+    shared_experts: List[str] = field(default_factory=list)
+    task_experts: List[str] = field(default_factory=list)
+    expert_configs: Dict[str, dict] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +270,12 @@ class PLEConfig:
     # model construction.  Required if expert_input_routing is non-empty.
     feature_group_ranges: Optional[Dict[str, tuple]] = None
 
+    # -- Expert basket -------------------------------------------------------
+    # When set, selects a subset of experts from the Expert Pool for this
+    # pipeline.  When None, falls back to the legacy behaviour (all shared
+    # experts are the same type defined by ``shared_expert``).
+    expert_basket: Optional[ExpertBasketConfig] = None
+
     # -- Per-task overrides --------------------------------------------------
     # Maps task_name -> {output_dim, activation, task_type, domain_experts, ...}
     task_overrides: Dict[str, dict] = field(default_factory=dict)
@@ -225,7 +292,9 @@ class PLEConfig:
     def get_task_activation(self, task_name: str) -> Optional[str]:
         """Return the activation function name for a task tower (or None)."""
         override = self.task_overrides.get(task_name, {})
-        act = override.get("activation", "sigmoid")
+        task_type = self.get_task_type(task_name)
+        default_act = None if task_type == "regression" else "sigmoid"
+        act = override.get("activation", default_act)
         return None if act in (None, "none", "null") else act
 
     def get_task_type(self, task_name: str) -> str:

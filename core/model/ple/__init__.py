@@ -31,6 +31,7 @@ Loss weighting:
 from .config import (
     PLEConfig,
     ExpertConfig,
+    ExpertBasketConfig,
     CGCConfig,
     AdaTTConfig,
     TaskGroupDef,
@@ -47,6 +48,7 @@ from .experts import (
     ExpertRegistry,
     CGCLayer,
     CGCAttention,
+    ExpertBasket,
 )
 from .feature_router import FeatureRouter
 from .gating import SoftmaxGate, AttentionGate, MLPGate, build_gate
@@ -63,6 +65,7 @@ __all__ = [
     # Config
     "PLEConfig",
     "ExpertConfig",
+    "ExpertBasketConfig",
     "CGCConfig",
     "AdaTTConfig",
     "TaskGroupDef",
@@ -82,6 +85,7 @@ __all__ = [
     "ExpertRegistry",
     "CGCLayer",
     "CGCAttention",
+    "ExpertBasket",
     # Feature routing
     "FeatureRouter",
     # Gating
