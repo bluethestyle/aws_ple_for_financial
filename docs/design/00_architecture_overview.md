@@ -160,3 +160,4 @@ serving:
 | [06_orchestration_and_audit](06_orchestration_and_audit.md) | Step Functions 5개, 3계층 감사, E2E 리니지 |
 | [07_cost_analysis](07_cost_analysis.md) | 규모별 비용 시뮬레이션, 손익분기점 분석 |
 | [08_recommendation_intelligence](08_recommendation_intelligence.md) | 스코어링, 추천 사유 3계층, 역매핑, 규제 준수 |
+| [09_compliance_governance](09_compliance_governance.md) | 감사 불변성, 36항목 레지스트리, 공정성, 쏠림, 인시던트, 킬스위치 |
