@@ -1,0 +1,103 @@
+{
+  "Comment": "ML Training Pipeline — Feature Engineering → Training → Model Registration",
+  "StartAt": "FeatureEngineering",
+  "States": {
+    "FeatureEngineering": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+      "Parameters": {
+        "ProcessingJobName.$": "States.Format('feature-eng-{}', $$.Execution.Name)",
+        "ProcessingResources": {
+          "ClusterConfig": {
+            "InstanceCount": 1,
+            "InstanceType": "ml.m5.xlarge",
+            "VolumeSizeInGB": 30
+          }
+        },
+        "AppSpecification": {
+          "ImageUri.$": "$.processing_image_uri",
+          "ContainerEntrypoint": ["python", "processing/feature_engineering.py"]
+        },
+        "ProcessingInputs": [
+          {
+            "InputName": "raw_data",
+            "S3Input": {
+              "S3Uri.$": "$.raw_data_uri",
+              "LocalPath": "/opt/ml/processing/input",
+              "S3DataType": "S3Prefix"
+            }
+          }
+        ],
+        "ProcessingOutputs": [
+          {
+            "OutputName": "features",
+            "S3Output": {
+              "S3Uri.$": "$.features_output_uri",
+              "LocalPath": "/opt/ml/processing/output",
+              "S3UploadMode": "EndOfJob"
+            }
+          }
+        ],
+        "RoleArn.$": "$.role_arn"
+      },
+      "Next": "Training",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "FailState"}]
+    },
+    "Training": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+      "Parameters": {
+        "TrainingJobName.$": "States.Format('training-{}', $$.Execution.Name)",
+        "AlgorithmSpecification": {
+          "TrainingImage.$": "$.training_image_uri",
+          "TrainingInputMode": "File"
+        },
+        "ResourceConfig": {
+          "InstanceCount": 1,
+          "InstanceType.$": "$.instance_type",
+          "VolumeSizeInGB": 50
+        },
+        "StoppingCondition": {"MaxRuntimeInSeconds": 7200},
+        "EnableManagedSpotTraining.$": "$.use_spot",
+        "CheckpointConfig": {
+          "S3Uri.$": "$.checkpoint_uri"
+        },
+        "InputDataConfig": [
+          {
+            "ChannelName": "train",
+            "DataSource": {
+              "S3DataSource": {
+                "S3Uri.$": "$.features_output_uri",
+                "S3DataType": "S3Prefix"
+              }
+            }
+          }
+        ],
+        "OutputDataConfig": {"S3OutputPath.$": "$.model_output_uri"},
+        "RoleArn.$": "$.role_arn",
+        "HyperParameters.$": "$.hyperparameters"
+      },
+      "Next": "RegisterModel",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "FailState"}]
+    },
+    "RegisterModel": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "register-model",
+        "Payload": {
+          "training_job_name.$": "States.Format('training-{}', $$.Execution.Name)",
+          "task_name.$": "$.task_name",
+          "model_output_uri.$": "$.model_output_uri"
+        }
+      },
+      "Next": "Success"
+    },
+    "Success": {"Type": "Succeed"},
+    "FailState": {
+      "Type": "Fail",
+      "Error": "PipelineFailed",
+      "Cause": "One or more pipeline steps failed. Check CloudWatch logs."
+    }
+  }
+}

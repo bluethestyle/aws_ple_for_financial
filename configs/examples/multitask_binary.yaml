@@ -1,0 +1,63 @@
+# 예시 1: 멀티태스크 이진분류 (CTR + 전환율 동시 학습)
+# 어떤 도메인이든 label_col만 바꾸면 재사용 가능합니다.
+
+task_name: multitask_binary_example
+
+tasks:
+  - name: click
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: clicked
+  - name: convert
+    type: binary
+    loss: focal
+    loss_weight: 1.5
+    label_col: converted
+
+data:
+  source: s3://YOUR_BUCKET/data/train/
+  format: parquet
+  train_split: 0.8
+  val_split: 0.1
+
+features:
+  numeric:
+    - user_age
+    - item_price
+    - item_popularity
+    - days_since_last_visit
+  categorical:
+    - user_segment
+    - item_category
+    - platform
+  embedding_dim: 16
+  transformers:
+    - name: standard_scaler
+      cols: [user_age, item_price, item_popularity, days_since_last_visit]
+    - name: label_encoder
+      cols: [user_segment, item_category, platform]
+
+model:
+  architecture: ple
+  num_shared_experts: 2
+  num_task_experts: 2
+  expert_hidden_dim: 256
+  num_layers: 2
+  tower_dims: [128, 64]
+  dropout: 0.1
+
+training:
+  batch_size: 2048
+  epochs: 20
+  learning_rate: 0.001
+  early_stopping_patience: 5
+  seed: 42
+
+aws:
+  region: ap-northeast-2
+  s3_bucket: YOUR_BUCKET
+  instance_type: ml.g4dn.xlarge
+  use_spot: true
+  max_run_seconds: 7200
+  role_arn: arn:aws:iam::YOUR_ACCOUNT:role/SageMakerRole

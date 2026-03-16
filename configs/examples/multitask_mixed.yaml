@@ -1,0 +1,65 @@
+# 예시 2: 혼합 태스크 (이진분류 + 회귀 동시 학습)
+# 예: 이탈 예측(binary) + 고객 생애 가치(regression) 동시 최적화
+
+task_name: churn_ltv_multitask
+
+tasks:
+  - name: churn
+    type: binary
+    loss: focal
+    loss_weight: 1.2
+    label_col: is_churned
+  - name: ltv
+    type: regression
+    loss: huber
+    loss_weight: 1.0
+    label_col: revenue_90d
+
+data:
+  source: s3://YOUR_BUCKET/data/customers/
+  format: parquet
+  train_split: 0.8
+  val_split: 0.1
+
+features:
+  numeric:
+    - tenure_days
+    - total_spend
+    - avg_monthly_spend
+    - num_transactions
+    - days_since_last_purchase
+    - support_tickets
+  categorical:
+    - subscription_tier
+    - acquisition_channel
+    - country
+  embedding_dim: 16
+  transformers:
+    - name: standard_scaler
+      cols: [tenure_days, total_spend, avg_monthly_spend, num_transactions, days_since_last_purchase]
+    - name: label_encoder
+      cols: [subscription_tier, acquisition_channel, country]
+
+model:
+  architecture: ple
+  num_shared_experts: 2
+  num_task_experts: 2
+  expert_hidden_dim: 256
+  num_layers: 2
+  tower_dims: [128, 64]
+  dropout: 0.1
+
+training:
+  batch_size: 1024
+  epochs: 30
+  learning_rate: 0.001
+  early_stopping_patience: 5
+  seed: 42
+
+aws:
+  region: ap-northeast-2
+  s3_bucket: YOUR_BUCKET
+  instance_type: ml.g4dn.xlarge
+  use_spot: true
+  max_run_seconds: 7200
+  role_arn: arn:aws:iam::YOUR_ACCOUNT:role/SageMakerRole

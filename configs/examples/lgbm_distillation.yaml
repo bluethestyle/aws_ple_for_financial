@@ -1,0 +1,49 @@
+# 예시 3: LGBM → PLE 지식 증류
+# PLE(teacher)의 소프트 레이블로 LGBM(student)을 빠른 추론용으로 학습
+
+task_name: lgbm_distillation_example
+
+tasks:
+  - name: click
+    type: binary
+    loss: bce
+    loss_weight: 1.0
+    label_col: soft_click_prob    # PLE teacher의 출력 확률
+  - name: convert
+    type: binary
+    loss: bce
+    loss_weight: 1.0
+    label_col: soft_convert_prob
+
+data:
+  source: s3://YOUR_BUCKET/data/distillation/
+  format: parquet
+  train_split: 0.9
+  val_split: 0.1
+
+features:
+  numeric:
+    - user_age
+    - item_price
+    - item_popularity
+  categorical:
+    - user_segment
+    - item_category
+
+model:
+  architecture: lgbm
+  # LGBM 전용 파라미터는 extra_params로 전달
+  # (PLEConfig 필드는 무시됨)
+
+training:
+  batch_size: 0     # LGBM은 배치 학습 없음 (전체 데이터)
+  epochs: 1
+  seed: 42
+
+aws:
+  region: ap-northeast-2
+  s3_bucket: YOUR_BUCKET
+  instance_type: ml.m5.4xlarge   # GPU 불필요
+  use_spot: true
+  max_run_seconds: 3600
+  role_arn: arn:aws:iam::YOUR_ACCOUNT:role/SageMakerRole

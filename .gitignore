@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# AWS credentials (NEVER commit these)
+.aws/
+*.pem
+*.key
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# ML artifacts
+*.pkl
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.bin
+mlruns/
+outputs/
+
+# Data
+data/
+*.parquet
+*.csv
+*.jsonl
+!examples/**/sample_data/*.csv
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CDK
+cdk.out/
+.cdk.staging/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
