@@ -5,7 +5,7 @@
 ### 문제점
 1. **스키마 관리 분산**: raw_schema_spec.yaml, clean_schema_spec.yaml, clean_table_mapping.yaml, feature_schema.yaml, 그리고 코드 내 하드코딩이 혼재
 2. **그룹 구조 고정**: G1-G10 체계가 금융 도메인에 종속 (예금, 카드, 앱로그 등)
-3. **쿼리 엔진 단일**: DuckDB 전용 — 소규모에 최적이지만 확장성 제한
+3. **쿼리 엔진**: DuckDB 전용 — 단일 머신에서 수백 GB까지 처리 가능, 그대로 유지
 4. **경로 하드코딩**: `D:/storage`, `C:/storage` 등 절대 경로 사용
 5. **소스 우선순위 복잡**: `master → encrypted → raw` 3단계 폴백 로직이 yaml에 혼재
 
@@ -133,33 +133,42 @@ s3://aiops-ple-financial/
 | 피처 테이블 | `version` | 피처 스키마 변경 시 공존 |
 | 모델 아티팩트 | `job_name` | 실험별 격리 |
 
-### 쿼리 엔진 — 이중 백엔드
+### 쿼리 엔진 — DuckDB 단일 (Athena는 확장 옵션)
+
+DuckDB는 단일 머신에서 **수백 GB까지 처리 가능**합니다. 디스크 스필이 자동으로 되므로 메모리보다 큰 데이터도 처리됩니다. 단일 머신 OLAP 벤치마크에서 Spark, Athena보다 빠릅니다.
+
+| 데이터 규모 | 엔진 | 이유 |
+|------------|------|------|
+| ~수백 GB | DuckDB | 단일 머신 최강, 비용 0 |
+| TB급 (분산 필요) | Athena (옵션) | 분산 스캔 필요 시만 |
+| 동시 쿼리 다수 | Athena (옵션) | 여러 팀 동시 접근 시 |
 
 ```python
 # core/data/query_engine.py
 class QueryEngine:
     """
-    DuckDB (기본) / Athena (대규모) 자동 선택.
-
-    사용자는 SQL만 작성하면 됩니다.
-    데이터 크기에 따라 엔진이 자동으로 결정됩니다.
+    DuckDB 기반 쿼리 엔진.
+    S3의 Parquet 파일을 httpfs 확장으로 직접 쿼리합니다.
+    TB급 분산 처리가 필요해지면 Athena 백엔드를 추가할 수 있습니다.
     """
 
     def __init__(self, config):
         self.backend = config.get("query_engine", "duckdb")
-        self.auto_switch_threshold_gb = config.get("auto_switch_gb", 50)
 
-    def query(self, sql: str, source: str = None) -> pd.DataFrame:
-        if self.backend == "auto":
-            size = self._estimate_scan_size(source)
-            backend = "athena" if size > self.auto_switch_threshold_gb else "duckdb"
+    def query(self, sql: str) -> pd.DataFrame:
+        if self.backend == "duckdb":
+            return self._duckdb_query(sql)
+        elif self.backend == "athena":
+            return self._athena_query(sql)
         else:
-            backend = self.backend
+            raise ValueError(f"Unknown backend: {self.backend}")
 
-        if backend == "duckdb":
-            return self._duckdb_query(sql)  # S3 httpfs 직접 쿼리
-        else:
-            return self._athena_query(sql)  # Athena 서버리스 쿼리
+    def _duckdb_query(self, sql: str) -> pd.DataFrame:
+        import duckdb
+        conn = duckdb.connect()
+        conn.execute("INSTALL httpfs; LOAD httpfs;")
+        conn.execute("SET s3_region='ap-northeast-2';")
+        return conn.execute(sql).fetchdf()
 ```
 
 ### 데이터 검증 게이트
@@ -242,7 +251,7 @@ CSV/DB/API                     ┌─────────────┐    
 | 스키마 관리 | 4개 YAML 분산 | 단일 schema.yaml + Registry | 일관성, 자동 검증 |
 | 데이터 그룹 | G1-G10 하드코딩 | sources: 배열 (동적) | 도메인 무관 |
 | 저장소 | 로컬 Parquet + GCS | S3 (버전관리 + 파티셔닝) | 내구성, IAM, 비용 |
-| 쿼리 | DuckDB only | DuckDB + Athena (auto) | 확장성 |
+| 쿼리 | DuckDB only | DuckDB 유지 (Athena는 확장 옵션) | 단일 머신 최강, 비용 0 |
 | PII 처리 | encryption_config.yaml 별도 | 스키마 내 pii: true 선언 | 단일 진실의 원천 |
 | 데이터 검증 | GX 수동 설정 | 스키마 기반 자동 생성 | 설정 줄이고 일관성 |
 | 피처 버전 | 없음 (덮어쓰기) | features/v1.0, v1.1 | 재현성, 롤백 |

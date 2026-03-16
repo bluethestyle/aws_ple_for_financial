@@ -1,147 +1,206 @@
-# 05. Serving & Online Testing — 배치/실시간 서빙, A/B 테스트
+# 05. Serving & Online Testing — 실시간 추론, 규모별 자동 전환, A/B 테스트
 
 ## 현재 (On-Prem) 분석
 
 ### 서빙 구조
 - **model_server**: FastAPI + Docker (PLE 추론)
 - **conda_lgbm**: FastAPI + Docker (경량 LGBM 추론)
-- **엔드포인트**: `/inference/predict`, `/inference/batch`, `/inference/interpret`
-- **모델 로딩**: model_manager.py에서 체크포인트 로드/캐싱
+- **지식 증류**: PLE → LGBM으로 모델 압축 (추론 시간 단축 목적)
 
 ### 문제점
 1. **Docker Compose 상시 가동**: 트래픽 없어도 리소스 점유
 2. **스케일링 불가**: 단일 서버, 수평 확장 없음
 3. **A/B 테스트 없음**: 새 모델 배포 시 전량 교체
-4. **출력 정규화 복잡**: 태스크별 스케일링이 코드에 흩어져 있음
 
 ### 유지할 패턴
-- **FastAPI 기반 API**: 인터페이스 유지, 배포 환경만 변경
-- **태스크별 출력 정규화**: binary→sigmoid, multiclass→softmax, regression→clipping
-- **Expert weight 해석**: 추론 시 Expert 기여도 반환
+- **LGBM 실시간 추론**: 매 요청마다 추론 (~5ms), 충분히 빠름
+- **태스크별 출력 정규화**: binary→sigmoid, multiclass→softmax
+- **지식 증류 파이프라인**: PLE(teacher) → LGBM(student)
 
 ---
 
-## AWS 설계
+## AWS 설계 — 핵심 원칙
 
-### 서빙 모드 3가지
+### 실시간 추론 전략
+
+**매 요청마다 LGBM 추론**합니다. 사전 계산 + 캐시 방식이 아닙니다.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    서빙 전략 선택                         │
-│                                                         │
-│  ① 배치 추론 (비용 최소)                                  │
-│     SageMaker Batch Transform                           │
-│     - S3에 입력 업로드 → 결과 S3에 저장                    │
-│     - 인스턴스 자동 종료                                   │
-│     - 월 1-2회 대량 추론에 최적                            │
-│                                                         │
-│  ② 서버리스 추론 (중간)                                   │
-│     Lambda + API Gateway                                │
-│     - 요청 당 과금, 유휴 시 0원                            │
-│     - Cold start 주의 (모델 로딩 시간)                     │
-│     - LGBM 경량 모델에 적합                               │
-│                                                         │
-│  ③ 실시간 추론 (포트폴리오 시연)                           │
-│     ECS Fargate + ALB                                   │
-│     - FastAPI 컨테이너 그대로 배포                         │
-│     - Auto-scaling (min=0, 트래픽 시 스케일)               │
-│     - A/B 테스트, 카나리 배포 가능                          │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+요청 (user_id, context)
+    ↓
+① 피처 조회 (메모리 또는 DynamoDB)    ~0.01ms 또는 ~5ms
+    ↓
+② 실시간 컨텍스트 결합                ~0.1ms
+   (현재 시간, 세션 정보, 요청 컨텍스트)
+    ↓
+③ LGBM 멀티태스크 추론               ~5ms
+    ↓
+④ 출력 정규화 + 응답                 ~0.1ms
+    ↓
+총: ~5-10ms
 ```
 
-### ① 배치 추론 (기본 모드)
+이 구조를 선택한 이유:
+- LGBM 추론은 ~5ms로 충분히 빠름 (추천 업계 기준 50-200ms 대비 최상위)
+- 실시간 컨텍스트 반영 가능 (시간대, 세션 행동 등)
+- 사전 계산 방식의 stale 문제 없음
+
+---
+
+## 규모별 자동 전환 아키텍처
+
+### 전체 구조
 
 ```yaml
-# configs/serving/batch.yaml
+# configs/serving.yaml
 serving:
-  mode: batch
-  input: s3://bucket/inference/input/
-  output: s3://bucket/inference/output/
-  model_path: s3://bucket/models/ple-latest/
-  instance_type: ml.g4dn.xlarge
-  instance_count: 1
+  mode: auto              # auto | lambda | ecs
+  auto_threshold: 100000000  # 월 1억 건 이상이면 ECS 전환 알림
+
+  feature_store: auto     # auto | memory | dynamodb
+  auto_feature_threshold: 5000000  # 유저 500만 이상이면 DynamoDB 전환
+
+  lambda:
+    memory_mb: 1024
+    timeout: 30
+  ecs:
+    cpu: 4096
+    memory: 16384
+    min_tasks: 2
+    embedded_stores:       # 대규모 시 활성화
+      redis: false
+      rocksdb: false
+      lancedb: false
 ```
 
+### 3단계 확장 경로
+
 ```
-S3 입력 데이터
-    ↓
-SageMaker Batch Transform
-    ├── 모델 로드 (S3)
-    ├── 배치별 추론
-    └── 결과 Parquet → S3
-    ↓
-인스턴스 자동 종료
+┌─────────────────────────────────────────────────────────────────────┐
+│                        규모별 서빙 아키텍처                           │
+│                                                                     │
+│  [1단계] 포트폴리오/소규모 (~100만 건/월)                             │
+│  ┌──────────────────────────────────────┐                           │
+│  │ API Gateway → Lambda                 │                           │
+│  │   ├── 피처: 메모리 로드 (S3 Parquet)  │  비용: $0-1/월            │
+│  │   ├── 모델: LGBM (메모리 내장)        │  지연: ~5ms              │
+│  │   └── 응답                            │  서버리스: 완전           │
+│  └──────────────────────────────────────┘                           │
+│                         │                                           │
+│                    월 1억 건 돌파                                     │
+│                         ▼                                           │
+│  [2단계] 중규모 (~1-3억 건/월)                                       │
+│  ┌──────────────────────────────────────┐                           │
+│  │ API Gateway → Lambda                 │                           │
+│  │   ├── 피처: DynamoDB 조회             │  비용: $100-400/월        │
+│  │   ├── 모델: LGBM (메모리 내장)        │  지연: ~10ms             │
+│  │   └── 응답                            │  서버리스: 완전           │
+│  └──────────────────────────────────────┘                           │
+│                         │                                           │
+│                    비용 역전 지점                                     │
+│                         ▼                                           │
+│  [3단계] 대규모 (3억+ 건/월, 금융사 앱 수준)                          │
+│  ┌──────────────────────────────────────┐                           │
+│  │ ALB → ECS Fargate                    │                           │
+│  │   ├── Redis (실시간 피처 캐시)         │  비용: ~$360/월           │
+│  │   ├── RocksDB (전체 유저 피처)        │  지연: ~5-8ms            │
+│  │   ├── LanceDB (벡터 검색)             │  서버리스: 아님           │
+│  │   ├── LGBM 추론                      │                           │
+│  │   └── 실시간 스트리밍 피처 수신        │                           │
+│  │       (Kinesis → Redis 갱신)          │                           │
+│  └──────────────────────────────────────┘                           │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### ② 서버리스 추론 (LGBM)
+### 추론 코드는 동일 (환경만 다름)
 
 ```python
-# containers/inference/lambda_handler.py
-import json
-import pickle
-import numpy as np
+# core/serving/predict.py — Lambda든 ECS든 이 코드 공유
+class RecommendationService:
+    def __init__(self, config):
+        self.feature_store = FeatureStoreFactory.create(config)  # memory | dynamodb | redis
+        self.model = load_lgbm_model(config.model_path)
+        self.tasks = config.tasks
 
-# Lambda 초기화 시 모델 로드 (Cold start에 포함)
-model = pickle.load(open("/opt/ml/model/lgbm.pkl", "rb"))
+    def predict(self, user_id: str, context: dict) -> dict:
+        # ① 피처 조회
+        features = self.feature_store.get(user_id)
 
-def handler(event, context):
-    features = np.array(event["features"])
-    predictions = {}
-    for task_name, task_model in model.items():
-        predictions[task_name] = task_model.predict_proba(features).tolist()
-    return {"predictions": predictions}
+        # ② 실시간 컨텍스트 결합
+        features = self._enrich_with_context(features, context)
+
+        # ③ LGBM 멀티태스크 추론
+        predictions = {}
+        for task in self.tasks:
+            raw = self.model[task.name].predict(features)
+            predictions[task.name] = self._normalize(raw, task.type)
+
+        return predictions
+
+    def _normalize(self, raw, task_type):
+        if task_type == "binary":
+            return float(raw[0][1])              # 양성 클래스 확률
+        elif task_type == "multiclass":
+            return raw[0].tolist()               # 클래스별 확률
+        else:
+            return float(raw[0])                 # 회귀값
+
+
+# Lambda 핸들러
+def lambda_handler(event, context):
+    service = RecommendationService(config)       # cold start 시 초기화
+    return service.predict(event["user_id"], event.get("context", {}))
+
+# ECS FastAPI
+@app.post("/v1/recommend")
+async def recommend(request: RecommendRequest):
+    return service.predict(request.user_id, request.context)
 ```
 
-### ③ 실시간 추론 (ECS Fargate)
-
-```
-클라이언트 요청
-    ↓
-API Gateway
-    ↓
-ALB (Application Load Balancer)
-    ├── Rule: /v1/* → Target Group A (Model v1, weight: 90%)
-    └── Rule: /v1/* → Target Group B (Model v2, weight: 10%)  ← A/B Test
-    ↓
-ECS Fargate
-    ├── Task: FastAPI 컨테이너 (ECR 이미지)
-    ├── Auto-scaling: CPU > 70% → scale up
-    └── 모델: S3에서 시작 시 로드 → 메모리 캐싱
-```
+### 피처 스토어 추상화
 
 ```python
-# containers/inference/main.py (FastAPI — 현재 model_server 구조 유지)
-from fastapi import FastAPI
-from core.pipeline.config import load_config
-from core.model.registry import ModelRegistry
+# core/serving/feature_store.py
+class FeatureStoreFactory:
+    @staticmethod
+    def create(config) -> AbstractFeatureStore:
+        mode = config.feature_store
+        if mode == "memory":
+            return MemoryFeatureStore(config.feature_path)   # S3 Parquet → dict
+        elif mode == "dynamodb":
+            return DynamoDBFeatureStore(config.dynamodb_table)
+        elif mode == "redis":
+            return RedisFeatureStore(config.redis_endpoint)
+        elif mode == "auto":
+            user_count = estimate_user_count(config)
+            if user_count < 5_000_000:
+                return MemoryFeatureStore(config.feature_path)
+            else:
+                return DynamoDBFeatureStore(config.dynamodb_table)
 
-app = FastAPI()
 
-@app.on_event("startup")
-async def load_model():
-    """S3에서 모델 로드 → 메모리 캐싱"""
-    global model, config
-    config = load_config(os.environ["CONFIG_PATH"])
-    model = ModelRegistry.load(os.environ["MODEL_S3_URI"])
+class MemoryFeatureStore(AbstractFeatureStore):
+    """S3의 피처 Parquet을 메모리에 dict로 로드. 유저 500만 이하에 적합."""
 
-@app.post("/v1/predict")
-async def predict(request: PredictRequest):
-    outputs = model(request.features)
-    return normalize_outputs(outputs, config.tasks)
+    def __init__(self, path: str):
+        import pandas as pd
+        df = pd.read_parquet(path)
+        self._store = {row["user_id"]: row.drop("user_id").values for _, row in df.iterrows()}
 
-@app.post("/v1/interpret")
-async def interpret(request: PredictRequest):
-    """Expert 기여도 + 피처 중요도 반환."""
-    outputs = model(request.features, return_expert_weights=True)
-    return {
-        "predictions": outputs.predictions,
-        "expert_weights": outputs.expert_weights,
-        "feature_importance": outputs.feature_importance,
-    }
+    def get(self, user_id: str) -> np.ndarray:
+        return self._store.get(user_id)
+
+
+class DynamoDBFeatureStore(AbstractFeatureStore):
+    """DynamoDB에서 유저 피처 조회. 대규모 유저에 적합. ~3-5ms."""
+    ...
 ```
 
-### A/B 테스트
+---
+
+## A/B 테스트
+
+Lambda와 ECS 모두 API Gateway의 **스테이지 변수 + 가중 라우팅**으로 A/B 테스트를 지원합니다.
 
 ```yaml
 # configs/serving/ab_test.yaml
@@ -149,81 +208,96 @@ ab_test:
   enabled: true
   variants:
     - name: control
-      model: s3://bucket/models/ple-v1/
+      model: s3://bucket/models/lgbm-v1/
       weight: 90              # 트래픽 90%
     - name: treatment
-      model: s3://bucket/models/ple-v2/
+      model: s3://bucket/models/lgbm-v2/
       weight: 10              # 트래픽 10%
 
-  metrics:
-    primary: click_through_rate
+  evaluation:
+    primary_metric: click_through_rate
     secondary: [conversion_rate, revenue_per_user]
     min_sample_size: 10000
     significance_level: 0.05
 
   auto_promote:
     enabled: true
-    # treatment이 control 대비 유의미하게 좋으면 자동 전환
-    min_improvement: 0.02      # 2% 이상 개선
+    min_improvement: 0.02     # 2% 이상 개선 시 자동 전환
 ```
 
 ```
-ALB 가중 라우팅
-    ├── 90% → ECS Task (Model v1) → CloudWatch 메트릭 기록
-    └── 10% → ECS Task (Model v2) → CloudWatch 메트릭 기록
+API Gateway
+    ├── 90% → Lambda/ECS (Model v1) → CloudWatch 메트릭 기록
+    └── 10% → Lambda/ECS (Model v2) → CloudWatch 메트릭 기록
     ↓
-Lambda (통계 분석)
-    ├── 일별 메트릭 비교
-    ├── t-test / 베이지안 A/B
-    └── 유의미 → 자동 전환 (또는 알림)
+Lambda (일일 통계 분석)
+    ├── t-test / 베이지안 A/B 검정
+    └── 유의미 → 자동 전환 or 알림
 ```
 
 ### 카나리 배포
 
 ```
-배포 단계:
-  1. 새 모델 → ECR 이미지 빌드
-  2. 카나리: 5% 트래픽으로 시작
-  3. 메트릭 모니터링 (5분 간격)
+새 모델 배포 시:
+  1. 새 Lambda 버전 배포 (또는 ECS Task Definition)
+  2. 5% 트래픽 → 새 버전
+  3. CloudWatch 메트릭 5분 간격 모니터링
   4. 이상 없으면: 25% → 50% → 100%
-  5. 이상 발견: 즉시 롤백 (이전 이미지로)
-```
-
-### 출력 정규화 (태스크 타입별)
-
-```python
-# core/serving/normalizer.py
-class OutputNormalizer:
-    """
-    태스크 타입에 따라 모델 출력을 정규화합니다.
-    On-Prem의 recommendation.py 로직을 범용화.
-    """
-
-    STRATEGIES = {
-        "binary": lambda logits: torch.sigmoid(logits),         # [0, 1]
-        "multiclass": lambda logits: torch.softmax(logits, -1), # [0, 1] sum=1
-        "regression": lambda logits: logits,                     # raw value
-        "contrastive": lambda logits: F.normalize(logits, dim=-1), # unit vector
-        "ranking": lambda logits: logits,                        # raw score
-    }
-
-    def normalize(self, outputs: dict, task_configs: list) -> dict:
-        result = {}
-        for task in task_configs:
-            strategy = self.STRATEGIES[task.type]
-            result[task.name] = strategy(outputs[task.name].logits)
-        return result
+  5. 이상 발견: 즉시 이전 버전으로 롤백
 ```
 
 ---
 
-## 서빙 비용 비교
+## 출력 정규화
 
-| 모드 | 월 비용 (추정) | 적합한 상황 |
-|------|--------------|------------|
-| 배치 (Batch Transform) | ~$1-3 (월 2-3회 실행) | 정기 대량 추론 |
-| 서버리스 (Lambda) | ~$0-1 (1만 요청 이하) | 간헐적 소량 요청 |
-| 실시간 (ECS Fargate) | ~$5-30 (가동 시간 비례) | 데모, 포트폴리오 시연 |
+```python
+# core/serving/normalizer.py
+class OutputNormalizer:
+    """태스크 타입에 따라 모델 출력을 정규화합니다."""
+
+    STRATEGIES = {
+        "binary": lambda logits: sigmoid(logits),           # [0, 1] 확률
+        "multiclass": lambda logits: softmax(logits),       # [0, 1] 클래스별
+        "regression": lambda logits: logits,                 # raw value
+        "contrastive": lambda logits: normalize(logits),     # unit vector
+        "ranking": lambda logits: logits,                    # raw score
+    }
+```
+
+---
+
+## 3단계 확장 시 추가 구성 (대규모)
+
+월 3억 건 이상의 금융사 앱 수준으로 확장할 때는 ECS + 임베디드 스토어를 활성화합니다:
+
+```
+[스트리밍 파이프라인 — 실시간 피처 갱신]
+
+이벤트 소스 (클릭, 구매, 세션 등)
+    ↓
+Kinesis Data Streams
+    ↓
+Lambda (피처 업데이트 계산)
+    ↓
+Redis (ECS 컨테이너 내) 실시간 갱신
+    ├── 최근 30분 클릭 수
+    ├── 현재 세션 관심 카테고리
+    └── 실시간 행동 시그널
+```
+
+```
+[ECS Fargate 컨테이너 구성]
+
+FastAPI
+├── Redis    (핫 유저 피처 캐시, 실시간 스트리밍 수신)    <0.5ms
+├── RocksDB  (전체 유저 배치 피처, 로컬 디스크)           <3ms
+├── LanceDB  (임베딩 벡터 인덱스, 콜드스타트 유사 유저)   <5ms
+└── LGBM     (실시간 추론)                               <5ms
+
+총: <8ms (네트워크 홉 0, 모든 데이터 로컬)
+```
+
+이 구성은 **config에서 `mode: ecs`로 전환**할 때만 활성화되며, 추론 코드(`core/serving/predict.py`)는 변경 없이 그대로 사용합니다.
 
 ---
 
@@ -231,9 +305,10 @@ class OutputNormalizer:
 
 | 항목 | 현재 (On-Prem) | AWS (설계) | 변경 이유 |
 |------|---------------|-----------|----------|
-| 배포 | Docker Compose (상시) | ECS Fargate (필요 시) | 유휴 비용 0 |
-| 스케일링 | 불가 (단일 서버) | Auto-scaling (0~N) | 트래픽 대응 |
-| A/B 테스트 | 없음 | ALB 가중 라우팅 | 안전한 모델 교체 |
-| 카나리 | 없음 | 점진적 트래픽 전환 | 롤백 안전성 |
-| 배치 추론 | API 호출 루프 | Batch Transform | 인프라 자동 관리 |
-| 해석 API | /interpret 엔드포인트 | 동일 유지 | FastAPI 구조 재사용 |
+| 기본 서빙 | Docker Compose (상시) | Lambda (서버리스) | 유휴 비용 $0 |
+| 대규모 서빙 | 해당 없음 | ECS + 임베디드 스토어 | config 전환으로 확장 |
+| 추론 방식 | 매 요청 추론 | 매 요청 추론 (동일) | LGBM ~5ms 충분 |
+| 피처 조회 | 로컬 파일 | 메모리 → DynamoDB → Redis | 규모별 자동 선택 |
+| A/B 테스트 | 없음 | API Gateway 가중 라우팅 | 안전한 모델 교체 |
+| 카나리 배포 | 없음 | 점진적 트래픽 전환 | 롤백 안전성 |
+| 스케일링 | 불가 | Lambda 자동 / ECS Auto-scaling | 트래픽 대응 |
