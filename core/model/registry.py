@@ -1,18 +1,8 @@
+"""Model architecture plugin registry."""
 from typing import Type
 
 
 class ModelRegistry:
-    """
-    모델 아키텍처 플러그인 레지스트리.
-
-    Example:
-        @ModelRegistry.register("my_model")
-        class MyModel:
-            ...
-
-        model = ModelRegistry.build("my_model", config=..., tasks=...)
-    """
-
     _registry: dict[str, Type] = {}
 
     @classmethod
@@ -33,9 +23,13 @@ class ModelRegistry:
         return list(cls._registry.keys())
 
 
-# 기본 모델 등록
+# PLE is always registered (torch-only)
 from .ple import PLEModel
-from .lgbm import LGBMModel
-
 ModelRegistry.register("ple")(PLEModel)
-ModelRegistry.register("lgbm")(LGBMModel)
+
+# LGBM is registered lazily to avoid pandas import at module load time
+try:
+    from .lgbm import LGBMModel
+    ModelRegistry.register("lgbm")(LGBMModel)
+except ImportError:
+    pass
