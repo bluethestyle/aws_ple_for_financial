@@ -1,10 +1,10 @@
 """
-Synthetic 데이터로 E2E 파이프라인 시연.
-AWS 없이 로컬에서 전체 흐름을 테스트할 수 있습니다.
+End-to-end pipeline demo using synthetic data.
+Runs the full flow locally without requiring AWS.
 
 Usage:
     python examples/synthetic/run.py
-    python examples/synthetic/run.py --tasks binary regression --n 50000
+    python examples/synthetic/run.py --n 50000 --output outputs/synthetic/
 """
 
 import argparse
@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# 패키지 루트를 path에 추가
+# Add package root to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.pipeline.config import load_config, PipelineConfig, TaskSpec, DataSpec, FeatureSpec, ModelSpec, TrainingSpec, AWSSpec
@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 def generate_synthetic_data(n: int = 10_000, seed: int = 42) -> pd.DataFrame:
-    """멀티태스크 학습용 합성 데이터 생성."""
+    """Generate synthetic data for multi-task learning."""
     rng = np.random.default_rng(seed)
 
-    # 피처
+    # Features
     user_age = rng.integers(18, 70, n)
     item_price = rng.exponential(50, n)
     item_popularity = rng.beta(2, 5, n)
@@ -38,7 +38,7 @@ def generate_synthetic_data(n: int = 10_000, seed: int = 42) -> pd.DataFrame:
     item_category = rng.choice(["electronics", "fashion", "food", "travel"], n)
     platform = rng.choice(["web", "mobile", "app"], n)
 
-    # 레이블 (실제 데이터처럼 상관관계 있게 생성)
+    # Labels (generated with realistic correlations)
     base_score = (
         0.3 * (user_age / 70)
         + 0.2 * item_popularity
@@ -82,11 +82,11 @@ def make_local_config(data_path: str) -> PipelineConfig:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n", type=int, default=10_000, help="샘플 수")
-    parser.add_argument("--output", default="outputs/synthetic/", help="결과 저장 경로")
+    parser.add_argument("--n", type=int, default=10_000, help="Number of samples")
+    parser.add_argument("--output", default="outputs/synthetic/", help="Output directory")
     args = parser.parse_args()
 
-    # 1. 데이터 생성
+    # 1. Generate data
     logger.info(f"Generating {args.n:,} synthetic samples...")
     df = generate_synthetic_data(n=args.n)
 
@@ -97,7 +97,7 @@ def main():
     logger.info(f"  click rate   : {df['clicked'].mean():.3f}")
     logger.info(f"  convert rate : {df['converted'].mean():.3f}")
 
-    # 2. 파이프라인 실행
+    # 2. Run pipeline
     config = make_local_config(data_path)
     runner = PipelineRunner(config)
     result = runner.run(mode="local", output_dir=args.output)

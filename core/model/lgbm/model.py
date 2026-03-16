@@ -1,8 +1,8 @@
 """
-LightGBM 멀티태스크 래퍼.
+LightGBM multi-task wrapper.
 
-태스크별로 독립적인 LGBM 모델을 학습하고 예측합니다.
-PLE와 동일한 인터페이스를 가지므로 파이프라인에서 교체 사용 가능합니다.
+Trains and predicts with independent LGBM models per task.
+Shares the same interface as PLE, so it can be swapped in pipelines.
 """
 
 from typing import Dict
@@ -16,7 +16,7 @@ from ...task.types import TaskType
 
 class LGBMModel:
     """
-    태스크별 독립 LGBM 모델 집합.
+    Collection of independent LGBM models, one per task.
 
     Example:
         model = LGBMModel(config, tasks_meta)

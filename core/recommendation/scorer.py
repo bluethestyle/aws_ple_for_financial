@@ -201,12 +201,12 @@ class WeightedSumScorer(AbstractScorer):
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
-        self.weights: Dict[str, float] = config.get("weights", {
-            "ctr": 0.30,
-            "cvr": 0.40,
-            "nba": 0.20,
-            "ltv": 0.10,
-        })
+        self.weights: Dict[str, float] = config.get("weights", {})
+        if not self.weights:
+            raise ValueError(
+                "WeightedSumScorer: 'weights' must be provided and non-empty. "
+                "Example: {\"ctr\": 0.30, \"cvr\": 0.40, \"nba\": 0.20, \"ltv\": 0.10}"
+            )
         self.min_score: float = config.get("min_score", 0.0)
         self.max_score: float = config.get("max_score", 1.0)
 
@@ -301,9 +301,12 @@ class FDTVSScorer(AbstractScorer):
         super().__init__(config)
 
         # Stage 1
-        self.task_weights: Dict[str, float] = config.get("task_weights", {
-            "ctr": 0.30, "cvr": 0.40, "nba": 0.20, "ltv": 0.10,
-        })
+        self.task_weights: Dict[str, float] = config.get("task_weights", {})
+        if not self.task_weights:
+            raise ValueError(
+                "FDTVSScorer: 'task_weights' must be provided and non-empty. "
+                "Example: {\"ctr\": 0.30, \"cvr\": 0.40, \"nba\": 0.20, \"ltv\": 0.10}"
+            )
 
         # Stage 2
         self.modifier_map: Dict[str, float] = config.get("modifier_map", {

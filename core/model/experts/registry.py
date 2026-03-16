@@ -9,7 +9,7 @@ Usage::
         ...
 
     # Creation
-    expert = ExpertRegistry.create("deepfm", input_dim=644, config={...})
+    expert = ExpertRegistry.create("deepfm", input_dim=128, config={...})
 
     # Bulk creation from a config dict
     experts = ExpertRegistry.create_from_config(shared_experts_cfg)

@@ -1,7 +1,9 @@
+"""Tests for the TaskRegistry and built-in task implementations."""
+
 import torch
 import pytest
 
-from core.task.base import TaskConfig
+from core.task.base import TaskConfig, AbstractTask, TaskOutput
 from core.task.registry import TaskRegistry
 from core.task.types import TaskType, LossType
 
@@ -41,7 +43,7 @@ def test_binary_task_forward():
 
 
 def test_multiclass_task_forward():
-    config = make_config(TaskType.MULTICLASS, num_classes=5)
+    config = make_config(TaskType.MULTICLASS, num_classes=5, output_dim=5)
     task = TaskRegistry.build(config, tower_input_dim=64)
 
     x = torch.randn(8, 64)
@@ -59,12 +61,11 @@ def test_unknown_task_type_raises():
 
 
 def test_custom_task_registration():
-    from core.task.base import AbstractTask
     import torch.nn.functional as F
 
     @TaskRegistry.register("test_custom")
     class CustomTask(AbstractTask):
-        def compute_loss(self, logits, labels):
+        def compute_loss(self, logits, labels, sample_weights=None, **kwargs):
             return F.mse_loss(logits.squeeze(-1), labels.float())
 
         def predict(self, logits):

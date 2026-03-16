@@ -17,10 +17,10 @@ Modular multi-task learning platform built on **Progressive Layered Extraction (
 pip install -e ".[dev]"
 
 # 2. Run a local example (no AWS needed)
-python examples/synthetic/run.py --config configs/examples/multitask_classification.yaml
+python examples/synthetic/run.py --n 10000 --output outputs/synthetic/
 
 # 3. Launch a SageMaker training job (requires AWS credentials)
-./scripts/start_training.sh --config configs/examples/multitask_classification.yaml
+./scripts/start_training.sh --config configs/examples/multitask_binary.yaml
 ```
 
 ## Architecture
@@ -69,11 +69,11 @@ aws:
 
 ## Examples
 
-| Dataset | Task | Architecture |
-|---------|------|-------------|
-| [MovieLens 1M](examples/movielens/) | Rating prediction + Watch ratio (multi-task) | PLE |
-| [Criteo](examples/criteo/) | CTR prediction (binary) | LGBM → PLE distillation |
-| [Synthetic](examples/synthetic/) | Configurable multi-task demo | PLE |
+| Dataset | Task | Architecture | Status |
+|---------|------|-------------|--------|
+| MovieLens 1M | Rating prediction + Watch ratio (multi-task) | PLE | *Coming soon* |
+| Criteo | CTR prediction (binary) | LGBM → PLE distillation | *Coming soon* |
+| [Synthetic](examples/synthetic/) | Configurable multi-task demo | PLE | Available |
 
 ## Project Structure
 

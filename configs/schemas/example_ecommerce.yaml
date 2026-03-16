@@ -1,0 +1,190 @@
+# Example schema: E-commerce recommendation system
+#
+# This schema works with SchemaRegistry.load("configs/schemas/example_ecommerce.yaml")
+# and defines the data contracts for an e-commerce multi-task recommendation pipeline.
+#
+# SchemaRegistry parses the "sources" top-level key. Each source defines columns,
+# primary keys, and metadata. Column specs support type, nullable, pii, min/max,
+# allowed_values, and description.
+
+sources:
+  # -- Transactional data --------------------------------------------------
+  transactions:
+    description: "Customer purchase transactions"
+    version: 1
+    primary_key: [transaction_id]
+    tags: [core, transactional]
+    columns:
+      transaction_id:
+        type: string
+        nullable: false
+        description: "Unique transaction identifier"
+      user_id:
+        type: string
+        nullable: false
+        pii: true
+        description: "Customer identifier (PII)"
+      item_id:
+        type: string
+        nullable: false
+        description: "Purchased product identifier"
+      amount:
+        type: float64
+        nullable: false
+        min: 0.0
+        description: "Transaction amount in local currency"
+      quantity:
+        type: int64
+        nullable: false
+        min: 1
+        description: "Number of units purchased"
+      category:
+        type: string
+        nullable: true
+        allowed_values: ["electronics", "fashion", "home", "food", "sports", "books", "other"]
+        description: "Top-level product category"
+      channel:
+        type: string
+        nullable: true
+        allowed_values: ["web", "mobile_app", "in_store", "marketplace"]
+        description: "Purchase channel"
+      transaction_ts:
+        type: timestamp
+        nullable: false
+        description: "Transaction timestamp (UTC)"
+      is_returned:
+        type: bool
+        nullable: true
+        description: "Whether the item was returned"
+
+  # -- Customer profile data -----------------------------------------------
+  customers:
+    description: "Customer profile and demographic data"
+    version: 1
+    primary_key: [user_id]
+    tags: [core, profile]
+    columns:
+      user_id:
+        type: string
+        nullable: false
+        pii: true
+        description: "Customer identifier (PII)"
+      email:
+        type: string
+        nullable: true
+        pii: true
+        description: "Email address (PII)"
+      age_group:
+        type: string
+        nullable: true
+        allowed_values: ["18-24", "25-34", "35-44", "45-54", "55-64", "65+"]
+        description: "Age bracket (for fairness monitoring)"
+      gender:
+        type: string
+        nullable: true
+        allowed_values: ["M", "F", "NB", "undisclosed"]
+        description: "Gender identity (for fairness monitoring)"
+      region:
+        type: string
+        nullable: true
+        description: "Geographic region code"
+      signup_date:
+        type: date
+        nullable: true
+        description: "Account creation date"
+      membership_tier:
+        type: string
+        nullable: true
+        allowed_values: ["free", "silver", "gold", "platinum"]
+        description: "Loyalty program tier"
+      lifetime_spend:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "Cumulative historical spend"
+
+  # -- Behavioral features (pre-computed) ----------------------------------
+  user_features:
+    description: "Pre-computed behavioral feature vectors for model input"
+    version: 1
+    primary_key: [user_id, snapshot_date]
+    tags: [feature, derived]
+    columns:
+      user_id:
+        type: string
+        nullable: false
+        pii: true
+      snapshot_date:
+        type: date
+        nullable: false
+        description: "Feature computation date"
+      total_orders_30d:
+        type: int64
+        nullable: true
+        min: 0
+        description: "Number of orders in the last 30 days"
+      avg_order_value_30d:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "Average order value over the last 30 days"
+      days_since_last_purchase:
+        type: int64
+        nullable: true
+        min: 0
+        description: "Days since most recent purchase"
+      category_diversity_score:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Shannon entropy of category distribution (normalised)"
+      session_count_7d:
+        type: int64
+        nullable: true
+        min: 0
+        description: "Number of browsing sessions in the last 7 days"
+      cart_abandon_rate_30d:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Fraction of carts abandoned without checkout"
+      preferred_channel:
+        type: string
+        nullable: true
+        allowed_values: ["web", "mobile_app", "in_store", "marketplace"]
+        description: "Most frequently used purchase channel"
+
+  # -- Product catalogue ---------------------------------------------------
+  products:
+    description: "Product catalogue metadata"
+    version: 1
+    primary_key: [item_id]
+    tags: [core, catalogue]
+    columns:
+      item_id:
+        type: string
+        nullable: false
+        description: "Product identifier"
+      item_name:
+        type: string
+        nullable: false
+        description: "Human-readable product name"
+      category:
+        type: string
+        nullable: false
+        allowed_values: ["electronics", "fashion", "home", "food", "sports", "books", "other"]
+      price:
+        type: float64
+        nullable: false
+        min: 0.0
+        description: "Current listed price"
+      in_stock:
+        type: bool
+        nullable: false
+        description: "Whether the item is currently in stock"
+      launch_date:
+        type: date
+        nullable: true
+        description: "Product launch date"

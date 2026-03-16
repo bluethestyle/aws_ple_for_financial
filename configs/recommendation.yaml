@@ -1,0 +1,225 @@
+# Recommendation Pipeline Configuration
+#
+# This config drives the full RecommendationPipeline:
+#   model predictions --> scoring --> filtering --> top-K --> reasons --> self-check
+#
+# Load with:
+#   import yaml
+#   with open("configs/recommendation.yaml") as f:
+#       config = yaml.safe_load(f)
+#   pipeline = RecommendationPipeline(config)
+
+# ===========================================================================
+# Pipeline orchestration settings
+# ===========================================================================
+pipeline:
+  scorer_name: weighted_sum          # "weighted_sum" or "fd_tvs" (ScorerRegistry)
+  enable_reasons: true               # generate recommendation reasons
+  enable_self_check: true            # verify reasons for compliance
+  enable_reverse_mapping: true       # IG feature interpretation
+
+# ===========================================================================
+# Scoring layer (ScorerRegistry plugins)
+# ===========================================================================
+scorer:
+  # -- Default: weighted sum of task predictions --
+  weighted_sum:
+    weights:
+      ctr: 0.25                      # click-through rate prediction weight
+      cvr: 0.35                      # conversion rate prediction weight
+      nba: 0.25                      # next-best-action prediction weight
+      ltv: 0.15                      # lifetime value prediction weight
+    min_score: 0.0
+    max_score: 1.0
+
+  # -- Advanced: 4-stage composite (FD-TVS) --
+  fd_tvs:
+    task_weights:
+      ctr: 0.25
+      cvr: 0.35
+      nba: 0.25
+      ltv: 0.15
+
+    # Stage 2: contextual modifier
+    modifier_map:
+      high: 1.2
+      medium: 1.0
+      low: 0.8
+    modifier_default: 1.0
+
+    # Stage 3: behavioral velocity
+    gamma_velocity: 0.15
+
+    # Stage 4: risk penalty thresholds
+    risk_weight_limit_util: 0.3
+    risk_weight_churn: 0.5
+    risk_weight_message_freq: 0.2
+    risk_threshold_limit_util: 0.8
+    risk_threshold_churn: 0.3
+    risk_threshold_message_count: 3
+
+    # Fatigue decay
+    fatigue_base_decay: 0.85
+    fatigue_channel_multiplier:
+      app_push: 1.0
+      email: 0.7
+      sms: 0.9
+      default: 1.0
+
+    # Engagement boost
+    engagement_boost_scale: 0.15
+
+# ===========================================================================
+# Constraint filtering (ConstraintEngine)
+# ===========================================================================
+constraint_engine:
+  fail_fast: true                    # stop on first filter failure
+
+filters:
+  fatigue:
+    enabled: true
+    max_messages_7d: 5               # hard cap on 7-day messages
+    channel_decay:
+      app_push: 0.85
+      email: 0.90
+      sms: 0.80
+      default: 0.85
+
+  eligibility:
+    enabled: true
+    min_score: 0.05                  # minimum composite score to recommend
+    churn_threshold: 0.6             # exclude if churn probability > threshold
+
+  owned_product:
+    enabled: true                    # exclude products the customer already owns
+
+# ===========================================================================
+# Top-K selection with diversity (TopKSelector)
+# ===========================================================================
+selector:
+  k: 5                              # number of recommendations to return
+  min_score: 0.0                     # floor score for selection
+  diversity_method: mmr              # "none" | "mmr" | "dpp"
+  diversity_lambda: 0.5             # 1.0 = all relevance, 0.0 = all diversity
+
+# ===========================================================================
+# Reason generation (TemplateEngine + SelfChecker)
+# ===========================================================================
+reason:
+  template_engine:
+    top_k_features: 3               # number of IG features to use for reasons
+
+    # Map feature name prefixes to template categories
+    feature_category_map:
+      spend_: spending_pattern
+      txn_count_: frequency_pattern
+      amt_: spending_pattern
+      avg_order_: spending_pattern
+      merchant_: frequency_pattern
+      category_: frequency_pattern
+      life_stage_: life_stage
+      benefit_: benefit_match
+      tenure_: loyalty_pattern
+      credit_: credit_pattern
+
+    # Template pool by category
+    template_pool:
+      spending_pattern:
+        - "{item_name} offers strong benefits aligned with your primary spending in {category}."
+        - "Based on your {category} spending patterns, {item_name} is a strong match."
+        - "Your spending profile in {category} makes {item_name} a natural fit."
+      frequency_pattern:
+        - "{item_name} is designed for frequent {merchant_type} users like you."
+        - "Your consistent engagement with {merchant_type} makes {item_name} ideal."
+      life_stage:
+        - "{item_name} is optimised for customers at your current life stage."
+        - "Customers with a similar profile have found {item_name} particularly valuable."
+      benefit_match:
+        - "{item_name} delivers {benefit_type} benefits aligned with your preferences."
+        - "The {benefit_type} benefits of {item_name} match your profile."
+      loyalty_pattern:
+        - "As a valued long-term customer, {item_name} rewards your loyalty."
+        - "Your tenure qualifies you for the enhanced benefits of {item_name}."
+      credit_pattern:
+        - "Based on your credit profile, {item_name} offers competitive terms."
+        - "{item_name} is available with terms tailored to your creditworthiness."
+      popularity:
+        - "{item_name} is popular among customers with a similar profile."
+        - "Many customers like you have chosen {item_name}."
+      minimum_safe:
+        - "{item_name} is recommended based on your overall profile analysis."
+
+    # Task-specific narrative framing
+    task_frames:
+      churn:
+        frame: retention
+        narrative: "We value your relationship and want to offer you something special."
+      ltv:
+        frame: growth
+        narrative: "Maximise long-term value with this recommendation."
+      nba:
+        frame: next_action
+        narrative: "This is the ideal next step for your financial journey."
+      cvr:
+        frame: conversion
+        narrative: "This product is a strong match for your current needs."
+
+  # -- Self-checker: compliance validation --------------------------------
+  self_checker:
+    enable_llm_check: false          # set true if LLM provider is available
+
+    # Compliance rules (regex patterns that must NOT appear in reason text)
+    compliance_rules:
+      guaranteed_return:
+        pattern: "guaranteed\\s+return"
+        severity: critical
+        description: "Must not promise guaranteed returns."
+      loss_impossible:
+        pattern: "no\\s+loss|loss\\s+impossible|cannot\\s+lose"
+        severity: critical
+        description: "Must not claim loss is impossible."
+      risk_free:
+        pattern: "risk[- ]?free"
+        severity: critical
+        description: "Must not describe any product as risk-free."
+      time_pressure:
+        pattern: "limited\\s+time|act\\s+now|hurry|last\\s+chance"
+        severity: major
+        description: "Must not create artificial urgency."
+      absolute_superlative:
+        pattern: "\\bbest\\b|\\bbiggest\\b|\\bhighest\\b"
+        severity: minor
+        description: "Avoid absolute superlatives without qualification."
+
+    # Prompt injection detection patterns
+    injection_patterns:
+      - "ignore\\s+(previous|all|above)\\s+(instructions?|prompts?|rules?)"
+      - "<\\s*/?\\s*system\\s*>"
+      - "you\\s+are\\s+now\\s+(a|an|the)"
+      - "system\\s*:\\s*"
+      - "\\[\\s*INST\\s*\\]"
+      - "```\\s*(system|admin)"
+
+    # AI disclosure text (appended to recommendations when required)
+    ai_disclosure: >
+      This recommendation was generated by an AI system.
+      The final decision rests with you. Please review the product
+      details before proceeding.
+    ai_opt_out: >
+      You can opt out of AI-generated recommendations at any time
+      through your account settings.
+
+# ===========================================================================
+# LLM provider (for LLM-based self-check, optional)
+# ===========================================================================
+llm_provider:
+  backend: dummy                     # "bedrock" | "openai" | "dummy"
+  bedrock:
+    model_id: anthropic.claude-3-haiku-20240307-v1:0
+    region: ap-northeast-2
+    max_tokens: 512
+    temperature: 0.0
+  openai:
+    model: gpt-4o-mini
+    max_tokens: 512
+    temperature: 0.0

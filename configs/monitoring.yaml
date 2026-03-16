@@ -1,0 +1,162 @@
+# Monitoring Configuration
+#
+# Drives the monitoring subsystem modules:
+#   - FairnessMonitor: bias detection across protected attributes
+#   - DriftDetector / ConsecutiveDriftTracker: feature distribution drift (PSI)
+#   - IncidentReporter: severity classification, escalation, archival
+#   - HerdingDetector: recommendation concentration monitoring
+#
+# Load with:
+#   import yaml
+#   with open("configs/monitoring.yaml") as f:
+#       config = yaml.safe_load(f)
+
+# ===========================================================================
+# Fairness monitoring
+# ===========================================================================
+fairness:
+  # Thresholds for fairness metrics
+  thresholds:
+    di_lower: 0.8                    # Disparate Impact lower bound
+    di_upper: 1.25                   # Disparate Impact upper bound
+    spd_max: 0.1                     # Statistical Parity Difference max absolute value
+    eod_max: 0.1                     # Equal Opportunity Difference max absolute value
+
+  # Protected attributes to monitor (must exist in recommendation data)
+  protected_attributes:
+    - age_group
+    - gender
+    - region_type
+    - income_tier
+    - life_stage
+
+  # Group pairs for pairwise comparison (privileged, unprivileged)
+  group_pairs:
+    age_group:
+      - ["25-34", "65+"]
+      - ["25-34", "18-24"]
+    gender:
+      - ["M", "F"]
+      - ["M", "NB"]
+    region_type:
+      - ["urban", "rural"]
+      - ["urban", "suburban"]
+    income_tier:
+      - ["high", "low"]
+      - ["very_high", "low"]
+    life_stage:
+      - ["mid_career", "student"]
+      - ["mid_career", "retired"]
+
+  # Automatically create an incident when a violation is detected
+  auto_incident: true
+
+  # Monitoring schedule (informational -- used by DAG orchestrator)
+  schedule:
+    frequency: daily
+    time: "06:00"
+    timezone: UTC
+
+# ===========================================================================
+# Drift detection (PSI-based)
+# ===========================================================================
+drift:
+  # PSI thresholds
+  psi_threshold_warning: 0.1         # PSI >= 0.1 triggers a warning
+  psi_threshold_critical: 0.25       # PSI >= 0.25 triggers a critical alert
+
+  # PSI computation parameters
+  n_bins: 10                         # number of histogram bins for PSI
+
+  # Features to monitor (null = monitor all shared numeric columns)
+  # Uncomment and list specific features to restrict monitoring scope:
+  # feature_columns:
+  #   - tenure_days
+  #   - total_balance
+  #   - avg_monthly_spend
+  #   - txn_count_30d
+
+  # Consecutive drift tracking (for auto-retrain decisions)
+  consecutive_tracker:
+    monitoring_dir: monitoring/drift_results
+    consecutive_threshold: 3         # retrain after N consecutive critical days
+    critical_feature_threshold: 5    # min critical features to count as a "critical day"
+
+  # Baseline data reference
+  baseline:
+    source: s3://YOUR_BUCKET/baselines/latest/
+    format: parquet
+
+# ===========================================================================
+# Incident management
+# ===========================================================================
+incidents:
+  # Severity classification criteria
+  severity_criteria:
+    critical:
+      conditions:
+        - kill_switch_activation
+        - di_below_0.6
+        - security_breach
+      response_time: "1 hour"
+      escalate: true
+    major:
+      conditions:
+        - di_below_0.8
+        - herding_critical
+        - model_rollback
+        - consecutive_drift_retrain
+      response_time: "4 hours"
+      escalate: true
+    minor:
+      conditions:
+        - drift_warning
+        - quality_drop
+        - herding_high
+        - single_feature_critical
+      response_time: "24 hours"
+      escalate: false
+
+  # AWS SNS notification (for CRITICAL and MAJOR incidents)
+  sns_topic_arn: ""                  # set via env var INCIDENT_SNS_TOPIC_ARN if preferred
+  region: ap-northeast-2
+
+  # Incident archive storage
+  s3_bucket: ""                      # set via env var INCIDENT_S3_BUCKET if preferred
+  s3_prefix: incidents
+
+# ===========================================================================
+# Herding detection
+# ===========================================================================
+herding:
+  # Concentration thresholds (Herfindahl-Hirschman Index style)
+  hhi_warning: 0.15                  # HHI above this triggers a warning
+  hhi_critical: 0.25                 # HHI above this triggers a critical alert
+
+  # Top-K concentration monitoring
+  top_k_items: 10                    # track concentration in top-K recommended items
+  top_k_concentration_warning: 0.5   # warning if top-K items account for > 50% of recommendations
+  top_k_concentration_critical: 0.7  # critical if top-K items account for > 70%
+
+  # Monitoring window
+  window_hours: 24                   # rolling window for herding evaluation
+
+# ===========================================================================
+# General monitoring settings
+# ===========================================================================
+general:
+  # Logging level for monitoring modules
+  log_level: INFO
+
+  # Output directory for monitoring reports and artifacts
+  output_dir: monitoring/reports
+
+  # Governance report generation
+  governance_report:
+    enabled: true
+    frequency: weekly
+    include_fairness: true
+    include_drift: true
+    include_incidents: true
+    include_herding: true
+    output_format: json              # "json" or "html"

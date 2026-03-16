@@ -34,7 +34,7 @@ Usage::
             "interaction": {"type": "deepfm", "output_dim": 64, ...},
             "causal":      {"type": "causal",  "output_dim": 64, ...},
         },
-        default_input_dim=644,
+        default_input_dim=128,
     )
 """
 

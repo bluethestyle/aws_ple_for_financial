@@ -1,0 +1,239 @@
+# Example schema: Financial services recommendation system
+#
+# This schema works with SchemaRegistry.load("configs/schemas/example_financial.yaml")
+# and defines data contracts for a financial product recommendation pipeline.
+#
+# PII columns are explicitly marked so the pipeline can apply encryption,
+# masking, or audit logging as required by financial regulations.
+
+sources:
+  # -- Customer master data ------------------------------------------------
+  customers:
+    description: "Customer master data for financial services"
+    version: 1
+    primary_key: [customer_id]
+    tags: [core, regulated, pii]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+        description: "Unique customer identifier"
+      name:
+        type: string
+        nullable: false
+        pii: true
+        description: "Full legal name (PII)"
+      date_of_birth:
+        type: date
+        nullable: true
+        pii: true
+        description: "Date of birth (PII, used for age group derivation)"
+      age_group:
+        type: string
+        nullable: true
+        allowed_values: ["18-24", "25-34", "35-44", "45-54", "55-64", "65+"]
+        description: "Age bracket for fairness monitoring"
+      gender:
+        type: string
+        nullable: true
+        allowed_values: ["M", "F", "NB", "undisclosed"]
+        description: "Gender for fairness monitoring"
+      income_tier:
+        type: string
+        nullable: true
+        allowed_values: ["low", "medium", "high", "very_high"]
+        description: "Income bracket for segmentation and fairness monitoring"
+      region_type:
+        type: string
+        nullable: true
+        allowed_values: ["urban", "suburban", "rural"]
+        description: "Geographic region classification"
+      credit_score_band:
+        type: string
+        nullable: true
+        allowed_values: ["poor", "fair", "good", "excellent"]
+        description: "Credit score bracket"
+      kyc_verified:
+        type: bool
+        nullable: false
+        description: "Whether KYC verification is complete"
+      onboarding_date:
+        type: date
+        nullable: false
+        description: "Date the customer was onboarded"
+
+  # -- Product holdings ----------------------------------------------------
+  product_holdings:
+    description: "Current product holdings per customer"
+    version: 1
+    primary_key: [customer_id, product_id]
+    tags: [core, portfolio]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      product_id:
+        type: string
+        nullable: false
+        description: "Financial product identifier"
+      product_type:
+        type: string
+        nullable: false
+        allowed_values: ["savings", "checking", "credit_card", "loan", "insurance", "investment", "mortgage"]
+        description: "Product category"
+      open_date:
+        type: date
+        nullable: false
+        description: "Account / product open date"
+      balance:
+        type: float64
+        nullable: true
+        description: "Current balance or outstanding amount"
+      is_active:
+        type: bool
+        nullable: false
+        description: "Whether the product is currently active"
+
+  # -- Transaction history -------------------------------------------------
+  transactions:
+    description: "Financial transaction records"
+    version: 1
+    primary_key: [transaction_id]
+    tags: [core, transactional, regulated]
+    columns:
+      transaction_id:
+        type: string
+        nullable: false
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      product_id:
+        type: string
+        nullable: false
+      amount:
+        type: float64
+        nullable: false
+        description: "Transaction amount (positive = credit, negative = debit)"
+      transaction_type:
+        type: string
+        nullable: false
+        allowed_values: ["deposit", "withdrawal", "transfer", "payment", "purchase", "refund", "fee"]
+      transaction_ts:
+        type: timestamp
+        nullable: false
+        description: "Transaction timestamp (UTC)"
+      merchant_category:
+        type: string
+        nullable: true
+        description: "Merchant category code (MCC) description"
+      channel:
+        type: string
+        nullable: true
+        allowed_values: ["branch", "atm", "online", "mobile_app", "phone"]
+
+  # -- Behavioral features -------------------------------------------------
+  customer_features:
+    description: "Pre-computed feature vectors for model training and inference"
+    version: 1
+    primary_key: [customer_id, snapshot_date]
+    tags: [feature, derived]
+    columns:
+      customer_id:
+        type: string
+        nullable: false
+        pii: true
+      snapshot_date:
+        type: date
+        nullable: false
+        description: "Feature snapshot date"
+      tenure_days:
+        type: int64
+        nullable: true
+        min: 0
+        description: "Days since account opening"
+      total_balance:
+        type: float64
+        nullable: true
+        description: "Sum of balances across all products"
+      avg_monthly_spend:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "Average monthly transaction spend (last 6 months)"
+      num_products:
+        type: int64
+        nullable: true
+        min: 0
+        description: "Number of active products held"
+      txn_count_30d:
+        type: int64
+        nullable: true
+        min: 0
+        description: "Number of transactions in the last 30 days"
+      days_since_last_txn:
+        type: int64
+        nullable: true
+        min: 0
+        description: "Days since the last transaction"
+      credit_utilisation:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Credit limit utilisation ratio"
+      support_tickets_90d:
+        type: int64
+        nullable: true
+        min: 0
+        description: "Number of support tickets filed in the last 90 days"
+      digital_engagement_score:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "Normalised digital channel engagement score"
+      life_stage:
+        type: string
+        nullable: true
+        allowed_values: ["student", "early_career", "mid_career", "family", "pre_retirement", "retired"]
+        description: "Inferred customer life stage"
+
+  # -- Product catalogue ---------------------------------------------------
+  products:
+    description: "Financial product catalogue"
+    version: 1
+    primary_key: [product_id]
+    tags: [core, catalogue]
+    columns:
+      product_id:
+        type: string
+        nullable: false
+      product_name:
+        type: string
+        nullable: false
+        description: "Display name of the product"
+      product_type:
+        type: string
+        nullable: false
+        allowed_values: ["savings", "checking", "credit_card", "loan", "insurance", "investment", "mortgage"]
+      benefit_type:
+        type: string
+        nullable: true
+        description: "Primary benefit category (e.g. cashback, miles, interest)"
+      annual_fee:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "Annual fee in local currency"
+      eligibility_min_income:
+        type: float64
+        nullable: true
+        min: 0.0
+        description: "Minimum income requirement for eligibility"
+      is_active:
+        type: bool
+        nullable: false
+        description: "Whether the product is currently offered"
