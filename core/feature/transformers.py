@@ -5,6 +5,10 @@ Every class is auto-registered with the :class:`FeatureRegistry` via the
 ``@FeatureRegistry.register(...)`` decorator so they can be referenced by
 name in YAML pipeline configs.
 
+Transformers operate on pandas DataFrames internally.  The
+:class:`~core.data.dataframe.DataFrameBackend` handles conversion from
+the active backend (DuckDB, cuDF) to pandas before transformer execution.
+
 Registered transformers
 -----------------------
 * ``standard_scaler`` -- z-score normalisation

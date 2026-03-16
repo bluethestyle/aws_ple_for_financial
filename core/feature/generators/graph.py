@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ class GraphEmbeddingGenerator(AbstractFeatureGenerator):
 
     # -- Core API ------------------------------------------------------
 
-    def fit(self, df: pd.DataFrame, **context: Any) -> "GraphEmbeddingGenerator":
+    def fit(self, df: Any, **context: Any) -> "GraphEmbeddingGenerator":
         """Learn entity embeddings from the training graph.
 
         .. note::
@@ -126,13 +127,14 @@ class GraphEmbeddingGenerator(AbstractFeatureGenerator):
            ball to each unique entity.  Replace with actual Riemannian
            SGD optimisation (e.g. ``geoopt``) for production use.
         """
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
         rng = np.random.RandomState(self.random_state)
 
         # Collect unique entities
-        if self.entity_column in df.columns:
-            entities = df[self.entity_column].unique()
+        if self.entity_column in pdf.columns:
+            entities = pdf[self.entity_column].unique()
         else:
-            entities = df.index.unique()
+            entities = pdf.index.unique()
 
         # Generate random embeddings inside the Poincare ball (norm < 1)
         self._embedding_table = {}
@@ -158,7 +160,7 @@ class GraphEmbeddingGenerator(AbstractFeatureGenerator):
         )
         return self
 
-    def generate(self, df: pd.DataFrame, **context: Any) -> pd.DataFrame:
+    def generate(self, df: Any, **context: Any) -> Any:
         """Look up or compute hyperbolic embeddings for each row.
 
         For each row, retrieves the pre-computed embedding for the
@@ -172,7 +174,8 @@ class GraphEmbeddingGenerator(AbstractFeatureGenerator):
                 "GraphEmbeddingGenerator must be fitted before generate()."
             )
 
-        n_rows = len(df)
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        n_rows = len(pdf)
         embeddings = np.zeros(
             (n_rows, self.embedding_dim), dtype=np.float32
         )
@@ -180,10 +183,10 @@ class GraphEmbeddingGenerator(AbstractFeatureGenerator):
         depths = np.zeros(n_rows, dtype=np.float32)
 
         # Resolve entity keys
-        if self.entity_column in df.columns:
-            entity_keys = df[self.entity_column].values
+        if self.entity_column in pdf.columns:
+            entity_keys = pdf[self.entity_column].values
         else:
-            entity_keys = df.index.values
+            entity_keys = pdf.index.values
 
         for i, key in enumerate(entity_keys):
             emb = self._embedding_table.get(key, self._default_embedding)
@@ -197,12 +200,10 @@ class GraphEmbeddingGenerator(AbstractFeatureGenerator):
             )
 
         # Assemble result DataFrame
-        result = pd.DataFrame(
-            embeddings,
-            columns=[f"{self.prefix}_d{i}" for i in range(self.embedding_dim)],
-            index=df.index,
-        )
-        result[f"{self.prefix}_norm"] = norms
-        result[f"{self.prefix}_depth"] = depths
+        data = {}
+        for i in range(self.embedding_dim):
+            data[f"{self.prefix}_d{i}"] = embeddings[:, i]
+        data[f"{self.prefix}_norm"] = norms
+        data[f"{self.prefix}_depth"] = depths
 
-        return result
+        return df_backend.from_dict(data, index=pdf.index)

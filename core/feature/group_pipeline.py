@@ -47,14 +47,16 @@ import json
 import logging
 import pickle
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import pandas as pd
+from core.data.dataframe import df_backend
 
 from .base import AbstractFeatureTransformer
 from .generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
 from .group import (
+    ContainerConfig,
     FeatureGroupConfig,
     FeatureGroupRegistry,
     FeatureInterpretationConfig,
@@ -138,17 +140,21 @@ class FeatureGroupPipeline:
     def fitted(self) -> bool:
         return self._fitted
 
-    def fit(self, df: pd.DataFrame) -> "FeatureGroupPipeline":
+    def fit(self, df: Any) -> "FeatureGroupPipeline":
         """Fit all feature groups on training data.
 
         Generators call ``fit()``; transformer chains call ``fit()`` on
         each transformer in sequence (output of transformer N feeds
         into transformer N+1).
 
+        For groups with ``runtime="container"``, fitting is deferred to
+        the container execution (the container receives training data
+        and returns both the fitted artefact and the generated features).
+
         Parameters
         ----------
-        df : pd.DataFrame
-            Training data.
+        df : DataFrame
+            Training data (pandas, cuDF, or any backend-native type).
 
         Returns
         -------
@@ -167,9 +173,20 @@ class FeatureGroupPipeline:
         for group in self._registry.enabled_groups:
             g_start = time.time()
 
+            if group.runtime == "container":
+                logger.info(
+                    "  Group '%s' uses container runtime -- "
+                    "fit deferred to container execution",
+                    group.name,
+                )
+                # For container groups, we only record output metadata
+                # here.  The actual fit happens during transform() via
+                # _run_container_job().
+                continue
+
             if group.group_type == "generate":
                 gen = self._generators[group.name]
-                gen.fit(df)
+                gen.fit(df_backend.to_pandas(df))
                 # Update output_dim and output_columns from generator
                 if group.output_dim == 0:
                     group.output_dim = gen.output_dim
@@ -182,7 +199,7 @@ class FeatureGroupPipeline:
 
             elif group.group_type == "transform":
                 chain = self._transformer_chains[group.name]
-                current = df
+                current = df_backend.to_pandas(df)
                 for t in chain:
                     current = t.fit(current).transform(current)
                 # Determine output columns from the group's column list
@@ -215,17 +232,17 @@ class FeatureGroupPipeline:
         )
         return self
 
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, df: Any) -> Any:
         """Apply all fitted feature groups and concatenate results.
 
         Parameters
         ----------
-        df : pd.DataFrame
-            Input data.
+        df : DataFrame
+            Input data (pandas, cuDF, or any backend-native type).
 
         Returns
         -------
-        pd.DataFrame
+        DataFrame
             Concatenated feature matrix with all group outputs.
 
         Raises
@@ -240,17 +257,24 @@ class FeatureGroupPipeline:
             )
 
         start = time.time()
-        group_outputs: List[pd.DataFrame] = []
+        group_outputs: List[Any] = []
+        pdf = df_backend.to_pandas(df)
 
         for group in self._registry.enabled_groups:
+            if group.runtime == "container":
+                container_result = self._run_container_job(group, pdf)
+                if container_result is not None:
+                    group_outputs.append(container_result)
+                continue
+
             if group.group_type == "generate":
                 gen = self._generators[group.name]
-                generated = gen.generate(df)
+                generated = gen.generate(pdf)
                 group_outputs.append(generated)
 
             elif group.group_type == "transform":
                 chain = self._transformer_chains[group.name]
-                current = df
+                current = pdf
                 for t in chain:
                     current = t.transform(current)
                 # Extract only the group's output columns
@@ -265,9 +289,9 @@ class FeatureGroupPipeline:
 
         if not group_outputs:
             logger.warning("[%s] No group outputs produced", self.name)
-            return pd.DataFrame(index=df.index)
+            return df_backend.empty()
 
-        result = pd.concat(group_outputs, axis=1)
+        result = df_backend.concat(group_outputs, axis=1)
 
         logger.debug(
             "[%s] Transform complete in %.2fs -- %d rows x %d cols",
@@ -275,7 +299,7 @@ class FeatureGroupPipeline:
         )
         return result
 
-    def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+    def fit_transform(self, df: Any) -> Any:
         """Convenience: ``fit(df)`` then ``transform(df)``."""
         self.fit(df)
         return self.transform(df)
@@ -382,6 +406,193 @@ class FeatureGroupPipeline:
     def registry(self) -> FeatureGroupRegistry:
         """Access to the underlying group registry."""
         return self._registry
+
+    # -- Container runtime support -------------------------------------
+
+    def _run_container_job(
+        self,
+        group: FeatureGroupConfig,
+        df: Any,
+    ) -> Any:
+        """Execute a feature group inside a SageMaker Processing Job.
+
+        Workflow:
+            1. Write input DataFrame to S3 as Parquet.
+            2. Launch a SageMaker Processing Job with the group's
+               container image.
+            3. Wait for completion.
+            4. Download the output Parquet from S3.
+            5. Return the output DataFrame.
+
+        Parameters
+        ----------
+        group : FeatureGroupConfig
+            The feature group config with ``runtime="container"``.
+        df : DataFrame
+            Input data to send to the container.
+
+        Returns
+        -------
+        DataFrame or None
+            The container's output features, or ``None`` on failure.
+        """
+        import pandas as pd
+
+        container_cfg = group.container
+        job_id = f"{group.name}-{uuid.uuid4().hex[:8]}"
+        s3_prefix = container_cfg.s3_staging_prefix.rstrip("/")
+        s3_input = f"{s3_prefix}/{job_id}/input/data.parquet"
+        s3_output = f"{s3_prefix}/{job_id}/output/"
+
+        logger.info(
+            "[container] Launching job '%s' for group '%s' "
+            "(image=%s, instance=%s)",
+            job_id, group.name,
+            container_cfg.image, container_cfg.instance_type,
+        )
+
+        try:
+            import boto3
+
+            # 1. Upload input to S3
+            self._upload_df_to_s3(df, s3_input)
+
+            # 2. Create and run SageMaker Processing Job
+            sm_client = boto3.client("sagemaker")
+            processing_job_name = f"feat-{job_id}"
+
+            env_vars = dict(container_cfg.env)
+            env_vars["FEATURE_GROUP_NAME"] = group.name
+            env_vars["FEATURE_GROUP_TYPE"] = group.group_type
+            if group.generator:
+                env_vars["FEATURE_GENERATOR"] = group.generator
+                env_vars["FEATURE_GENERATOR_PARAMS"] = json.dumps(
+                    group.generator_params
+                )
+
+            sm_client.create_processing_job(
+                ProcessingJobName=processing_job_name,
+                ProcessingResources={
+                    "ClusterConfig": {
+                        "InstanceCount": container_cfg.instance_count,
+                        "InstanceType": container_cfg.instance_type,
+                        "VolumeSizeInGB": container_cfg.volume_size_gb,
+                    }
+                },
+                AppSpecification={
+                    "ImageUri": container_cfg.image,
+                },
+                Environment=env_vars,
+                ProcessingInputs=[
+                    {
+                        "InputName": "input-data",
+                        "S3Input": {
+                            "S3Uri": s3_input.rsplit("/", 1)[0] + "/",
+                            "LocalPath": "/opt/ml/processing/input",
+                            "S3DataType": "S3Prefix",
+                            "S3InputMode": "File",
+                        },
+                    }
+                ],
+                ProcessingOutputConfig={
+                    "Outputs": [
+                        {
+                            "OutputName": "output-features",
+                            "S3Output": {
+                                "S3Uri": s3_output,
+                                "LocalPath": "/opt/ml/processing/output",
+                                "S3UploadMode": "EndOfJob",
+                            },
+                        }
+                    ]
+                },
+                StoppingCondition={
+                    "MaxRuntimeInSeconds": container_cfg.max_runtime_seconds,
+                },
+            )
+
+            # 3. Wait for completion
+            waiter = sm_client.get_waiter("processing_job_completed_or_stopped")
+            waiter.wait(
+                ProcessingJobName=processing_job_name,
+                WaiterConfig={"Delay": 15, "MaxAttempts": 240},
+            )
+
+            # 4. Check job status
+            status = sm_client.describe_processing_job(
+                ProcessingJobName=processing_job_name
+            )
+            if status["ProcessingJobStatus"] != "Completed":
+                reason = status.get("FailureReason", "unknown")
+                logger.error(
+                    "[container] Job '%s' failed: %s",
+                    processing_job_name, reason,
+                )
+                return None
+
+            # 5. Download output
+            output_path = f"{s3_output}features.parquet"
+            result = df_backend.read_parquet(output_path)
+
+            logger.info(
+                "[container] Job '%s' completed: %d rows x %d cols",
+                processing_job_name, len(result), len(result.columns),
+            )
+
+            # Update group metadata from container output
+            if group.output_dim == 0:
+                group.output_dim = len(result.columns)
+            if not group.output_columns:
+                group.output_columns = list(result.columns)
+
+            return result
+
+        except ImportError:
+            logger.error(
+                "[container] boto3 is required for container runtime. "
+                "Install with: pip install boto3"
+            )
+            return None
+        except Exception as exc:
+            logger.error(
+                "[container] Job '%s' failed with error: %s",
+                job_id, exc,
+            )
+            return None
+
+    @staticmethod
+    def _upload_df_to_s3(df: Any, s3_uri: str) -> None:
+        """Write a DataFrame to S3 as Parquet via boto3.
+
+        Parameters
+        ----------
+        df : DataFrame
+            Data to upload.
+        s3_uri : str
+            Full ``s3://bucket/key`` destination.
+        """
+        import io
+        import boto3
+        import pandas as pd
+
+        # Ensure we have a pandas DataFrame for serialisation
+        if hasattr(df, "to_pandas"):
+            pdf = df.to_pandas()
+        else:
+            pdf = df
+
+        buf = io.BytesIO()
+        pdf.to_parquet(buf, index=False)
+        buf.seek(0)
+
+        # Parse S3 URI
+        parts = s3_uri.replace("s3://", "").split("/", 1)
+        bucket = parts[0]
+        key = parts[1] if len(parts) > 1 else "data.parquet"
+
+        s3 = boto3.client("s3")
+        s3.upload_fileobj(buf, bucket, key)
+        logger.debug("Uploaded DataFrame (%d bytes) to %s", buf.tell(), s3_uri)
 
     # -- Serialisation -------------------------------------------------
 
@@ -535,6 +746,12 @@ class FeatureGroupPipeline:
             expert_str = ", ".join(group.target_experts) or "broadcast"
             interp = group.interpretation.category
 
+            runtime_tag = (
+                f" [CONTAINER:{group.container.image.split('/')[-1]}]"
+                if group.runtime == "container"
+                else ""
+            )
+
             if group.group_type == "generate":
                 gen = self._generators.get(group.name)
                 gen_fitted = gen.fitted if gen else False
@@ -542,7 +759,7 @@ class FeatureGroupPipeline:
                     f"    [{group.name}] GENERATE via '{group.generator}' "
                     f"-> {group.output_dim}D [{dim_range[0]}:{dim_range[1]}] "
                     f"experts=[{expert_str}] interp={interp} "
-                    f"fitted={gen_fitted}"
+                    f"fitted={gen_fitted}{runtime_tag}"
                 )
             else:
                 chain = self._transformer_chains.get(group.name, [])
@@ -550,7 +767,7 @@ class FeatureGroupPipeline:
                     f"    [{group.name}] TRANSFORM {group.transformers} "
                     f"-> {group.output_dim}D [{dim_range[0]}:{dim_range[1]}] "
                     f"experts=[{expert_str}] interp={interp} "
-                    f"chain_len={len(chain)}"
+                    f"chain_len={len(chain)}{runtime_tag}"
                 )
 
         # Expert routing summary

@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
 
 logger = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
 
     # -- Core API ------------------------------------------------------
 
-    def fit(self, df: pd.DataFrame, **context: Any) -> "MultidisciplinaryGenerator":
+    def fit(self, df: Any, **context: Any) -> "MultidisciplinaryGenerator":
         """Fit sub-model parameters from training data.
 
         Each sub-model learns its own set of parameters:
@@ -145,11 +146,12 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
         - Interference: base frequencies and phases per channel.
         - Crime pattern: flag/boost decay parameters.
         """
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
         rng = np.random.RandomState(self.random_state)
-        obs_cols = self._resolve_observation_columns(df)
+        obs_cols = self._resolve_observation_columns(pdf)
 
         if obs_cols:
-            data = df[obs_cols].values.astype(np.float64)
+            data = pdf[obs_cols].values.astype(np.float64)
             global_mean = float(np.nanmean(data))
             global_std = float(np.nanstd(data)) + 1e-10
         else:
@@ -194,7 +196,7 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
         )
         return self
 
-    def generate(self, df: pd.DataFrame, **context: Any) -> pd.DataFrame:
+    def generate(self, df: Any, **context: Any) -> Any:
         """Generate multidisciplinary features for each row.
 
         .. note::
@@ -207,10 +209,11 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
                 "MultidisciplinaryGenerator must be fitted before generate()."
             )
 
-        n_rows = len(df)
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        n_rows = len(pdf)
         results: Dict[str, np.ndarray] = {}
-        obs_cols = self._resolve_observation_columns(df)
-        obs_data = df[obs_cols].values.astype(np.float64) if obs_cols else None
+        obs_cols = self._resolve_observation_columns(pdf)
+        obs_data = pdf[obs_cols].values.astype(np.float64) if obs_cols else None
 
         for sm in self.sub_models:
             params = self._fitted_params[sm]
@@ -232,7 +235,7 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
                     self._generate_crime_pattern(obs_data, n_rows, params)
                 )
 
-        return pd.DataFrame(results, index=df.index)
+        return df_backend.from_dict(results, index=pdf.index)
 
     # -- Sub-model implementations (placeholders) ----------------------
 

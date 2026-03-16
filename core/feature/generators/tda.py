@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
 
 logger = logging.getLogger(__name__)
@@ -108,14 +109,15 @@ class TDAFeatureGenerator(AbstractFeatureGenerator):
 
     # -- Core API ------------------------------------------------------
 
-    def fit(self, df: pd.DataFrame, **context: Any) -> "TDAFeatureGenerator":
+    def fit(self, df: Any, **context: Any) -> "TDAFeatureGenerator":
         """Learn global scaling parameters from training data.
 
         In a real implementation this would also pre-compute any
         filtration parameters or landmark subsets.
         """
-        cols = self._resolve_input_columns(df)
-        data = df[cols].values.astype(np.float64)
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        cols = self._resolve_input_columns(pdf)
+        data = pdf[cols].values.astype(np.float64)
 
         # Learn normalisation parameters for the point cloud
         self._col_means = np.nanmean(data, axis=0)
@@ -131,7 +133,7 @@ class TDAFeatureGenerator(AbstractFeatureGenerator):
         )
         return self
 
-    def generate(self, df: pd.DataFrame, **context: Any) -> pd.DataFrame:
+    def generate(self, df: Any, **context: Any) -> Any:
         """Generate TDA features for each row.
 
         .. note::
@@ -144,9 +146,10 @@ class TDAFeatureGenerator(AbstractFeatureGenerator):
                 "TDAFeatureGenerator must be fitted before generate()."
             )
 
-        cols = self._resolve_input_columns(df)
-        data = df[cols].values.astype(np.float64)
-        n_rows = len(df)
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        cols = self._resolve_input_columns(pdf)
+        data = pdf[cols].values.astype(np.float64)
+        n_rows = len(pdf)
 
         # Normalise the point cloud
         normed = (data - self._col_means) / self._col_stds
@@ -187,10 +190,9 @@ class TDAFeatureGenerator(AbstractFeatureGenerator):
                         entropy = -float(np.sum(probs * np.log(probs + 1e-10)))
                         result[i, base_idx + stat_idx] = entropy
 
-        return pd.DataFrame(
-            result,
-            columns=self.output_columns,
-            index=df.index,
+        return df_backend.from_dict(
+            {col: result[:, i] for i, col in enumerate(self.output_columns)},
+            index=pdf.index,
         )
 
     # -- Helpers -------------------------------------------------------

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,82 @@ class FeatureInterpretationConfig:
 
 
 # ======================================================================
+# Container config (for runtime isolation)
+# ======================================================================
+
+
+@dataclass
+class ContainerConfig:
+    """Configuration for container-isolated execution of a feature group.
+
+    When a feature group specifies ``runtime="container"``, the pipeline
+    uploads input data to S3, launches a SageMaker Processing Job with
+    the specified container image, and downloads the output.
+
+    Parameters
+    ----------
+    image : str
+        ECR image URI (e.g. ``"123456789.dkr.ecr.ap-northeast-2.amazonaws.com/feature-tda:latest"``).
+        Required when ``runtime="container"``.
+    instance_type : str
+        SageMaker instance type for the processing job.
+    instance_count : int
+        Number of processing instances.
+    volume_size_gb : int
+        EBS volume size in GB attached to each processing instance.
+    max_runtime_seconds : int
+        Maximum job duration before timeout.
+    requirements : list[str]
+        Python packages to install at container startup (in addition
+        to what is baked into the image).
+    env : dict[str, str]
+        Environment variables injected into the container.
+    s3_staging_prefix : str
+        S3 prefix for staging input/output data during container
+        execution.
+    """
+
+    image: str = ""
+    instance_type: str = "ml.m5.xlarge"
+    instance_count: int = 1
+    volume_size_gb: int = 30
+    max_runtime_seconds: int = 3600
+    requirements: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    s3_staging_prefix: str = "s3://sagemaker-default/feature-pipeline/staging"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise to a plain dictionary (JSON-safe)."""
+        return {
+            "image": self.image,
+            "instance_type": self.instance_type,
+            "instance_count": self.instance_count,
+            "volume_size_gb": self.volume_size_gb,
+            "max_runtime_seconds": self.max_runtime_seconds,
+            "requirements": list(self.requirements),
+            "env": dict(self.env),
+            "s3_staging_prefix": self.s3_staging_prefix,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ContainerConfig":
+        """Deserialise from a dictionary."""
+        return cls(
+            image=d.get("image", ""),
+            instance_type=d.get("instance_type", "ml.m5.xlarge"),
+            instance_count=d.get("instance_count", 1),
+            volume_size_gb=d.get("volume_size_gb", 30),
+            max_runtime_seconds=d.get("max_runtime_seconds", 3600),
+            requirements=d.get("requirements", []),
+            env=d.get("env", {}),
+            s3_staging_prefix=d.get(
+                "s3_staging_prefix",
+                "s3://sagemaker-default/feature-pipeline/staging",
+            ),
+        )
+
+
+# ======================================================================
 # Feature Group Config
 # ======================================================================
 
@@ -134,6 +210,19 @@ class FeatureGroupConfig:
         (e.g. ``["deepfm", "temporal"]``).
     interpretation : FeatureInterpretationConfig
         How to interpret features in this group for explanations.
+    runtime : str
+        Execution mode for this feature group:
+
+        * ``"local"`` (default) -- run the generator/transformer chain
+          in the current process.
+        * ``"container"`` -- upload input to S3, run a SageMaker
+          Processing Job with the specified container image, and
+          download the output.  Useful when generators have conflicting
+          Python dependencies (e.g. TDA needs ``ripser``, graph needs
+          ``torch-geometric``).
+
+    container : ContainerConfig
+        Container configuration (only used when ``runtime="container"``).
     distill : bool
         Whether to include this group in knowledge distillation.
     distill_weight : float
@@ -166,6 +255,10 @@ class FeatureGroupConfig:
         default_factory=FeatureInterpretationConfig
     )
 
+    # -- Runtime isolation ---------------------------------------------
+    runtime: str = "local"  # "local" | "container"
+    container: ContainerConfig = field(default_factory=ContainerConfig)
+
     # -- Distillation --------------------------------------------------
     distill: bool = True
     distill_weight: float = 1.0
@@ -193,6 +286,16 @@ class FeatureGroupConfig:
                 f"FeatureGroupConfig '{self.name}' has group_type='transform' "
                 f"but no transformers specified"
             )
+        if self.runtime not in ("local", "container"):
+            raise ValueError(
+                f"runtime must be 'local' or 'container', "
+                f"got '{self.runtime}'"
+            )
+        if self.runtime == "container" and not self.container.image:
+            raise ValueError(
+                f"FeatureGroupConfig '{self.name}' has runtime='container' "
+                f"but no container.image specified"
+            )
 
     # -- Serialisation -------------------------------------------------
 
@@ -212,6 +315,8 @@ class FeatureGroupConfig:
             "output_columns": list(self.output_columns),
             "target_experts": list(self.target_experts),
             "interpretation": self.interpretation.to_dict(),
+            "runtime": self.runtime,
+            "container": self.container.to_dict(),
             "distill": self.distill,
             "distill_weight": self.distill_weight,
             "enabled": self.enabled,
@@ -226,6 +331,12 @@ class FeatureGroupConfig:
         else:
             interpretation = interp_raw
 
+        container_raw = d.get("container", {})
+        if isinstance(container_raw, dict):
+            container = ContainerConfig.from_dict(container_raw)
+        else:
+            container = container_raw
+
         return cls(
             name=d["name"],
             group_type=d.get("group_type", "transform"),
@@ -238,6 +349,8 @@ class FeatureGroupConfig:
             output_columns=d.get("output_columns", []),
             target_experts=d.get("target_experts", []),
             interpretation=interpretation,
+            runtime=d.get("runtime", "local"),
+            container=container,
             distill=d.get("distill", True),
             distill_weight=d.get("distill_weight", 1.0),
             enabled=d.get("enabled", True),

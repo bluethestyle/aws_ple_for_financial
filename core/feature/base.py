@@ -1,5 +1,5 @@
 """
-Feature base classes — FeatureSchema and AbstractFeatureTransformer.
+Feature base classes -- FeatureSchema and AbstractFeatureTransformer.
 
 FeatureSchema declares the column layout of a dataset.  ``input_dim`` is
 always computed dynamically from the schema so there is never a hardcoded
@@ -7,6 +7,11 @@ dimension anywhere in the system.
 
 AbstractFeatureTransformer defines the sklearn-style ``fit`` / ``transform``
 contract that every transformer must follow.
+
+Note: Transformers continue to accept/return pandas DataFrames internally.
+The :class:`~core.data.dataframe.DataFrameBackend` converts to pandas
+before passing data to transformers, so all transformer logic can assume
+``pandas.DataFrame`` without change.
 """
 
 from __future__ import annotations

@@ -18,6 +18,7 @@ settings -- propagated automatically to downstream systems.
 from .base import AbstractFeatureTransformer, FeatureSchema
 from .generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
 from .group import (
+    ContainerConfig,
     FeatureGroupConfig,
     FeatureGroupRegistry,
     FeatureInterpretationConfig,
@@ -46,6 +47,7 @@ __all__ = [
     "AbstractFeatureGenerator",
     "FeatureGeneratorRegistry",
     # Feature Group (new)
+    "ContainerConfig",
     "FeatureGroupConfig",
     "FeatureGroupRegistry",
     "FeatureInterpretationConfig",

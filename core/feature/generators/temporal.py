@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
 
 logger = logging.getLogger(__name__)
@@ -161,27 +162,28 @@ class TemporalPatternGenerator(AbstractFeatureGenerator):
 
     # -- Core API ------------------------------------------------------
 
-    def fit(self, df: pd.DataFrame, **context: Any) -> "TemporalPatternGenerator":
+    def fit(self, df: Any, **context: Any) -> "TemporalPatternGenerator":
         """Learn value distribution parameters for normalisation.
 
         Also detects whether the time column exists and contains
         valid datetime data.
         """
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
         # Check for time column
         self._has_time_column = (
             self.time_column is not None
-            and self.time_column in df.columns
+            and self.time_column in pdf.columns
         )
 
         # Resolve value columns
-        val_cols = self._resolve_value_columns(df)
+        val_cols = self._resolve_value_columns(pdf)
 
         # Learn normalisation stats
         self._value_means = {}
         self._value_stds = {}
         for col in val_cols:
-            self._value_means[col] = float(df[col].mean())
-            std = float(df[col].std())
+            self._value_means[col] = float(pdf[col].mean())
+            std = float(pdf[col].std())
             self._value_stds[col] = std if std > 0 else 1.0
 
         self._fitted = True
@@ -193,7 +195,7 @@ class TemporalPatternGenerator(AbstractFeatureGenerator):
         )
         return self
 
-    def generate(self, df: pd.DataFrame, **context: Any) -> pd.DataFrame:
+    def generate(self, df: Any, **context: Any) -> Any:
         """Generate temporal pattern features.
 
         .. note::
@@ -206,18 +208,19 @@ class TemporalPatternGenerator(AbstractFeatureGenerator):
                 "TemporalPatternGenerator must be fitted before generate()."
             )
 
-        n_rows = len(df)
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        n_rows = len(pdf)
         results: Dict[str, np.ndarray] = {}
 
         # -- Cyclical encodings ----------------------------------------
-        self._generate_cyclical(df, results)
+        self._generate_cyclical(pdf, results)
 
         # -- Per-value-column features ---------------------------------
-        val_cols = self._resolve_value_columns(df)
+        val_cols = self._resolve_value_columns(pdf)
 
         for v in val_cols:
-            if v in df.columns:
-                values = df[v].values.astype(np.float64)
+            if v in pdf.columns:
+                values = pdf[v].values.astype(np.float64)
             else:
                 values = np.zeros(n_rows, dtype=np.float64)
 
@@ -262,7 +265,7 @@ class TemporalPatternGenerator(AbstractFeatureGenerator):
                     np.exp(-distance / self.recency_halflife)
                 ).astype(np.float32)
 
-        return pd.DataFrame(results, index=df.index)
+        return df_backend.from_dict(results, index=pdf.index)
 
     # -- Cyclical encoding helpers ------------------------------------
 

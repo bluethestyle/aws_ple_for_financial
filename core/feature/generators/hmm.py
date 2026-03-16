@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
 
 logger = logging.getLogger(__name__)
@@ -147,7 +148,7 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
 
     # -- Core API ------------------------------------------------------
 
-    def fit(self, df: pd.DataFrame, **context: Any) -> "HMMFeatureGenerator":
+    def fit(self, df: Any, **context: Any) -> "HMMFeatureGenerator":
         """Fit HMM parameters for each mode.
 
         In production, this would run Baum-Welch on sequential data.
@@ -180,7 +181,7 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
         )
         return self
 
-    def generate(self, df: pd.DataFrame, **context: Any) -> pd.DataFrame:
+    def generate(self, df: Any, **context: Any) -> Any:
         """Generate HMM state features for each row.
 
         .. note::
@@ -193,12 +194,13 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
                 "HMMFeatureGenerator must be fitted before generate()."
             )
 
-        n_rows = len(df)
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        n_rows = len(pdf)
         result_arrays: Dict[str, np.ndarray] = {}
 
         # Resolve observation columns
-        obs_cols = self._resolve_observation_columns(df)
-        obs_data = df[obs_cols].values.astype(np.float64) if obs_cols else None
+        obs_cols = self._resolve_observation_columns(pdf)
+        obs_data = pdf[obs_cols].values.astype(np.float64) if obs_cols else None
 
         for mode in self.modes:
             cfg = self._mode_configs[mode]
@@ -240,7 +242,7 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
             for j, state_name in enumerate(state_names):
                 result_arrays[f"{self.prefix}_{mode}_prob_{state_name}"] = probs[:, j]
 
-        return pd.DataFrame(result_arrays, index=df.index)
+        return df_backend.from_dict(result_arrays, index=pdf.index)
 
     # -- Helpers -------------------------------------------------------
 

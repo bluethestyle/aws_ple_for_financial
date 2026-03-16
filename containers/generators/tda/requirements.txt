@@ -1,0 +1,6 @@
+# TDA (Topological Data Analysis) generator dependencies.
+# These are ON TOP of the base image requirements.
+
+ripser>=0.6,<1.0
+persim>=0.3,<1.0
+giotto-tda>=0.6,<1.0

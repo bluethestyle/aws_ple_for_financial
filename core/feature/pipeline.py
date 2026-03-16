@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-import pandas as pd
+from core.data.dataframe import df_backend
 
 from .base import AbstractFeatureTransformer, FeatureSchema
 
@@ -70,7 +70,7 @@ class FeaturePipeline:
 
     # ── Core API ───────────────────────────────────────────────────────
 
-    def fit(self, df: pd.DataFrame) -> "FeaturePipeline":
+    def fit(self, df: Any) -> "FeaturePipeline":
         """Fit every transformer in sequence.
 
         Each transformer's ``fit()`` is called, then its ``transform()``
@@ -79,8 +79,8 @@ class FeaturePipeline:
 
         Parameters
         ----------
-        df : pd.DataFrame
-            Training data.
+        df : DataFrame
+            Training data (pandas, cuDF, or any backend-native type).
 
         Returns
         -------
@@ -93,7 +93,7 @@ class FeaturePipeline:
             self.name, len(self.transformers), len(df), len(df.columns),
         )
 
-        current = df
+        current = df_backend.to_pandas(df)
         for i, t in enumerate(self.transformers):
             t_name = getattr(t, "name", type(t).__name__)
             logger.debug("  [%d/%d] fitting %s", i + 1, len(self.transformers), t_name)
@@ -110,24 +110,24 @@ class FeaturePipeline:
         }
 
         logger.info(
-            "[%s] Fit complete in %.2fs — output %d cols (%dD numeric)",
+            "[%s] Fit complete in %.2fs -- output %d cols (%dD numeric)",
             self.name, elapsed,
             self._fit_metadata["output_cols"],
             self._fit_metadata["output_dim"],
         )
         return self
 
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, df: Any) -> Any:
         """Apply every fitted transformer in order.
 
         Parameters
         ----------
-        df : pd.DataFrame
+        df : DataFrame
             Data to transform (train, valid, or test).
 
         Returns
         -------
-        pd.DataFrame
+        DataFrame
             Transformed DataFrame.
 
         Raises
@@ -140,12 +140,12 @@ class FeaturePipeline:
                 "FeaturePipeline must be fitted before calling transform(). "
                 "Call fit() or fit_transform() first."
             )
-        current = df
+        current = df_backend.to_pandas(df)
         for t in self.transformers:
             current = t.transform(current)
         return current
 
-    def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+    def fit_transform(self, df: Any) -> Any:
         """Convenience: ``fit(df)`` then ``transform(df)``."""
         self.fit(df)
         # Re-transform from scratch so the output is consistent
@@ -155,17 +155,17 @@ class FeaturePipeline:
 
     def transform_and_save(
         self,
-        df: pd.DataFrame,
+        df: Any,
         output_path: str,
         *,
         compression: str = "SNAPPY",
         row_group_size: int = 500_000,
     ) -> Path:
-        """Transform *df* and write the result as Parquet via DuckDB.
+        """Transform *df* and write the result as Parquet via df_backend.
 
         Parameters
         ----------
-        df : pd.DataFrame
+        df : DataFrame
             Input data.
         output_path : str
             Destination Parquet file path (local or S3).
@@ -179,26 +179,14 @@ class FeaturePipeline:
         Path
             The written file path.
         """
-        try:
-            import duckdb
-        except ImportError:
-            raise ImportError("duckdb is required for transform_and_save()")
-
         transformed = self.transform(df)
         out = Path(output_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        norm_path = str(out.resolve()).replace("\\", "/")
-
-        conn = duckdb.connect(":memory:")
-        try:
-            conn.register("_df", transformed)
-            conn.execute(
-                f"COPY _df TO '{norm_path}' "
-                f"(FORMAT PARQUET, COMPRESSION {compression}, "
-                f"ROW_GROUP_SIZE {row_group_size})"
-            )
-        finally:
-            conn.close()
+        df_backend.to_parquet(
+            transformed,
+            str(out),
+            compression=compression,
+            row_group_size=row_group_size,
+        )
 
         logger.info(
             "[%s] Saved %d rows to %s",

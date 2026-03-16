@@ -35,8 +35,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
-import pandas as pd
-
 logger = logging.getLogger(__name__)
 
 
@@ -79,13 +77,15 @@ class AbstractFeatureGenerator(ABC):
     # -- Core API ------------------------------------------------------
 
     @abstractmethod
-    def fit(self, df: pd.DataFrame, **context: Any) -> "AbstractFeatureGenerator":
+    def fit(self, df: Any, **context: Any) -> "AbstractFeatureGenerator":
         """Learn internal parameters from *df*.
 
         Parameters
         ----------
-        df : pd.DataFrame
-            Training data (raw, before any transformation).
+        df : DataFrame
+            Training data (pandas, cuDF, or any backend-native type).
+            Concrete generators should use ``df_backend.to_pandas(df)``
+            if they require pandas-specific APIs.
         **context
             Arbitrary keyword arguments that generators may use
             (e.g. ``target_col``, ``time_col``).
@@ -98,7 +98,7 @@ class AbstractFeatureGenerator(ABC):
         ...
 
     @abstractmethod
-    def generate(self, df: pd.DataFrame, **context: Any) -> pd.DataFrame:
+    def generate(self, df: Any, **context: Any) -> Any:
         """Generate new feature columns from *df*.
 
         The returned DataFrame must have the **same row count** as *df*
@@ -107,20 +107,20 @@ class AbstractFeatureGenerator(ABC):
 
         Parameters
         ----------
-        df : pd.DataFrame
-            Input data.
+        df : DataFrame
+            Input data (pandas, cuDF, or any backend-native type).
         **context
             Same keyword arguments accepted by ``fit``.
 
         Returns
         -------
-        pd.DataFrame
+        DataFrame
             DataFrame with only the new feature columns, indexed
             identically to *df*.
         """
         ...
 
-    def fit_generate(self, df: pd.DataFrame, **context: Any) -> pd.DataFrame:
+    def fit_generate(self, df: Any, **context: Any) -> Any:
         """Convenience: ``fit(df).generate(df)``."""
         return self.fit(df, **context).generate(df, **context)
 

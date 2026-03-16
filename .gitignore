@@ -38,8 +38,9 @@ env/
 mlruns/
 outputs/
 
-# Data
+# Data (exclude core/data/ which is source code)
 data/
+!core/data/
 *.parquet
 *.csv
 *.jsonl

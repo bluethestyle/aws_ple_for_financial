@@ -1,0 +1,11 @@
+# Base requirements for all feature generator containers.
+# These are shared dependencies that every generator image inherits.
+
+numpy>=1.24,<2.0
+pandas>=2.0,<3.0
+duckdb>=0.10,<2.0
+pyarrow>=14.0,<18.0
+scikit-learn>=1.3,<2.0
+scipy>=1.11,<2.0
+boto3>=1.28,<2.0
+pyyaml>=6.0
