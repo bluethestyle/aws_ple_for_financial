@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import yaml
 
@@ -143,6 +143,37 @@ class LoggingConfig:
     log_loss_weights: bool = True
 
 
+@dataclass
+class DistillationPhaseConfig:
+    """Distillation phase configuration (runs after main PLE training).
+
+    When ``enabled`` is True, the training pipeline will generate soft
+    labels from the trained PLE teacher and distill into LGBM student
+    models.
+
+    Args:
+        enabled: Whether to run distillation after PLE training.
+        temperature: Soft label temperature (higher = softer distributions).
+        alpha: Hard label weight in blended target.
+        soft_label_path: S3 path for caching soft labels.
+        student_output_dir: Directory to save student models.
+        lgbm_n_estimators: Number of boosting rounds for LGBM students.
+        lgbm_num_leaves: Max leaves per tree for LGBM students.
+        lgbm_learning_rate: LGBM learning rate.
+        enabled_tasks: Restrict to these tasks (None = all non-contrastive).
+    """
+
+    enabled: bool = False
+    temperature: float = 5.0
+    alpha: float = 0.3
+    soft_label_path: str = ""
+    student_output_dir: str = "student_models"
+    lgbm_n_estimators: int = 500
+    lgbm_num_leaves: int = 63
+    lgbm_learning_rate: float = 0.05
+    enabled_tasks: Optional[List[str]] = None
+
+
 # ---------------------------------------------------------------------------
 # Main config
 # ---------------------------------------------------------------------------
@@ -192,6 +223,11 @@ class TrainingConfig:
     # -- Logging -------------------------------------------------------------
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
+    # -- Distillation --------------------------------------------------------
+    distillation: DistillationPhaseConfig = field(
+        default_factory=DistillationPhaseConfig
+    )
+
     # -- GPU optimizations ---------------------------------------------------
     enable_tf32: bool = True
     cudnn_benchmark: bool = True
@@ -222,6 +258,7 @@ class TrainingConfig:
         phase1_d = d.get("phase1", {})
         phase2_d = d.get("phase2", {})
         logging_d = d.get("logging", {})
+        distillation_d = d.get("distillation", {})
 
         # Support flat keys as fallback
         if not optimizer_d and "learning_rate" in d:
@@ -271,6 +308,10 @@ class TrainingConfig:
                 k: v for k, v in logging_d.items()
                 if k in LoggingConfig.__dataclass_fields__
             }) if logging_d else LoggingConfig(),
+            distillation=DistillationPhaseConfig(**{
+                k: v for k, v in distillation_d.items()
+                if k in DistillationPhaseConfig.__dataclass_fields__
+            }) if distillation_d else DistillationPhaseConfig(),
             enable_tf32=d.get("enable_tf32", True),
             cudnn_benchmark=d.get("cudnn_benchmark", True),
             experiment_name=d.get("experiment_name", "ple_training"),

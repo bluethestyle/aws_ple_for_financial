@@ -44,6 +44,7 @@ from .config import (
     Phase1Config,
     Phase2Config,
     LoggingConfig,
+    DistillationPhaseConfig,
 )
 
 # Trainer
@@ -76,6 +77,9 @@ from .distillation import (
     SoftLabelGenerator,
 )
 
+# Student training (distillation orchestration)
+from .student_trainer import StudentTrainer, StudentConfig
+
 # Pre-existing modules
 from .checkpoint import CheckpointManager
 from .evaluator import ModelEvaluator
@@ -92,6 +96,7 @@ __all__ = [
     "Phase1Config",
     "Phase2Config",
     "LoggingConfig",
+    "DistillationPhaseConfig",
     # Trainer
     "PLETrainer",
     # Experiment tracking
@@ -112,6 +117,9 @@ __all__ = [
     "MultiTaskDistillationLoss",
     "FeatureDistillationLoss",
     "SoftLabelGenerator",
+    # Student training
+    "StudentTrainer",
+    "StudentConfig",
     # Pre-existing
     "CheckpointManager",
     "ModelEvaluator",
