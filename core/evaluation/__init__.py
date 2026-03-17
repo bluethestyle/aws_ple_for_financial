@@ -15,7 +15,12 @@ from core.evaluation.policy_evaluator import (
     EstimatorType,
 )
 from core.evaluation.exposure_simulator import ExposureSimulator, ExposureConfig
-from core.evaluation.model_competition import ModelCompetition, CompetitionConfig
+from core.evaluation.model_competition import (
+    ModelCompetition,
+    CompetitionConfig,
+    ModelCandidate,
+    CompetitionResult,
+)
 
 __all__ = [
     "PropensityEstimator",
@@ -27,4 +32,6 @@ __all__ = [
     "ExposureConfig",
     "ModelCompetition",
     "CompetitionConfig",
+    "ModelCandidate",
+    "CompetitionResult",
 ]
