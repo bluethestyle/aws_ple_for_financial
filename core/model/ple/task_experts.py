@@ -10,9 +10,9 @@ Flow:
     CGC output (extraction_dim)
     -> GroupEncoder[task_group] -> (group_output_dim)
     + ClusterEmbedding(cluster_id) -> (cluster_embed_dim)
-    -> concat -> TaskHead[task_name] -> (task_expert_output_dim)
-    -> Tower -> prediction
+    -> concat (96D) -> TaskTower[task_name] -> prediction
 
+No TaskHead bottleneck -- GroupEncoder output goes directly to TaskTower.
 Parameter efficiency: ~88% reduction vs independent experts per task.
 """
 
@@ -118,44 +118,6 @@ class ClusterEmbedding(nn.Module):
 
 
 # ============================================================================
-# TaskHead
-# ============================================================================
-
-class TaskHead(nn.Module):
-    """Lightweight per-task MLP projection.
-
-    One instance per task (16 total), but each is small (1-2 layers)
-    since the heavy lifting is done by the shared GroupEncoder.
-
-    Args:
-        input_dim: Input width (group_output_dim + cluster_embed_dim).
-        output_dim: Output width fed to the task tower.
-        hidden_dim: Hidden layer width.
-        dropout: Dropout probability.
-    """
-
-    def __init__(
-        self,
-        input_dim: int,
-        output_dim: int = 32,
-        hidden_dim: int = 64,
-        dropout: float = 0.2,
-    ):
-        super().__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.SiLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, output_dim),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """(batch, input_dim) -> (batch, output_dim)."""
-        return self.network(x)
-
-
-# ============================================================================
 # GroupTaskExpertBasket (orchestrator)
 # ============================================================================
 
@@ -188,14 +150,11 @@ class GroupTaskExpertBasket(nn.Module):
         group_output_dim: int = 64,
         cluster_embed_dim: int = 32,
         n_clusters: int = 0,
-        task_output_dim: int = 32,
-        task_head_hidden_dim: int = 64,
         dropout: float = 0.2,
     ):
         super().__init__()
         self.task_names = list(task_names)
         self.task_group_map = dict(task_group_map)
-        self._task_output_dim = task_output_dim
 
         # Identify unique groups
         unique_groups = sorted(set(task_group_map.values()))
@@ -224,31 +183,19 @@ class GroupTaskExpertBasket(nn.Module):
                 n_clusters=n_clusters,
                 embed_dim=cluster_embed_dim,
             )
-            effective_cluster_dim = cluster_embed_dim
+            self._output_dim = group_output_dim + cluster_embed_dim
         else:
             self.cluster_embedding = None
-            effective_cluster_dim = 0
-
-        # Per-task heads
-        head_input_dim = group_output_dim + effective_cluster_dim
-        self.task_heads = nn.ModuleDict()
-        for task_name in task_names:
-            self.task_heads[task_name] = TaskHead(
-                input_dim=head_input_dim,
-                output_dim=task_output_dim,
-                hidden_dim=task_head_hidden_dim,
-                dropout=dropout,
-            )
+            self._output_dim = group_output_dim
 
         # Log architecture summary
         logger.info(
-            "GroupTaskExpertBasket: %d groups (%s), %d task heads, "
-            "cluster_embed=%s, output_dim=%d",
+            "GroupTaskExpertBasket: %d groups (%s), "
+            "cluster_embed=%s, output_dim=%d → TaskTower directly",
             len(unique_groups),
             unique_groups,
-            len(task_names),
             f"{cluster_embed_dim}D (n={n_clusters})" if n_clusters > 0 else "disabled",
-            task_output_dim,
+            self._output_dim,
         )
 
     def forward(
@@ -280,14 +227,11 @@ class GroupTaskExpertBasket(nn.Module):
         if (self.cluster_embedding is not None
                 and (cluster_ids is not None or cluster_probs is not None)):
             cluster_out = self.cluster_embedding(cluster_ids, cluster_probs)
-            combined = torch.cat([group_out, cluster_out], dim=-1)
-        else:
-            combined = group_out
+            return torch.cat([group_out, cluster_out], dim=-1)
 
-        # 3. Task head
-        return self.task_heads[task_name](combined)
+        return group_out
 
     @property
     def output_dim(self) -> int:
-        """Output dimension of each TaskHead."""
-        return self._task_output_dim
+        """Output dimension: group_output_dim (+ cluster_embed_dim if enabled)."""
+        return self._output_dim

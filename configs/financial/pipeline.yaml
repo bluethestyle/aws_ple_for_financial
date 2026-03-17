@@ -524,10 +524,9 @@ model:
   group_task_expert:
     enabled: true
     group_hidden_dim: 128
-    group_output_dim: 64
-    cluster_embed_dim: 32
-    task_head_hidden_dim: 64
-    task_output_dim: 32
+    group_output_dim: 64     # GroupEncoder output
+    cluster_embed_dim: 32    # ClusterEmbedding output
+    # Total: 64 + 32 = 96D → directly to TaskTower (no TaskHead bottleneck)
     dropout: 0.2
 
 # ---------------------------------------------------------------------------

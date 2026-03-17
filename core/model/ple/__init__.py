@@ -54,7 +54,6 @@ from .experts import (
 from .task_experts import (
     GroupEncoder,
     ClusterEmbedding,
-    TaskHead,
     GroupTaskExpertBasket,
 )
 from .feature_router import FeatureRouter
@@ -97,7 +96,6 @@ __all__ = [
     # Task experts (v3.2 architecture)
     "GroupEncoder",
     "ClusterEmbedding",
-    "TaskHead",
     "GroupTaskExpertBasket",
     # Feature routing
     "FeatureRouter",

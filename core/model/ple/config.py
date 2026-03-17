@@ -225,13 +225,14 @@ class ExpertBasketConfig:
 
 @dataclass
 class GroupTaskExpertConfig:
-    """Configuration for the GroupEncoder + ClusterEmbedding + TaskHead architecture.
+    """Configuration for the GroupEncoder + ClusterEmbedding architecture.
 
     This is the preferred per-task expert approach (original v3.2 design):
     - GroupEncoder: shared MLP per task group (4 groups, not 16 individual)
     - ClusterEmbedding: GMM cluster -> learned embedding (user segment conditioning)
-    - TaskHead: lightweight per-task MLP projection
+    - Output goes directly to TaskTower (no intermediate TaskHead bottleneck)
 
+    Output dim = group_output_dim + cluster_embed_dim (e.g. 64 + 32 = 96D).
     Parameter efficiency: ~88% reduction vs independent experts per task.
 
     When ``enabled=False``, falls back to legacy per-task MLP experts.
@@ -240,8 +241,6 @@ class GroupTaskExpertConfig:
     group_hidden_dim: int = 128
     group_output_dim: int = 64
     cluster_embed_dim: int = 32
-    task_head_hidden_dim: int = 64
-    task_output_dim: int = 32
     dropout: float = 0.2
 
 

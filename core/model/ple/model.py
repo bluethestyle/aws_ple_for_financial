@@ -483,12 +483,11 @@ class PLEModel(nn.Module):
                 group_output_dim=gte.group_output_dim,
                 cluster_embed_dim=gte.cluster_embed_dim if n_clusters > 0 else 0,
                 n_clusters=n_clusters,
-                task_output_dim=gte.task_output_dim,
-                task_head_hidden_dim=gte.task_head_hidden_dim,
                 dropout=gte.dropout,
             )
-            # Set task_expert_output_dim for downstream tower construction
-            self._task_expert_output_dim = gte.task_output_dim
+            # output_dim = group_output_dim + cluster_embed_dim (e.g. 64+32=96)
+            # This goes directly to TaskTower (no TaskHead bottleneck)
+            self._task_expert_output_dim = self.group_task_expert_basket.output_dim
         else:
             # Fallback: plain MLP per task (legacy)
             self.group_task_expert_basket = None
@@ -1113,13 +1112,11 @@ class PLEModel(nn.Module):
 
         # Task expert architecture summary
         if self.group_task_expert_basket is not None:
-            gte = self.config.group_task_expert
             n_groups = len(self.group_task_expert_basket.group_encoders)
-            n_heads = len(self.group_task_expert_basket.task_heads)
+            out_dim = self.group_task_expert_basket.output_dim
             lines.append(
                 f"  Task experts: GroupTaskExpertBasket "
-                f"({n_groups} groups, {n_heads} heads, "
-                f"output_dim={gte.task_output_dim})"
+                f"({n_groups} groups, output_dim={out_dim} → TaskTower directly)"
             )
         else:
             lines.append(f"  Task experts: legacy MLP per task")
