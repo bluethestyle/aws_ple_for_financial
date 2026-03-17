@@ -22,6 +22,7 @@ from .feature_store import (
 from .predict import RecommendationService, PredictionResponse, OutputNormalizer
 from .kill_switch import KillSwitch, KillSwitchState, FallbackStrategy
 from .ab_test import ABTestManager, VariantAssignment
+from .model_registry import ModelRegistry, ModelVersion
 
 __all__ = [
     # config
@@ -45,4 +46,7 @@ __all__ = [
     # ab_test
     "ABTestManager",
     "VariantAssignment",
+    # model_registry
+    "ModelRegistry",
+    "ModelVersion",
 ]

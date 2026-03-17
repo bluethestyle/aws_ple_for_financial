@@ -443,21 +443,48 @@ class StudentTrainer:
     # Save / Load
     # ------------------------------------------------------------------
 
-    def save_students(self, output_dir: Optional[str] = None) -> Dict[str, str]:
-        """Save trained student models.
+    def save_students(
+        self,
+        output_dir: Optional[str] = None,
+        feature_selections: Optional[Dict[str, Any]] = None,
+        fidelity_results: Optional[List[Any]] = None,
+    ) -> Dict[str, str]:
+        """Save trained student models with optional traceability artifacts.
 
         Each model is saved as::
 
             {output_dir}/{task_name}/model.lgbm
             {output_dir}/{task_name}/metadata.json
+            {output_dir}/{task_name}/selected_features.json   (if provided)
+            {output_dir}/{task_name}/fidelity.json            (if provided)
 
         Args:
             output_dir: Override ``config.student_output_dir``.
+            feature_selections: ``{task_name: FeatureSelectionResult or dict}``
+                with per-task feature selection outcomes.  When provided,
+                each task directory receives a ``selected_features.json``
+                containing the selected feature indices, names, and count
+                so that the serving layer knows which features to extract.
+            fidelity_results: List of ``FidelityResult`` or dicts from
+                distillation validation.  When provided, each matching
+                task directory receives a ``fidelity.json`` with the
+                validation metrics and pass/fail status.
 
         Returns:
             ``{task_name: saved_model_path}`` dict.
         """
+        from dataclasses import asdict
+
         output_dir = output_dir or self.config.student_output_dir
+        feature_selections = feature_selections or {}
+        fidelity_results = fidelity_results or []
+
+        # Index fidelity results by task name for easy lookup
+        fidelity_by_task: Dict[str, Dict[str, Any]] = {}
+        for fr in fidelity_results:
+            fr_dict = asdict(fr) if hasattr(fr, "__dataclass_fields__") else dict(fr)
+            task = fr_dict.get("task_name", "unknown")
+            fidelity_by_task[task] = fr_dict
 
         saved_paths: Dict[str, str] = {}
         for task_name, model in self._students.items():
@@ -483,6 +510,28 @@ class StudentTrainer:
             }
             with open(task_dir / "metadata.json", "w") as f:
                 json.dump(meta, f, indent=2)
+
+            # Save feature selection results
+            if task_name in feature_selections:
+                fs = feature_selections[task_name]
+                fs_dict = (
+                    asdict(fs) if hasattr(fs, "__dataclass_fields__") else dict(fs)
+                )
+                selected = {
+                    "indices": fs_dict.get("selected_indices", []),
+                    "names": fs_dict.get("selected_names", []),
+                    "count": fs_dict.get("selected_count", 0),
+                    "original_count": fs_dict.get("original_count", 0),
+                    "reduction_pct": fs_dict.get("reduction_pct", 0.0),
+                    "selection_method": fs_dict.get("selection_method", ""),
+                }
+                with open(task_dir / "selected_features.json", "w") as f:
+                    json.dump(selected, f, indent=2)
+
+            # Save fidelity validation results
+            if task_name in fidelity_by_task:
+                with open(task_dir / "fidelity.json", "w") as f:
+                    json.dump(fidelity_by_task[task_name], f, indent=2, default=str)
 
             saved_paths[task_name] = model_path
 
