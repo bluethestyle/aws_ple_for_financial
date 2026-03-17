@@ -7,6 +7,7 @@ Unified interface to call various LLM backends.
 Implementations:
     BedrockProvider  -- AWS Bedrock (Claude / Titan / etc.)
     OpenAIProvider   -- OpenAI API (GPT-4, etc.)
+    GeminiProvider   -- Google Gemini API (gemini-2.0-flash, gemini-2.5-pro)
     DummyProvider    -- Deterministic stub for unit tests.
 
 Usage::
@@ -46,6 +47,7 @@ __all__ = [
     "AbstractLLMProvider",
     "BedrockProvider",
     "OpenAIProvider",
+    "GeminiProvider",
     "DummyProvider",
     "LLMProviderFactory",
 ]
@@ -221,6 +223,70 @@ class DummyProvider(AbstractLLMProvider):
 
 
 # ---------------------------------------------------------------------------
+# Google Gemini
+# ---------------------------------------------------------------------------
+
+class GeminiProvider(AbstractLLMProvider):
+    """Google Gemini API provider.
+
+    Supports gemini-2.0-flash (fast, cheap, L2a bulk) and
+    gemini-2.5-pro (quality, L2b validation).
+
+    Requires: GEMINI_API_KEY environment variable or config.
+
+    Config::
+
+        gemini:
+          api_key: ""              # or set GEMINI_API_KEY env var
+          model_id: gemini-2.0-flash
+          temperature: 0.3
+          max_tokens: 500
+    """
+
+    def __init__(self, config: Dict[str, Any] = None) -> None:
+        super().__init__(config or {})
+        self._api_key: str = self.config.get("api_key") or os.environ.get("GEMINI_API_KEY", "")
+        self._model: str = self.config.get("model_id", "gemini-2.0-flash")
+        self._temperature: float = self.config.get("temperature", 0.3)
+        self._max_tokens: int = self.config.get("max_tokens", 500)
+        self._base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        """Call Gemini API via REST (no SDK dependency)."""
+        import urllib.request
+
+        temperature = kwargs.get("temperature", self._temperature)
+        max_tokens = kwargs.get("max_tokens", self._max_tokens)
+
+        url = f"{self._base_url}/models/{self._model}:generateContent?key={self._api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+            },
+        }
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read().decode())
+                return result["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            logger.warning("Gemini API call failed: %s", e)
+            return ""
+
+    def is_available(self) -> bool:
+        return bool(self._api_key)
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -235,6 +301,7 @@ class LLMProviderFactory:
     _backends: ClassVar[Dict[str, Type[AbstractLLMProvider]]] = {
         "bedrock": BedrockProvider,
         "openai": OpenAIProvider,
+        "gemini": GeminiProvider,
         "dummy": DummyProvider,
     }
 

@@ -11,6 +11,7 @@ Modules:
     self_checker        -- Rule-based compliance + optional LLM factuality check.
     llm_provider        -- Abstract LLM provider (Bedrock / OpenAI / Dummy).
     async_orchestrator  -- 3-layer async reason generation (L1/L2a/L2b).
+    context_assembler   -- Multi-source context assembly for reason generation.
 """
 
 from .template_engine import TemplateEngine
@@ -18,6 +19,8 @@ from .reverse_mapper import ReverseMapper
 from .self_checker import SelfChecker, CheckResult
 from .llm_provider import AbstractLLMProvider, LLMProviderFactory
 from .async_orchestrator import AsyncReasonOrchestrator, ReasonResult
+from .context_assembler import ContextAssembler, AssembledContext
+from .reason_cache import ReasonCache, CacheEntry
 
 __all__ = [
     "TemplateEngine",
@@ -28,4 +31,8 @@ __all__ = [
     "LLMProviderFactory",
     "AsyncReasonOrchestrator",
     "ReasonResult",
+    "ContextAssembler",
+    "AssembledContext",
+    "ReasonCache",
+    "CacheEntry",
 ]

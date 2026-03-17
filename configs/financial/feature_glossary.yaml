@@ -1,0 +1,604 @@
+# =============================================================================
+# 644D Financial Feature Glossary
+# =============================================================================
+# Maps feature indices to Korean financial business language.
+# Used by ReverseMapper to generate human-readable explanations.
+#
+# Structure:
+#   feature_groups.<group_name>.features.<feature_id>:
+#     name:      Korean business name
+#     template:  Korean template with {value} placeholder
+#     unit:      Display unit
+#     direction: lower_is_better | higher_is_better (optional)
+#
+# Total: 644D across 13 groups in the main feature vector
+#   base_rfm(34) + base_category(64) + base_txn_stats(80) + base_temporal(60)
+#   + multi_source(91) + extended_source(84) + tda_topology(70)
+#   + gmm_clustering(22) + mamba_temporal(50) + economics(17)
+#   + multidisciplinary(24) + model_derived(27) + merchant_hierarchy(21)
+# =============================================================================
+
+feature_groups:
+
+  # ---------------------------------------------------------------------------
+  # 1. base_rfm (34D) -- RFM 고객 프로필
+  # ---------------------------------------------------------------------------
+  base_rfm:
+    description: "RFM 고객 프로필"
+    features:
+      rfm_001: {name: "최근거래일", template: "최근 {value}일 전 거래", unit: "일", direction: lower_is_better}
+      rfm_002: {name: "월평균거래건수", template: "월 평균 {value}건 거래", unit: "건", direction: higher_is_better}
+      rfm_003: {name: "월평균거래금액", template: "월 평균 {value}만원 사용", unit: "만원", direction: higher_is_better}
+      rfm_004: {name: "RFM종합점수", template: "고객 활동 점수 상위 {value}%", unit: "%", direction: higher_is_better}
+      rfm_005: {name: "최근3개월_거래빈도", template: "최근 3개월 {value}건 거래", unit: "건", direction: higher_is_better}
+      rfm_006: {name: "최근6개월_거래빈도", template: "최근 6개월 {value}건 거래", unit: "건", direction: higher_is_better}
+      rfm_007: {name: "거래간격_평균", template: "평균 {value}일 간격 거래", unit: "일", direction: lower_is_better}
+      rfm_008: {name: "거래간격_표준편차", template: "거래 간격 변동성 {value}", unit: "", direction: lower_is_better}
+      rfm_009: {name: "최대거래금액", template: "최대 거래 금액 {value}만원", unit: "만원", direction: higher_is_better}
+      rfm_010: {name: "최소거래금액", template: "최소 거래 금액 {value}원", unit: "원"}
+      rfm_011: {name: "거래금액_표준편차", template: "거래 금액 변동성 {value}", unit: ""}
+      rfm_012: {name: "온라인_거래비율", template: "온라인 거래 비율 {value}%", unit: "%"}
+      rfm_013: {name: "오프라인_거래비율", template: "오프라인 거래 비율 {value}%", unit: "%"}
+      rfm_014: {name: "주말_거래비율", template: "주말 거래 비율 {value}%", unit: "%"}
+      rfm_015: {name: "야간_거래비율", template: "야간 거래 비율 {value}%", unit: "%"}
+      rfm_016: {name: "반복구매율", template: "반복 구매율 {value}%", unit: "%", direction: higher_is_better}
+      rfm_017: {name: "고객등급점수", template: "고객 등급 점수 {value}", unit: "", direction: higher_is_better}
+      rfm_018: {name: "누적거래금액", template: "누적 거래 금액 {value}만원", unit: "만원", direction: higher_is_better}
+      rfm_019: {name: "평균할부기간", template: "평균 할부 기간 {value}개월", unit: "개월"}
+      rfm_020: {name: "할부이용비율", template: "할부 이용 비율 {value}%", unit: "%"}
+      rfm_021: {name: "포인트적립률", template: "포인트 적립률 {value}%", unit: "%", direction: higher_is_better}
+      rfm_022: {name: "포인트사용률", template: "포인트 사용률 {value}%", unit: "%"}
+      rfm_023: {name: "카드이용한도_사용률", template: "카드 한도 사용률 {value}%", unit: "%", direction: lower_is_better}
+      rfm_024: {name: "결제일_편중도", template: "결제일 편중도 {value}", unit: ""}
+      rfm_025: {name: "자동이체_건수", template: "자동이체 {value}건 설정", unit: "건"}
+      rfm_026: {name: "해외거래_여부", template: "해외 거래 활성도 {value}", unit: ""}
+      rfm_027: {name: "거래채널_다양성", template: "거래 채널 다양성 {value}", unit: "", direction: higher_is_better}
+      rfm_028: {name: "최근30일_거래금액", template: "최근 30일 {value}만원 사용", unit: "만원"}
+      rfm_029: {name: "최근90일_거래금액", template: "최근 90일 {value}만원 사용", unit: "만원"}
+      rfm_030: {name: "전월대비_증감률", template: "전월 대비 {value}% 변동", unit: "%"}
+      rfm_031: {name: "분기대비_증감률", template: "분기 대비 {value}% 변동", unit: "%"}
+      rfm_032: {name: "VIP등급_근접도", template: "VIP 등급 근접도 {value}%", unit: "%", direction: higher_is_better}
+      rfm_033: {name: "이탈위험_점수", template: "이탈 위험 점수 {value}", unit: "", direction: lower_is_better}
+      rfm_034: {name: "생애가치_추정", template: "고객 생애 가치 추정 {value}", unit: "", direction: higher_is_better}
+
+  # ---------------------------------------------------------------------------
+  # 2. base_category (64D) -- 카테고리별 소비 패턴
+  # ---------------------------------------------------------------------------
+  base_category:
+    description: "카테고리별 소비 패턴"
+    features:
+      category_001: {name: "식음료_지출비중", template: "식음료 지출 비중 {value}%", unit: "%"}
+      category_002: {name: "교통_지출비중", template: "교통비 지출 비중 {value}%", unit: "%"}
+      category_003: {name: "의류패션_지출비중", template: "의류/패션 지출 비중 {value}%", unit: "%"}
+      category_004: {name: "생활용품_지출비중", template: "생활용품 지출 비중 {value}%", unit: "%"}
+      category_005: {name: "의료건강_지출비중", template: "의료/건강 지출 비중 {value}%", unit: "%"}
+      category_006: {name: "교육_지출비중", template: "교육비 지출 비중 {value}%", unit: "%"}
+      category_007: {name: "여가오락_지출비중", template: "여가/오락 지출 비중 {value}%", unit: "%"}
+      category_008: {name: "통신_지출비중", template: "통신비 지출 비중 {value}%", unit: "%"}
+      category_009: {name: "주거관리_지출비중", template: "주거/관리비 지출 비중 {value}%", unit: "%"}
+      category_010: {name: "보험_지출비중", template: "보험료 지출 비중 {value}%", unit: "%"}
+      category_011: {name: "미용_지출비중", template: "미용 지출 비중 {value}%", unit: "%"}
+      category_012: {name: "여행숙박_지출비중", template: "여행/숙박 지출 비중 {value}%", unit: "%"}
+      category_013: {name: "자동차_지출비중", template: "자동차 관련 지출 비중 {value}%", unit: "%"}
+      category_014: {name: "가전전자_지출비중", template: "가전/전자 지출 비중 {value}%", unit: "%"}
+      category_015: {name: "문화예술_지출비중", template: "문화/예술 지출 비중 {value}%", unit: "%"}
+      category_016: {name: "반려동물_지출비중", template: "반려동물 지출 비중 {value}%", unit: "%"}
+      category_017: {name: "편의점_지출비중", template: "편의점 지출 비중 {value}%", unit: "%"}
+      category_018: {name: "대형마트_지출비중", template: "대형마트 지출 비중 {value}%", unit: "%"}
+      category_019: {name: "온라인쇼핑_지출비중", template: "온라인쇼핑 지출 비중 {value}%", unit: "%"}
+      category_020: {name: "배달앱_지출비중", template: "배달앱 지출 비중 {value}%", unit: "%"}
+      category_021: {name: "카페_지출비중", template: "카페 지출 비중 {value}%", unit: "%"}
+      category_022: {name: "주류_지출비중", template: "주류 지출 비중 {value}%", unit: "%"}
+      category_023: {name: "스포츠_지출비중", template: "스포츠 지출 비중 {value}%", unit: "%"}
+      category_024: {name: "학원_지출비중", template: "학원/과외 지출 비중 {value}%", unit: "%"}
+      category_025: {name: "병원약국_지출비중", template: "병원/약국 지출 비중 {value}%", unit: "%"}
+      category_026: {name: "세금공과금_지출비중", template: "세금/공과금 지출 비중 {value}%", unit: "%"}
+      category_027: {name: "기부_지출비중", template: "기부/후원 지출 비중 {value}%", unit: "%"}
+      category_028: {name: "렌탈_지출비중", template: "렌탈 지출 비중 {value}%", unit: "%"}
+      category_029: {name: "구독서비스_지출비중", template: "구독 서비스 지출 비중 {value}%", unit: "%"}
+      category_030: {name: "카테고리30_지출", template: "카테고리30 지출 비중 {value}%", unit: "%"}
+      category_031: {name: "카테고리31_지출", template: "카테고리31 지출 비중 {value}%", unit: "%"}
+      category_032: {name: "카테고리32_지출", template: "카테고리32 지출 비중 {value}%", unit: "%"}
+      category_033: {name: "카테고리33_지출", template: "카테고리33 지출 비중 {value}%", unit: "%"}
+      category_034: {name: "카테고리34_지출", template: "카테고리34 지출 비중 {value}%", unit: "%"}
+      category_035: {name: "카테고리35_지출", template: "카테고리35 지출 비중 {value}%", unit: "%"}
+      category_036: {name: "카테고리36_지출", template: "카테고리36 지출 비중 {value}%", unit: "%"}
+      category_037: {name: "카테고리37_지출", template: "카테고리37 지출 비중 {value}%", unit: "%"}
+      category_038: {name: "카테고리38_지출", template: "카테고리38 지출 비중 {value}%", unit: "%"}
+      category_039: {name: "카테고리39_지출", template: "카테고리39 지출 비중 {value}%", unit: "%"}
+      category_040: {name: "카테고리40_지출", template: "카테고리40 지출 비중 {value}%", unit: "%"}
+      category_041: {name: "카테고리41_지출", template: "카테고리41 지출 비중 {value}%", unit: "%"}
+      category_042: {name: "카테고리42_지출", template: "카테고리42 지출 비중 {value}%", unit: "%"}
+      category_043: {name: "카테고리43_지출", template: "카테고리43 지출 비중 {value}%", unit: "%"}
+      category_044: {name: "카테고리44_지출", template: "카테고리44 지출 비중 {value}%", unit: "%"}
+      category_045: {name: "카테고리45_지출", template: "카테고리45 지출 비중 {value}%", unit: "%"}
+      category_046: {name: "카테고리46_지출", template: "카테고리46 지출 비중 {value}%", unit: "%"}
+      category_047: {name: "카테고리47_지출", template: "카테고리47 지출 비중 {value}%", unit: "%"}
+      category_048: {name: "카테고리48_지출", template: "카테고리48 지출 비중 {value}%", unit: "%"}
+      category_049: {name: "카테고리49_지출", template: "카테고리49 지출 비중 {value}%", unit: "%"}
+      category_050: {name: "카테고리50_지출", template: "카테고리50 지출 비중 {value}%", unit: "%"}
+      category_051: {name: "카테고리51_지출", template: "카테고리51 지출 비중 {value}%", unit: "%"}
+      category_052: {name: "카테고리52_지출", template: "카테고리52 지출 비중 {value}%", unit: "%"}
+      category_053: {name: "카테고리53_지출", template: "카테고리53 지출 비중 {value}%", unit: "%"}
+      category_054: {name: "카테고리54_지출", template: "카테고리54 지출 비중 {value}%", unit: "%"}
+      category_055: {name: "카테고리55_지출", template: "카테고리55 지출 비중 {value}%", unit: "%"}
+      category_056: {name: "카테고리56_지출", template: "카테고리56 지출 비중 {value}%", unit: "%"}
+      category_057: {name: "카테고리57_지출", template: "카테고리57 지출 비중 {value}%", unit: "%"}
+      category_058: {name: "카테고리58_지출", template: "카테고리58 지출 비중 {value}%", unit: "%"}
+      category_059: {name: "카테고리59_지출", template: "카테고리59 지출 비중 {value}%", unit: "%"}
+      category_060: {name: "카테고리60_지출", template: "카테고리60 지출 비중 {value}%", unit: "%"}
+      category_061: {name: "카테고리61_지출", template: "카테고리61 지출 비중 {value}%", unit: "%"}
+      category_062: {name: "카테고리62_지출", template: "카테고리62 지출 비중 {value}%", unit: "%"}
+      category_063: {name: "카테고리63_지출", template: "카테고리63 지출 비중 {value}%", unit: "%"}
+      category_064: {name: "카테고리64_지출", template: "카테고리64 지출 비중 {value}%", unit: "%"}
+
+  # ---------------------------------------------------------------------------
+  # 3. base_txn_stats (80D) -- 거래 통계
+  # ---------------------------------------------------------------------------
+  base_txn_stats:
+    description: "거래 통계"
+    features:
+      transaction_stats_001: {name: "총거래건수", template: "총 {value}건 거래", unit: "건", direction: higher_is_better}
+      transaction_stats_002: {name: "총거래금액", template: "총 거래 금액 {value}만원", unit: "만원", direction: higher_is_better}
+      transaction_stats_003: {name: "건당평균금액", template: "건당 평균 {value}원 거래", unit: "원"}
+      transaction_stats_004: {name: "거래금액_중앙값", template: "거래 금액 중앙값 {value}원", unit: "원"}
+      transaction_stats_005: {name: "거래금액_최빈값대", template: "주요 거래 금액대 {value}원", unit: "원"}
+      transaction_stats_006: {name: "소액거래_비율", template: "소액 거래 비율 {value}%", unit: "%"}
+      transaction_stats_007: {name: "대액거래_비율", template: "대액 거래 비율 {value}%", unit: "%"}
+      transaction_stats_008: {name: "거래금액_왜도", template: "거래 금액 분포 편향 {value}", unit: ""}
+      transaction_stats_009: {name: "거래금액_첨도", template: "거래 금액 집중도 {value}", unit: ""}
+      transaction_stats_010: {name: "평균거래금액", template: "평균 거래 금액 {value}원", unit: "원"}
+      transaction_stats_011: {name: "일평균거래건수", template: "일 평균 {value}건 거래", unit: "건"}
+      transaction_stats_012: {name: "주평균거래건수", template: "주 평균 {value}건 거래", unit: "건"}
+      transaction_stats_013: {name: "거래활성일수", template: "거래 활성 일수 {value}일", unit: "일"}
+      transaction_stats_014: {name: "무거래일수_비율", template: "무거래 일수 비율 {value}%", unit: "%", direction: lower_is_better}
+      transaction_stats_015: {name: "연속거래_최장일수", template: "연속 거래 최장 {value}일", unit: "일"}
+      transaction_stats_020: {name: "승인거래_비율", template: "승인 거래 비율 {value}%", unit: "%"}
+      transaction_stats_021: {name: "취소반품_비율", template: "취소/반품 비율 {value}%", unit: "%", direction: lower_is_better}
+      transaction_stats_022: {name: "일시불_비율", template: "일시불 비율 {value}%", unit: "%"}
+      transaction_stats_023: {name: "할부_비율", template: "할부 비율 {value}%", unit: "%"}
+      transaction_stats_024: {name: "자동결제_비율", template: "자동결제 비율 {value}%", unit: "%"}
+      transaction_stats_030: {name: "국내거래_비율", template: "국내 거래 비율 {value}%", unit: "%"}
+      transaction_stats_031: {name: "해외거래_비율", template: "해외 거래 비율 {value}%", unit: "%"}
+      transaction_stats_032: {name: "모바일결제_비율", template: "모바일 결제 비율 {value}%", unit: "%"}
+      transaction_stats_033: {name: "오프라인결제_비율", template: "오프라인 결제 비율 {value}%", unit: "%"}
+      transaction_stats_034: {name: "간편결제_비율", template: "간편결제 비율 {value}%", unit: "%"}
+      transaction_stats_040: {name: "전월대비_거래건수_변화", template: "전월 대비 거래 건수 {value}% 변화", unit: "%"}
+      transaction_stats_041: {name: "전월대비_거래금액_변화", template: "전월 대비 거래 금액 {value}% 변화", unit: "%"}
+      transaction_stats_042: {name: "3개월_이동평균_거래액", template: "3개월 이동평균 거래액 {value}만원", unit: "만원"}
+      transaction_stats_043: {name: "6개월_이동평균_거래액", template: "6개월 이동평균 거래액 {value}만원", unit: "만원"}
+      transaction_stats_044: {name: "거래추세_기울기", template: "거래 추세 기울기 {value}", unit: ""}
+      transaction_stats_050: {name: "거래집중도_HHI", template: "거래 집중도(HHI) {value}", unit: ""}
+      transaction_stats_051: {name: "상위5업종_집중도", template: "상위 5개 업종 집중도 {value}%", unit: "%"}
+      transaction_stats_052: {name: "거래처_다양성", template: "거래처 다양성 지수 {value}", unit: "", direction: higher_is_better}
+      transaction_stats_053: {name: "신규가맹점_비율", template: "신규 가맹점 거래 비율 {value}%", unit: "%"}
+      transaction_stats_054: {name: "단골가맹점_비율", template: "단골 가맹점 거래 비율 {value}%", unit: "%"}
+      transaction_stats_060: {name: "결제수단_다양성", template: "결제 수단 다양성 {value}", unit: ""}
+      transaction_stats_061: {name: "카드별_거래비중_편차", template: "카드별 거래 비중 편차 {value}", unit: ""}
+      transaction_stats_062: {name: "체크카드_이용비율", template: "체크카드 이용 비율 {value}%", unit: "%"}
+      transaction_stats_063: {name: "신용카드_이용비율", template: "신용카드 이용 비율 {value}%", unit: "%"}
+      transaction_stats_070: {name: "이상거래_탐지횟수", template: "이상 거래 탐지 {value}회", unit: "회", direction: lower_is_better}
+      transaction_stats_071: {name: "한도초과_시도횟수", template: "한도 초과 시도 {value}회", unit: "회", direction: lower_is_better}
+      transaction_stats_080: {name: "거래패턴_안정성", template: "거래 패턴 안정성 {value}", unit: "", direction: higher_is_better}
+
+  # ---------------------------------------------------------------------------
+  # 4. base_temporal (60D) -- 시간대별 거래 패턴
+  # ---------------------------------------------------------------------------
+  base_temporal:
+    description: "시간대별 거래 패턴"
+    features:
+      temporal_001: {name: "주중_거래비율", template: "주중 거래 비율 {value}%", unit: "%"}
+      temporal_002: {name: "주말_거래비율", template: "주말 거래 비율 {value}%", unit: "%"}
+      temporal_003: {name: "월초_거래집중도", template: "월초 거래 집중도 {value}%", unit: "%"}
+      temporal_004: {name: "월중_거래집중도", template: "월중 거래 집중도 {value}%", unit: "%"}
+      temporal_005: {name: "월말_거래집중도", template: "월말 거래 집중도 {value}%", unit: "%"}
+      temporal_006: {name: "급여일_전후_거래증가율", template: "급여일 전후 거래 증가율 {value}%", unit: "%"}
+      temporal_007: {name: "분기말_거래패턴", template: "분기말 거래 패턴 강도 {value}", unit: ""}
+      temporal_008: {name: "연말_지출증가율", template: "연말 지출 증가율 {value}%", unit: "%"}
+      temporal_009: {name: "공휴일_거래비율", template: "공휴일 거래 비율 {value}%", unit: "%"}
+      temporal_010: {name: "오전_거래비율", template: "오전 거래 비율 {value}%", unit: "%"}
+      temporal_011: {name: "오후_거래비율", template: "오후 거래 비율 {value}%", unit: "%"}
+      temporal_012: {name: "저녁_거래비율", template: "저녁 거래 비율 {value}%", unit: "%"}
+      temporal_013: {name: "심야_거래비율", template: "심야 거래 비율 {value}%", unit: "%"}
+      temporal_014: {name: "출퇴근_거래비율", template: "출퇴근 시간 거래 비율 {value}%", unit: "%"}
+      temporal_015: {name: "점심시간_거래비율", template: "점심시간 거래 비율 {value}%", unit: "%"}
+      temporal_020: {name: "월요일_거래비중", template: "월요일 거래 비중 {value}%", unit: "%"}
+      temporal_021: {name: "화요일_거래비중", template: "화요일 거래 비중 {value}%", unit: "%"}
+      temporal_022: {name: "수요일_거래비중", template: "수요일 거래 비중 {value}%", unit: "%"}
+      temporal_023: {name: "목요일_거래비중", template: "목요일 거래 비중 {value}%", unit: "%"}
+      temporal_024: {name: "금요일_거래비중", template: "금요일 거래 비중 {value}%", unit: "%"}
+      temporal_025: {name: "토요일_거래비중", template: "토요일 거래 비중 {value}%", unit: "%"}
+      temporal_026: {name: "일요일_거래비중", template: "일요일 거래 비중 {value}%", unit: "%"}
+      temporal_030: {name: "1월_지출지수", template: "1월 지출 지수 {value}", unit: ""}
+      temporal_031: {name: "2월_지출지수", template: "2월 지출 지수 {value}", unit: ""}
+      temporal_032: {name: "3월_지출지수", template: "3월 지출 지수 {value}", unit: ""}
+      temporal_033: {name: "4월_지출지수", template: "4월 지출 지수 {value}", unit: ""}
+      temporal_034: {name: "5월_지출지수", template: "5월 지출 지수 {value}", unit: ""}
+      temporal_035: {name: "6월_지출지수", template: "6월 지출 지수 {value}", unit: ""}
+      temporal_036: {name: "7월_지출지수", template: "7월 지출 지수 {value}", unit: ""}
+      temporal_037: {name: "8월_지출지수", template: "8월 지출 지수 {value}", unit: ""}
+      temporal_038: {name: "9월_지출지수", template: "9월 지출 지수 {value}", unit: ""}
+      temporal_039: {name: "10월_지출지수", template: "10월 지출 지수 {value}", unit: ""}
+      temporal_040: {name: "11월_지출지수", template: "11월 지출 지수 {value}", unit: ""}
+      temporal_041: {name: "12월_지출지수", template: "12월 지출 지수 {value}", unit: ""}
+      temporal_050: {name: "계절성_강도", template: "소비 계절성 강도 {value}", unit: ""}
+      temporal_051: {name: "주기성_점수", template: "소비 주기성 점수 {value}", unit: ""}
+      temporal_052: {name: "규칙성_지수", template: "거래 규칙성 지수 {value}", unit: "", direction: higher_is_better}
+      temporal_053: {name: "시간대_엔트로피", template: "시간대 분포 엔트로피 {value}", unit: ""}
+      temporal_054: {name: "요일_엔트로피", template: "요일 분포 엔트로피 {value}", unit: ""}
+      temporal_060: {name: "최근_활동추세", template: "최근 활동 추세 {value}", unit: "", direction: higher_is_better}
+
+  # ---------------------------------------------------------------------------
+  # 5. multi_source (91D) -- 다중 소스 금융 행동
+  #    deposit(20) + membership(15) + investment(18) + credit(12) + digital(14) + product(12)
+  # ---------------------------------------------------------------------------
+  multi_source:
+    description: "다중 소스 금융 행동"
+    features:
+      # deposit_behavior (20D)
+      deposit_behavior_001: {name: "예적금_잔액추이", template: "예적금 잔액 추이 {value}", unit: ""}
+      deposit_behavior_002: {name: "예적금_평균잔액", template: "예적금 평균 잔액 {value}만원", unit: "만원", direction: higher_is_better}
+      deposit_behavior_003: {name: "예적금_잔액변동성", template: "예적금 잔액 변동성 {value}", unit: ""}
+      deposit_behavior_004: {name: "정기예금_보유건수", template: "정기예금 {value}건 보유", unit: "건"}
+      deposit_behavior_005: {name: "적금_납입율", template: "적금 납입율 {value}%", unit: "%", direction: higher_is_better}
+      deposit_behavior_006: {name: "수시입출금_변동성", template: "수시입출금 변동성 {value}", unit: ""}
+      deposit_behavior_010: {name: "예적금_만기도래_건수", template: "만기 도래 예적금 {value}건", unit: "건"}
+      deposit_behavior_015: {name: "자동이체_정상율", template: "자동이체 정상 처리율 {value}%", unit: "%", direction: higher_is_better}
+      deposit_behavior_020: {name: "예적금_성장률", template: "예적금 잔액 성장률 {value}%", unit: "%", direction: higher_is_better}
+      # membership_utilization (15D)
+      membership_utilization_001: {name: "멤버십_활용도", template: "멤버십 활용도 {value}%", unit: "%", direction: higher_is_better}
+      membership_utilization_002: {name: "포인트_적립활용비", template: "포인트 적립 대비 활용 비율 {value}%", unit: "%"}
+      membership_utilization_003: {name: "제휴혜택_이용률", template: "제휴 혜택 이용률 {value}%", unit: "%"}
+      membership_utilization_005: {name: "등급유지_가능성", template: "등급 유지 가능성 {value}%", unit: "%"}
+      membership_utilization_010: {name: "혜택_최적화_점수", template: "혜택 최적화 점수 {value}", unit: "", direction: higher_is_better}
+      membership_utilization_015: {name: "멤버십_관여도", template: "멤버십 관여도 {value}", unit: "", direction: higher_is_better}
+      # investment_propensity (18D)
+      investment_propensity_001: {name: "투자성향_점수", template: "투자 성향 점수 {value}", unit: ""}
+      investment_propensity_002: {name: "펀드_보유금액", template: "펀드 보유 금액 {value}만원", unit: "만원"}
+      investment_propensity_003: {name: "주식_거래빈도", template: "주식 거래 빈도 {value}", unit: ""}
+      investment_propensity_005: {name: "위험자산_비중", template: "위험자산 비중 {value}%", unit: "%"}
+      investment_propensity_010: {name: "투자_다양성", template: "투자 다양성 지수 {value}", unit: ""}
+      investment_propensity_018: {name: "투자_성과추세", template: "투자 성과 추세 {value}", unit: ""}
+      # credit_risk (12D)
+      credit_risk_001: {name: "신용위험_등급", template: "신용 위험 등급 {value}", unit: "", direction: lower_is_better}
+      credit_risk_002: {name: "연체이력_점수", template: "연체 이력 점수 {value}", unit: "", direction: lower_is_better}
+      credit_risk_003: {name: "부채비율", template: "부채 비율 {value}%", unit: "%", direction: lower_is_better}
+      credit_risk_005: {name: "신용한도_사용률", template: "신용 한도 사용률 {value}%", unit: "%"}
+      credit_risk_010: {name: "상환능력_지수", template: "상환 능력 지수 {value}", unit: "", direction: higher_is_better}
+      credit_risk_012: {name: "신용_안정성", template: "신용 안정성 지수 {value}", unit: "", direction: higher_is_better}
+      # digital_engagement (14D)
+      digital_engagement_001: {name: "디지털_활성도", template: "디지털 채널 활성도 {value}%", unit: "%", direction: higher_is_better}
+      digital_engagement_002: {name: "앱_로그인빈도", template: "앱 로그인 빈도 {value}회/월", unit: "회/월"}
+      digital_engagement_003: {name: "모바일뱅킹_이용률", template: "모바일뱅킹 이용률 {value}%", unit: "%"}
+      digital_engagement_005: {name: "디지털상품_가입률", template: "디지털 상품 가입률 {value}%", unit: "%"}
+      digital_engagement_010: {name: "비대면_거래비중", template: "비대면 거래 비중 {value}%", unit: "%"}
+      digital_engagement_014: {name: "디지털_전환점수", template: "디지털 전환 점수 {value}", unit: "", direction: higher_is_better}
+      # product_diversity (12D)
+      product_diversity_001: {name: "상품_다양성", template: "보유 상품 다양성 {value}", unit: "", direction: higher_is_better}
+      product_diversity_002: {name: "보유상품_수", template: "보유 상품 {value}개", unit: "개"}
+      product_diversity_003: {name: "교차판매_점수", template: "교차 판매 점수 {value}", unit: "", direction: higher_is_better}
+      product_diversity_005: {name: "상품군_분산도", template: "상품군 분산도 {value}", unit: ""}
+      product_diversity_010: {name: "상품_활용률", template: "상품 활용률 {value}%", unit: "%", direction: higher_is_better}
+      product_diversity_012: {name: "상품_성숙도", template: "상품 포트폴리오 성숙도 {value}", unit: ""}
+
+  # ---------------------------------------------------------------------------
+  # 6. extended_source (84D) -- 확장 소스 (보험, 상담, 캠페인 등)
+  # ---------------------------------------------------------------------------
+  extended_source:
+    description: "확장 소스 (보험, 상담, 캠페인 등)"
+    features:
+      # insurance (15D)
+      insurance_holding_001: {name: "보험_보유건수", template: "보험 보유 {value}건", unit: "건"}
+      insurance_holding_002: {name: "보험료_월납입액", template: "월 보험료 {value}만원 납입", unit: "만원"}
+      insurance_holding_003: {name: "보장성보험_비중", template: "보장성 보험 비중 {value}%", unit: "%"}
+      insurance_holding_005: {name: "보험_유지율", template: "보험 유지율 {value}%", unit: "%", direction: higher_is_better}
+      insurance_claim_001: {name: "보험금_청구이력", template: "보험금 청구 이력 {value}건", unit: "건"}
+      insurance_claim_007: {name: "보험_보장범위", template: "보험 보장 범위 점수 {value}", unit: ""}
+      # refund_loan (10D)
+      refund_loan_001: {name: "환급금대출_이용", template: "환급금 대출 이용 {value}", unit: ""}
+      refund_loan_010: {name: "대출_상환성실도", template: "대출 상환 성실도 {value}", unit: "", direction: higher_is_better}
+      # consultation (8D)
+      consultation_history_001: {name: "상담_횟수", template: "최근 상담 {value}회", unit: "회"}
+      consultation_history_002: {name: "상담_유형다양성", template: "상담 유형 다양성 {value}", unit: ""}
+      consultation_history_005: {name: "상담_만족도", template: "상담 만족도 {value}", unit: ""}
+      consultation_history_008: {name: "상담_전환율", template: "상담 후 상품 전환율 {value}%", unit: "%"}
+      # STT analysis (6D)
+      stt_analysis_001: {name: "통화_감성점수", template: "통화 감성 점수 {value}", unit: ""}
+      stt_analysis_006: {name: "VOC_핵심키워드", template: "VOC 핵심 키워드 관련도 {value}", unit: ""}
+      # product_interest (4D)
+      product_interest_001: {name: "상품관심_점수", template: "상품 관심 점수 {value}", unit: "", direction: higher_is_better}
+      product_interest_004: {name: "상품조회_패턴", template: "상품 조회 패턴 활성도 {value}", unit: ""}
+      # campaign (6D)
+      campaign_participation_001: {name: "캠페인_참여율", template: "캠페인 참여율 {value}%", unit: "%", direction: higher_is_better}
+      campaign_participation_003: {name: "캠페인_반응속도", template: "캠페인 반응 속도 {value}일", unit: "일", direction: lower_is_better}
+      campaign_participation_006: {name: "캠페인_전환율", template: "캠페인 전환율 {value}%", unit: "%", direction: higher_is_better}
+      # marketing (6D)
+      marketing_response_001: {name: "마케팅_반응률", template: "마케팅 반응률 {value}%", unit: "%", direction: higher_is_better}
+      marketing_response_003: {name: "마케팅_채널선호", template: "마케팅 채널 선호도 {value}", unit: ""}
+      marketing_response_006: {name: "마케팅_피로도", template: "마케팅 피로도 {value}", unit: "", direction: lower_is_better}
+      # overseas (6D)
+      overseas_payment_001: {name: "해외결제_비중", template: "해외 결제 비중 {value}%", unit: "%"}
+      overseas_payment_003: {name: "해외결제_주요국", template: "해외 결제 주요국 집중도 {value}", unit: ""}
+      overseas_payment_006: {name: "해외결제_추세", template: "해외 결제 추세 {value}", unit: ""}
+      # open_banking (8D)
+      open_banking_001: {name: "오픈뱅킹_연결", template: "오픈뱅킹 연결 {value}건", unit: "건"}
+      open_banking_003: {name: "타행_거래비중", template: "타행 거래 비중 {value}%", unit: "%"}
+      open_banking_008: {name: "오픈뱅킹_활성도", template: "오픈뱅킹 활성도 {value}", unit: ""}
+      # e_finance (7D)
+      e_finance_001: {name: "전자금융_이용률", template: "전자금융 이용률 {value}%", unit: "%"}
+      e_finance_007: {name: "전자금융_성숙도", template: "전자금융 성숙도 {value}", unit: ""}
+      # merchant_preference (8D)
+      merchant_preference_001: {name: "선호가맹점_집중도", template: "선호 가맹점 집중도 {value}%", unit: "%"}
+      merchant_preference_003: {name: "가맹점_충성도", template: "가맹점 충성도 {value}", unit: "", direction: higher_is_better}
+      merchant_preference_008: {name: "가맹점_탐색성향", template: "가맹점 탐색 성향 {value}", unit: ""}
+
+  # ---------------------------------------------------------------------------
+  # 7. tda_topology (70D) -- 위상 데이터 분석 (TDA)
+  #    short(24) + long(36) + phase_transition(10)
+  # ---------------------------------------------------------------------------
+  tda_topology:
+    description: "위상 데이터 분석 (TDA)"
+    features:
+      # short-window TDA (24D)
+      tda_short_001: {name: "단기_토폴로지_패턴", template: "단기 거래 패턴 지속성 {value}", unit: ""}
+      tda_short_002: {name: "단기_베티수_0차", template: "단기 연결 구성요소 수 {value}", unit: ""}
+      tda_short_003: {name: "단기_베티수_1차", template: "단기 순환 구조 수 {value}", unit: ""}
+      tda_short_004: {name: "단기_지속성_엔트로피", template: "단기 패턴 엔트로피 {value}", unit: ""}
+      tda_short_005: {name: "단기_지속성_최대수명", template: "단기 패턴 최대 수명 {value}", unit: ""}
+      tda_short_010: {name: "단기_병목구조_강도", template: "단기 소비 병목 강도 {value}", unit: ""}
+      tda_short_015: {name: "단기_클러스터_밀도", template: "단기 거래 클러스터 밀도 {value}", unit: ""}
+      tda_short_020: {name: "단기_패턴_복잡도", template: "단기 소비 패턴 복잡도 {value}", unit: ""}
+      # long-window TDA (36D)
+      tda_long_001: {name: "장기_토폴로지_패턴", template: "장기 거래 구조 안정성 {value}", unit: ""}
+      tda_long_002: {name: "장기_베티수_0차", template: "장기 연결 구성요소 수 {value}", unit: ""}
+      tda_long_003: {name: "장기_베티수_1차", template: "장기 순환 구조 수 {value}", unit: ""}
+      tda_long_004: {name: "장기_지속성_엔트로피", template: "장기 패턴 엔트로피 {value}", unit: ""}
+      tda_long_010: {name: "장기_구조_안정성", template: "장기 소비 구조 안정성 {value}", unit: "", direction: higher_is_better}
+      tda_long_015: {name: "장기_패턴_진화속도", template: "장기 패턴 진화 속도 {value}", unit: ""}
+      tda_long_020: {name: "장기_거래연결_강도", template: "장기 거래 연결 강도 {value}", unit: ""}
+      tda_long_030: {name: "장기_토폴로지_요약", template: "장기 토폴로지 요약 지수 {value}", unit: ""}
+      # phase transition (10D)
+      pt_total_topological_change: {name: "구조변화_강도", template: "소비 구조 변화 강도 {value}", unit: ""}
+      pt_transition_probability: {name: "전환확률", template: "소비 패턴 전환 확률 {value}%", unit: "%"}
+      pt_regime_stability: {name: "체제_안정성", template: "소비 체제 안정성 {value}", unit: "", direction: higher_is_better}
+      pt_phase_entropy: {name: "위상_엔트로피", template: "위상 전환 엔트로피 {value}", unit: ""}
+      pt_critical_point_proximity: {name: "임계점_근접도", template: "소비 패턴 임계점 근접도 {value}", unit: ""}
+
+  # ---------------------------------------------------------------------------
+  # 8. gmm_clustering (22D) -- 고객 세그먼트 (GMM)
+  #    20 soft assignments + entropy + dominant cluster
+  # ---------------------------------------------------------------------------
+  gmm_clustering:
+    description: "고객 세그먼트 (GMM)"
+    features:
+      gmm_cluster_001: {name: "세그먼트_확률_1", template: "고객군 1 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_002: {name: "세그먼트_확률_2", template: "고객군 2 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_003: {name: "세그먼트_확률_3", template: "고객군 3 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_004: {name: "세그먼트_확률_4", template: "고객군 4 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_005: {name: "세그먼트_확률_5", template: "고객군 5 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_006: {name: "세그먼트_확률_6", template: "고객군 6 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_007: {name: "세그먼트_확률_7", template: "고객군 7 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_008: {name: "세그먼트_확률_8", template: "고객군 8 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_009: {name: "세그먼트_확률_9", template: "고객군 9 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_010: {name: "세그먼트_확률_10", template: "고객군 10 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_011: {name: "세그먼트_확률_11", template: "고객군 11 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_012: {name: "세그먼트_확률_12", template: "고객군 12 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_013: {name: "세그먼트_확률_13", template: "고객군 13 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_014: {name: "세그먼트_확률_14", template: "고객군 14 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_015: {name: "세그먼트_확률_15", template: "고객군 15 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_016: {name: "세그먼트_확률_16", template: "고객군 16 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_017: {name: "세그먼트_확률_17", template: "고객군 17 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_018: {name: "세그먼트_확률_18", template: "고객군 18 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_019: {name: "세그먼트_확률_19", template: "고객군 19 소속 확률 {value}%", unit: "%"}
+      gmm_cluster_020: {name: "세그먼트_확률_20", template: "고객군 20 소속 확률 {value}%", unit: "%"}
+      gmm_entropy: {name: "세그먼트_엔트로피", template: "고객군 분류 불확실성 {value}", unit: ""}
+      gmm_dominant_cluster: {name: "주요_세그먼트", template: "주요 소속 고객군: {value}번", unit: ""}
+
+  # ---------------------------------------------------------------------------
+  # 9. mamba_temporal (50D) -- Mamba 시계열 상태
+  # ---------------------------------------------------------------------------
+  mamba_temporal:
+    description: "Mamba 시계열 상태"
+    features:
+      mamba_temporal_001: {name: "시계열_상태벡터_1", template: "거래 시계열 상태 {value}", unit: ""}
+      mamba_temporal_002: {name: "시계열_상태벡터_2", template: "거래 패턴 잠재 상태 {value}", unit: ""}
+      mamba_temporal_005: {name: "시계열_추세_성분", template: "시계열 추세 성분 {value}", unit: ""}
+      mamba_temporal_010: {name: "시계열_계절_성분", template: "시계열 계절 성분 {value}", unit: ""}
+      mamba_temporal_015: {name: "시계열_변화점_강도", template: "시계열 변화점 강도 {value}", unit: ""}
+      mamba_temporal_020: {name: "시계열_장기기억", template: "장기 기억 상태 {value}", unit: ""}
+      mamba_temporal_025: {name: "시계열_단기변동", template: "단기 변동 상태 {value}", unit: ""}
+      mamba_temporal_030: {name: "시계열_예측신뢰도", template: "시계열 예측 신뢰도 {value}", unit: ""}
+      mamba_temporal_040: {name: "시계열_이상탐지", template: "시계열 이상 탐지 점수 {value}", unit: ""}
+      mamba_temporal_050: {name: "시계열_종합상태", template: "시계열 종합 상태 지수 {value}", unit: ""}
+
+  # ---------------------------------------------------------------------------
+  # 10. economics (17D) -- 경제 행동 지표
+  #     income_decomposition(8) + financial_behavior(9)
+  # ---------------------------------------------------------------------------
+  economics:
+    description: "경제 행동 지표"
+    features:
+      # income_decomposition (8D)
+      income_decomposition_001: {name: "소득안정성", template: "소득 안정성 지수 {value}", unit: "", direction: higher_is_better}
+      income_decomposition_002: {name: "소득추세", template: "소득 추세 기울기 {value}", unit: "", direction: higher_is_better}
+      income_decomposition_003: {name: "소득계절성", template: "소득 계절성 강도 {value}", unit: ""}
+      income_decomposition_004: {name: "소득변동성", template: "소득 변동성 {value}", unit: "", direction: lower_is_better}
+      income_decomposition_005: {name: "소득대비_지출비율", template: "소득 대비 지출 비율 {value}%", unit: "%"}
+      income_decomposition_006: {name: "가처분소득_추정", template: "가처분 소득 추정 {value}만원", unit: "만원"}
+      income_decomposition_007: {name: "소득원_다양성", template: "소득원 다양성 {value}", unit: ""}
+      income_decomposition_008: {name: "소득_예측가능성", template: "소득 예측 가능성 {value}", unit: "", direction: higher_is_better}
+      # financial_behavior (9D)
+      financial_behavior_001: {name: "지출탄력성", template: "소비 탄력성 {value}", unit: ""}
+      financial_behavior_002: {name: "예산준수율", template: "예산 준수율 {value}%", unit: "%", direction: higher_is_better}
+      financial_behavior_003: {name: "재무스트레스", template: "재무 스트레스 지수 {value}", unit: "", direction: lower_is_better}
+      financial_behavior_004: {name: "저축성향", template: "저축 성향 지수 {value}", unit: "", direction: higher_is_better}
+      financial_behavior_005: {name: "소비충동성", template: "소비 충동성 지수 {value}", unit: "", direction: lower_is_better}
+      financial_behavior_006: {name: "재무건전성", template: "재무 건전성 점수 {value}", unit: "", direction: higher_is_better}
+      financial_behavior_007: {name: "금융리터러시_추정", template: "금융 리터러시 추정 {value}", unit: ""}
+      financial_behavior_008: {name: "가격민감도", template: "가격 민감도 {value}", unit: ""}
+      financial_behavior_009: {name: "할인선호도", template: "할인 선호도 {value}", unit: ""}
+
+  # ---------------------------------------------------------------------------
+  # 11. multidisciplinary (24D) -- 다학제 분석 지표
+  #     chemical_kinetics(6) + epidemic_diffusion(5) + interference(8) + crime_pattern(5)
+  # ---------------------------------------------------------------------------
+  multidisciplinary:
+    description: "다학제 분석 지표"
+    features:
+      # chemical_kinetics (6D)
+      chemical_kinetics_001: {name: "소비반응속도", template: "소비 반응 속도 {value}", unit: ""}
+      chemical_kinetics_002: {name: "소비촉매효과", template: "소비 촉매 효과 {value}", unit: ""}
+      chemical_kinetics_003: {name: "소비반응차수", template: "소비 반응 차수 {value}", unit: ""}
+      chemical_kinetics_004: {name: "소비활성화에너지", template: "소비 활성화 에너지 {value}", unit: ""}
+      chemical_kinetics_005: {name: "소비평형상수", template: "소비 평형 상수 {value}", unit: ""}
+      chemical_kinetics_006: {name: "소비반응열", template: "소비 반응 강도 {value}", unit: ""}
+      # epidemic_diffusion (5D)
+      epidemic_diffusion_001: {name: "트렌드확산도", template: "소비 트렌드 확산도 {value}", unit: ""}
+      epidemic_diffusion_002: {name: "트렌드감수성", template: "트렌드 감수성 {value}", unit: ""}
+      epidemic_diffusion_003: {name: "트렌드전파력", template: "소비 트렌드 전파력 {value}", unit: ""}
+      epidemic_diffusion_004: {name: "트렌드면역성", template: "트렌드 저항성 {value}", unit: ""}
+      epidemic_diffusion_005: {name: "트렌드채택속도", template: "트렌드 채택 속도 {value}", unit: ""}
+      # interference (8D)
+      interference_001: {name: "간섭패턴", template: "소비 간섭 패턴 강도 {value}", unit: ""}
+      interference_002: {name: "소비파동_진폭", template: "소비 파동 진폭 {value}", unit: ""}
+      interference_003: {name: "소비파동_주기", template: "소비 파동 주기 {value}", unit: ""}
+      interference_004: {name: "소비파동_위상", template: "소비 파동 위상 {value}", unit: ""}
+      interference_005: {name: "보강간섭_점수", template: "소비 보강 간섭 점수 {value}", unit: ""}
+      interference_006: {name: "상쇄간섭_점수", template: "소비 상쇄 간섭 점수 {value}", unit: ""}
+      interference_007: {name: "간섭_복잡도", template: "소비 간섭 복잡도 {value}", unit: ""}
+      interference_008: {name: "간섭_예측성", template: "소비 간섭 예측성 {value}", unit: ""}
+      # crime_pattern (5D)
+      crime_pattern_001: {name: "이상거래지표", template: "이상 거래 탐지 지표 {value}", unit: "", direction: lower_is_better}
+      crime_pattern_002: {name: "거래패턴_일탈도", template: "거래 패턴 일탈도 {value}", unit: "", direction: lower_is_better}
+      crime_pattern_003: {name: "시공간_이상도", template: "시공간 이상도 {value}", unit: ""}
+      crime_pattern_004: {name: "네트워크_이상도", template: "거래 네트워크 이상도 {value}", unit: ""}
+      crime_pattern_005: {name: "행동_일관성", template: "거래 행동 일관성 {value}", unit: "", direction: higher_is_better}
+
+  # ---------------------------------------------------------------------------
+  # 12. model_derived (27D) -- 모델 파생 피처 (HMM, Bandit, LNN)
+  #     hmm(5) + bandit(4) + lnn(18)
+  # ---------------------------------------------------------------------------
+  model_derived:
+    description: "모델 파생 피처 (HMM, Bandit, LNN)"
+    features:
+      # HMM summary (5D)
+      hmm_dominant_state: {name: "주요행동상태", template: "현재 주요 행동 상태: {value}", unit: ""}
+      hmm_state_entropy: {name: "행동다양성", template: "행동 다양성 지수 {value}", unit: ""}
+      hmm_transition_intensity: {name: "상태전환_강도", template: "행동 상태 전환 강도 {value}", unit: ""}
+      hmm_state_stability: {name: "상태안정성", template: "행동 상태 안정성 {value}", unit: "", direction: higher_is_better}
+      hmm_regime_duration: {name: "체제지속기간", template: "현재 행동 체제 지속 기간 {value}", unit: ""}
+      # Bandit/MAB (4D)
+      bandit_model_001: {name: "탐색성향", template: "상품 탐색 성향 {value}", unit: ""}
+      bandit_model_002: {name: "활용성향", template: "기존 상품 활용 성향 {value}", unit: ""}
+      bandit_model_003: {name: "탐색활용_균형", template: "탐색-활용 균형 지수 {value}", unit: ""}
+      bandit_model_004: {name: "최적행동_확률", template: "최적 행동 선택 확률 {value}%", unit: "%"}
+      # LNN (18D)
+      lnn_dist_amount_mean: {name: "지출분포_평균", template: "지출 분포 평균 {value}", unit: ""}
+      lnn_dist_amount_std: {name: "지출분포_표준편차", template: "지출 분포 표준편차 {value}", unit: ""}
+      lnn_dist_amount_skewness: {name: "지출분포_편향", template: "지출 분포 편향도 {value}", unit: ""}
+      lnn_dist_amount_kurtosis: {name: "지출분포_첨도", template: "지출 분포 첨도 {value}", unit: ""}
+      lnn_dist_interval_mean: {name: "거래간격분포_평균", template: "거래 간격 분포 평균 {value}", unit: ""}
+      lnn_dist_interval_std: {name: "거래간격분포_표준편차", template: "거래 간격 분포 변동성 {value}", unit: ""}
+      lnn_flow_velocity: {name: "자금흐름_속도", template: "자금 흐름 속도 {value}", unit: ""}
+      lnn_flow_acceleration: {name: "자금흐름_가속도", template: "자금 흐름 가속도 {value}", unit: ""}
+      lnn_flow_divergence: {name: "자금흐름_발산", template: "자금 흐름 발산도 {value}", unit: ""}
+      lnn_potential_energy: {name: "잠재에너지", template: "소비 잠재 에너지 {value}", unit: ""}
+      lnn_kinetic_energy: {name: "운동에너지", template: "소비 운동 에너지 {value}", unit: ""}
+      lnn_lagrangian: {name: "라그랑지안", template: "소비 역학 라그랑지안 {value}", unit: ""}
+      lnn_hamiltonian: {name: "해밀토니안", template: "소비 역학 해밀토니안 {value}", unit: ""}
+      lnn_phase_space_density: {name: "위상공간_밀도", template: "위상 공간 밀도 {value}", unit: ""}
+      lnn_lyapunov_exponent: {name: "리아푸노프_지수", template: "소비 혼돈도 (리아푸노프) {value}", unit: ""}
+      lnn_attractor_dim: {name: "끌개_차원", template: "소비 끌개 차원 {value}", unit: ""}
+      lnn_recurrence_rate: {name: "재귀율", template: "소비 패턴 재귀율 {value}", unit: ""}
+      lnn_determinism: {name: "결정론성", template: "소비 패턴 결정론성 {value}", unit: ""}
+
+  # ---------------------------------------------------------------------------
+  # 13. merchant_hierarchy (21D) -- 가맹점 계층 구조
+  #     MCC L1(4) + MCC L2(4) + Brand embed(8) + Agg stats(4) + Radius(1)
+  # ---------------------------------------------------------------------------
+  merchant_hierarchy:
+    description: "가맹점 계층 구조"
+    features:
+      # MCC Level 1 (4D)
+      merchant_mcc_level1_0: {name: "주요업종_1", template: "주요 이용 업종 1: {value}", unit: ""}
+      merchant_mcc_level1_1: {name: "주요업종_2", template: "주요 이용 업종 2: {value}", unit: ""}
+      merchant_mcc_level1_2: {name: "주요업종_3", template: "주요 이용 업종 3: {value}", unit: ""}
+      merchant_mcc_level1_3: {name: "주요업종_4", template: "주요 이용 업종 4: {value}", unit: ""}
+      # MCC Level 2 (4D)
+      merchant_mcc_level2_0: {name: "세부업종_1", template: "세부 업종 1: {value}", unit: ""}
+      merchant_mcc_level2_1: {name: "세부업종_2", template: "세부 업종 2: {value}", unit: ""}
+      merchant_mcc_level2_2: {name: "세부업종_3", template: "세부 업종 3: {value}", unit: ""}
+      merchant_mcc_level2_3: {name: "세부업종_4", template: "세부 업종 4: {value}", unit: ""}
+      # Brand embed (8D)
+      merchant_brand_embed_0: {name: "브랜드선호도_1", template: "브랜드 선호 벡터 1: {value}", unit: ""}
+      merchant_brand_embed_1: {name: "브랜드선호도_2", template: "브랜드 선호 벡터 2: {value}", unit: ""}
+      merchant_brand_embed_2: {name: "브랜드선호도_3", template: "브랜드 선호 벡터 3: {value}", unit: ""}
+      merchant_brand_embed_3: {name: "브랜드선호도_4", template: "브랜드 선호 벡터 4: {value}", unit: ""}
+      merchant_brand_embed_4: {name: "브랜드선호도_5", template: "브랜드 선호 벡터 5: {value}", unit: ""}
+      merchant_brand_embed_5: {name: "브랜드선호도_6", template: "브랜드 선호 벡터 6: {value}", unit: ""}
+      merchant_brand_embed_6: {name: "브랜드선호도_7", template: "브랜드 선호 벡터 7: {value}", unit: ""}
+      merchant_brand_embed_7: {name: "브랜드선호도_8", template: "브랜드 선호 벡터 8: {value}", unit: ""}
+      # Aggregate stats (4D)
+      merchant_agg_txn_count: {name: "가맹점_거래건수", template: "가맹점 평균 거래 건수 {value}", unit: ""}
+      merchant_agg_avg_amount: {name: "가맹점_평균금액", template: "가맹점 평균 거래 금액 {value}", unit: ""}
+      merchant_agg_diversity: {name: "가맹점_업종다양성", template: "가맹점 업종 다양성 {value}", unit: ""}
+      merchant_agg_loyalty: {name: "가맹점_충성도지수", template: "가맹점 충성도 지수 {value}", unit: "", direction: higher_is_better}
+      # Hierarchy radius (1D)
+      merchant_hierarchy_radius: {name: "가맹점_다양성", template: "가맹점 이용 다양성 {value}", unit: "", direction: higher_is_better}
+
+
+# =============================================================================
+# Task-specific feature weight boosts
+# =============================================================================
+# When generating reasons for a specific task, these feature groups get
+# higher priority via weight overrides on importance scores.
+
+task_feature_weights:
+  ctr:
+    priority_groups: [base_category, base_txn_stats, multidisciplinary]
+    weight_overrides: {base_category: 1.8, base_txn_stats: 1.5}
+  cvr:
+    priority_groups: [base_category, economics, multi_source]
+    weight_overrides: {base_category: 2.0, economics: 1.5}
+  churn:
+    priority_groups: [base_rfm, base_temporal, economics]
+    weight_overrides: {base_rfm: 1.8, base_temporal: 1.5, economics: 1.3}
+  retention:
+    priority_groups: [base_rfm, multi_source, extended_source]
+    weight_overrides: {base_rfm: 1.5, multi_source: 1.3}
+  ltv:
+    priority_groups: [economics, multi_source, base_rfm]
+    weight_overrides: {economics: 2.0, multi_source: 1.5}
+  nba:
+    priority_groups: [base_category, merchant_hierarchy, multi_source]
+    weight_overrides: {base_category: 1.8, merchant_hierarchy: 1.5}
+  life_stage:
+    priority_groups: [base_rfm, economics, model_derived]
+    weight_overrides: {economics: 1.5, model_derived: 1.3}
+  spending_category:
+    priority_groups: [base_category, merchant_hierarchy, multidisciplinary]
+    weight_overrides: {base_category: 2.0, merchant_hierarchy: 1.5}
+  brand_prediction:
+    priority_groups: [merchant_hierarchy, base_category, multidisciplinary]
+    weight_overrides: {merchant_hierarchy: 2.0, base_category: 1.5}
+  merchant_affinity:
+    priority_groups: [merchant_hierarchy, base_category, extended_source]
+    weight_overrides: {merchant_hierarchy: 2.0}
+  balance_util:
+    priority_groups: [economics, multi_source, base_rfm]
+    weight_overrides: {economics: 1.8, multi_source: 1.3}
+  channel:
+    priority_groups: [extended_source, base_temporal, multi_source]
+    weight_overrides: {extended_source: 1.5}
+  timing:
+    priority_groups: [base_temporal, mamba_temporal, model_derived]
+    weight_overrides: {base_temporal: 2.0, mamba_temporal: 1.5}
+  engagement:
+    priority_groups: [base_txn_stats, base_temporal, multi_source]
+    weight_overrides: {base_txn_stats: 1.5}
+  consumption_cycle:
+    priority_groups: [base_temporal, multidisciplinary, economics]
+    weight_overrides: {base_temporal: 1.8, multidisciplinary: 1.3}
+  spending_bucket:
+    priority_groups: [economics, base_category, base_txn_stats]
+    weight_overrides: {economics: 1.5}

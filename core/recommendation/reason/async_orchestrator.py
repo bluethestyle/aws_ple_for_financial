@@ -422,6 +422,20 @@ class AsyncReasonOrchestrator:
                 job_id=job_id,
             )
 
+        # L2a Safety Gate: 3-layer check before caching
+        gate_passed, gate_reason = self._apply_safety_gate(rewritten, context)
+        if not gate_passed:
+            logger.warning("L2a safety gate failed: %s (job=%s)", gate_reason, job_id)
+            # Fall back to L1
+            return ReasonResult(
+                text=l1_text,
+                layer="L1",
+                confidence=1.0,
+                validation_passed=True,
+                generated_at=datetime.now(timezone.utc).isoformat(),
+                job_id=job_id,
+            )
+
         l2a_result = ReasonResult(
             text=rewritten,
             layer="L2a",
@@ -701,6 +715,43 @@ class AsyncReasonOrchestrator:
         )
 
         return prompt
+
+    # ------------------------------------------------------------------
+    # L2a: 3-Layer Safety Gate
+    # ------------------------------------------------------------------
+
+    def _apply_safety_gate(self, text: str, context: Dict) -> Tuple[bool, str]:
+        """3-Layer Safety Gate for L2a LLM output.
+
+        Gate 1 (Parse): Non-empty, no JSON remnants, no raw code
+        Gate 2 (Compliance): No prohibited financial claims (reuse self_checker rules)
+        Gate 3 (Quality): Length 30~200 chars, Korean ratio >= 80%
+
+        Returns:
+            (passed, gate_name_that_failed_or_empty)
+        """
+        # Gate 1: Parse check
+        if not text or len(text.strip()) < 10:
+            return False, "parse:empty"
+        if any(marker in text for marker in ['{', '}', '```', '<json>', 'null']):
+            return False, "parse:json_remnant"
+
+        # Gate 2: Compliance (reuse self_checker)
+        if self._self_checker:
+            result = self._self_checker.check(text)
+            if result.verdict == "reject" and result.violations:
+                return False, "compliance:" + result.violations[0]
+
+        # Gate 3: Quality
+        if len(text) < 30 or len(text) > 200:
+            return False, f"quality:length_{len(text)}"
+        # Korean character ratio
+        korean_count = sum(1 for c in text if '\uac00' <= c <= '\ud7a3')
+        total_alpha = sum(1 for c in text if c.isalpha())
+        if total_alpha > 0 and korean_count / total_alpha < 0.8:
+            return False, "quality:korean_ratio_low"
+
+        return True, ""
 
     # ------------------------------------------------------------------
     # LLM output extraction

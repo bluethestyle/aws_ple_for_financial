@@ -63,10 +63,17 @@ Config example (``reason.reverse_mapper``)::
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Tuple
 
 import numpy as np
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover
+    yaml = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from core.feature.group_config import FeatureGroupConfig
@@ -156,6 +163,11 @@ class ReverseMapper:
         )
 
         self.feature_names: Optional[List[str]] = feature_names
+
+        # Financial glossary lookup tables (populated by _load_glossary)
+        self._glossary_features: Dict[str, Dict[str, Any]] = {}
+        self._glossary_group_descriptions: Dict[str, str] = {}
+        self._glossary_task_weights: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
             "ReverseMapper initialised: %d groups, %d range bins",
@@ -273,6 +285,219 @@ class ReverseMapper:
         return instance
 
     # ------------------------------------------------------------------
+    # Glossary-based construction and interpretation
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_glossary(
+        cls,
+        glossary_path: str,
+        feature_groups_path: Optional[str] = None,
+        feature_names: Optional[List[str]] = None,
+    ) -> "ReverseMapper":
+        """Create a ReverseMapper with financial glossary loaded from YAML.
+
+        The glossary provides Korean financial business language templates
+        for each feature, enabling human-readable interpretations like
+        ``"월 평균 47건 거래"`` instead of generic ``"rfm_002: high"``.
+
+        Args:
+            glossary_path: Path to ``feature_glossary.yaml``.
+            feature_groups_path: Optional path to ``feature_groups.yaml``
+                for auto-deriving group index ranges and feature names.
+                If ``None``, group ranges must be set via the base config
+                or ``from_feature_groups``.
+            feature_names: Optional explicit feature name list.
+
+        Returns:
+            A fully configured ReverseMapper with glossary loaded.
+        """
+        if yaml is None:
+            raise ImportError(
+                "PyYAML is required for glossary loading. "
+                "Install it with: pip install pyyaml"
+            )
+
+        # Build base config from feature_groups.yaml if provided
+        config: Dict[str, Any] = {"reason": {"reverse_mapper": {}}}
+        resolved_names: Optional[List[str]] = feature_names
+
+        if feature_groups_path and os.path.exists(feature_groups_path):
+            with open(feature_groups_path, "r", encoding="utf-8") as fh:
+                fg_data = yaml.safe_load(fh)
+
+            feature_groups_cfg: Dict[str, Dict[str, Any]] = {}
+            all_names: List[str] = []
+            offset = 0
+
+            for group_def in fg_data.get("feature_groups", []):
+                name = group_def["name"]
+                dim = group_def.get("output_dim", 0)
+                feature_groups_cfg[name] = {
+                    "start": offset,
+                    "end": offset + dim,
+                    "label": name.replace("_", " ").title(),
+                    "description": group_def.get("interpretation", {}).get(
+                        "template", ""
+                    ),
+                }
+                # Collect column names for feature_names
+                for col in group_def.get("columns", []):
+                    all_names.append(col)
+                offset += dim
+
+            config["reason"]["reverse_mapper"]["feature_groups"] = (
+                feature_groups_cfg
+            )
+            if resolved_names is None and all_names:
+                resolved_names = all_names
+
+        instance = cls(config=config, feature_names=resolved_names)
+        instance._load_glossary(glossary_path)
+
+        logger.info(
+            "ReverseMapper.from_glossary: loaded %d glossary features, "
+            "%d group descriptions, %d task weight sets",
+            len(instance._glossary_features),
+            len(instance._glossary_group_descriptions),
+            len(instance._glossary_task_weights),
+        )
+        return instance
+
+    def _load_glossary(self, path: str) -> None:
+        """Load feature glossary YAML and build lookup tables.
+
+        Populates:
+            - ``_glossary_features``: ``{feature_id: {name, template, unit, direction}}``
+            - ``_glossary_group_descriptions``: ``{group_name: description}``
+            - ``_glossary_task_weights``: ``{task: {priority_groups, weight_overrides}}``
+        """
+        if yaml is None:
+            raise ImportError(
+                "PyYAML is required for glossary loading. "
+                "Install it with: pip install pyyaml"
+            )
+
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+
+        # Parse feature_groups section
+        for group_name, group_def in data.get("feature_groups", {}).items():
+            desc = group_def.get("description", "")
+            self._glossary_group_descriptions[group_name] = desc
+
+            for feat_id, feat_def in group_def.get("features", {}).items():
+                self._glossary_features[feat_id] = {
+                    "name": feat_def.get("name", feat_id),
+                    "template": feat_def.get("template", "{value}"),
+                    "unit": feat_def.get("unit", ""),
+                    "direction": feat_def.get("direction", ""),
+                    "group": group_name,
+                    "group_description": desc,
+                }
+
+        # Parse task_feature_weights section
+        for task_name, task_def in data.get("task_feature_weights", {}).items():
+            self._glossary_task_weights[task_name] = {
+                "priority_groups": task_def.get("priority_groups", []),
+                "weight_overrides": task_def.get("weight_overrides", {}),
+            }
+
+        logger.debug(
+            "Glossary loaded: %d features across %d groups",
+            len(self._glossary_features),
+            len(self._glossary_group_descriptions),
+        )
+
+    def interpret_financial(
+        self,
+        feature_name: str,
+        value: float,
+        task: Optional[str] = None,
+    ) -> str:
+        """Return a financial business language interpretation of a feature.
+
+        Uses the glossary template to produce human-readable Korean text::
+
+            interpret_financial("rfm_002", 47.0)
+            # => "월 평균 47건 거래"
+
+        Falls back to the generic range-label interpretation when the
+        feature is not found in the glossary.
+
+        Args:
+            feature_name: Feature identifier (e.g. ``"rfm_002"``).
+            value: Raw or transformed feature value.
+            task: Optional task for context (unused currently, reserved
+                  for future task-specific template variants).
+
+        Returns:
+            Korean financial language string.
+        """
+        glossary_entry = self._glossary_features.get(feature_name)
+        if glossary_entry is not None:
+            template = glossary_entry["template"]
+            try:
+                # Format value: round floats for readability
+                if isinstance(value, float):
+                    if value == int(value):
+                        display_value = str(int(value))
+                    elif abs(value) >= 100:
+                        display_value = f"{value:,.0f}"
+                    elif abs(value) >= 1:
+                        display_value = f"{value:.1f}"
+                    else:
+                        display_value = f"{value:.2f}"
+                else:
+                    display_value = str(value)
+
+                return template.format(value=display_value)
+            except (KeyError, IndexError, ValueError):
+                return f"{glossary_entry['name']}: {value}"
+
+        # Fallback: use generic range-label interpretation
+        range_label = self._classify_range(value)
+        _, group_label = self._get_feature_group_by_name(feature_name)
+        return self._render_interpretation(feature_name, group_label, range_label)
+
+    def _get_feature_group_by_name(
+        self,
+        feature_name: str,
+    ) -> Tuple[str, str]:
+        """Determine feature group by feature name (glossary or feature_names list)."""
+        # Check glossary first
+        glossary_entry = self._glossary_features.get(feature_name)
+        if glossary_entry is not None:
+            group = glossary_entry["group"]
+            label = self._glossary_group_descriptions.get(group, group)
+            return group, label
+
+        # Fall back to index-based lookup
+        if self.feature_names:
+            try:
+                idx = self.feature_names.index(feature_name)
+                return self._get_feature_group(idx)
+            except ValueError:
+                pass
+
+        return "unknown", "Unknown"
+
+    def get_glossary_task_weights(
+        self,
+        task: str,
+    ) -> Dict[str, float]:
+        """Return glossary-defined weight overrides for a given task.
+
+        These can be used by callers to re-weight feature importances
+        before calling ``interpret_top_k``.
+
+        Returns:
+            ``{group_name: weight_multiplier}`` dict, empty if task unknown.
+        """
+        task_def = self._glossary_task_weights.get(task, {})
+        return task_def.get("weight_overrides", {})
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -314,7 +539,7 @@ class ReverseMapper:
 
             value = float(feature_vector[idx]) if feature_vector is not None and idx < len(feature_vector) else float(importances[idx])
             range_label = self._classify_range(value)
-            interpretation = self._render_interpretation(feat_name, group_label, range_label)
+            interpretation = self._render_interpretation(feat_name, group_label, range_label, value=value)
 
             results.append(FeatureInterpretation(
                 feature_name=feat_name,
@@ -388,8 +613,21 @@ class ReverseMapper:
         feature_name: str,
         group_label: str,
         range_label: str,
+        value: Optional[float] = None,
     ) -> str:
-        """Render a natural language interpretation."""
+        """Render a natural language interpretation.
+
+        When a glossary is loaded and the feature has a Korean template,
+        uses the financial business language template.  Otherwise falls
+        back to generic range-label interpretation.
+        """
+        # Try glossary-based financial interpretation first
+        if self._glossary_features and value is not None:
+            glossary_entry = self._glossary_features.get(feature_name)
+            if glossary_entry is not None:
+                return self.interpret_financial(feature_name, value)
+
+        # Fallback: generic range-label template
         template = self.interpretation_templates.get(
             range_label,
             "{feature_label} has a {range_label} value.",
