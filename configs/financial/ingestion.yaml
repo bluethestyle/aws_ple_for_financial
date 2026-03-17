@@ -1,0 +1,76 @@
+# =============================================================================
+# Financial Recommendation System -- Domain Ingestion Config
+# =============================================================================
+# Configures raw data sources for the domain ingestion framework.
+# Each domain maps to a registered AbstractDomainIngestor subclass.
+#
+# Usage:
+#   config = IngestionConfig.from_yaml("configs/financial/ingestion.yaml")
+#   runner = IngestionRunner(config)
+#   results = runner.run_all()
+# =============================================================================
+
+output_base_s3: s3://aiops-ple-financial/ingested/
+schema_path: configs/financial/schema.yaml
+encryption_config_path: configs/financial/encryption.yaml
+
+domains:
+
+  # ---- Core domains ----
+  customer_master:
+    s3_input_path: s3://aiops-ple-financial/raw/customer_master/
+    enabled: true
+
+  account:
+    s3_input_path: s3://aiops-ple-financial/raw/account/
+    enabled: true
+
+  card:
+    s3_input_path: s3://aiops-ple-financial/raw/card/
+    enabled: true
+
+  transaction:
+    s3_input_path: s3://aiops-ple-financial/raw/transaction/
+    enabled: true
+
+  # ---- G-series domains ----
+  g6_management:
+    s3_input_path: s3://aiops-ple-financial/raw/g6_management/
+    enabled: true
+
+  g7_membership:
+    s3_input_path: s3://aiops-ple-financial/raw/g7_membership/
+    enabled: true
+
+  g9_fund_forex:
+    s3_input_path: s3://aiops-ple-financial/raw/g9_fund_forex/
+    enabled: true
+
+  # ---- Extended domains ----
+  insurance:
+    s3_input_path: s3://aiops-ple-financial/raw/insurance/
+    enabled: true
+
+  consultation:
+    s3_input_path: s3://aiops-ple-financial/raw/consultation/
+    enabled: true
+
+  campaign:
+    s3_input_path: s3://aiops-ple-financial/raw/campaign/
+    enabled: true
+
+  marketing:
+    s3_input_path: s3://aiops-ple-financial/raw/marketing/
+    enabled: true
+
+  open_banking:
+    s3_input_path: s3://aiops-ple-financial/raw/open_banking/
+    enabled: true
+
+  e_finance:
+    s3_input_path: s3://aiops-ple-financial/raw/e_finance/
+    enabled: true
+
+  merchant:
+    s3_input_path: s3://aiops-ple-financial/raw/merchant/
+    enabled: true
