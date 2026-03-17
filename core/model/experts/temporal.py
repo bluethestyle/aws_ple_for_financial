@@ -1,18 +1,16 @@
 """
-Temporal Ensemble Expert -- Mamba + PatchTST with learned gating.
+Temporal Ensemble Expert -- Mamba + PatchTST + LNN with learned gating.
 
 Ensembles multiple temporal modelling paradigms to capture different aspects
 of sequential data:
 
 * **Mamba (SSM)** -- linear-complexity long-range dependency modelling.
 * **PatchTST (Transformer)** -- patch-based attention for periodic patterns.
+* **LNN (Liquid Neural Network)** -- input-dependent time constants for
+  adaptive temporal dynamics, especially useful for irregularly sampled data.
 
 A learned gating network decides per-sample how much to trust each sub-model,
 providing both capacity and interpretability (gate entropy monitoring).
-
-The original implementation also included Liquid Neural Networks (LNN).
-LNN support can be re-added as a plugin; this version keeps Mamba + Transformer
-as the two production-ready branches.
 """
 
 from __future__ import annotations
@@ -159,13 +157,169 @@ class PatchTST(nn.Module):
 
 
 # =============================================================================
+# Liquid Neural Network components
+# =============================================================================
+
+class LiquidTimeConstantCell(nn.Module):
+    """
+    Single Liquid Time-Constant (LTC) cell with input-dependent time constants.
+
+    Inspired by Hasani et al. "Liquid Time-constant Networks" (AAAI 2021).
+    The time constant tau is computed from both the current input and the
+    previous hidden state, allowing the network to adapt its temporal dynamics
+    per-sample.  Small tau yields fast adaptation; large tau yields slow
+    (memory-like) behaviour.
+    """
+
+    def __init__(self, input_dim: int, hidden_dim: int, dropout: float = 0.1):
+        super().__init__()
+        # Gates: input, forget, candidate, output (LSTM-style)
+        self.x_proj = nn.Linear(input_dim + hidden_dim, hidden_dim * 4)
+        # Adaptive time constant from (x_t, h_prev)
+        self.tau_net = nn.Sequential(
+            nn.Linear(input_dim + hidden_dim, hidden_dim),
+            nn.Sigmoid(),
+        )
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        x_t: torch.Tensor,
+        h_prev: torch.Tensor,
+        dt: float = 1.0,
+    ) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        x_t : torch.Tensor
+            ``[batch, input_dim]`` -- input at time *t*.
+        h_prev : torch.Tensor
+            ``[batch, hidden_dim]`` -- previous hidden state.
+        dt : float or torch.Tensor
+            Scalar or ``[batch]`` time delta since last event.
+
+        Returns
+        -------
+        torch.Tensor
+            ``[batch, hidden_dim]`` -- updated hidden state.
+        """
+        combined = torch.cat([x_t, h_prev], dim=-1)
+
+        # LSTM-style gates
+        gates = self.x_proj(combined)
+        i_gate, f_gate, g_gate, o_gate = gates.chunk(4, dim=-1)
+        i_gate = torch.sigmoid(i_gate)
+        f_gate = torch.sigmoid(f_gate)
+        g_gate = torch.tanh(g_gate)
+        o_gate = torch.sigmoid(o_gate)
+
+        # Candidate state (gated)
+        candidate = o_gate * torch.tanh(f_gate * h_prev + i_gate * g_gate)
+
+        # Adaptive time constant
+        tau = self.tau_net(combined)  # [batch, hidden_dim], in (0, 1)
+        # Scale tau to a meaningful range (eps prevents division by zero)
+        eps = 1e-6
+        # ODE-inspired update: h += (dt / (tau + eps)) * (candidate - h_prev)
+        if isinstance(dt, torch.Tensor):
+            dt = dt.unsqueeze(-1)  # [batch, 1]
+        alpha = dt / (tau + eps)
+        h_new = h_prev + alpha * (candidate - h_prev)
+
+        h_new = self.layer_norm(h_new)
+        h_new = self.dropout(h_new)
+        return h_new
+
+
+class LiquidNeuralNetwork(nn.Module):
+    """
+    Stacked Liquid Time-Constant cells processing a sequence.
+
+    Each layer consists of an :class:`LiquidTimeConstantCell`.  The network
+    processes the sequence step-by-step and returns the mean-pooled hidden
+    state across time.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 64,
+        n_layers: int = 2,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+
+        # Optional input projection
+        if input_dim != hidden_dim:
+            self.input_proj: Optional[nn.Linear] = nn.Linear(input_dim, hidden_dim)
+        else:
+            self.input_proj = None
+
+        # Stacked LTC cells -- first cell receives hidden_dim input
+        self.cells = nn.ModuleList([
+            LiquidTimeConstantCell(hidden_dim, hidden_dim, dropout=dropout)
+            for _ in range(n_layers)
+        ])
+        self.norm = nn.LayerNorm(hidden_dim)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        time_delta: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        x : torch.Tensor
+            ``[batch, seq_len, input_dim]``
+        time_delta : torch.Tensor or None
+            ``[batch, seq_len]`` inter-event time deltas.  If ``None``,
+            uniform spacing ``dt=1.0`` is assumed.
+
+        Returns
+        -------
+        torch.Tensor
+            ``[batch, hidden_dim]`` -- mean-pooled hidden states.
+        """
+        batch, seq_len, _ = x.shape
+
+        # Project input if dimensions differ
+        if self.input_proj is not None:
+            x = self.input_proj(x)
+
+        # Initialise hidden states for each layer
+        h_states = [
+            torch.zeros(batch, self.hidden_dim, device=x.device, dtype=x.dtype)
+            for _ in self.cells
+        ]
+
+        # Collect final-layer hidden states for pooling
+        collector: list[torch.Tensor] = []
+
+        for t in range(seq_len):
+            x_t = x[:, t, :]
+            dt = time_delta[:, t] if time_delta is not None else 1.0
+            for layer_idx, cell in enumerate(self.cells):
+                x_t = cell(x_t, h_states[layer_idx], dt=dt)
+                h_states[layer_idx] = x_t
+            collector.append(x_t)
+
+        # Mean pool across time
+        stacked = torch.stack(collector, dim=1)  # [batch, seq_len, hidden_dim]
+        pooled = stacked.mean(dim=1)  # [batch, hidden_dim]
+        return self.norm(pooled)
+
+
+# =============================================================================
 # Temporal Ensemble Expert
 # =============================================================================
 
 @ExpertRegistry.register("temporal_ensemble")
 class TemporalEnsembleExpert(AbstractExpert):
     """
-    Temporal ensemble expert: Mamba + Transformer with learned gating.
+    Temporal ensemble expert: Mamba + Transformer + LNN with learned gating.
 
     Processes one or more sequence streams (e.g. primary + auxiliary).
     Each enabled sub-model produces a representation that is projected to
@@ -196,6 +350,12 @@ class TemporalEnsembleExpert(AbstractExpert):
         Encoder layers (default 2).
     transformer.patch_size : int
         Patch size (default 16).
+    lnn.enabled : bool
+        Enable Liquid Neural Network branch (default ``True``).
+    lnn.hidden_dim : int
+        LNN hidden dimension (default 64).
+    lnn.n_layers : int
+        Number of stacked LTC cells (default 2).
     ensemble_gating : bool
         Use learned gating (default ``True``).  If ``False``,
         concatenate + MLP fusion.
@@ -214,13 +374,17 @@ class TemporalEnsembleExpert(AbstractExpert):
         # Sub-model configs (nested dicts)
         m_cfg = config.get("mamba", {})
         t_cfg = config.get("transformer", {})
+        l_cfg = config.get("lnn", {})
 
         self.mamba_enabled: bool = m_cfg.get("enabled", True)
         self.transformer_enabled: bool = t_cfg.get("enabled", True)
+        self.lnn_enabled: bool = l_cfg.get("enabled", True)
 
-        num_models = self.mamba_enabled + self.transformer_enabled
+        num_models = self.mamba_enabled + self.transformer_enabled + self.lnn_enabled
         if num_models == 0:
-            raise ValueError("At least one sub-model (mamba or transformer) must be enabled.")
+            raise ValueError(
+                "At least one sub-model (mamba, transformer, or lnn) must be enabled."
+            )
 
         # -- Mamba branch ------------------------------------------------------
         mamba_out_dim = 0
@@ -277,8 +441,32 @@ class TemporalEnsembleExpert(AbstractExpert):
                 )
                 transformer_out_dim += t_aux_d
 
+        # -- LNN branch --------------------------------------------------------
+        lnn_out_dim = 0
+        if self.lnn_enabled:
+            l_hidden_dim = l_cfg.get("hidden_dim", 64)
+            l_n_layers = l_cfg.get("n_layers", 2)
+
+            self.lnn_primary = LiquidNeuralNetwork(
+                input_dim=input_dim,
+                hidden_dim=l_hidden_dim,
+                n_layers=l_n_layers,
+                dropout=dropout,
+            )
+            lnn_out_dim += l_hidden_dim
+
+            if aux_input_dim is not None:
+                l_aux_d = l_hidden_dim // 2
+                self.lnn_aux = LiquidNeuralNetwork(
+                    input_dim=aux_input_dim,
+                    hidden_dim=l_aux_d,
+                    n_layers=l_n_layers,
+                    dropout=dropout,
+                )
+                lnn_out_dim += l_aux_d
+
         self._has_aux = aux_input_dim is not None
-        total_dim = mamba_out_dim + transformer_out_dim
+        total_dim = mamba_out_dim + transformer_out_dim + lnn_out_dim
 
         # -- Gating / Fusion ---------------------------------------------------
         if self.ensemble_gating and num_models > 1:
@@ -293,6 +481,8 @@ class TemporalEnsembleExpert(AbstractExpert):
                 model_dims.append(mamba_out_dim)
             if self.transformer_enabled:
                 model_dims.append(transformer_out_dim)
+            if self.lnn_enabled:
+                model_dims.append(lnn_out_dim)
             self.model_projs = nn.ModuleList([
                 nn.Linear(d, self._output_dim) for d in model_dims
             ])
@@ -307,9 +497,9 @@ class TemporalEnsembleExpert(AbstractExpert):
 
         logger.info(
             "TemporalEnsembleExpert: input=%d, aux=%s, "
-            "Mamba=%s, Transformer=%s -> output=%d",
+            "Mamba=%s, Transformer=%s, LNN=%s -> output=%d",
             input_dim, aux_input_dim,
-            self.mamba_enabled, self.transformer_enabled,
+            self.mamba_enabled, self.transformer_enabled, self.lnn_enabled,
             self._output_dim,
         )
 
@@ -326,6 +516,9 @@ class TemporalEnsembleExpert(AbstractExpert):
         aux_seq : torch.Tensor, optional
             ``[batch, seq_len, aux_input_dim]`` auxiliary sequence.
             Required if ``aux_input_dim`` was set in config.
+        time_delta : torch.Tensor, optional
+            ``[batch, seq_len]`` inter-event time deltas for the LNN branch.
+            If ``None``, uniform spacing is assumed.
 
         Returns
         -------
@@ -333,6 +526,7 @@ class TemporalEnsembleExpert(AbstractExpert):
             ``[batch, output_dim]``
         """
         aux_seq: Optional[torch.Tensor] = kwargs.get("aux_seq")
+        time_delta: Optional[torch.Tensor] = kwargs.get("time_delta")
         outputs: list[torch.Tensor] = []
 
         # -- Mamba branch ------------------------------------------------------
@@ -349,6 +543,14 @@ class TemporalEnsembleExpert(AbstractExpert):
             parts = [h_tf]
             if self._has_aux and aux_seq is not None:
                 parts.append(self.transformer_aux(aux_seq))
+            outputs.append(torch.cat(parts, dim=-1))
+
+        # -- LNN branch --------------------------------------------------------
+        if self.lnn_enabled:
+            h_lnn = self.lnn_primary(x, time_delta=time_delta)
+            parts = [h_lnn]
+            if self._has_aux and aux_seq is not None:
+                parts.append(self.lnn_aux(aux_seq, time_delta=time_delta))
             outputs.append(torch.cat(parts, dim=-1))
 
         # -- Ensemble ----------------------------------------------------------
@@ -386,6 +588,7 @@ class TemporalEnsembleExpert(AbstractExpert):
             # Compute gate weights directly without a full forward pass
             parts: list[torch.Tensor] = []
             aux_seq = kwargs.get("aux_seq")
+            time_delta = kwargs.get("time_delta")
             if self.mamba_enabled:
                 h = self.mamba_primary(x)[:, -1, :]
                 ps = [h]
@@ -397,6 +600,12 @@ class TemporalEnsembleExpert(AbstractExpert):
                 ps = [h]
                 if self._has_aux and aux_seq is not None:
                     ps.append(self.transformer_aux(aux_seq))
+                parts.append(torch.cat(ps, dim=-1))
+            if self.lnn_enabled:
+                h = self.lnn_primary(x, time_delta=time_delta)
+                ps = [h]
+                if self._has_aux and aux_seq is not None:
+                    ps.append(self.lnn_aux(aux_seq, time_delta=time_delta))
                 parts.append(torch.cat(ps, dim=-1))
 
             concat = torch.cat(parts, dim=-1)
