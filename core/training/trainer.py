@@ -84,7 +84,9 @@ class PLETrainer:
         device: Optional[torch.device] = None,
         tracker: Optional[ExperimentTracker] = None,
         callbacks: Optional[List[TrainingCallback]] = None,
+        audit_store: Optional[Any] = None,
     ) -> None:
+        self._audit_store = audit_store
         self.model = model
         self.config = config
         self.device = device or torch.device(
@@ -395,6 +397,15 @@ class PLETrainer:
 
         finally:
             self.callbacks.on_train_end(self._make_state())
+
+        if hasattr(self, '_audit_store') and self._audit_store:
+            self._audit_store.log_event("training", {
+                "pk": phase,
+                "phase": phase,
+                "total_epochs": self.current_epoch,
+                "best_val_loss": self.best_val_loss,
+                "best_val_metrics": self.best_val_metrics,
+            })
 
         return {"best_val_loss": self.best_val_loss, **self.best_val_metrics}
 

@@ -28,6 +28,7 @@ from .constraint_engine import (
 )
 from .selector import TopKSelector, DiversityMethod
 from .pipeline import RecommendationPipeline, RecommendationResult, RecommendationItem
+from .audit_archiver import RecommendationAuditArchiver, RecommendationAuditRecord
 
 __all__ = [
     # scorer
@@ -49,4 +50,7 @@ __all__ = [
     "RecommendationItem",
     # additional exports
     "FDTVSScorer",
+    # audit archiver
+    "RecommendationAuditArchiver",
+    "RecommendationAuditRecord",
 ]

@@ -39,6 +39,14 @@ from core.monitoring.xai_quality_evaluator import (
     ExplanationQualityMetrics,
     ConsistencyResult,
 )
+from core.monitoring.public_disclosure_generator import (
+    PublicDisclosureGenerator,
+    DisclosureReport,
+)
+from core.monitoring.audit_package_builder import (
+    AuditPackageBuilder,
+    AuditPackage,
+)
 
 __all__ = [
     "AuditLogger",
@@ -73,4 +81,8 @@ __all__ = [
     "XAIQualityReport",
     "ExplanationQualityMetrics",
     "ConsistencyResult",
+    "PublicDisclosureGenerator",
+    "DisclosureReport",
+    "AuditPackageBuilder",
+    "AuditPackage",
 ]

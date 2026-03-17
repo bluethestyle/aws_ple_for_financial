@@ -121,8 +121,9 @@ class RecommendationPipeline:
                 a YAML file).
     """
 
-    def __init__(self, config: Dict[str, Any]) -> None:
+    def __init__(self, config: Dict[str, Any], audit_store=None) -> None:
         self.config = config
+        self._audit_store = audit_store
         pipe_cfg = config.get("pipeline", {})
 
         # ---- Scorer ----
@@ -356,7 +357,7 @@ class RecommendationPipeline:
 
         elapsed = (time.perf_counter() - t0) * 1000.0
 
-        return RecommendationResult(
+        result = RecommendationResult(
             customer_id=customer_id,
             items=items,
             total_candidates=total_candidates,
@@ -368,6 +369,18 @@ class RecommendationPipeline:
                 "k": self.selector.k,
             },
         )
+
+        if self._audit_store and result:
+            self._audit_store.log_event("recommendation", {
+                "pk": result.customer_id,
+                "customer_id": result.customer_id,
+                "total_candidates": result.total_candidates,
+                "total_filtered": result.total_filtered,
+                "items_returned": len(result.items),
+                "elapsed_ms": result.elapsed_ms,
+            })
+
+        return result
 
     def recommend_batch(
         self,

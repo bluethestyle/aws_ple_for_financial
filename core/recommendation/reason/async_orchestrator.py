@@ -490,6 +490,17 @@ class AsyncReasonOrchestrator:
         # Step 4: Cache the validated result
         self._cache_result(customer_id, recommendation_id, l2b_result)
 
+        # Step 4.5: Write to audit store if available
+        if self._audit_store and callable(self._audit_store):
+            self._audit_store({
+                "event": "l2a_rewrite",
+                "job_id": job_id,
+                "customer_id": customer_id,
+                "layer": l2b_result.layer,
+                "validation_passed": l2b_result.validation_passed,
+                "confidence": l2b_result.confidence,
+            })
+
         # Step 5: Audit log
         self._audit(job_id, customer_id, "l2b_pass", l2b_result)
 

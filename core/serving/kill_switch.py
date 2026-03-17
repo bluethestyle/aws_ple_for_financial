@@ -88,12 +88,14 @@ class KillSwitch:
         table_name: str = "ple-kill-switch",
         fallback_strategy: str = "rule_based",
         region: str = "ap-northeast-2",
+        audit_store=None,
     ) -> None:
         import boto3
 
         self._table_name = table_name
         self._fallback = FallbackStrategy(fallback_strategy)
         self._region = region
+        self._audit_store = audit_store
 
         dynamodb = boto3.resource("dynamodb", region_name=region)
         self._table = dynamodb.Table(table_name)
@@ -219,6 +221,13 @@ class KillSwitch:
         )
         self._emit_audit_log("ACTIVATE", scope, reason, activated_by, now)
 
+        if self._audit_store:
+            level = scope.split(":")[0] if ":" in scope else "global"
+            self._audit_store.log_killswitch(
+                action="ACTIVATE", level=level, target=scope,
+                reason=reason, actor=activated_by,
+            )
+
         return KillSwitchState(
             active=True,
             scope=scope,
@@ -270,6 +279,13 @@ class KillSwitch:
             "KillSwitch DEACTIVATED: scope=%s, by=%s", scope, deactivated_by,
         )
         self._emit_audit_log("DEACTIVATE", scope, "", deactivated_by, now)
+
+        if self._audit_store:
+            level = scope.split(":")[0] if ":" in scope else "global"
+            self._audit_store.log_killswitch(
+                action="DEACTIVATE", level=level, target=scope,
+                reason="", actor=deactivated_by,
+            )
 
         return KillSwitchState(active=False, scope=scope)
 

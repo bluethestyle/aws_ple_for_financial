@@ -57,12 +57,14 @@ class EncryptionPipeline:
         indexer: PIIIntegerIndexer,
         policies: Dict[str, SourceEncryptionPolicy],
         validator=None,  # Optional DataValidator
+        audit_store=None,
     ):
         self._encryptor = PIIEncryptor(salt_manager)
         self._indexer = indexer
         self._policies = policies
         self._validator = validator
         self._audit: List[Dict[str, Any]] = []
+        self._audit_store = audit_store
 
     # ── Main entry point ──────────────────────────────────────────────
 
@@ -131,6 +133,9 @@ class EncryptionPipeline:
             "duration_seconds": round(elapsed, 2),
         }
         self._audit.append(audit)
+
+        if self._audit_store:
+            self._audit_store.log_event("encryption", {"pk": source_name, **audit})
 
         logger.info(
             "Encryption complete for '%s': %d rows, %d dropped, "

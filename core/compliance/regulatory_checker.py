@@ -187,6 +187,19 @@ class RegulatoryComplianceChecker:
             passed_count, total,
             (passed_count / total * 100) if total else 0.0,
         )
+
+        if self._store:
+            self._store.log_event("compliance_check", {
+                "pk": "regulatory_check",
+                "total_checks": len(results),
+                "passed": sum(1 for r in results if r.passed),
+                "failed": sum(1 for r in results if not r.passed),
+                "critical_failures": [
+                    r.item.id for r in results
+                    if not r.passed and r.item.severity == "critical"
+                ],
+            })
+
         return results
 
     def run_category(self, category: str) -> List[CheckResult]:

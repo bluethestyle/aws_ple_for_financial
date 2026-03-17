@@ -123,7 +123,9 @@ class StudentTrainer:
         task_specs: List[TaskSpec],
         feature_columns: List[str],
         device: Optional[torch.device] = None,
+        audit_store: Optional[Any] = None,
     ) -> None:
+        self._audit_store = audit_store
         self.config = config
         self.task_specs = {t.name: t for t in task_specs}
         self.feature_columns = feature_columns
@@ -423,6 +425,18 @@ class StudentTrainer:
             len(self._students),
             len(enabled),
         )
+
+        if self._audit_store:
+            for task_name, model in self._students.items():
+                self._audit_store.log_event("distillation", {
+                    "pk": task_name,
+                    "task": task_name,
+                    "teacher_checkpoint": self.config.teacher_checkpoint,
+                    "temperature": self.config.temperature,
+                    "alpha": self.config.alpha,
+                    "num_trees": model.num_trees() if hasattr(model, 'num_trees') else 0,
+                })
+
         return dict(self._students)
 
     # ------------------------------------------------------------------

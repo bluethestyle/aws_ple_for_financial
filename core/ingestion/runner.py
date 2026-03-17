@@ -51,10 +51,12 @@ class IngestionRunner:
         config: IngestionConfig,
         schema_registry: Optional[Any] = None,
         encryption_pipeline: Optional[Any] = None,
+        audit_store: Optional[Any] = None,
     ) -> None:
         self._config = config
         self._schema_registry = schema_registry
         self._encryption_pipeline = encryption_pipeline
+        self._audit_store = audit_store
 
         # Import all domain modules to trigger registration.
         # This mirrors the generator pattern where importing the
@@ -123,7 +125,21 @@ class IngestionRunner:
             domain_name, input_path, output_path,
         )
 
-        return ingestor.run(input_path, output_path)
+        result = ingestor.run(input_path, output_path)
+
+        if self._audit_store:
+            self._audit_store.log_event("ingestion", {
+                "pk": result.source_name,
+                "domain": result.source_name,
+                "rows": result.row_count,
+                "columns": result.column_count,
+                "pii_encrypted": result.pii_columns_encrypted,
+                "pii_dropped": result.pii_columns_dropped,
+                "validation_passed": result.validation_passed,
+                "duration_seconds": result.duration_seconds,
+            })
+
+        return result
 
     def run_all(
         self,
