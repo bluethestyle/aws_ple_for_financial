@@ -282,7 +282,7 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: tda_topology
     group_type: generate
-    generator: tda_extractor
+    generator: tda
     generator_params:
       short_window_days: 90
       long_window_days: 365
@@ -308,7 +308,7 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: gmm_clustering
     group_type: generate
-    generator: gmm_clusterer
+    generator: gmm
     generator_params:
       n_clusters: 20
       covariance_type: full
@@ -328,7 +328,7 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: mamba_temporal
     group_type: generate
-    generator: mamba_state_extractor
+    generator: mamba
     generator_params:
       d_model: 128
       d_state: 16
@@ -352,7 +352,7 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: economics
     group_type: generate
-    generator: economics_extractor
+    generator: economics
     generator_params:
       income_decomposition_dim: 8
       financial_behavior_dim: 9
@@ -391,7 +391,7 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: model_derived
     group_type: generate
-    generator: model_feature_extractor
+    generator: model_features
     generator_params:
       hmm_dim: 5
       bandit_dim: 4
@@ -411,7 +411,7 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: merchant_hierarchy
     group_type: generate
-    generator: merchant_hierarchy_encoder
+    generator: merchant_hierarchy
     generator_params:
       mcc_level1_dim: 4
       mcc_level2_dim: 4
@@ -435,7 +435,7 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: hmm_states
     group_type: generate
-    generator: hmm_triple_mode
+    generator: hmm
     generator_params:
       modes: [journey, lifecycle, behavior]
       state_dim: 16
@@ -456,7 +456,7 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: graph_embeddings
     group_type: generate
-    generator: hyperbolic_embedding
+    generator: graph
     generator_params:
       hierarchy_sources: [mcc, product, region]
       curvature: 1.0

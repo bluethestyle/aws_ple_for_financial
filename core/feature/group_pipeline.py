@@ -63,6 +63,13 @@ from .group import (
 )
 from .registry import FeatureRegistry
 
+# Trigger @register decorators for all built-in generators so that the
+# FeatureGeneratorRegistry is populated before we try to build generators.
+try:
+    from . import generators as _generators  # noqa: F401
+except Exception:
+    pass
+
 logger = logging.getLogger(__name__)
 
 

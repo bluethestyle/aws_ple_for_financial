@@ -14,6 +14,9 @@ Available generators
 * ``mamba``                -- Mamba SSM temporal embedding features.
 * ``multidisciplinary``    -- Chemical kinetics, epidemic diffusion, interference, crime patterns.
 * ``temporal``             -- Temporal rolling aggregation, cyclical encoding, and velocity features.
+* ``economics``            -- Economic / financial behavior features (income decomposition + financial behavior).
+* ``merchant_hierarchy``   -- Merchant hierarchy features (MCC levels, brand SVD, aggregate stats, radius).
+* ``model_features``       -- Model-derived features: HMM summary + Bandit/MAB + LNN temporal dynamics (27D).
 
 Pool / Basket pattern
 ---------------------
@@ -54,6 +57,9 @@ from . import multidisciplinary  # noqa: F401
 from . import temporal           # noqa: F401
 from . import gmm                # noqa: F401
 from . import phase_transition   # noqa: F401
+from . import economics             # noqa: F401
+from . import merchant_hierarchy    # noqa: F401
+from . import model_features        # noqa: F401
 
 # GPU utilities
 from . import gpu_utils       # noqa: F401
