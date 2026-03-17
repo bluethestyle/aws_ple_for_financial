@@ -996,6 +996,24 @@ class PLEModel(nn.Module):
                 total_loss = total_loss + ent_lambda * ent_loss
                 aux_losses["cgc_entropy"] = (ent_lambda * ent_loss).item()
 
+            # CausalExpert DAG regularization (NOTEARS acyclicity + sparsity)
+            if self.training:
+                for expert in self._iter_shared_experts():
+                    if hasattr(expert, "get_dag_regularization"):
+                        dag_reg = expert.get_dag_regularization()
+                        total_loss = total_loss + dag_reg
+                        aux_losses["dag_regularization"] = dag_reg.item()
+
+            # TemporalEnsemble gate entropy monitoring (logging only, no reg)
+            if self.training:
+                for expert in self._iter_shared_experts():
+                    if hasattr(expert, "compute_gate_entropy"):
+                        ent = expert.compute_gate_entropy(
+                            task_representations[0].unsqueeze(1),
+                        )
+                        if ent is not None:
+                            aux_losses["temporal_gate_entropy"] = ent.item()
+
         # CGC attention weights for monitoring (inference only)
         cgc_weights = None
         if not self.training and self.cgc_attention is not None and shared_concat is not None:
@@ -1131,6 +1149,16 @@ class PLEModel(nn.Module):
             losses[task_name] = loss
 
         return losses
+
+    def _iter_shared_experts(self):
+        """Iterate over shared expert modules from extraction layers.
+
+        Yields individual expert nn.Module instances from CGC shared_experts
+        or from the ExpertBasket's built shared experts.
+        """
+        for layer in self.extraction_layers:
+            if hasattr(layer, "shared_experts"):
+                yield from layer.shared_experts
 
     def _extract_task_gradients(
         self,
