@@ -229,11 +229,22 @@ def _run_full(config, args, s3_base, ts, wait):
     else:
         _submit_distillation_job(config, features_uri, model_uri, s3_base, ts, wait)
 
+    # Step 4: Register Model (repackage into ModelRegistry)
+    student_uri = f"{s3_base}/students/{ts}/"
+    version = f"v{ts.replace('-', '.').replace('T', '-')}"
+    logger.info("--- Step 4: Register Model (version=%s) ---")
+    if args.dry_run:
+        logger.info("[DRY RUN] ModelRegistry.package(version=%s)", version)
+        logger.info("[DRY RUN] artifacts: %s/artifacts/%s/", s3_base, version)
+    elif wait:
+        _register_model(config, s3_base, version, model_uri, student_uri)
+
     logger.info("=" * 60)
-    logger.info("Pipeline submission complete!")
+    logger.info("Pipeline complete!")
     logger.info("  Features: %s", features_uri)
-    logger.info("  Teacher model: %s", model_uri)
-    logger.info("  Student models: %s/students/%s/", s3_base, ts)
+    logger.info("  Teacher (raw): %s", model_uri)
+    logger.info("  Students (raw): %s", student_uri)
+    logger.info("  Registry: %s/artifacts/%s/", s3_base, version)
     logger.info("=" * 60)
 
 
@@ -329,6 +340,124 @@ def _submit_distillation_job(config, features_uri, model_uri, s3_base, ts, wait)
 
     logger.info("Distillation job submitted: %s", job_name)
     logger.info("Output: %s", output_uri)
+
+
+def _register_model(config, s3_base, version, teacher_uri, student_uri):
+    """Repackage SageMaker Job outputs into ModelRegistry versioned structure.
+
+    Reads raw artifacts from SageMaker output paths, restructures into
+    the registry format, and optionally promotes the new version.
+    """
+    from core.serving.model_registry import ModelRegistry
+
+    registry = ModelRegistry(
+        s3_base=f"{s3_base}/artifacts/",
+        local_base="/tmp/model_registry/",
+        region=config.aws.region,
+    )
+
+    # Download raw artifacts to temp dir for repackaging
+    import tempfile
+    import json
+    tmp = tempfile.mkdtemp(prefix="register_")
+
+    try:
+        import boto3
+        s3 = boto3.client("s3", region_name=config.aws.region)
+
+        # Download teacher model.pth from model.tar.gz
+        teacher_state_dict = None
+        teacher_config = None
+        training_metrics = None
+
+        try:
+            import tarfile, io, torch
+
+            # Parse S3 URI
+            parts = teacher_uri.replace("s3://", "").split("/", 1)
+            bucket, key = parts[0], parts[1]
+
+            # Download tar.gz
+            tar_buf = io.BytesIO()
+            s3.download_fileobj(bucket, key, tar_buf)
+            tar_buf.seek(0)
+
+            with tarfile.open(fileobj=tar_buf, mode="r:gz") as tar:
+                tar.extractall(tmp)
+
+            # Load state_dict
+            model_path = Path(tmp) / "model.pth"
+            if model_path.exists():
+                teacher_state_dict = torch.load(str(model_path), map_location="cpu")
+
+            # Load config
+            config_path = Path(tmp) / "config.json"
+            if config_path.exists():
+                with open(config_path) as f:
+                    teacher_config = json.load(f)
+
+            # Load metrics
+            metrics_path = Path(tmp) / "training_metrics.json"
+            if metrics_path.exists():
+                with open(metrics_path) as f:
+                    training_metrics = json.load(f)
+
+        except Exception as e:
+            logger.warning("Failed to extract teacher artifacts: %s", e)
+            training_metrics = {}
+
+        # List student models from S3
+        students = {}
+        student_metadata = {}
+        parts = student_uri.replace("s3://", "").split("/", 1)
+        bucket, prefix = parts[0], parts[1]
+
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    if key.endswith("/model.lgbm"):
+                        task_name = key.split("/")[-2]
+                        students[task_name] = f"s3://{bucket}/{key}"
+                    elif key.endswith("/metadata.json"):
+                        task_name = key.split("/")[-2]
+                        meta_obj = s3.get_object(Bucket=bucket, Key=key)
+                        student_metadata[task_name] = json.loads(
+                            meta_obj["Body"].read().decode()
+                        )
+        except Exception as e:
+            logger.warning("Failed to list student artifacts: %s", e)
+
+        # Package into registry
+        model_version = registry.package(
+            version=version,
+            teacher_state_dict=teacher_state_dict,
+            teacher_config=teacher_config,
+            training_metrics=training_metrics or {},
+            students=students,
+            student_metadata=student_metadata,
+        )
+
+        logger.info(
+            "Model registered: %s (%d students, promoted=%s)",
+            version, len(students), model_version.promoted,
+        )
+
+        # Auto-promote if all fidelity checks passed (or no checks yet)
+        fidelity = model_version.fidelity_summary
+        if not fidelity.get("failed", 0):
+            registry.promote(version)
+            logger.info("Model %s auto-promoted to champion", version)
+        else:
+            logger.warning(
+                "Model %s NOT promoted: %d fidelity failures",
+                version, fidelity.get("failed", 0),
+            )
+
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

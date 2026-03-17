@@ -145,14 +145,20 @@
       "Parameters": {
         "FunctionName": "register-model",
         "Payload": {
+          "action": "package_and_promote",
           "training_job_name.$": "States.Format('training-{}', $$.Execution.Name)",
           "distillation_job_name.$": "States.Format('distill-{}', $$.Execution.Name)",
           "task_name.$": "$.task_name",
-          "model_output_uri.$": "$.model_output_uri",
-          "student_models_uri.$": "States.Format('{}/students/', $.model_output_uri)"
+          "teacher_uri.$": "$.model_output_uri",
+          "student_uri.$": "States.Format('{}/students/', $.model_output_uri)",
+          "registry_base.$": "States.Format('{}/artifacts/', $.model_output_uri)",
+          "version.$": "States.Format('v-{}', $$.Execution.Name)",
+          "auto_promote": true
         }
       },
-      "Next": "Success"
+      "ResultPath": "$.register_result",
+      "Next": "Success",
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "FailState"}]
     },
     "Success": {"Type": "Succeed"},
     "FailState": {
