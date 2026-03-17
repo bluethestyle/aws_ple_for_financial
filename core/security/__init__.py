@@ -24,6 +24,7 @@ from .encryption_policy import (
     load_encryption_config,
 )
 from .pipeline import EncryptionPipeline
+from .prompt_sanitizer import PromptSanitizer, SanitizeResult, Sensitivity
 
 __all__ = [
     "PIIDomain",
@@ -38,4 +39,7 @@ __all__ = [
     "derive_from_schema",
     "load_encryption_config",
     "EncryptionPipeline",
+    "PromptSanitizer",
+    "SanitizeResult",
+    "Sensitivity",
 ]
