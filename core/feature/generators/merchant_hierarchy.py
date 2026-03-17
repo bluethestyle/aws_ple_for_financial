@@ -30,6 +30,7 @@ import pandas as pd
 
 from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
+from .gpu_utils import has_cupy
 
 logger = logging.getLogger(__name__)
 
@@ -410,9 +411,22 @@ class MerchantHierarchyGenerator(AbstractFeatureGenerator):
                 transformed = self._svd_model.transform(X)  # (n_rows, n_components)
 
             # Normalise each row to unit norm for stable embeddings
-            norms = np.linalg.norm(transformed, axis=1, keepdims=True)
-            norms = np.where(norms < 1e-10, 1.0, norms)
-            transformed = transformed / norms
+            # CuPy GPU path for norm computation on large matrices
+            if has_cupy() and transformed.shape[0] > 1000:
+                try:
+                    import cupy as cp
+                    t_gpu = cp.asarray(transformed)
+                    norms_gpu = cp.linalg.norm(t_gpu, axis=1, keepdims=True)
+                    norms_gpu = cp.where(norms_gpu < 1e-10, 1.0, norms_gpu)
+                    transformed = cp.asnumpy(t_gpu / norms_gpu)
+                except Exception:
+                    norms = np.linalg.norm(transformed, axis=1, keepdims=True)
+                    norms = np.where(norms < 1e-10, 1.0, norms)
+                    transformed = transformed / norms
+            else:
+                norms = np.linalg.norm(transformed, axis=1, keepdims=True)
+                norms = np.where(norms < 1e-10, 1.0, norms)
+                transformed = transformed / norms
 
             # Fill available components (pad with zeros if n_components < dim)
             fill_dim = min(n_components, dim)
