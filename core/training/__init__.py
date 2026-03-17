@@ -19,6 +19,16 @@ Distillation:
   - ``MultiTaskDistillationLoss``: Multi-task weighted distillation.
   - ``SoftLabelGenerator``: Generate teacher soft labels for LGBM student.
 
+Distillation Validation:
+  - ``DistillationValidator``: Teacher-student fidelity measurement (8 metrics).
+  - ``ValidationCriteria``: Configurable per-metric thresholds.
+  - ``FidelityResult``: Per-task validation result.
+
+Feature Selection:
+  - ``FeatureSelector``: Adaptive per-task feature selection (IG + LGBM pruning).
+  - ``FeatureSelectionConfig``: Cumulative threshold and selection parameters.
+  - ``FeatureSelectionResult``: Per-task selection result.
+
 Checkpoint & Evaluation (pre-existing):
   - ``CheckpointManager``: S3-integrated checkpoint management.
   - ``ModelEvaluator``: Per-task metrics and champion-vs-challenger comparison.
@@ -80,6 +90,20 @@ from .distillation import (
 # Student training (distillation orchestration)
 from .student_trainer import StudentTrainer, StudentConfig
 
+# Distillation validation
+from .distillation_validator import (
+    DistillationValidator,
+    ValidationCriteria,
+    FidelityResult,
+)
+
+# Feature selection
+from .feature_selector import (
+    FeatureSelector,
+    FeatureSelectionConfig,
+    FeatureSelectionResult,
+)
+
 # Pre-existing modules
 from .checkpoint import CheckpointManager
 from .evaluator import ModelEvaluator
@@ -120,6 +144,14 @@ __all__ = [
     # Student training
     "StudentTrainer",
     "StudentConfig",
+    # Distillation validation
+    "DistillationValidator",
+    "ValidationCriteria",
+    "FidelityResult",
+    # Feature selection
+    "FeatureSelector",
+    "FeatureSelectionConfig",
+    "FeatureSelectionResult",
     # Pre-existing
     "CheckpointManager",
     "ModelEvaluator",
