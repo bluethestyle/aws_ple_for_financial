@@ -1,0 +1,44 @@
+# Encryption Configuration for Financial PLE Platform
+# ===================================================
+# Domain-specific SHA256 salts stored in AWS Secrets Manager.
+# PII columns are hashed -> integer indexed. No decryption.
+
+# AWS Secrets Manager secret containing domain salts as JSON:
+#   {"customer": "salt_value", "account": "salt_value", ...}
+secrets_manager:
+  secret_name: aiops-ple-financial/pii-salts
+  region: ap-northeast-2
+
+# S3 path for persistent integer index tables (one Parquet per domain)
+index_store:
+  s3_path: s3://aiops-ple-financial/pii-indices/
+
+# Column-level encryption actions:
+#   hash_and_index: SHA256 hash + INT32 index (for joinable IDs)
+#   hash_only: SHA256 hash only (no index needed)
+#   drop: Remove column entirely (contact info, SSN)
+default_action: hash_and_index
+
+# Domain-to-column overrides (supplements auto-detection from schema.yaml pii tags)
+column_overrides:
+  # Columns to always drop regardless of domain
+  drop_always:
+    - phone
+    - telno
+    - hp_no
+    - email
+    - rrno        # 주민등록번호
+    - brno        # 사업자등록번호
+    - cust_nm     # 고객 실명
+    - name
+
+  # Columns to hash but NOT integer-index
+  hash_only:
+    - address
+    - postal_code
+
+# Development mode (for local testing without Secrets Manager)
+# Set USE_LOCAL_SALTS=true environment variable to activate
+local_development:
+  salt_file: ""   # path to local salt JSON (optional)
+  env_prefix: "SALT_"  # environment variable prefix
