@@ -1,0 +1,18 @@
+# Requirements for CPU processing jobs (DuckDB, HMM, GMM, TDA generators).
+# Pip-installed automatically by SageMaker when source_dir is uploaded.
+# Base image: AWS-managed SKLearn 1.2-1
+
+# Core data
+numpy>=1.24,<2.0
+pandas>=2.0,<3.0
+duckdb>=0.10,<2.0
+pyarrow>=14.0,<18.0
+scikit-learn>=1.3,<2.0
+scipy>=1.11,<2.0
+pyyaml>=6.0
+
+# Feature generators (CPU)
+hmmlearn>=0.3,<1.0
+ripser>=0.6,<1.0
+giotto-ph>=0.3,<1.0
+persim>=0.3,<1.0

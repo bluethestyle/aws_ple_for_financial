@@ -1,0 +1,27 @@
+# Requirements for GPU processing jobs (Graph, Mamba generators).
+# Pip-installed automatically by SageMaker when source_dir is uploaded.
+# Base image: AWS-managed PyTorch 2.1 (py310, CUDA 12.x)
+
+# Core data
+numpy>=1.24,<2.0
+pandas>=2.0,<3.0
+duckdb>=0.10,<2.0
+pyarrow>=14.0,<18.0
+scikit-learn>=1.3,<2.0
+scipy>=1.11,<2.0
+pyyaml>=6.0
+
+# Feature generators (CPU-based, also needed in GPU jobs)
+hmmlearn>=0.3,<1.0
+ripser>=0.6,<1.0
+giotto-ph>=0.3,<1.0
+persim>=0.3,<1.0
+
+# GPU acceleration (installed on top of PyTorch base image)
+cupy-cuda12x>=12.0
+mamba-ssm>=1.2,<3.0
+
+# NOTE: cudf and cuml (RAPIDS) are NOT pip-installable.
+# If you need RAPIDS GPU-accelerated dataframes, use the custom Docker
+# image fallback with image_uri pointing to an NVIDIA RAPIDS base image,
+# or build a custom container from nvidia/rapidsai base images.

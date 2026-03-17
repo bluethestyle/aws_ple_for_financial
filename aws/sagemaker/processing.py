@@ -1,19 +1,43 @@
 """
 SageMaker Processing Job wrapper for feature engineering.
 
-Runs a DuckDB-based feature engineering script inside a SageMaker
-Processing container.  Input/output channels are mapped to S3 URIs
-and the processing script receives them as local paths under
-``/opt/ml/processing/``.
+Runs feature engineering scripts inside SageMaker Processing containers.
+Input/output channels are mapped to S3 URIs and the processing script
+receives them as local paths under ``/opt/ml/processing/``.
+
+By default, uses **AWS-managed images** (SKLearn for CPU, PyTorch for GPU)
+with a ``requirements.txt`` that is pip-installed automatically when SageMaker
+unpacks the ``source_dir``.  A custom Docker image can still be used by
+passing ``image_uri`` explicitly (fallback mode).
 
 Usage::
 
     config = load_config("configs/my_problem.yaml")
     proc = SageMakerProcessingJob(config)
+
+    # CPU job (DuckDB, HMM, GMM, TDA generators)
     result = proc.run(
-        script="scripts/feature_engineering.py",
+        script="entrypoint.py",
+        source_dir="containers/generators/base/",
         input_s3="s3://bucket/raw/",
         output_s3="s3://bucket/features/",
+    )
+
+    # GPU job (Graph, Mamba generators)
+    result = proc.run(
+        script="entrypoint.py",
+        source_dir="containers/generators/base/",
+        input_s3="s3://bucket/raw/",
+        output_s3="s3://bucket/features/",
+        use_gpu=True,
+        instance_type="ml.g4dn.xlarge",
+    )
+
+    # Custom Docker fallback
+    result = proc.run(
+        script="entrypoint.py",
+        image_uri="123456789.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
+        input_s3="s3://bucket/raw/",
     )
 """
 
@@ -32,6 +56,8 @@ from sagemaker.processing import (
     ProcessingOutput,
     ScriptProcessor,
 )
+from sagemaker.pytorch.processing import PyTorchProcessor
+from sagemaker.sklearn.processing import SKLearnProcessor
 
 from ...core.pipeline.config import PipelineConfig
 
@@ -43,9 +69,11 @@ class SageMakerProcessingJob:
 
     This wrapper handles:
 
-    * DuckDB-based feature processing scripts
+    * AWS-managed images (SKLearn for CPU, PyTorch for GPU) with
+      automatic ``requirements.txt`` installation via ``source_dir``
+    * Custom Docker image fallback via ``image_uri``
     * S3 input/output channel management
-    * Instance type selection (CPU-optimized for feature engineering)
+    * Instance type selection
     * Wait/no-wait execution modes
     * Job tagging for cost attribution
 
@@ -71,6 +99,7 @@ class SageMakerProcessingJob:
     def run(
         self,
         script: str,
+        source_dir: str | None = None,
         input_s3: str | None = None,
         output_s3: str | None = None,
         instance_type: str = "ml.m5.2xlarge",
@@ -80,14 +109,29 @@ class SageMakerProcessingJob:
         extra_inputs: dict[str, str] | None = None,
         extra_args: list[str] | None = None,
         wait: bool = True,
+        use_gpu: bool = False,
+        image_uri: str | None = None,
     ) -> dict[str, Any]:
         """Launch a processing job.
+
+        By default uses AWS-managed images with ``requirements.txt``
+        auto-installed from ``source_dir``.  When ``image_uri`` is
+        provided, falls back to a custom Docker container via
+        :class:`ScriptProcessor`.
 
         Parameters
         ----------
         script : str
-            Path to the processing script (e.g.
-            ``"scripts/feature_engineering.py"``).
+            Processing script filename (relative to *source_dir* when
+            using managed images, or an absolute/relative path when
+            using a custom ``image_uri``).
+        source_dir : str, optional
+            Local directory containing the processing script **and**
+            ``requirements.txt``.  SageMaker uploads this directory to
+            S3 and pip-installs ``requirements.txt`` at job start.
+            Required when using managed images (``image_uri`` is None).
+            Typically ``"containers/generators/base/"`` for feature
+            generator jobs.
         input_s3 : str, optional
             S3 URI for the primary input data.  Defaults to
             ``config.data.source``.
@@ -95,7 +139,8 @@ class SageMakerProcessingJob:
             S3 URI for output data.  Defaults to
             ``s3://<bucket>/<task>/features/``.
         instance_type : str
-            Processing instance type.  CPU is preferred for DuckDB.
+            Processing instance type.  Defaults to ``ml.m5.2xlarge``
+            (CPU).  For GPU jobs use e.g. ``ml.g4dn.xlarge``.
         instance_count : int
             Number of processing instances.
         volume_size_gb : int
@@ -108,6 +153,16 @@ class SageMakerProcessingJob:
             Extra CLI arguments for the processing script.
         wait : bool
             Block until the job completes.
+        use_gpu : bool
+            When *True* and ``image_uri`` is *None*, use a PyTorch
+            managed image (framework 2.1, py310) suitable for GPU
+            workloads (graph, mamba generators).  When *False* (default),
+            use an SKLearn managed image for CPU workloads (DuckDB, HMM,
+            GMM, TDA).
+        image_uri : str, optional
+            **Fallback**: explicit Docker image URI.  When provided,
+            ``source_dir`` is ignored and a plain :class:`ScriptProcessor`
+            is used (legacy custom-container behaviour).
 
         Returns
         -------
@@ -126,19 +181,13 @@ class SageMakerProcessingJob:
         job_name = f"{cfg.task_name}-processing-{ts}"
 
         # -- Build processor --
-        processor = ScriptProcessor(
-            role=aws.role_arn,
-            image_uri=self._get_processing_image_uri(),
-            command=["python3"],
+        processor = self._build_processor(
+            image_uri=image_uri,
+            use_gpu=use_gpu,
             instance_type=instance_type,
             instance_count=instance_count,
-            volume_size_in_gb=volume_size_gb,
-            max_runtime_in_seconds=max_runtime_seconds,
-            sagemaker_session=self.session,
-            tags=[
-                {"Key": "Project", "Value": cfg.task_name},
-                {"Key": "JobType", "Value": "processing"},
-            ],
+            volume_size_gb=volume_size_gb,
+            max_runtime_seconds=max_runtime_seconds,
         )
 
         # -- Input channels --
@@ -185,11 +234,16 @@ class SageMakerProcessingJob:
 
         logger.info(f"Launching Processing Job: {job_name}")
         logger.info(f"  Script: {script}")
+        if source_dir and image_uri is None:
+            logger.info(f"  Source dir: {source_dir}")
         logger.info(f"  Instance: {instance_type} x {instance_count}")
+        logger.info(f"  GPU mode: {use_gpu}")
+        logger.info(f"  Image: {image_uri or 'AWS managed'}")
         logger.info(f"  Input: {input_s3}")
         logger.info(f"  Output: {output_s3}")
 
-        processor.run(
+        # -- Build run kwargs --
+        run_kwargs: dict[str, Any] = dict(
             code=script,
             inputs=processing_inputs,
             outputs=processing_outputs,
@@ -198,6 +252,13 @@ class SageMakerProcessingJob:
             wait=wait,
             logs=wait,
         )
+        # source_dir is supported by managed-image processors
+        # (SKLearnProcessor / PyTorchProcessor) but not by the plain
+        # ScriptProcessor fallback.
+        if image_uri is None and source_dir is not None:
+            run_kwargs["source_dir"] = source_dir
+
+        processor.run(**run_kwargs)
 
         result: dict[str, Any] = {
             "job_name": job_name,
@@ -221,6 +282,8 @@ class SageMakerProcessingJob:
 
         Wraps :meth:`run` with the standard DuckDB entry point script
         and injects SQL template files as an extra input channel.
+        Uses CPU managed image (SKLearn) by default since DuckDB is
+        CPU-only.
 
         Parameters
         ----------
@@ -246,8 +309,11 @@ class SageMakerProcessingJob:
             "--sql-dir", "/opt/ml/processing/input/sql_templates",
         ])
 
+        # Default source_dir for managed-image mode
+        kwargs.setdefault("source_dir", "containers/generators/base/")
+
         return self.run(
-            script="containers/processing/feature_engineering.py",
+            script="entrypoint.py",
             extra_inputs=extra_inputs,
             extra_args=extra_args,
             wait=wait,
@@ -260,21 +326,72 @@ class SageMakerProcessingJob:
             ProcessingJobName=job_name,
         )
 
-    def _get_processing_image_uri(self) -> str:
-        """Resolve the processing container image URI.
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
 
-        Falls back to the official SageMaker SKLearn processing image
-        which includes DuckDB-compatible native libraries.
+    def _build_processor(
+        self,
+        *,
+        image_uri: str | None,
+        use_gpu: bool,
+        instance_type: str,
+        instance_count: int,
+        volume_size_gb: int,
+        max_runtime_seconds: int,
+    ) -> ScriptProcessor | SKLearnProcessor | PyTorchProcessor:
+        """Build the appropriate processor.
+
+        * ``image_uri`` provided  -> :class:`ScriptProcessor` (custom
+          Docker fallback).
+        * ``use_gpu=True``        -> :class:`PyTorchProcessor` with
+          framework 2.1 / py310.
+        * ``use_gpu=False``       -> :class:`SKLearnProcessor` with
+          framework 1.2-1.
+
+        Returns
+        -------
+        ScriptProcessor | SKLearnProcessor | PyTorchProcessor
         """
-        region = self.config.aws.region
-        account_map = {
-            "ap-northeast-2": "366743142698",
-            "us-east-1": "683313688378",
-            "us-west-2": "246618743249",
-            "eu-west-1": "141502667606",
-        }
-        account = account_map.get(region, "683313688378")
-        return (
-            f"{account}.dkr.ecr.{region}.amazonaws.com/"
-            f"sagemaker-scikit-learn:1.2-1-cpu-py3"
+        aws = self.config.aws
+        common = dict(
+            role=aws.role_arn,
+            instance_type=instance_type,
+            instance_count=instance_count,
+            volume_size_in_gb=volume_size_gb,
+            max_runtime_in_seconds=max_runtime_seconds,
+            sagemaker_session=self.session,
+            tags=[
+                {"Key": "Project", "Value": self.config.task_name},
+                {"Key": "JobType", "Value": "processing"},
+            ],
+        )
+
+        if image_uri is not None:
+            # Fallback: custom Docker container
+            logger.info("Using custom Docker image: %s", image_uri)
+            return ScriptProcessor(
+                image_uri=image_uri,
+                command=["python3"],
+                **common,
+            )
+
+        if use_gpu:
+            # GPU workloads: Graph, Mamba generators
+            logger.info(
+                "Using AWS-managed PyTorch 2.1 image (GPU processing)"
+            )
+            return PyTorchProcessor(
+                framework_version="2.1",
+                py_version="py310",
+                **common,
+            )
+
+        # CPU workloads: DuckDB, HMM, GMM, TDA generators
+        logger.info(
+            "Using AWS-managed SKLearn 1.2-1 image (CPU processing)"
+        )
+        return SKLearnProcessor(
+            framework_version="1.2-1",
+            **common,
         )

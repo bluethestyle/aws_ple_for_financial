@@ -1,11 +1,15 @@
 """
 Container entry point for SageMaker Processing Jobs.
 
-This script is the generic entry point for all feature generator
-containers.  It reads environment variables set by the
-:class:`FeatureGroupPipeline` to determine which generator to run,
-loads input data from the SageMaker processing input path, fits and
-generates features, and writes the output to the processing output path.
+This script is invoked via SageMaker's ``code`` parameter (not Docker
+ENTRYPOINT).  When using AWS-managed images with ``source_dir``,
+SageMaker unpacks the source directory to ``/opt/ml/code`` and
+pip-installs ``requirements.txt`` before running this script.
+
+It reads environment variables set by the :class:`FeatureGroupPipeline`
+to determine which generator to run, loads input data from the SageMaker
+processing input path, fits and generates features, and writes the
+output to the processing output path.
 
 Environment variables
 ---------------------
@@ -22,6 +26,13 @@ SageMaker paths
 ---------------
 Input:  /opt/ml/processing/input/data.parquet
 Output: /opt/ml/processing/output/features.parquet
+
+Note on PYTHONPATH
+------------------
+When SageMaker unpacks ``source_dir`` to ``/opt/ml/code``, that
+directory is automatically added to ``sys.path``.  If the ``core/``
+package is included in ``source_dir``, imports like
+``from core.feature.generator import ...`` will resolve correctly.
 """
 
 from __future__ import annotations
