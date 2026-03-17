@@ -39,11 +39,13 @@ class TaskSpec:
     """Specification for a single learning task."""
 
     name: str
-    type: str           # binary | multiclass | regression | ranking
+    type: str           # binary | multiclass | regression | ranking | contrastive
     loss: str
     loss_weight: float = 1.0
     label_col: str = "label"
     num_classes: int = 1
+    tower_type: str = ""        # "" = use default ("standard")
+    tower_dims: list[int] = field(default_factory=list)  # [] = use global default
 
 
 @dataclass

@@ -346,7 +346,10 @@ class PipelineRunner:
         task_overrides: Dict[str, Dict[str, Any]] = {}
         for t in self.config.tasks:
             override: Dict[str, Any] = {"task_type": t.type}
-            if t.type == "multiclass":
+            if t.type == "contrastive":
+                override["output_dim"] = t.num_classes
+                override["activation"] = None
+            elif t.type == "multiclass":
                 override["output_dim"] = t.num_classes
                 override["activation"] = "softmax"
             elif t.type == "regression":
@@ -355,6 +358,11 @@ class PipelineRunner:
             else:
                 override["output_dim"] = 1
                 override["activation"] = "sigmoid"
+            # Per-task tower overrides
+            if t.tower_type:
+                override["tower_type"] = t.tower_type
+            if t.tower_dims:
+                override["tower_dims"] = t.tower_dims
             task_overrides[t.name] = override
 
         expert_output_dim = max(self.config.model.expert_hidden_dim // 4, 64)

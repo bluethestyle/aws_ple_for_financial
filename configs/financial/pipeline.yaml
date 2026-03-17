@@ -116,11 +116,13 @@ tasks:
     label_col: label_merchant_affinity
 
   - name: brand_prediction
-    type: multiclass
-    loss: ce
+    type: contrastive
+    loss: infonce
     loss_weight: 2.0
     label_col: label_next_brand
     num_classes: 128
+    tower_type: contrastive
+    tower_dims: [64, 64]
 
 # ---------------------------------------------------------------------------
 # Task Groups -- single source of truth for adaTT, loss weighting, monitoring
@@ -480,7 +482,7 @@ model:
   num_task_experts: 2
   expert_hidden_dim: 256
   num_layers: 2
-  tower_dims: [128, 64]
+  tower_dims: [64, 32]
   dropout: 0.2
   # -------------------------------------------------------------------------
   # Expert Basket -- subset selection from Expert Pool (11 registered)

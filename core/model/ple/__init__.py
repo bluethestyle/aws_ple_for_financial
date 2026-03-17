@@ -42,7 +42,7 @@ from .config import (
     LogitTransferDef,
     ExpertInputConfig,
 )
-from .model import PLEModel, PLEInput, PLEOutput, TaskTower
+from .model import PLEModel, PLEInput, PLEOutput, TaskTower, ContrastiveTower, TowerRegistry
 from .experts import (
     BaseExpert,
     MLPExpert,
@@ -86,6 +86,8 @@ __all__ = [
     "PLEInput",
     "PLEOutput",
     "TaskTower",
+    "ContrastiveTower",
+    "TowerRegistry",
     # Experts
     "BaseExpert",
     "MLPExpert",

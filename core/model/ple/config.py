@@ -364,3 +364,22 @@ class PLEConfig:
         """Return the list of domain-relevant expert names for a task."""
         override = self.task_overrides.get(task_name, {})
         return override.get("domain_experts", [])
+
+    def get_tower_type(self, task_name: str) -> str:
+        """Return the tower type for a specific task.
+
+        Looks up ``tower_type`` in task_overrides; defaults to
+        ``"standard"``.  Use ``"contrastive"`` for tasks with many
+        classes (e.g. brand_prediction).
+        """
+        override = self.task_overrides.get(task_name, {})
+        return override.get("tower_type", "standard")
+
+    def get_tower_dims(self, task_name: str) -> Optional[List[int]]:
+        """Return per-task tower hidden_dims override, or ``None`` for default.
+
+        When ``None``, ``_build_task_towers`` uses
+        ``TaskTowerConfig.hidden_dims`` as the global default.
+        """
+        override = self.task_overrides.get(task_name, {})
+        return override.get("tower_dims")

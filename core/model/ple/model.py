@@ -204,8 +204,56 @@ class PLEOutput:
 # Task Tower
 # ============================================================================
 
+# ============================================================================
+# Tower Registry
+# ============================================================================
+
+class TowerRegistry:
+    """Plugin registry for task tower types.
+
+    Towers are registered by string key and instantiated via
+    ``TowerRegistry.build(key, **kwargs)``.  The default ``"standard"``
+    tower is auto-registered at module load time.
+
+    Usage::
+
+        @TowerRegistry.register("contrastive")
+        class ContrastiveTower(nn.Module):
+            ...
+
+        tower = TowerRegistry.build("contrastive", input_dim=96, output_dim=128)
+    """
+
+    _registry: Dict[str, type] = {}
+
+    @classmethod
+    def register(cls, key: str):
+        def decorator(tower_cls):
+            cls._registry[key] = tower_cls
+            return tower_cls
+        return decorator
+
+    @classmethod
+    def build(cls, key: str, **kwargs) -> nn.Module:
+        if key not in cls._registry:
+            raise KeyError(
+                f"Unknown tower type '{key}'. "
+                f"Registered: {list(cls._registry.keys())}"
+            )
+        return cls._registry[key](**kwargs)
+
+    @classmethod
+    def list_registered(cls) -> List[str]:
+        return list(cls._registry.keys())
+
+
+# ============================================================================
+# Standard Task Tower
+# ============================================================================
+
+@TowerRegistry.register("standard")
 class TaskTower(nn.Module):
-    """Per-task output tower.
+    """Per-task output tower (standard MLP).
 
     Maps the task expert output to the final prediction.
 
@@ -260,6 +308,60 @@ class TaskTower(nn.Module):
         elif self.activation == "softmax":
             return F.softmax(out, dim=-1)
         return out
+
+
+# ============================================================================
+# Contrastive Tower (for brand_prediction etc.)
+# ============================================================================
+
+@TowerRegistry.register("contrastive")
+class ContrastiveTower(nn.Module):
+    """Contrastive embedding tower for tasks with many classes.
+
+    Instead of softmax over N classes, learns an embedding space where
+    similar items are close.  Output is an L2-normalized embedding vector
+    used with contrastive loss (e.g. InfoNCE, triplet).
+
+    Args:
+        input_dim: Width of the task expert output.
+        output_dim: Embedding dimension (e.g. 128 for brand_prediction).
+        hidden_dims: Hidden layer widths.
+        dropout: Dropout probability.
+        task_type: Ignored (always contrastive).
+        activation: Ignored (always L2 normalize).
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int = 128,
+        hidden_dims: Optional[List[int]] = None,
+        dropout: float = 0.2,
+        task_type: str = "contrastive",
+        activation: Optional[str] = None,
+    ):
+        super().__init__()
+
+        if hidden_dims is None:
+            hidden_dims = [64, 64]
+
+        layers: List[nn.Module] = []
+        prev_dim = input_dim
+        for hd in hidden_dims:
+            layers.extend([
+                nn.Linear(prev_dim, hd),
+                nn.LayerNorm(hd),
+                nn.SiLU(),
+                nn.Dropout(dropout),
+            ])
+            prev_dim = hd
+
+        layers.append(nn.Linear(prev_dim, output_dim))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        emb = self.network(x)
+        return F.normalize(emb, p=2, dim=-1)
 
 
 # ============================================================================
@@ -562,7 +664,12 @@ class PLEModel(nn.Module):
                         f"(strength={self.logit_transfer_strength})")
 
     def _build_task_towers(self) -> None:
-        """Build per-task output towers."""
+        """Build per-task output towers.
+
+        Each task can override tower_type and tower_dims via
+        ``task_overrides``.  When no override is set, falls back to the
+        global ``TaskTowerConfig`` defaults.
+        """
         cfg = self.config
         self.task_towers = nn.ModuleDict()
 
@@ -570,10 +677,14 @@ class PLEModel(nn.Module):
         tower_input_dim = self._task_expert_output_dim
 
         for task_name in self.task_names:
-            self.task_towers[task_name] = TaskTower(
+            tower_type = cfg.get_tower_type(task_name)
+            tower_dims = cfg.get_tower_dims(task_name) or cfg.task_tower.hidden_dims
+
+            self.task_towers[task_name] = TowerRegistry.build(
+                tower_type,
                 input_dim=tower_input_dim,
                 output_dim=cfg.get_task_output_dim(task_name),
-                hidden_dims=cfg.task_tower.hidden_dims,
+                hidden_dims=tower_dims,
                 activation=cfg.get_task_activation(task_name),
                 dropout=cfg.task_tower.dropout,
                 task_type=cfg.get_task_type(task_name),
