@@ -4,25 +4,27 @@ HMM (Hidden Markov Model) Feature Generator -- triple-mode state estimation.
 Estimates latent states from sequential user data using three complementary
 perspectives:
 
-1. **Journey mode**: models the user's progression through product adoption
-   stages (awareness -> consideration -> purchase -> loyalty).
-2. **Lifecycle mode**: models the user's lifecycle phase (new -> growing ->
-   mature -> declining -> churned).
-3. **Behavior mode**: models short-term behavioural patterns (browsing,
-   comparing, transacting, dormant).
+1. **Journey mode** (5 states): Awareness -> Interest -> Consideration ->
+   Retention -> Advocacy.
+2. **Lifecycle mode** (5 states): New -> Growing -> Mature -> AtRisk -> Churned.
+3. **Behavior mode** (6 states): Dormant -> Conservative -> Routine ->
+   Exploratory -> Splurge -> Investor.
 
-Each mode produces a state probability vector and a most-likely-state
-indicator, enabling the PLE model to capture different temporal dynamics
-simultaneously.
+Each mode trains a separate Gaussian HMM via Baum-Welch (hmmlearn) or a
+simplified numpy-only EM fallback, then produces:
+  - state_id (1D): most likely state from Viterbi decoding
+  - state_probs (n_states D): posterior state probabilities
+  - dwell_time (1D): expected dwell time in assigned state
+  - transition_entropy (1D): Shannon entropy of the outgoing transition row
 
-This is a **placeholder implementation** that generates synthetic state
-features.  A production implementation would use ``hmmlearn`` or a custom
-Baum-Welch implementation fitted on actual sequential data.
+Total output: ~24D (depends on mode configuration).
 """
 
 from __future__ import annotations
 
 import logging
+import warnings
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -33,162 +35,430 @@ from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Lazy import hmmlearn
+# ---------------------------------------------------------------------------
+try:
+    from hmmlearn.hmm import GaussianHMM  # type: ignore[import-untyped]
+except ImportError:
+    GaussianHMM = None  # type: ignore[misc,assignment]
+    logger.debug("hmmlearn not available -- will use numpy EM fallback.")
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+@dataclass
+class HMMConfig:
+    """Per-mode HMM configuration."""
+
+    n_states: int = 5
+    n_iter: int = 100
+    covariance_type: str = "diag"
+    random_state: int = 42
+
 
 # Default mode definitions
-_DEFAULT_MODES = {
+_DEFAULT_MODES: Dict[str, Dict[str, Any]] = {
     "journey": {
-        "n_states": 4,
-        "state_names": ["awareness", "consideration", "purchase", "loyalty"],
+        "n_states": 5,
+        "state_names": [
+            "awareness", "interest", "consideration", "retention", "advocacy",
+        ],
         "description": "Product adoption journey stages",
     },
     "lifecycle": {
         "n_states": 5,
-        "state_names": ["new", "growing", "mature", "declining", "churned"],
+        "state_names": ["new", "growing", "mature", "at_risk", "churned"],
         "description": "Customer lifecycle phases",
     },
     "behavior": {
-        "n_states": 4,
-        "state_names": ["browsing", "comparing", "transacting", "dormant"],
+        "n_states": 6,
+        "state_names": [
+            "dormant", "conservative", "routine",
+            "exploratory", "splurge", "investor",
+        ],
         "description": "Short-term behavioural patterns",
     },
 }
 
 
+# ---------------------------------------------------------------------------
+# Simplified numpy-only EM (CPU fallback)
+# ---------------------------------------------------------------------------
+
+class _NumpyGaussianHMM:
+    """Minimal Gaussian HMM with diagonal covariance (numpy only).
+
+    Implements Baum-Welch EM for a single observation sequence.  This is a
+    lightweight fallback when ``hmmlearn`` is not installed.
+    """
+
+    def __init__(
+        self,
+        n_components: int = 5,
+        n_iter: int = 50,
+        covariance_type: str = "diag",
+        random_state: int = 42,
+    ) -> None:
+        self.n_components = n_components
+        self.n_iter = n_iter
+        self.covariance_type = covariance_type
+        self._rng = np.random.RandomState(random_state)
+
+        # Parameters (set after fit)
+        self.startprob_: np.ndarray = np.array([])
+        self.transmat_: np.ndarray = np.array([])
+        self.means_: np.ndarray = np.array([])
+        self.covars_: np.ndarray = np.array([])
+
+    # -- helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _log_normalize(log_a: np.ndarray) -> np.ndarray:
+        """Log-sum-exp normalise along last axis, return log-probabilities."""
+        max_val = log_a.max(axis=-1, keepdims=True)
+        log_a_shifted = log_a - max_val
+        log_sum = max_val + np.log(np.exp(log_a_shifted).sum(axis=-1, keepdims=True) + 1e-300)
+        return log_a - log_sum
+
+    def _log_gauss(self, X: np.ndarray) -> np.ndarray:
+        """Log probability of X under each Gaussian component.
+
+        Returns shape (T, K).
+        """
+        T, D = X.shape
+        K = self.n_components
+        log_prob = np.zeros((T, K))
+        for k in range(K):
+            diff = X - self.means_[k]  # (T, D)
+            var = self.covars_[k] + 1e-6  # (D,)
+            log_prob[:, k] = -0.5 * (
+                D * np.log(2 * np.pi)
+                + np.sum(np.log(var))
+                + np.sum(diff ** 2 / var, axis=1)
+            )
+        return log_prob
+
+    # -- forward / backward ------------------------------------------------
+
+    def _forward(self, log_emiss: np.ndarray) -> np.ndarray:
+        """Log-space forward pass. Returns log-alpha (T, K)."""
+        T, K = log_emiss.shape
+        log_alpha = np.full((T, K), -np.inf)
+        log_alpha[0] = np.log(self.startprob_ + 1e-300) + log_emiss[0]
+        log_trans = np.log(self.transmat_ + 1e-300)
+        for t in range(1, T):
+            for k in range(K):
+                log_alpha[t, k] = (
+                    np.logaddexp.reduce(log_alpha[t - 1] + log_trans[:, k])
+                    + log_emiss[t, k]
+                )
+        return log_alpha
+
+    def _backward(self, log_emiss: np.ndarray) -> np.ndarray:
+        """Log-space backward pass. Returns log-beta (T, K)."""
+        T, K = log_emiss.shape
+        log_beta = np.full((T, K), -np.inf)
+        log_beta[T - 1] = 0.0
+        log_trans = np.log(self.transmat_ + 1e-300)
+        for t in range(T - 2, -1, -1):
+            for k in range(K):
+                log_beta[t, k] = np.logaddexp.reduce(
+                    log_trans[k] + log_emiss[t + 1] + log_beta[t + 1]
+                )
+        return log_beta
+
+    # -- fit ---------------------------------------------------------------
+
+    def fit(self, X: np.ndarray) -> "_NumpyGaussianHMM":
+        """Fit HMM via Baum-Welch EM on a single observation matrix (T, D)."""
+        T, D = X.shape
+        K = self.n_components
+
+        # Initialise parameters
+        self.startprob_ = np.ones(K) / K
+        self.transmat_ = np.ones((K, K)) / K
+        # K-means-ish init: assign rows uniformly then compute stats
+        assignments = np.arange(T) % K
+        self._rng.shuffle(assignments)
+        self.means_ = np.zeros((K, D))
+        self.covars_ = np.ones((K, D))
+        for k in range(K):
+            mask = assignments == k
+            if mask.any():
+                self.means_[k] = X[mask].mean(axis=0)
+                self.covars_[k] = X[mask].var(axis=0) + 1e-3
+            else:
+                self.means_[k] = X.mean(axis=0) + self._rng.randn(D) * 0.1
+                self.covars_[k] = X.var(axis=0) + 1e-3
+
+        for iteration in range(self.n_iter):
+            log_emiss = self._log_gauss(X)
+            log_alpha = self._forward(log_emiss)
+            log_beta = self._backward(log_emiss)
+
+            # Gamma (posterior state probs)
+            log_gamma = log_alpha + log_beta
+            log_gamma = self._log_normalize(log_gamma)
+            gamma = np.exp(log_gamma)
+
+            # Xi (pairwise transition posteriors)
+            log_trans = np.log(self.transmat_ + 1e-300)
+            xi_sum = np.zeros((K, K))
+            for t in range(T - 1):
+                log_xi_t = (
+                    log_alpha[t, :, None]
+                    + log_trans
+                    + log_emiss[t + 1, None, :]
+                    + log_beta[t + 1, None, :]
+                )
+                log_xi_t -= np.logaddexp.reduce(log_xi_t.ravel())
+                xi_sum += np.exp(log_xi_t)
+
+            # M-step
+            self.startprob_ = gamma[0] + 1e-10
+            self.startprob_ /= self.startprob_.sum()
+
+            row_sums = xi_sum.sum(axis=1, keepdims=True) + 1e-10
+            self.transmat_ = xi_sum / row_sums
+
+            for k in range(K):
+                g_k = gamma[:, k]
+                g_sum = g_k.sum() + 1e-10
+                self.means_[k] = (g_k[:, None] * X).sum(axis=0) / g_sum
+                diff = X - self.means_[k]
+                self.covars_[k] = (
+                    (g_k[:, None] * diff ** 2).sum(axis=0) / g_sum + 1e-3
+                )
+
+        return self
+
+    # -- predict / score ---------------------------------------------------
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Viterbi decoding -- returns most-likely state sequence (T,)."""
+        log_emiss = self._log_gauss(X)
+        T, K = log_emiss.shape
+        log_trans = np.log(self.transmat_ + 1e-300)
+
+        viterbi = np.full((T, K), -np.inf)
+        backptr = np.zeros((T, K), dtype=np.int32)
+        viterbi[0] = np.log(self.startprob_ + 1e-300) + log_emiss[0]
+
+        for t in range(1, T):
+            for k in range(K):
+                scores = viterbi[t - 1] + log_trans[:, k]
+                backptr[t, k] = int(np.argmax(scores))
+                viterbi[t, k] = scores[backptr[t, k]] + log_emiss[t, k]
+
+        states = np.zeros(T, dtype=np.int32)
+        states[T - 1] = int(np.argmax(viterbi[T - 1]))
+        for t in range(T - 2, -1, -1):
+            states[t] = backptr[t + 1, states[t + 1]]
+        return states
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """Forward-backward posterior probabilities (T, K)."""
+        log_emiss = self._log_gauss(X)
+        log_alpha = self._forward(log_emiss)
+        log_beta = self._backward(log_emiss)
+        log_gamma = log_alpha + log_beta
+        log_gamma = self._log_normalize(log_gamma)
+        return np.exp(log_gamma)
+
+
+# ---------------------------------------------------------------------------
+# HMM Feature Generator
+# ---------------------------------------------------------------------------
+
 @FeatureGeneratorRegistry.register(
-    "hmm_triple_mode",
+    "hmm",
     description="Triple-mode HMM state estimation (journey / lifecycle / behavior).",
     tags=["hmm", "temporal", "sequential", "state"],
 )
 class HMMFeatureGenerator(AbstractFeatureGenerator):
     """Triple-mode Hidden Markov Model feature generator.
 
-    For each enabled mode, the generator produces:
-      - ``{prefix}_{mode}_state``: most-likely state index (int).
-      - ``{prefix}_{mode}_prob_{state_name}``: probability of each state
-        (float, sums to 1.0).
+    Trains a Gaussian HMM per mode using Baum-Welch (via hmmlearn when
+    available, otherwise a numpy EM fallback).  For each mode the generator
+    outputs:
+
+      - ``{prefix}_{mode}_state_id``: Viterbi most-likely state (int)
+      - ``{prefix}_{mode}_prob_{name}``: posterior probability per state
+      - ``{prefix}_{mode}_dwell_time``: expected dwell time in current state
+      - ``{prefix}_{mode}_transition_entropy``: Shannon entropy of the
+        outgoing transition row from the current state
 
     Parameters
     ----------
     modes : list[str]
         Which modes to enable.  Subset of ``["journey", "lifecycle",
         "behavior"]``.  Default: all three.
-    mode_configs : dict, optional
-        Override the default mode definitions.  Maps mode name to
-        ``{"n_states": int, "state_names": list[str]}``.
-    sequence_columns : list[str]
-        Columns that contain sequential / temporal signals used as HMM
-        observations.
+    hmm_config : HMMConfig, optional
+        Shared HMM hyper-parameters (overridable per mode via
+        ``mode_hmm_configs``).
+    mode_hmm_configs : dict[str, HMMConfig], optional
+        Per-mode HMM configs.
+    sequence_columns : list[str], optional
+        Columns used as observation features.  Defaults to all numeric.
     prefix : str
-        Column name prefix for generated features.
-    n_iter : int
-        Number of Baum-Welch iterations (for production use).
-    random_state : int
-        Random seed for reproducibility.
+        Column-name prefix.
     """
+
+    supports_gpu: bool = False
+    required_libraries: List[str] = []
+    optional_libraries: List[str] = ["hmmlearn"]
 
     def __init__(
         self,
         modes: Optional[List[str]] = None,
-        mode_configs: Optional[Dict[str, Dict[str, Any]]] = None,
+        hmm_config: Optional[HMMConfig] = None,
+        mode_hmm_configs: Optional[Dict[str, HMMConfig]] = None,
         sequence_columns: Optional[List[str]] = None,
         prefix: str = "hmm",
-        n_iter: int = 100,
-        random_state: int = 42,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.modes = modes or list(_DEFAULT_MODES.keys())
+        self.hmm_config = hmm_config or HMMConfig()
+        self.mode_hmm_configs = mode_hmm_configs or {}
         self.sequence_columns = sequence_columns or []
         self.prefix = prefix
-        self.n_iter = n_iter
-        self.random_state = random_state
 
-        # Build mode configs
-        self._mode_configs: Dict[str, Dict[str, Any]] = {}
+        # Validate modes
         for mode in self.modes:
-            if mode_configs and mode in mode_configs:
-                self._mode_configs[mode] = mode_configs[mode]
-            elif mode in _DEFAULT_MODES:
-                self._mode_configs[mode] = dict(_DEFAULT_MODES[mode])
-            else:
+            if mode not in _DEFAULT_MODES:
                 raise ValueError(
                     f"Unknown HMM mode '{mode}'. "
-                    f"Available: {list(_DEFAULT_MODES.keys())} "
-                    f"or provide custom mode_configs."
+                    f"Available: {list(_DEFAULT_MODES.keys())}"
                 )
 
-        # Internal fitted state (transition matrices, emission params, etc.)
-        self._transition_matrices: Dict[str, np.ndarray] = {}
-        self._initial_probs: Dict[str, np.ndarray] = {}
+        # Fitted models per mode
+        self._models: Dict[str, Any] = {}
+        self._mode_configs = {m: dict(_DEFAULT_MODES[m]) for m in self.modes}
 
-    # -- Output description --------------------------------------------
+    # -- helpers -----------------------------------------------------------
+
+    def _get_hmm_config(self, mode: str) -> HMMConfig:
+        """Return the HMMConfig for a given mode (per-mode override or shared)."""
+        return self.mode_hmm_configs.get(mode, self.hmm_config)
+
+    def _build_model(self, mode: str) -> Any:
+        """Construct the HMM model object for *mode*."""
+        cfg = self._get_hmm_config(mode)
+        n_states = self._mode_configs[mode]["n_states"]
+
+        if GaussianHMM is not None:
+            return GaussianHMM(
+                n_components=n_states,
+                covariance_type=cfg.covariance_type,
+                n_iter=cfg.n_iter,
+                random_state=cfg.random_state,
+            )
+        else:
+            logger.info(
+                "Using numpy EM fallback for mode '%s' (hmmlearn unavailable).",
+                mode,
+            )
+            return _NumpyGaussianHMM(
+                n_components=n_states,
+                n_iter=min(cfg.n_iter, 30),  # cap iterations for perf
+                covariance_type=cfg.covariance_type,
+                random_state=cfg.random_state,
+            )
+
+    @staticmethod
+    def _transition_entropy(transmat: np.ndarray, state: int) -> float:
+        """Shannon entropy of outgoing transition probabilities from *state*."""
+        row = transmat[state]
+        row = row[row > 0]
+        return float(-np.sum(row * np.log(row + 1e-300)))
+
+    @staticmethod
+    def _dwell_time(transmat: np.ndarray, state: int) -> float:
+        """Expected dwell time = 1 / (1 - self-transition prob)."""
+        p_self = transmat[state, state]
+        return float(1.0 / (1.0 - p_self + 1e-10))
+
+    # -- Output description ------------------------------------------------
 
     @property
     def output_dim(self) -> int:
-        """Total output dimension across all modes.
-
-        For each mode: 1 (state index) + n_states (probabilities).
-        """
         total = 0
         for mode in self.modes:
             n_states = self._mode_configs[mode]["n_states"]
-            total += 1 + n_states  # state_idx + probs
+            # state_id + n_states probs + dwell_time + transition_entropy
+            total += 1 + n_states + 1 + 1
         return total
 
     @property
     def output_columns(self) -> List[str]:
-        """Generated column names."""
-        cols = []
+        cols: List[str] = []
         for mode in self.modes:
             cfg = self._mode_configs[mode]
-            cols.append(f"{self.prefix}_{mode}_state")
-            for state_name in cfg["state_names"]:
-                cols.append(f"{self.prefix}_{mode}_prob_{state_name}")
+            cols.append(f"{self.prefix}_{mode}_state_id")
+            for sn in cfg["state_names"]:
+                cols.append(f"{self.prefix}_{mode}_prob_{sn}")
+            cols.append(f"{self.prefix}_{mode}_dwell_time")
+            cols.append(f"{self.prefix}_{mode}_transition_entropy")
         return cols
 
-    # -- Core API ------------------------------------------------------
+    # -- Core API ----------------------------------------------------------
 
     def fit(self, df: Any, **context: Any) -> "HMMFeatureGenerator":
-        """Fit HMM parameters for each mode.
+        """Fit a Gaussian HMM per mode on the observation matrix."""
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        obs_cols = self._resolve_observation_columns(pdf)
 
-        In production, this would run Baum-Welch on sequential data.
-        The placeholder learns simple statistics to generate plausible
-        state distributions.
-        """
-        rng = np.random.RandomState(self.random_state)
+        if not obs_cols:
+            logger.warning(
+                "No numeric observation columns found -- HMM will use "
+                "uniform state assignments."
+            )
+
+        X = pdf[obs_cols].values.astype(np.float64) if obs_cols else np.zeros((len(pdf), 1))
+        # Replace NaN with column means
+        col_means = np.nanmean(X, axis=0)
+        nan_mask = np.isnan(X)
+        X[nan_mask] = np.take(col_means, np.where(nan_mask)[1]) if nan_mask.any() else X[nan_mask]
 
         for mode in self.modes:
-            n_states = self._mode_configs[mode]["n_states"]
-
-            # Placeholder: create random but valid transition matrix
-            raw = rng.dirichlet(np.ones(n_states), size=n_states)
-            # Add self-transition bias (states tend to persist)
-            self._transition_matrices[mode] = 0.6 * np.eye(n_states) + 0.4 * raw
-            # Normalise rows
-            row_sums = self._transition_matrices[mode].sum(axis=1, keepdims=True)
-            self._transition_matrices[mode] /= row_sums
-
-            # Initial state distribution (uniform with slight bias toward early states)
-            init = np.ones(n_states) / n_states
-            init[0] += 0.1
-            init /= init.sum()
-            self._initial_probs[mode] = init
+            model = self._build_model(mode)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    if GaussianHMM is not None:
+                        model.fit(X)
+                    else:
+                        model.fit(X)
+                    self._models[mode] = model
+                    logger.info(
+                        "HMM mode '%s' fitted: n_states=%d, n_obs=%d, n_features=%d",
+                        mode,
+                        self._mode_configs[mode]["n_states"],
+                        X.shape[0],
+                        X.shape[1],
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "HMM fit failed for mode '%s': %s. Using random init.",
+                        mode,
+                        exc,
+                    )
+                    self._models[mode] = None
 
         self._fitted = True
         logger.info(
             "HMMFeatureGenerator fitted: modes=%s, total output_dim=%d",
-            self.modes, self.output_dim,
+            self.modes,
+            self.output_dim,
         )
         return self
 
     def generate(self, df: Any, **context: Any) -> Any:
-        """Generate HMM state features for each row.
-
-        .. note::
-           Placeholder: derives state probabilities from input feature
-           statistics.  Replace with actual Viterbi / forward-backward
-           decoding for production use.
-        """
+        """Generate HMM state features via Viterbi decoding and forward-backward."""
         if not self._fitted:
             raise RuntimeError(
                 "HMMFeatureGenerator must be fitted before generate()."
@@ -196,55 +466,65 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
 
         pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
         n_rows = len(pdf)
-        result_arrays: Dict[str, np.ndarray] = {}
-
-        # Resolve observation columns
         obs_cols = self._resolve_observation_columns(pdf)
-        obs_data = pdf[obs_cols].values.astype(np.float64) if obs_cols else None
+        X = pdf[obs_cols].values.astype(np.float64) if obs_cols else np.zeros((n_rows, 1))
+
+        # Fill NaN
+        col_means = np.nanmean(X, axis=0)
+        nan_mask = np.isnan(X)
+        if nan_mask.any():
+            X[nan_mask] = np.take(col_means, np.where(nan_mask)[1])
+
+        results: Dict[str, np.ndarray] = {}
 
         for mode in self.modes:
             cfg = self._mode_configs[mode]
             n_states = cfg["n_states"]
             state_names = cfg["state_names"]
+            model = self._models.get(mode)
 
-            # Placeholder: generate plausible state distributions
-            # In production: run forward-backward or Viterbi
-            probs = np.zeros((n_rows, n_states), dtype=np.float32)
-            states = np.zeros(n_rows, dtype=np.int32)
+            if model is not None:
+                # Viterbi decoding
+                try:
+                    states = model.predict(X)
+                except Exception:
+                    states = np.zeros(n_rows, dtype=np.int32)
 
-            for i in range(n_rows):
-                # Create pseudo-observations from available data
-                if obs_data is not None and obs_data.shape[1] > 0:
-                    row = obs_data[i]
-                    valid = row[~np.isnan(row)]
-                    if len(valid) > 0:
-                        # Use row statistics to bias toward certain states
-                        z_score = (valid.mean() - np.nanmean(obs_data)) / (
-                            np.nanstd(obs_data) + 1e-10
-                        )
-                        # Map z-score to state probabilities via softmax
-                        logits = np.array([
-                            -abs(z_score - (2 * s / (n_states - 1) - 1))
-                            for s in range(n_states)
-                        ])
-                    else:
-                        logits = np.zeros(n_states)
-                else:
-                    logits = np.zeros(n_states)
+                # Posterior probabilities
+                try:
+                    probs = model.predict_proba(X)
+                except Exception:
+                    probs = np.full((n_rows, n_states), 1.0 / n_states, dtype=np.float32)
 
-                # Softmax
-                exp_logits = np.exp(logits - logits.max())
-                probs[i] = exp_logits / (exp_logits.sum() + 1e-10)
-                states[i] = int(np.argmax(probs[i]))
+                transmat = model.transmat_
+            else:
+                # Fallback: uniform
+                states = np.zeros(n_rows, dtype=np.int32)
+                probs = np.full((n_rows, n_states), 1.0 / n_states, dtype=np.float32)
+                transmat = np.ones((n_states, n_states)) / n_states
 
-            # Store results
-            result_arrays[f"{self.prefix}_{mode}_state"] = states
-            for j, state_name in enumerate(state_names):
-                result_arrays[f"{self.prefix}_{mode}_prob_{state_name}"] = probs[:, j]
+            # state_id
+            results[f"{self.prefix}_{mode}_state_id"] = states.astype(np.int32)
 
-        return df_backend.from_dict(result_arrays, index=pdf.index)
+            # per-state probabilities
+            for j, sn in enumerate(state_names):
+                results[f"{self.prefix}_{mode}_prob_{sn}"] = probs[:, j].astype(np.float32)
 
-    # -- Helpers -------------------------------------------------------
+            # dwell_time and transition_entropy per row (based on assigned state)
+            dwell = np.array(
+                [self._dwell_time(transmat, int(s)) for s in states],
+                dtype=np.float32,
+            )
+            t_entropy = np.array(
+                [self._transition_entropy(transmat, int(s)) for s in states],
+                dtype=np.float32,
+            )
+            results[f"{self.prefix}_{mode}_dwell_time"] = dwell
+            results[f"{self.prefix}_{mode}_transition_entropy"] = t_entropy
+
+        return df_backend.from_dict(results, index=pdf.index)
+
+    # -- Helpers -----------------------------------------------------------
 
     def _resolve_observation_columns(self, df: pd.DataFrame) -> List[str]:
         """Resolve observation columns, falling back to all numeric."""

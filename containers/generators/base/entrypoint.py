@@ -24,6 +24,8 @@ Input:  /opt/ml/processing/input/data.parquet
 Output: /opt/ml/processing/output/features.parquet
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -78,6 +80,22 @@ def main() -> None:
     # Trigger generator registration by importing the generators package
     import core.feature.generators  # noqa: F401
 
+    # -- Log GPU / device info --
+    from core.feature.generators.gpu_utils import log_device_info
+    log_device_info()
+
+    # -- Log available generators and GPU capability --
+    available = FeatureGeneratorRegistry.list_available()
+    gpu_capable = FeatureGeneratorRegistry.list_gpu_capable()
+    logger.info(
+        "Generator Pool: %d registered %s",
+        len(available), available,
+    )
+    logger.info(
+        "GPU-capable generators: %s",
+        gpu_capable if gpu_capable else "(none)",
+    )
+
     # -- Load input data --
     logger.info("Reading input from %s", input_path)
     df = df_backend.read_parquet(input_path)
@@ -86,10 +104,27 @@ def main() -> None:
     # -- Instantiate and run generator --
     if group_type == "generate" and generator_name:
         logger.info(
-            "Building generator '%s' with params: %s",
+            "Creating generator '%s' with params: %s",
             generator_name, generator_params,
         )
-        gen = FeatureGeneratorRegistry.build(generator_name, **generator_params)
+        gen = FeatureGeneratorRegistry.create(generator_name, **generator_params)
+
+        # Log generator metadata
+        logger.info(
+            "Generator info: supports_gpu=%s, device=%s, "
+            "required_libraries=%s, container_image=%s",
+            gen.supports_gpu, gen.device,
+            gen.required_libraries, gen.container_image or "(none)",
+        )
+
+        # Check dependencies before running
+        if not gen.check_dependencies():
+            logger.warning(
+                "Some optional libraries are missing for %s, "
+                "using fallback implementations",
+                generator_name,
+            )
+
         gen.fit(df)
         result = gen.generate(df)
     else:

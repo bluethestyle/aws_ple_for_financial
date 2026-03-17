@@ -6,15 +6,60 @@ decorators on all built-in generators, making them available by name.
 
 Available generators
 --------------------
-* ``tda_extractor``       -- Topological Data Analysis features (persistence diagrams).
-* ``hmm_triple_mode``     -- Hidden Markov Model state estimation (journey / lifecycle / behavior).
-* ``hyperbolic_embedding`` -- Hyperbolic (Poincare ball) graph embeddings.
-* ``multidisciplinary``   -- Chemical kinetics, epidemic diffusion, interference, crime patterns.
-* ``temporal_pattern``    -- Temporal sequence aggregation and cyclical encoding.
+* ``tda``                  -- Topological Data Analysis features (persistence diagrams).
+* ``phase_transition``     -- Topological phase transition detection via persistence diagram distances.
+* ``hmm``                  -- Triple-mode HMM state estimation (journey / lifecycle / behavior).
+* ``gmm``                  -- Gaussian Mixture Model soft clustering with BIC validation.
+* ``graph``                -- LightGCN graph embeddings with optional Poincare projection.
+* ``mamba``                -- Mamba SSM temporal embedding features.
+* ``multidisciplinary``    -- Chemical kinetics, epidemic diffusion, interference, crime patterns.
+* ``temporal``             -- Temporal rolling aggregation, cyclical encoding, and velocity features.
+
+Pool / Basket pattern
+---------------------
+All generators register themselves into the **Generator Pool** (the
+``FeatureGeneratorRegistry``).  Downstream config selects a subset
+(the "basket") for a specific pipeline run via ``FeatureGroupConfig``.
+
+Usage::
+
+    from core.feature.generators import FeatureGeneratorRegistry
+
+    # List all available generators in the pool
+    print(FeatureGeneratorRegistry.list_available())
+
+    # Check GPU-capable generators
+    print(FeatureGeneratorRegistry.list_gpu_capable())
+
+    # Create a generator by name
+    gen = FeatureGeneratorRegistry.create("tda", max_homology_dim=2)
+
+    # Get summary info for all generators
+    for info in FeatureGeneratorRegistry.list_all_info():
+        print(f"  {info['name']}: gpu={info['supports_gpu']}, libs={info['required_libraries']}")
 """
 
-from . import tda          # noqa: F401
-from . import hmm          # noqa: F401
-from . import graph        # noqa: F401
+from __future__ import annotations
+
+# Re-export the registry for convenient access
+from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
+
+# Import all generator modules to trigger @register decorators.
+# Each module registers its generator(s) at import time.
+from . import tda                # noqa: F401
+from . import hmm                # noqa: F401
+from . import graph              # noqa: F401
+from . import mamba              # noqa: F401
 from . import multidisciplinary  # noqa: F401
-from . import temporal     # noqa: F401
+from . import temporal           # noqa: F401
+from . import gmm                # noqa: F401
+from . import phase_transition   # noqa: F401
+
+# GPU utilities
+from . import gpu_utils       # noqa: F401
+
+__all__ = [
+    "AbstractFeatureGenerator",
+    "FeatureGeneratorRegistry",
+    "gpu_utils",
+]

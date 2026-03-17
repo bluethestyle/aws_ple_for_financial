@@ -18,17 +18,30 @@ All concrete generators are registered via the
 ``@FeatureGeneratorRegistry.register("name")`` decorator so they can be
 referenced by name in :class:`FeatureGroupConfig` definitions.
 
+Pool / Basket pattern
+---------------------
+Mirrors the 3-tier expert selection architecture from
+``core.model.ple.experts``:
+
+1. **Generator Pool** -- all generators registered via
+   ``@FeatureGeneratorRegistry.register``.
+2. **Generator Basket** -- config-defined subset selected from the pool
+   for a specific pipeline run (driven by ``FeatureGroupConfig``).
+3. **Pipeline Execution** -- runtime invocation of generators in the
+   basket via :class:`FeatureGroupPipeline`.
+
 Example::
 
     @FeatureGeneratorRegistry.register("tda_extractor")
     class TDAFeatureGenerator(AbstractFeatureGenerator):
         ...
 
-    gen = FeatureGeneratorRegistry.build("tda_extractor", dim=8)
+    gen = FeatureGeneratorRegistry.create("tda_extractor", dim=8)
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
 import pickle
 from abc import ABC, abstractmethod
@@ -51,10 +64,16 @@ class AbstractFeatureGenerator(ABC):
     existing columns in place.
 
     Subclasses must implement:
-        * ``fit``      -- learn any internal state from training data.
-        * ``generate`` -- produce a DataFrame of **only** new columns.
+        * ``fit``            -- learn any internal state from training data.
+        * ``generate``       -- produce a DataFrame of **only** new columns.
         * ``output_dim``     -- number of new columns produced.
         * ``output_columns`` -- explicit list of new column names.
+
+    Subclasses may override:
+        * ``supports_gpu``       -- whether this generator can use GPU (default ``False``).
+        * ``required_libraries`` -- heavy Python packages needed at runtime.
+        * ``container_image``    -- ECR image URI for container execution.
+        * ``estimated_output_dim`` -- classmethod for pre-instantiation dim estimation.
 
     Attributes
     ----------
@@ -73,6 +92,99 @@ class AbstractFeatureGenerator(ABC):
     @property
     def fitted(self) -> bool:
         return self._fitted
+
+    # -- GPU / device support ------------------------------------------
+
+    @property
+    def supports_gpu(self) -> bool:
+        """Whether this generator can utilise GPU acceleration.
+
+        Override in subclasses that leverage CUDA (e.g. via torch,
+        cuML, mamba_ssm).  Defaults to ``False``.
+        """
+        return False
+
+    @property
+    def required_libraries(self) -> List[str]:
+        """Python packages required at runtime.
+
+        Return a list of importable module names (e.g.
+        ``["ripser", "persim"]``).  These are checked by
+        :meth:`check_dependencies` and used by the registry for
+        introspection.  Defaults to an empty list.
+        """
+        return []
+
+    @property
+    def container_image(self) -> str:
+        """ECR image URI this generator should run inside.
+
+        Return an empty string if the generator can run locally without
+        a specialised container.  Override in subclasses that need
+        specific system-level dependencies.
+        """
+        return ""
+
+    @property
+    def device(self) -> str:
+        """Auto-detect the best device for this generator.
+
+        Returns ``"cuda"`` if the generator supports GPU and CUDA is
+        available; otherwise ``"cpu"``.  Uses lazy import of ``torch``
+        to avoid hard dependency.
+        """
+        if not self.supports_gpu:
+            return "cpu"
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
+        except ImportError:
+            pass
+        return "cpu"
+
+    def check_dependencies(self) -> bool:
+        """Validate that all ``required_libraries`` are importable.
+
+        Returns
+        -------
+        bool
+            ``True`` if all dependencies are available, ``False``
+            otherwise.  Logs warnings for missing packages.
+        """
+        all_ok = True
+        for lib in self.required_libraries:
+            try:
+                importlib.import_module(lib)
+            except ImportError:
+                logger.warning(
+                    "Generator '%s' requires '%s' which is not installed.",
+                    self.name, lib,
+                )
+                all_ok = False
+        return all_ok
+
+    @classmethod
+    def estimated_output_dim(cls, config: Dict[str, Any]) -> int:
+        """Estimate the number of output columns from a config dict.
+
+        This classmethod allows callers to estimate output dimensionality
+        *before* instantiating the generator (useful for PLE model
+        construction and dimension planning).
+
+        Parameters
+        ----------
+        config : dict
+            Generator constructor parameters.
+
+        Returns
+        -------
+        int
+            Estimated number of output columns.  The default
+            implementation returns ``0`` (unknown); subclasses should
+            override with a meaningful estimate.
+        """
+        return 0
 
     # -- Core API ------------------------------------------------------
 
@@ -165,6 +277,10 @@ class AbstractFeatureGenerator(ABC):
             "fitted": self._fitted,
             "output_dim": self.output_dim,
             "output_columns": self.output_columns,
+            "supports_gpu": self.supports_gpu,
+            "device": self.device,
+            "required_libraries": self.required_libraries,
+            "container_image": self.container_image,
         }
 
     # -- Repr ----------------------------------------------------------
@@ -173,20 +289,26 @@ class AbstractFeatureGenerator(ABC):
         return (
             f"{type(self).__name__}("
             f"output_dim={self.output_dim}, "
-            f"fitted={self._fitted})"
+            f"fitted={self._fitted}, "
+            f"device={self.device!r})"
         )
 
 
 # ======================================================================
-# Generator Registry
+# Generator Registry (Pool)
 # ======================================================================
 
 
 class FeatureGeneratorRegistry:
-    """Plugin registry for feature generators.
+    """Plugin registry for feature generators (the Generator Pool).
 
-    Mirrors the design of :class:`FeatureRegistry` but is specialised
-    for :class:`AbstractFeatureGenerator` subclasses.
+    Mirrors the design of :class:`ExpertRegistry` in
+    ``core.model.experts.registry`` but is specialised for
+    :class:`AbstractFeatureGenerator` subclasses.
+
+    The registry acts as the **Pool** tier in the Pool/Basket pattern:
+    all available generators are registered here; downstream config
+    selects a subset (the "basket") for a specific pipeline run.
 
     Usage::
 
@@ -194,7 +316,10 @@ class FeatureGeneratorRegistry:
         class TDAFeatureGenerator(AbstractFeatureGenerator):
             ...
 
-        gen = FeatureGeneratorRegistry.build("tda_extractor", dim=8)
+        gen = FeatureGeneratorRegistry.create("tda_extractor", dim=8)
+
+    Thread-safety note: registration happens at import time (module-level
+    decorators) before any worker threads start, so no locking is needed.
     """
 
     _registry: Dict[str, Type[AbstractFeatureGenerator]] = {}
@@ -215,7 +340,7 @@ class FeatureGeneratorRegistry:
         Parameters
         ----------
         name : str
-            Unique name (used in configs and ``build()``).
+            Unique name (used in configs and ``create()``).
         description : str, optional
             Short human-readable description.
         tags : list[str], optional
@@ -244,15 +369,21 @@ class FeatureGeneratorRegistry:
                 "tags": tags or [],
             }
             gen_cls.name = name  # type: ignore[attr-defined]
+            logger.debug(
+                "Generator registered: %s -> %s", name, gen_cls.__name__,
+            )
             return gen_cls
 
         return decorator
 
-    # -- Lookup --------------------------------------------------------
+    # -- Instantiation -------------------------------------------------
 
     @classmethod
-    def build(cls, name: str, **kwargs: Any) -> AbstractFeatureGenerator:
+    def create(cls, name: str, **kwargs: Any) -> AbstractFeatureGenerator:
         """Instantiate a generator by its registered *name*.
+
+        This is the primary factory method (equivalent to
+        ``ExpertRegistry.create``).
 
         Parameters
         ----------
@@ -273,9 +404,38 @@ class FeatureGeneratorRegistry:
         if name not in cls._registry:
             raise KeyError(
                 f"Unknown generator '{name}'. "
-                f"Registered: {cls.list_registered()}"
+                f"Available: {cls.list_available()}"
             )
-        return cls._registry[name](**kwargs)
+        gen_cls = cls._registry[name]
+        try:
+            instance = gen_cls(**kwargs)
+            logger.debug(
+                "Generator created: %s (class=%s)",
+                name, gen_cls.__name__,
+            )
+            return instance
+        except Exception:
+            logger.exception("Failed to create generator: %s", name)
+            raise
+
+    @classmethod
+    def build(cls, name: str, **kwargs: Any) -> AbstractFeatureGenerator:
+        """Alias for :meth:`create` (backward compatibility).
+
+        Parameters
+        ----------
+        name : str
+            Registered generator name.
+        **kwargs
+            Forwarded to the generator constructor.
+
+        Returns
+        -------
+        AbstractFeatureGenerator
+        """
+        return cls.create(name, **kwargs)
+
+    # -- Lookup / Introspection ----------------------------------------
 
     @classmethod
     def get_class(cls, name: str) -> Type[AbstractFeatureGenerator]:
@@ -283,14 +443,107 @@ class FeatureGeneratorRegistry:
         if name not in cls._registry:
             raise KeyError(
                 f"Unknown generator '{name}'. "
-                f"Registered: {cls.list_registered()}"
+                f"Available: {cls.list_available()}"
             )
         return cls._registry[name]
 
     @classmethod
-    def list_registered(cls) -> List[str]:
+    def is_registered(cls, name: str) -> bool:
+        """Check whether *name* is registered."""
+        return name in cls._registry
+
+    @classmethod
+    def list_available(cls) -> List[str]:
         """Return a sorted list of all registered generator names."""
         return sorted(cls._registry.keys())
+
+    @classmethod
+    def list_registered(cls) -> List[str]:
+        """Alias for :meth:`list_available` (backward compatibility)."""
+        return cls.list_available()
+
+    @classmethod
+    def list_gpu_capable(cls) -> List[str]:
+        """Return names of generators that support GPU acceleration.
+
+        This method instantiates each generator class with no arguments
+        to query the ``supports_gpu`` property.  Generators that fail
+        to instantiate without arguments are skipped.
+
+        Returns
+        -------
+        list[str]
+            Sorted list of generator names with ``supports_gpu=True``.
+        """
+        gpu_names: List[str] = []
+        for name, gen_cls in cls._registry.items():
+            try:
+                # Read supports_gpu directly from the class dict to avoid
+                # instantiation.  Class-level bool attributes are preferred
+                # over instance-level assignments for GPU capability.
+                val = gen_cls.__dict__.get("supports_gpu")
+                if val is True:
+                    gpu_names.append(name)
+            except Exception:
+                # If we cannot determine GPU support, skip silently.
+                pass
+        return sorted(gpu_names)
+
+    @classmethod
+    def get_info(cls, name: str) -> Dict[str, Any]:
+        """Return metadata for a registered generator.
+
+        Parameters
+        ----------
+        name : str
+            Registered generator name.
+
+        Returns
+        -------
+        dict
+            Keys: ``name``, ``class``, ``description``, ``tags``,
+            ``supports_gpu``, ``required_libraries``,
+            ``container_image``.
+        """
+        if name not in cls._registry:
+            raise KeyError(
+                f"Unknown generator '{name}'. "
+                f"Available: {cls.list_available()}"
+            )
+        meta = dict(cls._metadata.get(name, {}))
+        meta["name"] = name
+
+        # Extract runtime info from class-level attributes where possible
+        gen_cls = cls._registry[name]
+        try:
+            # Prefer class-level attributes to avoid instantiation
+            val = gen_cls.__dict__.get("supports_gpu")
+            meta["supports_gpu"] = val if isinstance(val, bool) else False
+
+            libs = gen_cls.__dict__.get("required_libraries")
+            meta["required_libraries"] = libs if isinstance(libs, list) else []
+
+            img = gen_cls.__dict__.get("container_image")
+            meta["container_image"] = img if isinstance(img, str) else ""
+        except Exception:
+            meta["supports_gpu"] = False
+            meta["required_libraries"] = []
+            meta["container_image"] = ""
+
+        return meta
+
+    @classmethod
+    def list_all_info(cls) -> List[Dict[str, Any]]:
+        """Return metadata dicts for all registered generators.
+
+        Useful for summary display or dashboard integration.
+
+        Returns
+        -------
+        list[dict]
+            One info dict per registered generator, sorted by name.
+        """
+        return [cls.get_info(name) for name in cls.list_available()]
 
     @classmethod
     def find_by_tag(cls, tag: str) -> List[str]:
@@ -303,10 +556,8 @@ class FeatureGeneratorRegistry:
 
     @classmethod
     def info(cls, name: str) -> Dict[str, Any]:
-        """Return metadata for a registered generator."""
-        if name not in cls._metadata:
-            raise KeyError(f"No metadata for '{name}'")
-        return dict(cls._metadata[name])
+        """Alias for :meth:`get_info` (backward compatibility)."""
+        return cls.get_info(name)
 
     @classmethod
     def clear(cls) -> None:
