@@ -8,16 +8,30 @@ validation, and data quality checks.
 
 from .config import DataBackendConfig
 from .dataframe import DataFrameBackend, df_backend
+from .dataloader import (
+    FeatureColumnSpec,
+    SequenceConfig,
+    PLEDataset,
+    build_ple_dataloader,
+)
 from .query_engine import QueryEngine
 from .schema_registry import SchemaRegistry
+from .sequence_densifier import SequenceDensifier, SequenceDensifyConfig, SequenceSpec
 from .validation import DataValidator, ValidationResult
 
 __all__ = [
     "DataBackendConfig",
     "DataFrameBackend",
     "df_backend",
+    "FeatureColumnSpec",
+    "SequenceConfig",
+    "PLEDataset",
+    "build_ple_dataloader",
     "SchemaRegistry",
     "QueryEngine",
+    "SequenceDensifier",
+    "SequenceDensifyConfig",
+    "SequenceSpec",
     "DataValidator",
     "ValidationResult",
 ]

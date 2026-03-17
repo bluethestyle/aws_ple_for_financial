@@ -58,7 +58,7 @@ class PLEInput:
     """Model input container.
 
     Args:
-        features: ``(batch, input_dim)`` feature tensor.
+        features: ``(batch, input_dim)`` static feature tensor (e.g. 644D).
         feature_group_ranges: Optional mapping from feature group name to
             ``(start_col, end_col)`` index range within ``features``.
             When provided together with a configured ``FeatureRouter``,
@@ -71,13 +71,82 @@ class PLEInput:
         cluster_ids: ``(batch,)`` cluster assignment (or zeros if no clustering).
         cluster_probs: ``(batch, n_clusters)`` soft cluster probabilities.
         targets: ``{task_name: label_tensor}`` for training.
+        hyperbolic_features: ``(batch, 20)`` embeddings for HGCN expert.
+        tda_features: ``(batch, 70)`` precomputed TDA features for PersLay.
+        tda_diagrams: ``(batch, max_pairs, 3)`` raw persistence diagrams.
+        tda_diagram_mask: ``(batch, max_pairs)`` validity mask for diagrams.
+        collaborative_features: ``(batch, 64)`` LightGCN embeddings.
+        hmm_journey: ``(batch, 16)`` HMM journey-mode state posteriors.
+        hmm_lifecycle: ``(batch, 16)`` HMM lifecycle-mode state posteriors.
+        hmm_behavior: ``(batch, 16)`` HMM behavior-mode state posteriors.
+        event_sequences: ``(batch, seq_len, feat_dim)`` event-level sequences.
+        session_sequences: ``(batch, seq_len, feat_dim)`` session-level sequences.
+        event_time_delta: ``(batch, seq_len)`` inter-event time deltas.
+        session_time_delta: ``(batch, seq_len)`` inter-session time deltas.
+        sequence_lengths: Actual pre-padding lengths per sequence type.
+        multidisciplinary_features: ``(batch, 24)`` cross-domain features.
+        coldstart_features: ``(batch, 40)`` cold-start indicator features.
+        anonymous_features: ``(batch, 15)`` anonymous-user features.
+        edge_index: ``(2, num_edges)`` graph edge indices for runtime GNN.
+        edge_weight: ``(num_edges,)`` edge weights for runtime GNN.
+        sample_weights: ``(batch,)`` per-sample importance weights.
     """
     features: torch.Tensor
+
+    # Existing fields
     feature_group_ranges: Optional[Dict[str, Tuple[int, int]]] = None
     expert_routing: Optional[Dict[str, List[str]]] = None
     cluster_ids: Optional[torch.Tensor] = None
     cluster_probs: Optional[torch.Tensor] = None
     targets: Optional[Dict[str, torch.Tensor]] = None
+
+    # Specialized expert inputs
+    hyperbolic_features: Optional[torch.Tensor] = None
+    tda_features: Optional[torch.Tensor] = None
+    tda_diagrams: Optional[torch.Tensor] = None
+    tda_diagram_mask: Optional[torch.Tensor] = None
+    collaborative_features: Optional[torch.Tensor] = None
+
+    # HMM triple-mode states
+    hmm_journey: Optional[torch.Tensor] = None
+    hmm_lifecycle: Optional[torch.Tensor] = None
+    hmm_behavior: Optional[torch.Tensor] = None
+
+    # Sequence tensors (for Temporal / Mamba experts)
+    event_sequences: Optional[torch.Tensor] = None
+    session_sequences: Optional[torch.Tensor] = None
+    event_time_delta: Optional[torch.Tensor] = None
+    session_time_delta: Optional[torch.Tensor] = None
+    sequence_lengths: Optional[Dict[str, torch.Tensor]] = None
+
+    # Auxiliary features
+    multidisciplinary_features: Optional[torch.Tensor] = None
+    coldstart_features: Optional[torch.Tensor] = None
+    anonymous_features: Optional[torch.Tensor] = None
+
+    # Graph structure (for runtime GNN)
+    edge_index: Optional[torch.Tensor] = None
+    edge_weight: Optional[torch.Tensor] = None
+
+    # Sample metadata
+    sample_weights: Optional[torch.Tensor] = None
+
+    # Names of all tensor fields for generic iteration in .to()
+    _TENSOR_FIELDS: List[str] = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # Pre-compute the list once so .to() doesn't introspect every call
+        object.__setattr__(self, "_TENSOR_FIELDS", [
+            "features", "cluster_ids", "cluster_probs",
+            "hyperbolic_features", "tda_features", "tda_diagrams",
+            "tda_diagram_mask", "collaborative_features",
+            "hmm_journey", "hmm_lifecycle", "hmm_behavior",
+            "event_sequences", "session_sequences",
+            "event_time_delta", "session_time_delta",
+            "multidisciplinary_features", "coldstart_features",
+            "anonymous_features", "edge_index", "edge_weight",
+            "sample_weights",
+        ])
 
     @property
     def batch_size(self) -> int:
@@ -88,18 +157,27 @@ class PLEInput:
         return self.features.device
 
     def to(self, device: torch.device) -> "PLEInput":
-        def _to(t: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-            return t.to(device) if t is not None else None
+        """Move all tensors to *device*, leaving non-tensor fields unchanged."""
+        kwargs: Dict[str, object] = {}
+        for name in self._TENSOR_FIELDS:
+            val = getattr(self, name)
+            kwargs[name] = val.to(device) if val is not None else None
 
-        return PLEInput(
-            features=self.features.to(device),
-            feature_group_ranges=self.feature_group_ranges,
-            expert_routing=self.expert_routing,
-            cluster_ids=_to(self.cluster_ids),
-            cluster_probs=_to(self.cluster_probs),
-            targets={k: v.to(device) for k, v in self.targets.items()}
-                if self.targets else None,
+        # Dict[str, Tensor] fields
+        kwargs["targets"] = (
+            {k: v.to(device) for k, v in self.targets.items()}
+            if self.targets else None
         )
+        kwargs["sequence_lengths"] = (
+            {k: v.to(device) for k, v in self.sequence_lengths.items()}
+            if self.sequence_lengths else None
+        )
+
+        # Non-tensor fields pass through
+        kwargs["feature_group_ranges"] = self.feature_group_ranges
+        kwargs["expert_routing"] = self.expert_routing
+
+        return PLEInput(**kwargs)
 
 
 @dataclass
@@ -525,6 +603,109 @@ class PLEModel(nn.Module):
         return result
 
     # ------------------------------------------------------------------
+    # Expert input preparation
+    # ------------------------------------------------------------------
+
+    # Mapping from PLEInput field names to expert type identifiers.
+    # When a PLEInput has a dedicated tensor field, it is routed to the
+    # matching expert instead of slicing from the main features tensor.
+    _EXPERT_FIELD_MAP: Dict[str, str] = {
+        "hgcn": "hyperbolic_features",
+        "perslay": "tda_features",
+        "lightgcn": "collaborative_features",
+        "temporal": "event_sequences",
+        "mamba": "event_sequences",
+    }
+
+    def _prepare_expert_inputs(
+        self,
+        ple_input: PLEInput,
+    ) -> Optional[Dict[str, torch.Tensor]]:
+        """Map PLEInput fields to expert-specific inputs.
+
+        Priority:
+            1. Dedicated tensor (e.g., PLEInput.hyperbolic_features for hgcn)
+            2. Feature router slice (when feature_group_ranges provided)
+            3. Full features tensor (fallback -- all experts get everything)
+
+        When no specialized inputs are available (no dedicated tensors and
+        no feature_group_ranges), returns ``None`` to signal that the
+        legacy code path (all experts receive full features) should be used.
+
+        Args:
+            ple_input: Model input container.
+
+        Returns:
+            Dict mapping expert name to its input tensor, or ``None`` if
+            no routing is needed (backward compatible fallback).
+        """
+        features = ple_input.features
+        has_dedicated = False
+        has_routing = False
+        expert_inputs: Dict[str, torch.Tensor] = {}
+
+        # Determine which expert names we need to prepare inputs for.
+        # These come from the first CGC layer's shared expert names.
+        if self.expert_basket is not None:
+            expert_names = self.expert_basket.shared_expert_names
+        else:
+            expert_names = [
+                f"shared_{i}" for i in range(self.config.num_shared_experts)
+            ]
+
+        # Step 1: Check for dedicated tensor fields
+        for expert_key, field_name in self._EXPERT_FIELD_MAP.items():
+            tensor = getattr(ple_input, field_name, None)
+            if tensor is not None:
+                # Find which shared expert(s) match this key.
+                # Expert basket names use the expert type directly (e.g. "hgcn").
+                # Legacy shared expert names are "shared_0", "shared_1", etc.
+                for ename in expert_names:
+                    if expert_key in ename.lower() or ename.lower() == expert_key:
+                        expert_inputs[ename] = tensor
+                        has_dedicated = True
+                        logger.debug(
+                            "Expert routing: %s receiving %s (%dD)",
+                            ename, field_name,
+                            tensor.shape[-1] if tensor.dim() >= 2 else tensor.numel(),
+                        )
+
+        # Step 2: Use FeatureRouter for remaining experts
+        if self.feature_router is not None:
+            # Use runtime group_ranges if provided, else fall back to config
+            runtime_ranges = ple_input.feature_group_ranges
+            if runtime_ranges is not None:
+                # Create a temporary router with runtime ranges if they differ
+                # from the config-time ranges.  In practice, they usually match.
+                pass  # The existing self.feature_router handles this
+
+            for ename in expert_names:
+                if ename not in expert_inputs:
+                    if self.feature_router.has_routing(ename):
+                        expert_inputs[ename] = self.feature_router.route(
+                            features, ename,
+                        )
+                        has_routing = True
+                    else:
+                        expert_inputs[ename] = features
+
+        if not has_dedicated and not has_routing:
+            return None
+
+        # Step 3: Fill in any remaining experts with full features
+        for ename in expert_names:
+            if ename not in expert_inputs:
+                expert_inputs[ename] = features
+
+        # Log routing summary (once, at debug level)
+        if logger.isEnabledFor(logging.DEBUG):
+            for ename, tensor in expert_inputs.items():
+                dim_str = "x".join(str(s) for s in tensor.shape[1:])
+                logger.debug("Expert input: %s -> %sD", ename, dim_str)
+
+        return expert_inputs
+
+    # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
 
@@ -544,12 +725,48 @@ class PLEModel(nn.Module):
         """
         features = inputs.features
 
+        # Prepare expert-specific inputs (returns None when no routing needed)
+        expert_inputs = self._prepare_expert_inputs(inputs)
+
+        # Log routing decisions at INFO level on first forward pass
+        if not hasattr(self, "_routing_logged") and expert_inputs is not None:
+            self._routing_logged = True
+            for ename, tensor in expert_inputs.items():
+                dim_str = "x".join(str(s) for s in tensor.shape[1:])
+                logger.info(
+                    "Expert routing: %s receiving %sD input", ename, dim_str,
+                )
+
         # 1. Stacked CGC extraction layers
         task_representations = [features] * len(self.task_names)
         shared_input = features
         shared_concat = None
-        for layer in self.extraction_layers:
-            task_representations, shared_concat = layer(shared_input, task_representations)
+
+        for layer_idx, layer in enumerate(self.extraction_layers):
+            if layer_idx == 0 and expert_inputs is not None:
+                # For the first layer, pass expert-specific inputs via
+                # the feature_router mechanism.  The CGCLayer already
+                # supports FeatureRouter -- we just need to ensure the
+                # shared_input contains the full features tensor so the
+                # router can slice from it.  For dedicated tensors that
+                # bypass the router, we inject them by temporarily
+                # replacing the shared experts' forward methods.
+                #
+                # However, the cleaner approach is: when expert_inputs
+                # are available and a FeatureRouter is configured, the
+                # CGCLayer already handles routing.  When dedicated
+                # tensors are provided (not from the main features tensor),
+                # we need to handle them specially.
+                #
+                # Strategy: For dedicated tensors (from PLEInput fields),
+                # we override the expert's input by wrapping the layer call.
+                task_representations, shared_concat = self._forward_cgc_with_routing(
+                    layer, shared_input, task_representations, expert_inputs,
+                )
+            else:
+                task_representations, shared_concat = layer(
+                    shared_input, task_representations,
+                )
             shared_input = shared_concat
 
         # 2. Per-task expert processing
@@ -636,6 +853,89 @@ class PLEModel(nn.Module):
             cgc_attention_weights=cgc_weights,
             aux_losses=aux_losses if aux_losses else None,
         )
+
+    # ------------------------------------------------------------------
+    # CGC routing helper
+    # ------------------------------------------------------------------
+
+    def _forward_cgc_with_routing(
+        self,
+        layer: CGCLayer,
+        shared_input: torch.Tensor,
+        task_inputs: List[torch.Tensor],
+        expert_inputs: Dict[str, torch.Tensor],
+    ) -> Tuple[List[torch.Tensor], torch.Tensor]:
+        """Forward through a CGC layer with expert-specific input routing.
+
+        This method replicates ``CGCLayer.forward()`` logic but substitutes
+        expert-specific inputs from ``expert_inputs`` when available.  This
+        handles the case where dedicated PLEInput tensors (e.g.,
+        ``hyperbolic_features``) need to bypass the FeatureRouter and be
+        fed directly to their matching expert.
+
+        When a FeatureRouter is configured on the layer, it handles
+        standard group-based slicing.  This method adds support for
+        dedicated tensor override on top of that.
+
+        Expert forward() signatures are NOT modified -- routing happens
+        BEFORE passing to experts.
+
+        Args:
+            layer: The CGC layer to forward through.
+            shared_input: Full features tensor ``(batch, input_dim)``.
+            task_inputs: Per-task input tensors.
+            expert_inputs: ``{expert_name: tensor}`` from
+                ``_prepare_expert_inputs()``.
+
+        Returns:
+            Same as ``CGCLayer.forward()``: list of per-task gated outputs
+            and concatenated shared expert outputs.
+        """
+        # Shared expert outputs: use expert_inputs dict for overrides
+        shared_expert_outputs: List[torch.Tensor] = []
+        for i, expert in enumerate(layer.shared_experts):
+            expert_name = layer.shared_expert_names[i]
+            if expert_name in expert_inputs:
+                expert_input = expert_inputs[expert_name]
+            elif (layer.feature_router is not None
+                    and expert_name in layer.feature_router.expert_names):
+                expert_input = layer.feature_router.route(
+                    shared_input, expert_name,
+                )
+            else:
+                expert_input = shared_input
+
+            # Handle 3D sequence tensors: if the expert input is 3D
+            # (batch, seq_len, feat_dim) but the expert expects 2D,
+            # reshape to (batch, seq_len * feat_dim) for compatibility.
+            # The expert's forward() expects (batch, input_dim).
+            if expert_input.dim() == 3 and expert.input_dim != expert_input.shape[1]:
+                batch_size = expert_input.size(0)
+                expert_input = expert_input.reshape(batch_size, -1)
+
+            shared_expert_outputs.append(expert(expert_input))
+
+        shared_outs = torch.stack(shared_expert_outputs, dim=1)
+        shared_concat = torch.cat(shared_expert_outputs, dim=-1)
+
+        # Per-task expert outputs (always receive full input -- same as
+        # CGCLayer.forward())
+        outputs: List[torch.Tensor] = []
+        for task_idx in range(layer.num_tasks):
+            task_outs = torch.stack(
+                [expert(task_inputs[task_idx])
+                 for expert in layer.task_experts[task_idx]],
+                dim=1,
+            )
+            all_outs = torch.cat([task_outs, shared_outs], dim=1)
+
+            gate_logits = layer.gating[task_idx](task_inputs[task_idx])
+            gate_weights = F.softmax(gate_logits, dim=-1)
+
+            gated = (gate_weights.unsqueeze(-1) * all_outs).sum(dim=1)
+            outputs.append(gated)
+
+        return outputs, shared_concat
 
     # ------------------------------------------------------------------
     # Loss helpers

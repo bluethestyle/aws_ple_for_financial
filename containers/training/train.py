@@ -98,8 +98,68 @@ def _parse_hp_value(v: str) -> Any:
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_data(channel_dir: str, config: Dict[str, Any]) -> TensorDataset:
-    """Load Parquet files from a SageMaker input channel into a TensorDataset.
+def _parse_feature_column_spec(
+    config: Dict[str, Any],
+    available_columns: list,
+) -> Optional["FeatureColumnSpec"]:
+    """Build a :class:`FeatureColumnSpec` from hyperparameter config.
+
+    Returns ``None`` when the config does not contain feature-spec
+    definitions, in which case the caller should fall back to the legacy
+    TensorDataset path.
+    """
+    feature_cfg = config.get("feature_columns")
+    if not feature_cfg:
+        return None
+
+    try:
+        from core.data.dataloader import FeatureColumnSpec, SequenceConfig
+    except ImportError:
+        logger.warning("core.data.dataloader not available; using legacy path")
+        return None
+
+    return FeatureColumnSpec(
+        static_features=feature_cfg.get("static_features", []),
+        hyperbolic_columns=feature_cfg.get("hyperbolic_columns", []),
+        tda_columns=feature_cfg.get("tda_columns", []),
+        collaborative_columns=feature_cfg.get("collaborative_columns", []),
+        hmm_journey_columns=feature_cfg.get("hmm_journey_columns", []),
+        hmm_lifecycle_columns=feature_cfg.get("hmm_lifecycle_columns", []),
+        hmm_behavior_columns=feature_cfg.get("hmm_behavior_columns", []),
+        multidisciplinary_columns=feature_cfg.get("multidisciplinary_columns", []),
+        coldstart_columns=feature_cfg.get("coldstart_columns", []),
+        anonymous_columns=feature_cfg.get("anonymous_columns", []),
+        event_seq_pattern=feature_cfg.get(
+            "event_seq_pattern", "txn_card_{feature}_{step:03d}"
+        ),
+        session_seq_pattern=feature_cfg.get(
+            "session_seq_pattern", "sess_{feature}_{step:03d}"
+        ),
+        event_seq_features=feature_cfg.get("event_seq_features", []),
+        session_seq_features=feature_cfg.get("session_seq_features", []),
+        event_time_delta_prefix=feature_cfg.get(
+            "event_time_delta_prefix", "txn_card_time_delta"
+        ),
+        session_time_delta_prefix=feature_cfg.get(
+            "session_time_delta_prefix", "sess_time_delta"
+        ),
+    )
+
+
+def load_data(
+    channel_dir: str,
+    config: Dict[str, Any],
+    *,
+    use_gpu_loading: bool = False,
+    batch_size: int = 2048,
+    shuffle: bool = True,
+) -> Any:
+    """Load Parquet files from a SageMaker input channel.
+
+    When the config contains a ``feature_columns`` section, returns a
+    PyTorch ``DataLoader`` backed by :class:`PLEDataset` with optional
+    cuDF GPU zero-copy support.  Otherwise falls back to a legacy
+    ``TensorDataset`` for backward compatibility.
 
     Parameters
     ----------
@@ -107,11 +167,18 @@ def load_data(channel_dir: str, config: Dict[str, Any]) -> TensorDataset:
         Directory containing Parquet files (e.g. /opt/ml/input/data/train).
     config : dict
         Pipeline config dict with task/feature definitions.
+    use_gpu_loading : bool
+        Enable cuDF DLPack zero-copy loading when available.
+    batch_size : int
+        Batch size (only used when returning a DataLoader).
+    shuffle : bool
+        Whether to shuffle (only used when returning a DataLoader).
 
     Returns
     -------
-    TensorDataset
-        Contains (features, *label_tensors_per_task).
+    TensorDataset or DataLoader
+        Legacy TensorDataset when ``feature_columns`` is absent, otherwise
+        a DataLoader yielding PLE-compatible dicts.
     """
     import pandas as pd
 
@@ -125,15 +192,42 @@ def load_data(channel_dir: str, config: Dict[str, Any]) -> TensorDataset:
     logger.info(f"Loading {len(parquet_files)} Parquet file(s) from {channel_dir}")
     dfs = [pd.read_parquet(f) for f in parquet_files]
     df = pd.concat(dfs, ignore_index=True)
+    df = df.fillna(0)
     logger.info(f"Loaded {len(df)} rows, {len(df.columns)} columns")
 
-    # Extract features and labels
     tasks = config.get("tasks", [])
     label_cols = [t["label_col"] for t in tasks]
+
+    # ---- Try new PLEDataset path ----
+    feature_spec = _parse_feature_column_spec(config, list(df.columns))
+    if feature_spec is not None:
+        from core.data.dataloader import build_ple_dataloader, SequenceConfig
+
+        label_map = {t["name"]: t["label_col"] for t in tasks}
+
+        seq_cfg_raw = config.get("sequence_config", {})
+        seq_cfg = SequenceConfig(**seq_cfg_raw) if seq_cfg_raw else None
+
+        loader = build_ple_dataloader(
+            df=df,
+            feature_spec=feature_spec,
+            label_columns=label_map,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            use_gpu_loading=use_gpu_loading,
+            sequence_config=seq_cfg,
+        )
+        logger.info(
+            "Using PLEDataset dataloader: %d samples, batch_size=%d",
+            len(df), batch_size,
+        )
+        return loader
+
+    # ---- Legacy TensorDataset path (backward compatible) ----
     feature_cols = [c for c in df.columns if c not in label_cols]
 
     features = torch.tensor(
-        df[feature_cols].fillna(0).values, dtype=torch.float32,
+        df[feature_cols].values, dtype=torch.float32,
     )
 
     label_tensors = []
@@ -142,11 +236,11 @@ def load_data(channel_dir: str, config: Dict[str, Any]) -> TensorDataset:
         if col in df.columns:
             if task["type"] == "multiclass":
                 label_tensors.append(
-                    torch.tensor(df[col].fillna(0).values, dtype=torch.long)
+                    torch.tensor(df[col].values, dtype=torch.long)
                 )
             else:
                 label_tensors.append(
-                    torch.tensor(df[col].fillna(0).values, dtype=torch.float32)
+                    torch.tensor(df[col].values, dtype=torch.float32)
                 )
         else:
             logger.warning(f"Label column '{col}' not found, using zeros")
@@ -178,6 +272,62 @@ def report_metrics(prefix: str, metrics: Dict[str, float], epoch: int) -> None:
 # Training loop
 # ---------------------------------------------------------------------------
 
+def _batch_to_ple_input(
+    batch: Any,
+    task_names: list,
+    device: torch.device,
+) -> "PLEInput":
+    """Convert a batch (dict, PLEInput, or tuple) into a device-resident PLEInput.
+
+    Supports three batch formats:
+      - ``dict`` from :class:`PLEDataset` / :func:`build_ple_dataloader`
+      - ``PLEInput`` directly (e.g. when ``return_ple_input=True``)
+      - ``tuple`` from a legacy ``TensorDataset``
+    """
+    from core.model.ple.model import PLEInput
+
+    if isinstance(batch, PLEInput):
+        return batch.to(device)
+
+    if isinstance(batch, dict):
+        kwargs: Dict[str, Any] = {
+            "features": batch["features"],
+        }
+        if "targets" in batch:
+            kwargs["targets"] = batch["targets"]
+
+        # Map short collate keys to PLEInput field names
+        _KEY_MAP = {
+            "hyperbolic": "hyperbolic_features",
+            "tda": "tda_features",
+            "collaborative": "collaborative_features",
+            "hmm_journey": "hmm_journey",
+            "hmm_lifecycle": "hmm_lifecycle",
+            "hmm_behavior": "hmm_behavior",
+            "event_sequences": "event_sequences",
+            "session_sequences": "session_sequences",
+            "event_time_delta": "event_time_delta",
+            "session_time_delta": "session_time_delta",
+            "multidisciplinary": "multidisciplinary_features",
+            "coldstart": "coldstart_features",
+            "anonymous": "anonymous_features",
+        }
+        for src, dst in _KEY_MAP.items():
+            val = batch.get(src)
+            if val is not None:
+                kwargs[dst] = val
+
+        return PLEInput(**kwargs).to(device)
+
+    # Legacy TensorDataset tuple: (features, label0, label1, ...)
+    features = batch[0].to(device)
+    targets = {
+        task_names[i]: batch[i + 1].to(device)
+        for i in range(min(len(task_names), len(batch) - 1))
+    }
+    return PLEInput(features=features, targets=targets)
+
+
 def train_epoch(
     model: nn.Module,
     dataloader: DataLoader,
@@ -201,13 +351,7 @@ def train_epoch(
     n_batches = 0
 
     for batch in dataloader:
-        features = batch[0].to(device)
-        targets = {
-            task_names[i]: batch[i + 1].to(device)
-            for i in range(len(task_names))
-        }
-
-        inputs = PLEInput(features=features, targets=targets)
+        inputs = _batch_to_ple_input(batch, task_names, device)
         output = model(inputs, compute_loss=True)
 
         if output.total_loss is None:
@@ -262,13 +406,8 @@ def validate(
     all_targets: Dict[str, list] = {name: [] for name in task_names}
 
     for batch in dataloader:
-        features = batch[0].to(device)
-        targets = {
-            task_names[i]: batch[i + 1].to(device)
-            for i in range(len(task_names))
-        }
-
-        inputs = PLEInput(features=features, targets=targets)
+        inputs = _batch_to_ple_input(batch, task_names, device)
+        targets = inputs.targets or {}
         output = model(inputs, compute_loss=True)
 
         if output.total_loss is not None:
@@ -459,34 +598,82 @@ def main() -> None:
     logger.info(f"Device: {device}")
 
     # -- Load data --
-    train_dataset = load_data(train_dir, config)
-    logger.info(f"Train dataset: {len(train_dataset)} samples")
+    use_gpu_loading = hp.get("use_gpu_loading", False) and num_gpus > 0
+    train_data = load_data(
+        train_dir, config,
+        use_gpu_loading=use_gpu_loading,
+        batch_size=batch_size,
+        shuffle=True,
+    )
 
-    val_dataset = None
-    if os.path.isdir(val_dir):
-        try:
-            val_dataset = load_data(val_dir, config)
-            logger.info(f"Validation dataset: {len(val_dataset)} samples")
-        except FileNotFoundError:
-            logger.warning("No validation data found, using train data split")
+    # load_data returns either a DataLoader (new path) or a TensorDataset (legacy)
+    if isinstance(train_data, DataLoader):
+        # New PLEDataset path -- load_data already returned DataLoaders
+        train_loader = train_data
+        logger.info(f"Train dataloader: {len(train_loader.dataset)} samples")
 
-    # Split train data if no separate validation set
-    if val_dataset is None:
-        n = len(train_dataset)
-        val_size = max(1, int(n * 0.1))
-        train_size = n - val_size
-        train_dataset, val_dataset = torch.utils.data.random_split(
-            train_dataset, [train_size, val_size],
+        val_loader = None
+        if os.path.isdir(val_dir):
+            try:
+                val_loader = load_data(
+                    val_dir, config,
+                    use_gpu_loading=use_gpu_loading,
+                    batch_size=batch_size,
+                    shuffle=False,
+                )
+            except FileNotFoundError:
+                logger.warning("No validation data found, using train data split")
+
+        if val_loader is None:
+            # Fall back to splitting the training dataset
+            n = len(train_loader.dataset)
+            val_size = max(1, int(n * 0.1))
+            train_size = n - val_size
+            train_subset, val_subset = torch.utils.data.random_split(
+                train_loader.dataset, [train_size, val_size],
+            )
+            train_loader = DataLoader(
+                train_subset, batch_size=batch_size, shuffle=True,
+                collate_fn=train_loader.collate_fn,
+                num_workers=0 if use_gpu_loading else 4,
+                pin_memory=not use_gpu_loading,
+                drop_last=True,
+            )
+            val_loader = DataLoader(
+                val_subset, batch_size=batch_size, shuffle=False,
+                collate_fn=train_loader.collate_fn,
+                num_workers=0 if use_gpu_loading else 2,
+                pin_memory=not use_gpu_loading,
+            )
+    else:
+        # Legacy TensorDataset path
+        train_dataset = train_data
+        logger.info(f"Train dataset: {len(train_dataset)} samples")
+
+        val_dataset = None
+        if os.path.isdir(val_dir):
+            try:
+                val_dataset = load_data(val_dir, config)
+                logger.info(f"Validation dataset: {len(val_dataset)} samples")
+            except FileNotFoundError:
+                logger.warning("No validation data found, using train data split")
+
+        if val_dataset is None:
+            n = len(train_dataset)
+            val_size = max(1, int(n * 0.1))
+            train_size = n - val_size
+            train_dataset, val_dataset = torch.utils.data.random_split(
+                train_dataset, [train_size, val_size],
+            )
+
+        train_loader = DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True,
+            num_workers=4, pin_memory=True, drop_last=True,
         )
-
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True,
-        num_workers=4, pin_memory=True, drop_last=True,
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False,
-        num_workers=2, pin_memory=True,
-    )
+        val_loader = DataLoader(
+            val_dataset, batch_size=batch_size, shuffle=False,
+            num_workers=2, pin_memory=True,
+        )
 
     # -- Build model --
     from core.model.ple.model import PLEModel

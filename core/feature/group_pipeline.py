@@ -369,6 +369,69 @@ class FeatureGroupPipeline:
         return routing
 
     @property
+    def expert_routing_by_groups(self) -> Dict[str, List[str]]:
+        """Expert name -> list of feature group names it should receive.
+
+        This is the group-level counterpart of :attr:`expert_routing`
+        (which returns column indices).  Used when constructing
+        ``PLEInput.expert_routing`` for the model.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Maps expert name to a list of feature group names.
+        """
+        routing: Dict[str, List[str]] = {}
+
+        for group in self._registry.enabled_groups:
+            if not group.target_experts:
+                continue
+            for expert in group.target_experts:
+                if expert not in routing:
+                    routing[expert] = []
+                routing[expert].append(group.name)
+
+        return routing
+
+    def get_ple_input_metadata(self) -> Dict[str, Any]:
+        """Return metadata needed for PLEInput construction.
+
+        Provides the feature group ranges and expert routing information
+        that the DataLoader / training loop needs when constructing
+        ``PLEInput`` instances.  This bridges the feature engineering
+        layer to the model layer.
+
+        Returns
+        -------
+        dict[str, Any]
+            Contains:
+            - ``feature_group_ranges``: ``{group_name: (start, end)}``
+              column index ranges per group in the concatenated feature
+              tensor.
+            - ``expert_routing``: ``{expert_name: [group_names]}``
+              which feature groups route to which expert.
+            - ``total_dim``: Total feature dimension.
+            - ``output_columns``: Ordered list of all output column names.
+
+        Raises
+        ------
+        RuntimeError
+            If the pipeline has not been fitted yet.
+        """
+        if not self._fitted:
+            raise RuntimeError(
+                "Pipeline must be fitted before get_ple_input_metadata(). "
+                "Call fit() or fit_transform() first."
+            )
+
+        return {
+            "feature_group_ranges": dict(self._group_ranges),
+            "expert_routing": self.expert_routing_by_groups,
+            "total_dim": self._total_dim,
+            "output_columns": list(self._output_columns),
+        }
+
+    @property
     def interpretation_map(self) -> Dict[str, FeatureInterpretationConfig]:
         """Auto-generated interpretation mapping for reverse_mapper.
 

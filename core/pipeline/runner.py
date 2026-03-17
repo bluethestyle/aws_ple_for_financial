@@ -463,12 +463,36 @@ class PipelineRunner:
         task_names: list,
         batch_size: int = 2048,
         shuffle: bool = True,
+        feature_spec: Optional[Any] = None,
+        use_gpu_loading: bool = False,
     ) -> Any:
         """Convert a DataFrame into a PyTorch DataLoader of dicts.
 
         Each batch is a ``dict`` with ``"features"`` and ``"targets"`` keys,
         compatible with :meth:`PLETrainer._prepare_inputs`.
+
+        When *feature_spec* (a :class:`FeatureColumnSpec`) is provided, the
+        new GPU-capable ``build_ple_dataloader`` is used.  Otherwise, the
+        simple legacy path is preserved for backward compatibility.
         """
+        if feature_spec is not None:
+            from ..data.dataloader import build_ple_dataloader
+
+            label_map = {
+                task_name: label_col
+                for task_name, label_col in zip(task_names, label_cols)
+            }
+            return build_ple_dataloader(
+                df=df,
+                feature_spec=feature_spec,
+                label_columns=label_map,
+                batch_size=batch_size,
+                shuffle=shuffle,
+                use_gpu_loading=use_gpu_loading,
+                pin_memory=True,
+            )
+
+        # ---- Legacy simple path (backward compatible) ----
         import numpy as np
         import torch
         from torch.utils.data import DataLoader
