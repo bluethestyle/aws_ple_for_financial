@@ -585,6 +585,9 @@ class ExpertBasket:
         # Validate all requested experts exist in the pool
         pool_names = set(PoolRegistry.list_available())
         all_requested = set(basket_config.shared_experts) | set(basket_config.task_experts)
+        # Include group-specific task experts in validation
+        for group_experts in basket_config.group_task_experts.values():
+            all_requested |= set(group_experts)
         missing = all_requested - pool_names
         if missing:
             raise ValueError(
@@ -600,6 +603,11 @@ class ExpertBasket:
             len(basket_config.shared_experts),
             len(basket_config.task_experts),
         )
+        if basket_config.group_task_experts:
+            logger.info(
+                "  Group task experts: %s",
+                basket_config.group_task_experts,
+            )
         logger.info(
             "  Shared basket: %s",
             basket_config.shared_experts,

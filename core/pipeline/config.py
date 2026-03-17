@@ -17,11 +17,18 @@ class TaskGroupConfig:
     """Definition of a task group for adaTT transfer and monitoring.
 
     Task groups are defined once in pipeline.yaml and propagated to adaTT
-    (intra/inter transfer strengths), loss weighting, and monitoring.
+    (intra/inter transfer strengths), loss weighting, monitoring, and
+    per-group task expert selection.
+
+    When ``task_experts`` is non-empty, tasks in this group use the
+    specified experts instead of the global ``expert_basket.task_experts``.
+    This enables domain-specific expert assignment per task group
+    (e.g. lifecycle tasks use causal expert, consumption tasks use deepfm).
     """
 
     name: str = ""
     tasks: list[str] = field(default_factory=list)
+    task_experts: list[str] = field(default_factory=list)
     adatt_intra_strength: float = 0.8   # intra-group transfer strength
     adatt_inter_strength: float = 0.3   # inter-group transfer strength
     description: str = ""

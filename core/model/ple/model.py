@@ -458,19 +458,57 @@ class PLEModel(nn.Module):
         )
 
     def _build_task_experts(self) -> None:
-        """Build per-task MLP experts."""
+        """Build per-task expert networks.
+
+        When an ``ExpertBasket`` is configured with ``group_task_experts``,
+        each task uses the expert type(s) assigned to its task group.
+        Falls back to the global ``task_experts`` list (or plain MLP)
+        when no group-specific override exists.
+        """
         cfg = self.config
         self.task_expert_networks = nn.ModuleDict()
 
         for task_name in self.task_names:
-            self.task_expert_networks[task_name] = MLPExpert(
-                input_dim=self._extraction_output_dim,
-                output_dim=cfg.task_expert_output_dim,
-                hidden_dims=cfg.task_expert.hidden_dims,
-                dropout=cfg.task_expert.dropout,
-                activation=cfg.task_expert.activation,
-                use_layer_norm=cfg.task_expert.use_layer_norm,
-            )
+            expert_built = False
+
+            # Try group-specific expert from basket
+            if self.expert_basket is not None and cfg.expert_basket is not None:
+                task_group = cfg.task_group_map.get(task_name)
+                expert_names = cfg.expert_basket.get_task_experts_for(
+                    task_name, task_group
+                )
+                if expert_names:
+                    # Use the first expert in the list as the primary
+                    # task expert (multiple task experts per task would
+                    # require a mini-gating layer which is overkill).
+                    primary_expert_name = expert_names[0]
+                    try:
+                        expert = self.expert_basket.build_task_expert(
+                            primary_expert_name
+                        )
+                        self.task_expert_networks[task_name] = expert
+                        expert_built = True
+                        logger.debug(
+                            "Task '%s' (group=%s) using expert '%s'",
+                            task_name, task_group, primary_expert_name,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to build group expert '%s' for task '%s': %s. "
+                            "Falling back to MLP.",
+                            primary_expert_name, task_name, exc,
+                        )
+
+            # Fallback: plain MLP expert
+            if not expert_built:
+                self.task_expert_networks[task_name] = MLPExpert(
+                    input_dim=self._extraction_output_dim,
+                    output_dim=cfg.task_expert_output_dim,
+                    hidden_dims=cfg.task_expert.hidden_dims,
+                    dropout=cfg.task_expert.dropout,
+                    activation=cfg.task_expert.activation,
+                    use_layer_norm=cfg.task_expert.use_layer_norm,
+                )
 
     def _build_adatt(self) -> None:
         """Build the Adaptive Task Transfer module."""

@@ -378,6 +378,12 @@ class PipelineRunner:
                 len(self.config.task_groups),
             )
 
+        # -- Build task_group_map from pipeline task_groups -------------------
+        task_group_map: Dict[str, str] = {}
+        for tg in self.config.task_groups:
+            for t in tg.tasks:
+                task_group_map[t] = tg.name
+
         ple_config = PLEConfig(
             input_dim=input_dim,
             task_names=task_names,
@@ -395,6 +401,7 @@ class PipelineRunner:
             dropout=self.config.model.dropout,
             task_overrides=task_overrides,
             expert_basket=expert_basket_cfg,
+            task_group_map=task_group_map,
             **({"adatt": adatt_cfg} if adatt_cfg is not None else {}),
         )
 

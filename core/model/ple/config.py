@@ -185,8 +185,19 @@ class ExpertBasketConfig:
     Args:
         shared_experts: List of registered expert names to use as shared
             experts in the CGC layer (e.g. ``["deepfm", "hgcn", "perslay"]``).
-        task_experts: List of registered expert names to use as per-task
-            experts (e.g. ``["mlp", "deepfm"]``).
+        task_experts: Default per-task expert names used when a task's
+            group does not specify its own experts
+            (e.g. ``["mlp", "deepfm"]``).
+        group_task_experts: Per-group task expert overrides.  Keys are
+            task group names; values are lists of expert names.  Tasks
+            belonging to a group use these experts instead of the global
+            ``task_experts``.  Example::
+
+                group_task_experts:
+                  engagement: ["deepfm"]
+                  lifecycle: ["causal", "mlp"]
+                  consumption: ["deepfm", "xdeepfm"]
+
         expert_configs: Per-expert configuration overrides.  Keys are
             expert names from ``shared_experts`` or ``task_experts``;
             values are dicts forwarded to the expert constructor's
@@ -194,7 +205,19 @@ class ExpertBasketConfig:
     """
     shared_experts: List[str] = field(default_factory=list)
     task_experts: List[str] = field(default_factory=list)
+    group_task_experts: Dict[str, List[str]] = field(default_factory=dict)
     expert_configs: Dict[str, dict] = field(default_factory=dict)
+
+    def get_task_experts_for(self, task_name: str, task_group: Optional[str] = None) -> List[str]:
+        """Return the task expert names for a specific task.
+
+        Looks up the task's group in ``group_task_experts`` first;
+        falls back to the global ``task_experts`` if the group has no
+        override or if *task_group* is ``None``.
+        """
+        if task_group and task_group in self.group_task_experts:
+            return self.group_task_experts[task_group]
+        return self.task_experts
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +298,12 @@ class PLEConfig:
     # pipeline.  When None, falls back to the legacy behaviour (all shared
     # experts are the same type defined by ``shared_expert``).
     expert_basket: Optional[ExpertBasketConfig] = None
+
+    # -- Task group mapping --------------------------------------------------
+    # Maps task_name -> group_name.  Populated from pipeline-level
+    # TaskGroupConfig list before model construction.  Used by
+    # _build_task_experts() for group-specific expert selection.
+    task_group_map: Dict[str, str] = field(default_factory=dict)
 
     # -- Per-task overrides --------------------------------------------------
     # Maps task_name -> {output_dim, activation, task_type, domain_experts, ...}

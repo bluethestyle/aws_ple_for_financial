@@ -128,21 +128,25 @@ tasks:
 task_groups:
   - name: engagement
     tasks: [ctr, cvr]
+    task_experts: [deepfm]
     adatt_intra_strength: 0.8
     adatt_inter_strength: 0.3
     description: "User engagement prediction tasks"
   - name: lifecycle
     tasks: [churn, retention, life_stage, ltv]
+    task_experts: [causal, mlp]
     adatt_intra_strength: 0.6
     adatt_inter_strength: 0.3
     description: "Customer lifecycle management tasks"
   - name: value
     tasks: [balance_util, channel, timing]
+    task_experts: [mlp]
     adatt_intra_strength: 0.7
     adatt_inter_strength: 0.3
     description: "Customer value optimization tasks"
   - name: consumption
     tasks: [nba, spending_category, consumption_cycle, spending_bucket, merchant_affinity, brand_prediction]
+    task_experts: [deepfm, xdeepfm]
     adatt_intra_strength: 0.7
     adatt_inter_strength: 0.3
     description: "Consumption pattern and product recommendation tasks"
@@ -494,9 +498,14 @@ model:
       - lightgcn
       - causal
       - optimal_transport
-    task_experts:
+    task_experts:       # global default (used when group has no override)
       - mlp
       - deepfm
+    group_task_experts: # per-group task expert overrides
+      engagement: [deepfm]
+      lifecycle: [causal, mlp]
+      value: [mlp]
+      consumption: [deepfm, xdeepfm]
     expert_configs:
       hgcn:
         hidden_dim: 128
