@@ -36,7 +36,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import PLEConfig, ExpertInputConfig, ExpertBasketConfig
+from .config import PLEConfig, ExpertInputConfig, ExpertBasketConfig, GroupTaskExpertConfig
 from .experts import CGCLayer, CGCAttention, MLPExpert, ExpertRegistry, ExpertBasket
 from .feature_router import FeatureRouter
 from .adatt import AdaptiveTaskTransfer
@@ -460,47 +460,40 @@ class PLEModel(nn.Module):
     def _build_task_experts(self) -> None:
         """Build per-task expert networks.
 
-        When an ``ExpertBasket`` is configured with ``group_task_experts``,
-        each task uses the expert type(s) assigned to its task group.
-        Falls back to the global ``task_experts`` list (or plain MLP)
-        when no group-specific override exists.
+        When ``GroupTaskExpertConfig.enabled`` is ``True`` and a
+        ``task_group_map`` is available, uses the efficient GroupEncoder +
+        ClusterEmbedding + TaskHead architecture (original v3.2 design).
+
+        Falls back to legacy per-task MLP experts otherwise.
         """
         cfg = self.config
-        self.task_expert_networks = nn.ModuleDict()
 
-        for task_name in self.task_names:
-            expert_built = False
+        if cfg.group_task_expert.enabled and cfg.task_group_map:
+            # Use GroupEncoder + ClusterEmbedding + TaskHead architecture
+            from .task_experts import GroupTaskExpertBasket
 
-            # Try group-specific expert from basket
-            if self.expert_basket is not None and cfg.expert_basket is not None:
-                task_group = cfg.task_group_map.get(task_name)
-                expert_names = cfg.expert_basket.get_task_experts_for(
-                    task_name, task_group
-                )
-                if expert_names:
-                    # Use the first expert in the list as the primary
-                    # task expert (multiple task experts per task would
-                    # require a mini-gating layer which is overkill).
-                    primary_expert_name = expert_names[0]
-                    try:
-                        expert = self.expert_basket.build_task_expert(
-                            primary_expert_name
-                        )
-                        self.task_expert_networks[task_name] = expert
-                        expert_built = True
-                        logger.debug(
-                            "Task '%s' (group=%s) using expert '%s'",
-                            task_name, task_group, primary_expert_name,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Failed to build group expert '%s' for task '%s': %s. "
-                            "Falling back to MLP.",
-                            primary_expert_name, task_name, exc,
-                        )
+            gte = cfg.group_task_expert
+            n_clusters = cfg.cluster.n_clusters
 
-            # Fallback: plain MLP expert
-            if not expert_built:
+            self.group_task_expert_basket = GroupTaskExpertBasket(
+                input_dim=self._extraction_output_dim,
+                task_names=self.task_names,
+                task_group_map=cfg.task_group_map,
+                group_hidden_dim=gte.group_hidden_dim,
+                group_output_dim=gte.group_output_dim,
+                cluster_embed_dim=gte.cluster_embed_dim if n_clusters > 0 else 0,
+                n_clusters=n_clusters,
+                task_output_dim=gte.task_output_dim,
+                task_head_hidden_dim=gte.task_head_hidden_dim,
+                dropout=gte.dropout,
+            )
+            # Set task_expert_output_dim for downstream tower construction
+            self._task_expert_output_dim = gte.task_output_dim
+        else:
+            # Fallback: plain MLP per task (legacy)
+            self.group_task_expert_basket = None
+            self.task_expert_networks = nn.ModuleDict()
+            for task_name in self.task_names:
                 self.task_expert_networks[task_name] = MLPExpert(
                     input_dim=self._extraction_output_dim,
                     output_dim=cfg.task_expert_output_dim,
@@ -509,6 +502,7 @@ class PLEModel(nn.Module):
                     activation=cfg.task_expert.activation,
                     use_layer_norm=cfg.task_expert.use_layer_norm,
                 )
+            self._task_expert_output_dim = cfg.task_expert_output_dim
 
     def _build_adatt(self) -> None:
         """Build the Adaptive Task Transfer module."""
@@ -559,8 +553,8 @@ class PLEModel(nn.Module):
                 self.logit_transfer_sources[tgt] = src
                 src_output_dim = cfg.get_task_output_dim(src)
                 self.logit_transfer_proj[tgt] = nn.Sequential(
-                    nn.Linear(src_output_dim, cfg.task_expert_output_dim),
-                    nn.LayerNorm(cfg.task_expert_output_dim),
+                    nn.Linear(src_output_dim, self._task_expert_output_dim),
+                    nn.LayerNorm(self._task_expert_output_dim),
                     nn.SiLU(),
                 )
 
@@ -573,9 +567,12 @@ class PLEModel(nn.Module):
         cfg = self.config
         self.task_towers = nn.ModuleDict()
 
+        # Use _task_expert_output_dim set by _build_task_experts()
+        tower_input_dim = self._task_expert_output_dim
+
         for task_name in self.task_names:
             self.task_towers[task_name] = TaskTower(
-                input_dim=cfg.task_expert_output_dim,
+                input_dim=tower_input_dim,
                 output_dim=cfg.get_task_output_dim(task_name),
                 hidden_dims=cfg.task_tower.hidden_dims,
                 activation=cfg.get_task_activation(task_name),
@@ -807,11 +804,22 @@ class PLEModel(nn.Module):
                 )
             shared_input = shared_concat
 
-        # 2. Per-task expert processing
+        # 2. Per-task expert processing (GroupEncoder + ClusterEmbedding + TaskHead)
         task_expert_outputs: Dict[str, torch.Tensor] = {}
-        for i, task_name in enumerate(self.task_names):
-            task_repr = task_representations[i]
-            task_expert_outputs[task_name] = self.task_expert_networks[task_name](task_repr)
+        if self.group_task_expert_basket is not None:
+            cluster_ids = inputs.cluster_ids
+            cluster_probs = inputs.cluster_probs
+            for i, task_name in enumerate(self.task_names):
+                task_repr = task_representations[i]
+                task_expert_outputs[task_name] = self.group_task_expert_basket(
+                    task_repr, task_name,
+                    cluster_ids=cluster_ids,
+                    cluster_probs=cluster_probs,
+                )
+        else:
+            for i, task_name in enumerate(self.task_names):
+                task_repr = task_representations[i]
+                task_expert_outputs[task_name] = self.task_expert_networks[task_name](task_repr)
 
         # 3. Task towers with logit transfer (in dependency order)
         execution_order = self._get_task_execution_order()
@@ -1103,10 +1111,23 @@ class PLEModel(nn.Module):
         else:
             lines.append(f"  Shared experts: {self.config.num_shared_experts} (legacy mode)")
 
+        # Task expert architecture summary
+        if self.group_task_expert_basket is not None:
+            gte = self.config.group_task_expert
+            n_groups = len(self.group_task_expert_basket.group_encoders)
+            n_heads = len(self.group_task_expert_basket.task_heads)
+            lines.append(
+                f"  Task experts: GroupTaskExpertBasket "
+                f"({n_groups} groups, {n_heads} heads, "
+                f"output_dim={gte.task_output_dim})"
+            )
+        else:
+            lines.append(f"  Task experts: legacy MLP per task")
+
         lines.extend([
             f"  Task experts per task: {self.config.num_task_experts_per_task}",
             f"  Expert hidden dim: {self.config.shared_expert.output_dim}",
-            f"  Task expert output dim: {self.config.task_expert_output_dim}",
+            f"  Task expert output dim: {self._task_expert_output_dim}",
             f"  adaTT: {'enabled' if self.adatt is not None else 'disabled'}",
             f"  CGC attention: {'enabled' if self.cgc_attention is not None else 'disabled'}",
             f"  Logit transfers: {self.logit_transfer_sources or 'none'}",

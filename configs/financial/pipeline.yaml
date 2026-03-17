@@ -498,14 +498,8 @@ model:
       - lightgcn
       - causal
       - optimal_transport
-    task_experts:       # global default (used when group has no override)
+    task_experts:
       - mlp
-      - deepfm
-    group_task_experts: # per-group task expert overrides
-      engagement: [deepfm]
-      lifecycle: [causal, mlp]
-      value: [mlp]
-      consumption: [deepfm, xdeepfm]
     expert_configs:
       hgcn:
         hidden_dim: 128
@@ -522,6 +516,19 @@ model:
         num_layers: 3
       causal: {}
       optimal_transport: {}
+  # -------------------------------------------------------------------------
+  # GroupEncoder + ClusterEmbedding + TaskHead (original v3.2 architecture)
+  # Replaces per-group task expert overrides with efficient shared encoders.
+  # 4 group encoders shared across 16 tasks -> ~88% parameter reduction.
+  # -------------------------------------------------------------------------
+  group_task_expert:
+    enabled: true
+    group_hidden_dim: 128
+    group_output_dim: 64
+    cluster_embed_dim: 32
+    task_head_hidden_dim: 64
+    task_output_dim: 32
+    dropout: 0.2
 
 # ---------------------------------------------------------------------------
 # Training -- 2-phase setup matching original

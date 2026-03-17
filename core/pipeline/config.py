@@ -93,6 +93,7 @@ class ModelSpec:
     tower_dims: list[int] = field(default_factory=lambda: [128, 64])
     dropout: float = 0.1
     expert_basket: dict | None = None
+    group_task_expert: dict | None = None
 
 
 @dataclass

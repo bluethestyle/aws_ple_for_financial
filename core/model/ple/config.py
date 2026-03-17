@@ -182,6 +182,14 @@ class ExpertBasketConfig:
     gating.  It defines *which* experts are included in a specific
     pipeline and with what configuration overrides.
 
+    .. note:: Per-task expert routing
+
+       For per-task expert routing, prefer :class:`GroupTaskExpertConfig`
+       which implements the efficient GroupEncoder + ClusterEmbedding +
+       TaskHead architecture.  The ``group_task_experts`` field here is
+       retained for potential future use but is superseded by
+       ``GroupTaskExpertConfig`` for the standard pipeline.
+
     Args:
         shared_experts: List of registered expert names to use as shared
             experts in the CGC layer (e.g. ``["deepfm", "hgcn", "perslay"]``).
@@ -191,13 +199,8 @@ class ExpertBasketConfig:
         group_task_experts: Per-group task expert overrides.  Keys are
             task group names; values are lists of expert names.  Tasks
             belonging to a group use these experts instead of the global
-            ``task_experts``.  Example::
-
-                group_task_experts:
-                  engagement: ["deepfm"]
-                  lifecycle: ["causal", "mlp"]
-                  consumption: ["deepfm", "xdeepfm"]
-
+            ``task_experts``.  Superseded by ``GroupTaskExpertConfig``
+            for production use.
         expert_configs: Per-expert configuration overrides.  Keys are
             expert names from ``shared_experts`` or ``task_experts``;
             values are dicts forwarded to the expert constructor's
@@ -218,6 +221,28 @@ class ExpertBasketConfig:
         if task_group and task_group in self.group_task_experts:
             return self.group_task_experts[task_group]
         return self.task_experts
+
+
+@dataclass
+class GroupTaskExpertConfig:
+    """Configuration for the GroupEncoder + ClusterEmbedding + TaskHead architecture.
+
+    This is the preferred per-task expert approach (original v3.2 design):
+    - GroupEncoder: shared MLP per task group (4 groups, not 16 individual)
+    - ClusterEmbedding: GMM cluster -> learned embedding (user segment conditioning)
+    - TaskHead: lightweight per-task MLP projection
+
+    Parameter efficiency: ~88% reduction vs independent experts per task.
+
+    When ``enabled=False``, falls back to legacy per-task MLP experts.
+    """
+    enabled: bool = True
+    group_hidden_dim: int = 128
+    group_output_dim: int = 64
+    cluster_embed_dim: int = 32
+    task_head_hidden_dim: int = 64
+    task_output_dim: int = 32
+    dropout: float = 0.2
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +323,11 @@ class PLEConfig:
     # pipeline.  When None, falls back to the legacy behaviour (all shared
     # experts are the same type defined by ``shared_expert``).
     expert_basket: Optional[ExpertBasketConfig] = None
+
+    # -- GroupEncoder + ClusterEmbedding + TaskHead (v3.2 architecture) ------
+    group_task_expert: GroupTaskExpertConfig = field(
+        default_factory=GroupTaskExpertConfig,
+    )
 
     # -- Task group mapping --------------------------------------------------
     # Maps task_name -> group_name.  Populated from pipeline-level

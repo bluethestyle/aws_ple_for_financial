@@ -32,6 +32,7 @@ from .config import (
     PLEConfig,
     ExpertConfig,
     ExpertBasketConfig,
+    GroupTaskExpertConfig,
     CGCConfig,
     AdaTTConfig,
     TaskGroupDef,
@@ -50,6 +51,12 @@ from .experts import (
     CGCAttention,
     ExpertBasket,
 )
+from .task_experts import (
+    GroupEncoder,
+    ClusterEmbedding,
+    TaskHead,
+    GroupTaskExpertBasket,
+)
 from .feature_router import FeatureRouter
 from .gating import SoftmaxGate, AttentionGate, MLPGate, build_gate
 from .adatt import AdaptiveTaskTransfer, TaskAffinityComputer
@@ -66,6 +73,7 @@ __all__ = [
     "PLEConfig",
     "ExpertConfig",
     "ExpertBasketConfig",
+    "GroupTaskExpertConfig",
     "CGCConfig",
     "AdaTTConfig",
     "TaskGroupDef",
@@ -86,6 +94,11 @@ __all__ = [
     "CGCLayer",
     "CGCAttention",
     "ExpertBasket",
+    # Task experts (v3.2 architecture)
+    "GroupEncoder",
+    "ClusterEmbedding",
+    "TaskHead",
+    "GroupTaskExpertBasket",
     # Feature routing
     "FeatureRouter",
     # Gating

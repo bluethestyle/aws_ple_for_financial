@@ -327,7 +327,7 @@ class PipelineRunner:
         import torch
         from torch.utils.data import DataLoader, TensorDataset
 
-        from ..model.ple.config import PLEConfig, ExpertConfig, TaskTowerConfig, ExpertBasketConfig, AdaTTConfig
+        from ..model.ple.config import PLEConfig, ExpertConfig, TaskTowerConfig, ExpertBasketConfig, AdaTTConfig, GroupTaskExpertConfig
         from ..model.ple.model import PLEModel
         from ..training.trainer import PLETrainer
         from ..training.config import TrainingConfig
@@ -378,6 +378,17 @@ class PipelineRunner:
                 len(self.config.task_groups),
             )
 
+        # -- Build GroupTaskExpertConfig from pipeline model config --------------
+        group_task_expert_cfg: Optional[GroupTaskExpertConfig] = None
+        if self.config.model.group_task_expert is not None:
+            gte = self.config.model.group_task_expert
+            group_task_expert_cfg = GroupTaskExpertConfig(**gte)
+            logger.info(
+                "[PLE] GroupTaskExpertBasket: enabled=%s, output_dim=%d",
+                gte.get("enabled", True),
+                gte.get("task_output_dim", 32),
+            )
+
         # -- Build task_group_map from pipeline task_groups -------------------
         task_group_map: Dict[str, str] = {}
         for tg in self.config.task_groups:
@@ -402,6 +413,7 @@ class PipelineRunner:
             task_overrides=task_overrides,
             expert_basket=expert_basket_cfg,
             task_group_map=task_group_map,
+            **({"group_task_expert": group_task_expert_cfg} if group_task_expert_cfg is not None else {}),
             **({"adatt": adatt_cfg} if adatt_cfg is not None else {}),
         )
 
