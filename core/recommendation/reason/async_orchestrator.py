@@ -141,9 +141,11 @@ class AsyncReasonOrchestrator:
         llm_provider=None,
         self_checker=None,
         audit_store=None,
+        prompt_sanitizer=None,
     ) -> None:
         self._config = config or {}
         ao_cfg = self._config.get("reason", {}).get("async_orchestrator", {})
+        self._prompt_sanitizer = prompt_sanitizer
 
         self._template_engine = template_engine
         self._llm_provider = llm_provider
@@ -393,8 +395,27 @@ class AsyncReasonOrchestrator:
         # Step 1: Build LLM prompt
         prompt = self._build_llm_prompt(l1_text, context)
 
+        # Step 1.5: PromptSanitizer — classify sensitivity and route LLM
+        actual_provider = self._llm_provider
+        if self._prompt_sanitizer is not None:
+            sanitized_prompt, provider_name, sanitize_result = (
+                self._prompt_sanitizer.sanitize_and_route(prompt)
+            )
+            prompt = sanitized_prompt
+            # Route to appropriate provider if factory is available
+            if provider_name != "bedrock" and hasattr(self, "_llm_provider_factory"):
+                try:
+                    actual_provider = self._llm_provider_factory(provider_name)
+                except Exception:
+                    pass  # stick with default provider
+            logger.debug(
+                "Sanitizer: sensitivity=%s, provider=%s, scrubbed=%s (job=%s)",
+                sanitize_result.sensitivity, sanitize_result.provider,
+                sanitize_result.scrubbed, job_id,
+            )
+
         # Step 2: Call LLM provider
-        if self._llm_provider is None:
+        if actual_provider is None:
             logger.warning("No LLM provider configured; returning L1 as-is for job %s", job_id)
             return ReasonResult(
                 text=l1_text,
@@ -406,7 +427,7 @@ class AsyncReasonOrchestrator:
             )
 
         try:
-            llm_output = self._llm_provider.generate(
+            llm_output = actual_provider.generate(
                 prompt, temperature=self._llm_temperature,
             )
             rewritten = self._extract_rewritten_reason(llm_output)
