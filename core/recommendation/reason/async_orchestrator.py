@@ -515,7 +515,9 @@ class AsyncReasonOrchestrator:
         )
 
         # Step 3: L2b quality validation
-        l2b_result = self._validate_l2b(l2a_result, context)
+        # Pass gate_passed=True to skip redundant self_checker compliance
+        # check (already done in _apply_safety_gate Gate 2).
+        l2b_result = self._validate_l2b(l2a_result, context, safety_gate_passed=True)
 
         # If validation failed, fall back to L1
         if not l2b_result.validation_passed:
@@ -949,6 +951,7 @@ class AsyncReasonOrchestrator:
         self,
         l2a_result: ReasonResult,
         context: Dict[str, Any],
+        safety_gate_passed: bool = False,
     ) -> ReasonResult:
         """L2b: Validate an L2a result for compliance and quality.
 
@@ -958,6 +961,9 @@ class AsyncReasonOrchestrator:
                was scrubbed during L2a.
             1. PII leakage detection (regex-based).
             2. Self-checker compliance + injection + factuality.
+               **Skipped** when ``safety_gate_passed=True`` because the
+               same ``self_checker.check()`` already ran in
+               ``_apply_safety_gate()`` Gate 2.
             3. Hallucination guard: LLM output must not introduce claims
                absent from the context.
             4. Random 5% sampling for human review flagging.
@@ -965,6 +971,10 @@ class AsyncReasonOrchestrator:
         Args:
             l2a_result: The L2a :class:`ReasonResult` to validate.
             context: Source context for factuality checking.
+            safety_gate_passed: When ``True``, the compliance check
+                (self_checker) is skipped since ``_apply_safety_gate()``
+                already performed it.  Default ``False`` for backward
+                compatibility.
 
         Returns:
             :class:`ReasonResult` with ``layer="L2b"`` and updated
@@ -995,7 +1005,9 @@ class AsyncReasonOrchestrator:
                 break
 
         # Check 2: Self-checker (compliance + injection + optional LLM factuality)
-        if passed and self._self_checker is not None:
+        # Skip if _apply_safety_gate() already ran self_checker.check()
+        # (Gate 2) to avoid redundant LLM calls and latency.
+        if passed and self._self_checker is not None and not safety_gate_passed:
             check_result = self._self_checker.check(
                 reason_text=text,
                 source_context=context,

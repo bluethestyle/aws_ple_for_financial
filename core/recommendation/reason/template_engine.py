@@ -293,16 +293,45 @@ class TemplateEngine:
     def _ig_based_reasons(
         self,
         customer_id: str,
-        ig_top_features: List[Tuple[str, float]],
+        ig_top_features: list,
         item_name: str,
         item_info: Dict[str, Any],
         task_type: Optional[str],
     ) -> List[Dict[str, Any]]:
-        """Map IG top features to template reasons."""
+        """Map IG top features to template reasons.
+
+        Accepts ig_top_features in two formats:
+            - Legacy: ``[(feature_name, ig_score), ...]``
+            - Enriched (from InterpretationRegistry):
+              ``[(feature_name, ig_score, interpretation_text), ...]``
+
+        When interpretation text is present and non-empty, it is used
+        directly as the L1 reason text instead of template rendering.
+        """
         reasons: List[Dict[str, Any]] = []
         top_n = ig_top_features[: self.top_k_features]
 
-        for rank, (feat_name, ig_score) in enumerate(top_n, start=1):
+        for rank, entry in enumerate(top_n, start=1):
+            # Support both (name, score) and (name, score, text) tuples
+            if len(entry) >= 3:
+                feat_name, ig_score, interp_text = entry[0], entry[1], entry[2]
+            else:
+                feat_name, ig_score = entry[0], entry[1]
+                interp_text = ""
+
+            # If InterpretationRegistry provided a text, use it directly
+            if interp_text:
+                reason_type = "primary" if rank == 1 else "supplementary"
+                reasons.append({
+                    "rank": rank,
+                    "type": reason_type,
+                    "text": f"{item_name}: {interp_text}",
+                    "feature": feat_name,
+                    "ig_score": float(ig_score),
+                    "category": "interpretation_registry",
+                })
+                continue
+
             category = self._classify_feature(feat_name)
             if category is None:
                 continue

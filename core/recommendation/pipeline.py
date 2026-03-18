@@ -41,6 +41,8 @@ from .reason.template_engine import TemplateEngine
 from .reason.reverse_mapper import ReverseMapper
 from .reason.self_checker import SelfChecker, CheckResult
 from .reason.llm_provider import LLMProviderFactory, AbstractLLMProvider
+from .reason.interpretation_registry import InterpretationRegistry
+from .reason.reason_cache import ReasonCache
 
 if TYPE_CHECKING:
     from core.feature.group_config import FeatureGroupConfig
@@ -132,10 +134,14 @@ class RecommendationPipeline:
         config: Dict[str, Any],
         audit_store=None,
         audit_archiver: Optional[Any] = None,
+        interpretation_registry: Optional[InterpretationRegistry] = None,
+        reason_cache: Optional[ReasonCache] = None,
     ) -> None:
         self.config = config
         self._audit_store = audit_store
         self._audit_archiver = audit_archiver
+        self.interpretation_registry = interpretation_registry
+        self.reason_cache = reason_cache
         pipe_cfg = config.get("pipeline", {})
 
         # ---- Scorer ----
@@ -180,9 +186,11 @@ class RecommendationPipeline:
 
         logger.info(
             "RecommendationPipeline initialised: scorer=%s, reasons=%s, "
-            "self_check=%s, reverse_map=%s, audit_archiver=%s",
+            "self_check=%s, reverse_map=%s, audit_archiver=%s, "
+            "interpretation_registry=%s, reason_cache=%s",
             scorer_name, self.enable_reasons, self.enable_self_check,
             self.enable_reverse_mapping, audit_archiver is not None,
+            interpretation_registry is not None, reason_cache is not None,
         )
 
     # ------------------------------------------------------------------
@@ -318,12 +326,49 @@ class RecommendationPipeline:
         for sel in selected:
             reasons: List[Dict[str, Any]] = []
             check: Optional[CheckResult] = None
+            cache_hit = False
 
-            if self.template_engine and self.enable_reasons:
+            # ---- Cache lookup (수정 2) ----
+            if self.reason_cache is not None and task_type:
+                cached_entry = self.reason_cache.get(
+                    customer_id=customer_id,
+                    product_id=sel["item_id"],
+                    task_name=task_type,
+                )
+                if cached_entry is not None:
+                    reasons = [{
+                        "rank": 1,
+                        "type": "primary",
+                        "text": cached_entry.reason_text,
+                        "feature": "cached",
+                        "ig_score": None,
+                        "category": "cached",
+                    }]
+                    cache_hit = True
+                    logger.debug(
+                        "ReasonCache hit for customer=%s, item=%s, task=%s (layer=%s)",
+                        customer_id, sel["item_id"], task_type, cached_entry.layer,
+                    )
+
+            if not cache_hit and self.template_engine and self.enable_reasons:
+                # ---- InterpretationRegistry → enrich ig_top_features (수정 1, 4) ----
+                ig_features_for_reason = sel.get("ig_top_features", [])
+                if self.interpretation_registry is not None and ig_features_for_reason:
+                    interp_results = self.interpretation_registry.interpret_batch(
+                        features=ig_features_for_reason,
+                        task=task_type or "",
+                    )
+                    # Enrich ig_top_features with interpretation text so
+                    # template_engine can embed them into L1 reasons.
+                    ig_features_for_reason = [
+                        (entry["name"], entry["value"], entry.get("text", ""))
+                        for entry in interp_results
+                    ]
+
                 reason_output = self.template_engine.generate_reason(
                     customer_id=customer_id,
                     item_id=sel["item_id"],
-                    ig_top_features=sel.get("ig_top_features", []),
+                    ig_top_features=ig_features_for_reason,
                     segment=segment,
                     task_type=task_type,
                     item_info=sel.get("item_info"),
@@ -338,8 +383,39 @@ class RecommendationPipeline:
                         source_context=sel.get("item_info"),
                     )
 
+                # ---- Cache store (수정 2) ----
+                if self.reason_cache is not None and task_type and reasons:
+                    primary_text = reasons[0].get("text", "")
+                    self.reason_cache.put(
+                        customer_id=customer_id,
+                        product_id=sel["item_id"],
+                        task_name=task_type,
+                        reason_text=primary_text,
+                        layer="L1",
+                        confidence=1.0,
+                        quality_passed=True,
+                        metadata={"generation_method": "template_l1"},
+                    )
+
             meta: Dict[str, Any] = {}
-            if self.enable_reverse_mapping and self.reverse_mapper:
+            # ---- Feature interpretation (수정 1): prefer InterpretationRegistry ----
+            if self.interpretation_registry is not None:
+                ig_features = sel.get("ig_top_features", [])
+                if ig_features:
+                    interp_results = self.interpretation_registry.interpret_batch(
+                        features=ig_features,
+                        task=task_type or "",
+                    )
+                    meta["feature_interpretations"] = [
+                        {
+                            "feature": entry["name"],
+                            "group": entry.get("feature_group", "unknown"),
+                            "level": entry.get("level", "fallback"),
+                            "interpretation": entry.get("text", ""),
+                        }
+                        for entry in interp_results
+                    ]
+            elif self.enable_reverse_mapping and self.reverse_mapper:
                 ig_features = sel.get("ig_top_features", [])
                 if ig_features:
                     importances = np.array([s for _, s in ig_features])
