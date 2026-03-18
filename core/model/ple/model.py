@@ -889,22 +889,6 @@ class PLEModel(nn.Module):
 
         for layer_idx, layer in enumerate(self.extraction_layers):
             if layer_idx == 0 and expert_inputs is not None:
-                # For the first layer, pass expert-specific inputs via
-                # the feature_router mechanism.  The CGCLayer already
-                # supports FeatureRouter -- we just need to ensure the
-                # shared_input contains the full features tensor so the
-                # router can slice from it.  For dedicated tensors that
-                # bypass the router, we inject them by temporarily
-                # replacing the shared experts' forward methods.
-                #
-                # However, the cleaner approach is: when expert_inputs
-                # are available and a FeatureRouter is configured, the
-                # CGCLayer already handles routing.  When dedicated
-                # tensors are provided (not from the main features tensor),
-                # we need to handle them specially.
-                #
-                # Strategy: For dedicated tensors (from PLEInput fields),
-                # we override the expert's input by wrapping the layer call.
                 task_representations, shared_concat = self._forward_cgc_with_routing(
                     layer, shared_input, task_representations, expert_inputs,
                 )
@@ -912,7 +896,12 @@ class PLEModel(nn.Module):
                 task_representations, shared_concat = layer(
                     shared_input, task_representations,
                 )
-            shared_input = shared_concat
+            # For stacked PLE layers: next layer's shared_input should be
+            # expert_hidden_dim, not the concatenated shared_concat
+            # (which is num_shared * expert_hidden_dim).
+            # Use mean of task representations as the shared input for
+            # the next layer (standard PLE stacking approach).
+            shared_input = torch.stack(task_representations, dim=0).mean(dim=0)
 
         # 2. Per-task expert processing (GroupEncoder + ClusterEmbedding + TaskHead)
         task_expert_outputs: Dict[str, torch.Tensor] = {}
