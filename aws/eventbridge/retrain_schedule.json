@@ -1,11 +1,12 @@
 {
-  "Comment": "EventBridge scheduled rule for daily auto-retrain evaluation (02:00 UTC / 11:00 KST)",
+  "Comment": "All scheduled EventBridge rules for PLE operational automation. All rules deploy as DISABLED by default — enable individually after validation.",
+
   "Rules": [
     {
       "Name": "ple-daily-retrain-evaluation",
-      "Description": "Daily evaluation of model retraining conditions at 02:00 UTC (11:00 KST)",
+      "Description": "Daily: evaluate retraining conditions (drift, staleness, performance)",
       "ScheduleExpression": "cron(0 2 * * ? *)",
-      "State": "ENABLED",
+      "State": "DISABLED",
       "Targets": [
         {
           "Id": "auto-retrain-trigger-lambda",
@@ -25,14 +26,115 @@
         {"Key": "Component", "Value": "AutoRetrain"},
         {"Key": "Environment", "Value": "production"}
       ]
+    },
+    {
+      "Name": "ple-daily-drift-report",
+      "Description": "Daily: generate PSI drift report for retrain trigger to consume",
+      "ScheduleExpression": "cron(0 3 * * ? *)",
+      "State": "DISABLED",
+      "Targets": [
+        {
+          "Id": "drift-report-generator-lambda",
+          "Arn": "arn:aws:lambda:ap-northeast-2:ACCOUNT_ID:function:ple-drift-report-generator",
+          "Input": "{\"action\": \"generate\"}",
+          "RetryPolicy": {
+            "MaximumRetryAttempts": 2,
+            "MaximumEventAgeInSeconds": 3600
+          }
+        }
+      ],
+      "Tags": [
+        {"Key": "Project", "Value": "PLE-AIOps"},
+        {"Key": "Component", "Value": "DriftDetection"},
+        {"Key": "Environment", "Value": "production"}
+      ]
+    },
+    {
+      "Name": "ple-weekly-fairness-evaluation",
+      "Description": "Weekly Monday: evaluate fairness (DI/SPD/EOD) on prediction logs",
+      "ScheduleExpression": "cron(0 4 ? * MON *)",
+      "State": "DISABLED",
+      "Targets": [
+        {
+          "Id": "fairness-evaluation-lambda",
+          "Arn": "arn:aws:lambda:ap-northeast-2:ACCOUNT_ID:function:ple-fairness-evaluation",
+          "Input": "{\"action\": \"evaluate\"}",
+          "RetryPolicy": {
+            "MaximumRetryAttempts": 2,
+            "MaximumEventAgeInSeconds": 3600
+          }
+        }
+      ],
+      "Tags": [
+        {"Key": "Project", "Value": "PLE-AIOps"},
+        {"Key": "Component", "Value": "FairnessMonitoring"},
+        {"Key": "Environment", "Value": "production"}
+      ]
+    },
+    {
+      "Name": "ple-weekly-fidelity-recheck",
+      "Description": "Weekly Sunday: teacher-student fidelity re-validation via SageMaker Job",
+      "ScheduleExpression": "cron(0 5 ? * SUN *)",
+      "State": "DISABLED",
+      "Targets": [
+        {
+          "Id": "fidelity-recheck-trigger-lambda",
+          "Arn": "arn:aws:lambda:ap-northeast-2:ACCOUNT_ID:function:ple-fidelity-recheck-trigger",
+          "Input": "{\"action\": \"schedule\", \"lookback_days\": 7, \"sample_size\": 10000}",
+          "RetryPolicy": {
+            "MaximumRetryAttempts": 1,
+            "MaximumEventAgeInSeconds": 7200
+          }
+        }
+      ],
+      "Tags": [
+        {"Key": "Project", "Value": "PLE-AIOps"},
+        {"Key": "Component", "Value": "FidelityMonitoring"},
+        {"Key": "Environment", "Value": "production"}
+      ]
+    },
+    {
+      "Name": "ple-quarterly-compliance-check",
+      "Description": "Quarterly: run all 20+ regulatory compliance checks",
+      "ScheduleExpression": "cron(0 6 1 1,4,7,10 ? *)",
+      "State": "DISABLED",
+      "Targets": [
+        {
+          "Id": "compliance-check-lambda",
+          "Arn": "arn:aws:lambda:ap-northeast-2:ACCOUNT_ID:function:ple-compliance-check",
+          "Input": "{\"action\": \"scheduled\"}",
+          "RetryPolicy": {
+            "MaximumRetryAttempts": 2,
+            "MaximumEventAgeInSeconds": 3600
+          }
+        }
+      ],
+      "Tags": [
+        {"Key": "Project", "Value": "PLE-AIOps"},
+        {"Key": "Component", "Value": "Compliance"},
+        {"Key": "Environment", "Value": "production"}
+      ]
     }
   ],
-  "Permissions": {
-    "Comment": "Lambda resource-based policy to allow EventBridge invocation",
-    "StatementId": "AllowEventBridgeInvoke",
-    "Action": "lambda:InvokeFunction",
-    "FunctionName": "ple-auto-retrain-trigger",
-    "Principal": "events.amazonaws.com",
-    "SourceArn": "arn:aws:events:ap-northeast-2:ACCOUNT_ID:rule/ple-daily-retrain-evaluation"
+
+  "ActivationGuide": {
+    "Comment": "Enable rules one by one after validating each Lambda manually.",
+    "Step1_Test": [
+      "aws lambda invoke --function-name ple-drift-report-generator --payload '{\"action\": \"generate\"}' /dev/null",
+      "aws lambda invoke --function-name ple-auto-retrain-trigger --payload '{\"action\": \"manual\"}' /dev/null",
+      "aws lambda invoke --function-name ple-fairness-evaluation --payload '{\"action\": \"evaluate\"}' /dev/null",
+      "aws lambda invoke --function-name ple-fidelity-recheck-trigger --payload '{\"action\": \"manual\"}' /dev/null",
+      "aws lambda invoke --function-name ple-compliance-check --payload '{\"action\": \"manual\"}' /dev/null"
+    ],
+    "Step2_Enable": [
+      "aws events enable-rule --name ple-daily-drift-report",
+      "aws events enable-rule --name ple-daily-retrain-evaluation",
+      "aws events enable-rule --name ple-weekly-fairness-evaluation",
+      "aws events enable-rule --name ple-weekly-fidelity-recheck",
+      "aws events enable-rule --name ple-quarterly-compliance-check"
+    ],
+    "Rollback": [
+      "aws events disable-rule --name <rule-name>"
+    ]
   }
 }
