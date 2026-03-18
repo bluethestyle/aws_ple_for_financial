@@ -232,51 +232,154 @@ cold_start:
   # Set to 0 to always treat known user_ids as COLDSTART regardless of age.
   anonymous_threshold_days: 0
 
-  # S3 URI for a JSON popularity catalog.  Leave empty to use the static list below.
-  # Format: [{"item_id": "...", "score": 0.9, "name": "...", "benefit_type": "..."}, ...]
+  # S3 URI for a flat JSON engagement catalog (overrides catalogs.engagement below).
   popularity_catalog_s3_uri: ""
 
-  # Static popularity catalog (fallback when S3 URI is not configured).
-  # Sorted descending by score at load time.
-  # Replace item_ids with real product codes for production.
-  popularity_catalog:
-    - item_id: "CARD_CASHBACK_PREMIUM"
-      score: 0.95
-      name: "Cashback Premium Card"
-      benefit_type: cashback
-      category: credit_card
-    - item_id: "CARD_TRAVEL_MILEAGE"
-      score: 0.90
-      name: "Travel Mileage Card"
-      benefit_type: mileage
-      category: credit_card
-    - item_id: "CARD_EVERYDAY_POINTS"
-      score: 0.85
-      name: "Everyday Points Card"
-      benefit_type: points
-      category: credit_card
-    - item_id: "LOAN_PERSONAL_FLEX"
-      score: 0.80
-      name: "Flexible Personal Loan"
-      benefit_type: rate
-      category: loan
-    - item_id: "SAVINGS_HIGH_YIELD"
-      score: 0.75
-      name: "High-Yield Savings Account"
-      benefit_type: interest
-      category: deposit
-    - item_id: "INSURANCE_LIFE_BASIC"
-      score: 0.70
-      name: "Basic Life Insurance"
-      benefit_type: protection
-      category: insurance
-    - item_id: "FUND_BALANCED"
-      score: 0.65
-      name: "Balanced Mutual Fund"
-      benefit_type: growth
-      category: investment
-    - item_id: "CARD_STUDENT"
-      score: 0.60
-      name: "Student Card"
-      benefit_type: cashback
-      category: credit_card
+  # Per-task regression defaults. Override global means per task without
+  # touching strategy code.
+  global_means:
+    ltv: 150.0              # average customer lifetime value
+    balance_util: 0.52      # average balance utilisation ratio
+    engagement: 0.48        # average engagement score
+    spending_bucket: 500000 # average monthly spending (KRW)
+    merchant_affinity: 0.30 # average merchant affinity score
+
+  # Per-task strategy overrides (optional).
+  # Supported types: popularity | retention_catalog | uniform | global_mean |
+  #                  contextual_channel | contextual_timing | action_catalog | brand_popularity
+  # New tasks added in future → just add an entry here; no Python code needed.
+  task_strategies: {}
+  # Example for a future risk task:
+  # task_strategies:
+  #   credit_risk:
+  #     type: global_mean
+  #     global_mean: 0.15
+  #   fraud_score:
+  #     type: global_mean
+  #     global_mean: 0.02
+
+  # Sub-catalogs per task group.
+  # Each key maps to AbstractTaskStrategy.catalog_key in cold_start_strategy.py.
+  # Add more catalog keys as new task groups are introduced.
+  catalogs:
+    # ctr / cvr → engagement: general popular products ranked by click/conversion
+    engagement:
+      - item_id: "CARD_CASHBACK_PREMIUM"
+        score: 0.95
+        name: "Cashback Premium Card"
+        benefit_type: cashback
+        category: credit_card
+      - item_id: "CARD_TRAVEL_MILEAGE"
+        score: 0.90
+        name: "Travel Mileage Card"
+        benefit_type: mileage
+        category: credit_card
+      - item_id: "CARD_EVERYDAY_POINTS"
+        score: 0.85
+        name: "Everyday Points Card"
+        benefit_type: points
+        category: credit_card
+      - item_id: "LOAN_PERSONAL_FLEX"
+        score: 0.80
+        name: "Flexible Personal Loan"
+        benefit_type: rate
+        category: loan
+      - item_id: "SAVINGS_HIGH_YIELD"
+        score: 0.75
+        name: "High-Yield Savings Account"
+        benefit_type: interest
+        category: deposit
+      - item_id: "INSURANCE_LIFE_BASIC"
+        score: 0.70
+        name: "Basic Life Insurance"
+        benefit_type: protection
+        category: insurance
+      - item_id: "FUND_BALANCED"
+        score: 0.65
+        name: "Balanced Mutual Fund"
+        benefit_type: growth
+        category: investment
+      - item_id: "CARD_STUDENT"
+        score: 0.60
+        name: "Student Card"
+        benefit_type: cashback
+        category: credit_card
+
+    # churn / retention → retention: loyalty/reward products for at-risk customers
+    retention:
+      - item_id: "CARD_LOYALTY_BOOST"
+        score: 0.92
+        name: "Loyalty Boost Card"
+        benefit_type: points
+        category: credit_card
+      - item_id: "BENEFIT_ANNIVERSARY"
+        score: 0.88
+        name: "Anniversary Benefit Package"
+        benefit_type: cashback
+        category: benefit
+      - item_id: "LOAN_RATE_PROMO"
+        score: 0.84
+        name: "Preferential Rate Loan"
+        benefit_type: rate
+        category: loan
+      - item_id: "SAVINGS_LOYALTY_PLUS"
+        score: 0.80
+        name: "Loyalty Plus Savings"
+        benefit_type: interest
+        category: deposit
+      - item_id: "INSURANCE_BUNDLE"
+        score: 0.75
+        name: "Bundled Insurance Discount"
+        benefit_type: protection
+        category: insurance
+
+    # nba → actions: popular next-best-action items
+    actions:
+      - item_id: "apply_card"
+        score: 0.85
+        name: "신용카드 신청"
+        benefit_type: cashback
+        category: action
+      - item_id: "open_deposit"
+        score: 0.78
+        name: "예금 개설"
+        benefit_type: interest
+        category: action
+      - item_id: "apply_loan"
+        score: 0.70
+        name: "대출 신청"
+        benefit_type: rate
+        category: action
+      - item_id: "subscribe_insurance"
+        score: 0.65
+        name: "보험 가입"
+        benefit_type: protection
+        category: action
+      - item_id: "invest_fund"
+        score: 0.60
+        name: "펀드 투자"
+        benefit_type: growth
+        category: action
+
+    # brand_prediction → brands: top brands by transaction frequency
+    brands:
+      - item_id: "BRAND_STARBUCKS"
+        score: 0.88
+        name: "Starbucks"
+        category: food_beverage
+      - item_id: "BRAND_COUPANG"
+        score: 0.85
+        name: "Coupang"
+        category: ecommerce
+      - item_id: "BRAND_GS25"
+        score: 0.80
+        name: "GS25"
+        category: convenience
+      - item_id: "BRAND_OLIVE_YOUNG"
+        score: 0.72
+        name: "Olive Young"
+        category: beauty
+      - item_id: "BRAND_BAEMIN"
+        score: 0.70
+        name: "배달의민족"
+        category: food_delivery

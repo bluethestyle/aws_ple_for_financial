@@ -26,6 +26,18 @@ from .ab_test import ABTestManager, VariantAssignment
 from .model_registry import ModelRegistry, ModelVersion
 from .model_monitor import ModelMonitor, ChampionChallengerResult
 from .cold_start import ColdStartHandler, UserSegment
+from .cold_start_strategy import (
+    TaskColdStartRegistry,
+    AbstractTaskStrategy,
+    PopularityStrategy,
+    RetentionCatalogStrategy,
+    UniformDistributionStrategy,
+    GlobalMeanStrategy,
+    ContextualChannelStrategy,
+    ContextualTimingStrategy,
+    ActionCatalogStrategy,
+    BrandPopularityStrategy,
+)
 
 __all__ = [
     # config
@@ -58,4 +70,15 @@ __all__ = [
     # cold_start
     "ColdStartHandler",
     "UserSegment",
+    # cold_start_strategy
+    "TaskColdStartRegistry",
+    "AbstractTaskStrategy",
+    "PopularityStrategy",
+    "RetentionCatalogStrategy",
+    "UniformDistributionStrategy",
+    "GlobalMeanStrategy",
+    "ContextualChannelStrategy",
+    "ContextualTimingStrategy",
+    "ActionCatalogStrategy",
+    "BrandPopularityStrategy",
 ]

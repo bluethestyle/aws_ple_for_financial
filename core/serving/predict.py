@@ -442,34 +442,46 @@ class RecommendationService:
         # Classify segment
         segment = handler.classify(user_id=user_id, context=ctx)
 
-        # Try LGBM inference with default feature vector (COLDSTART only)
-        coldstart_predictions: Dict[str, Any] = {}
+        # Task-aware default predictions: each task strategy provides its own default.
+        # For tasks with use_lgbm=True (ctr/cvr), attempt LGBM with default features.
+        task_names = [t["name"] for t in self._tasks_meta]
+        coldstart_predictions: Dict[str, Any] = handler.task_predictions(
+            task_names, context=ctx
+        )
+
         if segment == UserSegment.COLDSTART:
-            feature_names = [t["name"] for t in self._tasks_meta]
-            default_feats = handler.default_features(feature_names)
-            try:
-                import pandas as pd
+            # LGBM override for tasks that benefit from model inference
+            lgbm_tasks = [n for n in task_names if handler.should_use_lgbm(n)]
+            if lgbm_tasks:
+                feature_names = task_names
+                default_feats = handler.default_features(feature_names)
+                try:
+                    import pandas as pd
 
-                feature_df = pd.DataFrame([default_feats])
-                raw_preds = self._model.predict(feature_df)
-                for task_name, raw in raw_preds.items():
-                    task_type = self._task_type_map.get(task_name, "regression")
-                    raw_val = (
-                        raw[0] if isinstance(raw, np.ndarray) and raw.ndim >= 1
-                        else raw
+                    feature_df = pd.DataFrame([default_feats])
+                    raw_preds = self._model.predict(feature_df)
+                    for task_name, raw in raw_preds.items():
+                        if task_name in lgbm_tasks:
+                            task_type = self._task_type_map.get(task_name, "regression")
+                            raw_val = (
+                                raw[0] if isinstance(raw, np.ndarray) and raw.ndim >= 1
+                                else raw
+                            )
+                            coldstart_predictions[task_name] = OutputNormalizer.normalise(
+                                raw_val, task_type
+                            )
+                except Exception:
+                    logger.debug(
+                        "Cold-start LGBM inference failed for user_id=%s (non-fatal)",
+                        user_id,
+                        exc_info=True,
                     )
-                    coldstart_predictions[task_name] = OutputNormalizer.normalise(
-                        raw_val, task_type
-                    )
-            except Exception:
-                logger.debug(
-                    "Cold-start LGBM inference failed for user_id=%s (non-fatal)",
-                    user_id,
-                    exc_info=True,
-                )
 
-        # Popularity candidates
-        candidates = handler.popularity_candidates(k=20, context=ctx)
+        # Task-aware popularity candidates: use the primary scoring task if known
+        primary_task = ctx.get("primary_task") or (
+            task_names[0] if task_names else None
+        )
+        candidates = handler.popularity_candidates(k=20, context=ctx, task_name=primary_task)
 
         # Route through pipeline if available
         recommendations: List[Dict[str, Any]] = []
