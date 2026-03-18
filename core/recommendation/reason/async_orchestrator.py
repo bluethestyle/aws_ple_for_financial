@@ -172,6 +172,12 @@ class AsyncReasonOrchestrator:
         self._max_reason_length: int = ao_cfg.get("max_reason_length", 200)
         self._llm_temperature: float = ao_cfg.get("llm_temperature", 0.3)
 
+        # Task-specific narrative frames: {task_type: {frame, narrative, guidelines}}
+        # Loaded from config["reason"]["template_engine"]["task_frames"]
+        reason_cfg = config.get("reason", {})
+        te_cfg = reason_cfg.get("template_engine", {})
+        self._task_frames: Dict[str, Dict[str, str]] = te_cfg.get("task_frames", {})
+
         # AI disclosure requirement (금소법 -- Financial Consumer Protection Act)
         self._ai_disclosure: str = ao_cfg.get(
             "ai_disclosure",
@@ -745,6 +751,19 @@ class AsyncReasonOrchestrator:
 
         if task_type:
             prompt += f"6. Task context: {task_type}\n"
+
+            # Task-specific writing guidelines from config
+            task_frame = self._task_frames.get(task_type, {})
+            if task_frame:
+                frame = task_frame.get("frame", "")
+                narrative = task_frame.get("narrative", "")
+                guidelines = task_frame.get("guidelines", "")
+                if frame:
+                    prompt += f"7. Writing frame: {frame}\n"
+                if narrative:
+                    prompt += f"8. Narrative tone: {narrative}\n"
+                if guidelines:
+                    prompt += f"9. Task guidelines: {guidelines}\n"
 
         prompt += (
             "\n## Original Reason (L1 Template)\n"

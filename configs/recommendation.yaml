@@ -149,20 +149,75 @@ reason:
       minimum_safe:
         - "{item_name} is recommended based on your overall profile analysis."
 
-    # Task-specific narrative framing
+    # Task-specific narrative framing + LLM writing guidelines
+    # frame: overall tone direction
+    # narrative: the emotional core message
+    # guidelines: specific instructions for LLM on how to interpret features
     task_frames:
-      churn:
-        frame: retention
-        narrative: "We value your relationship and want to offer you something special."
-      ltv:
-        frame: growth
-        narrative: "Maximise long-term value with this recommendation."
-      nba:
-        frame: next_action
-        narrative: "This is the ideal next step for your financial journey."
+      ctr:
+        frame: engagement
+        narrative: "고객님의 관심사에 맞는 상품을 찾았습니다."
+        guidelines: >
+          피처 변화는 '관심도 상승'으로 해석하세요.
+          소비 패턴 변화 → 새로운 관심사 발견.
+          TDA 위상 변화 → 탐색 행동 증가.
+          클릭/관심 유도 관점에서 작성하세요.
       cvr:
         frame: conversion
-        narrative: "This product is a strong match for your current needs."
+        narrative: "고객님의 현재 니즈에 딱 맞는 상품입니다."
+        guidelines: >
+          피처 변화는 '전환 준비 상태'로 해석하세요.
+          재무 건전성 → 상품 가입 여력.
+          소비 집중도 → 관련 상품 필요성.
+          구매/가입 결정을 돕는 관점에서 작성하세요.
+      churn:
+        frame: retention
+        narrative: "소중한 고객님을 위해 특별한 혜택을 준비했습니다."
+        guidelines: >
+          피처 변화는 '이탈 위험 신호'로 해석하세요.
+          소비 감소/패턴 변화 → 서비스 불만족 가능성.
+          재무 스트레스 → 비용 부담으로 인한 이탈 동기.
+          고객 유지 관점에서 혜택/가치를 강조하세요.
+          절대 '이탈'이라는 단어를 직접 사용하지 마세요.
+      retention:
+        frame: loyalty
+        narrative: "고객님의 꾸준한 이용에 감사드리며 더 나은 혜택을 드립니다."
+        guidelines: >
+          피처 안정성은 '충성도'로 해석하세요.
+          장기 이용 패턴 → 로열티 보상 근거.
+          가맹점 충성도 → 맞춤 혜택 강화 근거.
+          기존 관계 강화 관점에서 작성하세요.
+      ltv:
+        frame: growth
+        narrative: "고객님의 장기적 가치를 극대화할 수 있는 상품입니다."
+        guidelines: >
+          피처 변화는 '성장 잠재력'으로 해석하세요.
+          소득 안정성 → 장기 상품 적합성.
+          소비 확장 → 금융 니즈 증가.
+          투자/자산 성장 관점에서 작성하세요.
+      nba:
+        frame: next_action
+        narrative: "고객님의 금융 여정에서 다음 최적의 단계입니다."
+        guidelines: >
+          피처 변화는 '새로운 니즈 발생'으로 해석하세요.
+          생애 단계 전환 → 새 금융 상품 필요.
+          거래 패턴 전환점 → 행동 변화에 맞는 추천.
+          자연스러운 다음 단계 관점에서 작성하세요.
+      life_stage:
+        frame: milestone
+        narrative: "고객님의 현재 생애 단계에 최적화된 제안입니다."
+        guidelines: >
+          세그먼트/클러스터 변화는 '생애 전환기'로 해석하세요.
+          경제 지표 → 현재 재무 상황에 맞는 단계.
+          인생 단계별 맞춤 관점에서 작성하세요.
+      spending_category:
+        frame: lifestyle
+        narrative: "고객님의 소비 스타일에 맞는 혜택입니다."
+        guidelines: >
+          카테고리 피처는 '라이프스타일'로 해석하세요.
+          소비 비중 변화 → 관심사 변화.
+          트렌드 확산도 → 새로운 소비 카테고리 진입.
+          일상 혜택 관점에서 작성하세요.
 
   # -- Self-checker: compliance validation --------------------------------
   self_checker:
