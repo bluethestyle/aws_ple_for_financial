@@ -1,0 +1,38 @@
+{
+  "Comment": "EventBridge scheduled rule for daily auto-retrain evaluation (02:00 UTC / 11:00 KST)",
+  "Rules": [
+    {
+      "Name": "ple-daily-retrain-evaluation",
+      "Description": "Daily evaluation of model retraining conditions at 02:00 UTC (11:00 KST)",
+      "ScheduleExpression": "cron(0 2 * * ? *)",
+      "State": "ENABLED",
+      "Targets": [
+        {
+          "Id": "auto-retrain-trigger-lambda",
+          "Arn": "arn:aws:lambda:ap-northeast-2:ACCOUNT_ID:function:ple-auto-retrain-trigger",
+          "Input": "{\"action\": \"evaluate\"}",
+          "RetryPolicy": {
+            "MaximumRetryAttempts": 2,
+            "MaximumEventAgeInSeconds": 3600
+          },
+          "DeadLetterConfig": {
+            "Arn": "arn:aws:sqs:ap-northeast-2:ACCOUNT_ID:ple-retrain-dlq"
+          }
+        }
+      ],
+      "Tags": [
+        {"Key": "Project", "Value": "PLE-AIOps"},
+        {"Key": "Component", "Value": "AutoRetrain"},
+        {"Key": "Environment", "Value": "production"}
+      ]
+    }
+  ],
+  "Permissions": {
+    "Comment": "Lambda resource-based policy to allow EventBridge invocation",
+    "StatementId": "AllowEventBridgeInvoke",
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": "ple-auto-retrain-trigger",
+    "Principal": "events.amazonaws.com",
+    "SourceArn": "arn:aws:events:ap-northeast-2:ACCOUNT_ID:rule/ple-daily-retrain-evaluation"
+  }
+}

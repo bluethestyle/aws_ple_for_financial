@@ -1,0 +1,111 @@
+{
+  "Comment": "CloudWatch Alarms for model performance degradation → auto-retrain trigger",
+  "Alarms": [
+    {
+      "AlarmName": "ple-inference-latency-p99-high",
+      "AlarmDescription": "P99 inference latency exceeds 5000ms — potential model or infrastructure degradation",
+      "Namespace": "PLE/Serving",
+      "MetricName": "InferenceLatency",
+      "Statistic": "p99",
+      "Period": 300,
+      "EvaluationPeriods": 3,
+      "DatapointsToAlarm": 2,
+      "Threshold": 5000,
+      "ComparisonOperator": "GreaterThanThreshold",
+      "Unit": "Milliseconds",
+      "TreatMissingData": "notBreaching",
+      "ActionsEnabled": true,
+      "AlarmActions": [
+        "arn:aws:sns:ap-northeast-2:ACCOUNT_ID:ple-retrain-alarm-topic"
+      ],
+      "OKActions": [
+        "arn:aws:sns:ap-northeast-2:ACCOUNT_ID:ple-retrain-alarm-topic"
+      ],
+      "Tags": [
+        {"Key": "Project", "Value": "PLE-AIOps"},
+        {"Key": "Component", "Value": "AutoRetrain"},
+        {"Key": "AlarmType", "Value": "LatencyDegradation"}
+      ]
+    },
+    {
+      "AlarmName": "ple-prediction-score-degradation",
+      "AlarmDescription": "Average PredictionScore dropped by 20% or more from baseline — model quality degradation",
+      "Namespace": "PLE/Serving",
+      "Metrics": [
+        {
+          "Id": "current_score",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "PLE/Serving",
+              "MetricName": "PredictionScore"
+            },
+            "Period": 3600,
+            "Stat": "Average"
+          },
+          "ReturnData": false
+        },
+        {
+          "Id": "baseline_score",
+          "MetricStat": {
+            "Metric": {
+              "Namespace": "PLE/Serving",
+              "MetricName": "PredictionScoreBaseline"
+            },
+            "Period": 3600,
+            "Stat": "Average"
+          },
+          "ReturnData": false
+        },
+        {
+          "Id": "score_ratio",
+          "Expression": "current_score / baseline_score",
+          "Label": "Score ratio (current / baseline)",
+          "ReturnData": true
+        }
+      ],
+      "Threshold": 0.8,
+      "ComparisonOperator": "LessThanThreshold",
+      "EvaluationPeriods": 6,
+      "DatapointsToAlarm": 4,
+      "TreatMissingData": "notBreaching",
+      "ActionsEnabled": true,
+      "AlarmActions": [
+        "arn:aws:sns:ap-northeast-2:ACCOUNT_ID:ple-retrain-alarm-topic"
+      ],
+      "OKActions": [
+        "arn:aws:sns:ap-northeast-2:ACCOUNT_ID:ple-retrain-alarm-topic"
+      ],
+      "Tags": [
+        {"Key": "Project", "Value": "PLE-AIOps"},
+        {"Key": "Component", "Value": "AutoRetrain"},
+        {"Key": "AlarmType", "Value": "ScoreDegradation"}
+      ]
+    }
+  ],
+  "SNSTopic": {
+    "TopicName": "ple-retrain-alarm-topic",
+    "DisplayName": "PLE Auto-Retrain Alarm",
+    "Subscriptions": [
+      {
+        "Protocol": "lambda",
+        "Endpoint": "arn:aws:lambda:ap-northeast-2:ACCOUNT_ID:function:ple-auto-retrain-trigger"
+      }
+    ],
+    "Policy": {
+      "Comment": "Allow CloudWatch Alarms to publish to this topic",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Principal": {"Service": "cloudwatch.amazonaws.com"},
+          "Action": "SNS:Publish",
+          "Resource": "arn:aws:sns:ap-northeast-2:ACCOUNT_ID:ple-retrain-alarm-topic",
+          "Condition": {
+            "ArnLike": {
+              "aws:SourceArn": "arn:aws:cloudwatch:ap-northeast-2:ACCOUNT_ID:alarm:ple-*"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
