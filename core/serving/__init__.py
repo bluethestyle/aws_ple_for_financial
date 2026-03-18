@@ -10,6 +10,7 @@ Modules:
     predict         -- RecommendationService (shared between Lambda & ECS)
     kill_switch     -- Per-request circuit breaker (DynamoDB-backed)
     ab_test         -- Deterministic A/B variant assignment + auto-promote
+    model_monitor   -- Prediction logging + CloudWatch metrics + Champion-Challenger
 """
 
 from .config import ServingConfig, LambdaConfig, ECSConfig, ABVariant
@@ -23,6 +24,7 @@ from .predict import RecommendationService, PredictionResponse, OutputNormalizer
 from .kill_switch import KillSwitch, KillSwitchState, FallbackStrategy
 from .ab_test import ABTestManager, VariantAssignment
 from .model_registry import ModelRegistry, ModelVersion
+from .model_monitor import ModelMonitor, ChampionChallengerResult
 
 __all__ = [
     # config
@@ -49,4 +51,7 @@ __all__ = [
     # model_registry
     "ModelRegistry",
     "ModelVersion",
+    # model_monitor
+    "ModelMonitor",
+    "ChampionChallengerResult",
 ]

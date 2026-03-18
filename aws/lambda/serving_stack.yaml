@@ -1,0 +1,257 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  PLE Financial Recommendation — LGBM Serverless Serving Layer
+
+  Resources:
+    - Lambda function: LGBM multi-task inference endpoint
+    - DynamoDB table: Prediction logs for Champion-Challenger
+    - IAM role: Lambda execution with S3/DynamoDB/CloudWatch access
+
+# ---------------------------------------------------------------------------
+# Parameters (override via sam deploy --parameter-overrides)
+# ---------------------------------------------------------------------------
+
+Parameters:
+  RegistryBase:
+    Type: String
+    Default: "s3://aiops-ple-financial/models/artifacts"
+    Description: S3 base path for the ModelRegistry (_promoted marker lives here)
+
+  MonitorTable:
+    Type: String
+    Default: "ple-prediction-log"
+    Description: DynamoDB table name for prediction logging
+
+  CWNamespace:
+    Type: String
+    Default: "PLE/Serving"
+    Description: CloudWatch custom metric namespace
+
+  LambdaMemoryMB:
+    Type: Number
+    Default: 1024
+    Description: Lambda memory in MB (increase for large models)
+
+  LambdaTimeoutSec:
+    Type: Number
+    Default: 30
+    Description: Lambda timeout in seconds
+
+  ReservedConcurrency:
+    Type: Number
+    Default: 100
+    Description: Reserved concurrency for the predict Lambda
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: CloudWatch log retention in days
+
+
+# ---------------------------------------------------------------------------
+# Globals
+# ---------------------------------------------------------------------------
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        REGISTRY_BASE: !Ref RegistryBase
+        MONITOR_TABLE: !Ref MonitorTable
+        CW_NAMESPACE: !Ref CWNamespace
+        AWS_REGION_NAME: !Ref AWS::Region
+
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+
+Resources:
+
+  # ------------------------------------------------------------------
+  # IAM Role
+  # ------------------------------------------------------------------
+
+  PredictLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ple-predict-lambda-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ple-predict-lambda-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # S3: read model artifacts from registry
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::aiops-ple-financial"
+                  - !Sub "arn:aws:s3:::aiops-ple-financial/*"
+
+              # DynamoDB: write prediction logs
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt PredictionLogTable.Arn
+                  - !Sub "${PredictionLogTable.Arn}/index/*"
+
+              # CloudWatch: publish custom metrics
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+
+  # ------------------------------------------------------------------
+  # Lambda: Predict
+  # ------------------------------------------------------------------
+
+  PredictFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ple-predict
+      Description: "LGBM multi-task inference endpoint (champion model auto-loaded from S3 registry)"
+      Handler: predict.handler
+      CodeUri: ../../containers/lambda/
+      MemorySize: !Ref LambdaMemoryMB
+      Timeout: !Ref LambdaTimeoutSec
+      ReservedConcurrentExecutions: !Ref ReservedConcurrency
+      Role: !GetAtt PredictLambdaRole.Arn
+      Layers:
+        - !Ref LGBMLayer
+      Events:
+        # Invoke via API Gateway (optional — can also be called directly)
+        PredictApi:
+          Type: Api
+          Properties:
+            Path: /predict
+            Method: post
+            RestApiId: !Ref PredictApi
+
+  PredictFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${PredictFunction}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ------------------------------------------------------------------
+  # Lambda Layer: LightGBM + NumPy
+  # (Build with: pip install lightgbm numpy pandas -t layer/python/)
+  # ------------------------------------------------------------------
+
+  LGBMLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: ple-lgbm-layer
+      Description: "LightGBM + NumPy + Pandas for LGBM inference"
+      ContentUri: ../../containers/lambda/layers/lgbm/
+      CompatibleRuntimes:
+        - python3.11
+      RetentionPolicy: Retain
+
+  # ------------------------------------------------------------------
+  # API Gateway
+  # ------------------------------------------------------------------
+
+  PredictApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: ple-predict-api
+      StageName: prod
+      Description: "PLE Financial Recommendation — Serving API"
+
+  # ------------------------------------------------------------------
+  # DynamoDB: Prediction Log
+  # ------------------------------------------------------------------
+
+  PredictionLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref MonitorTable
+      BillingMode: PAY_PER_REQUEST
+      TableClass: STANDARD_INFREQUENT_ACCESS
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+      AttributeDefinitions:
+        - AttributeName: prediction_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+        - AttributeName: version
+          AttributeType: S
+
+      KeySchema:
+        - AttributeName: prediction_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+
+      # GSI for Champion-Challenger queries: partition by version, sort by timestamp
+      GlobalSecondaryIndexes:
+        - IndexName: version-timestamp-index
+          KeySchema:
+            - AttributeName: version
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - predictions
+              - user_id
+              - elapsed_ms
+              - channel
+              - segment
+
+      # DynamoDB TTL — records expire after 90 days (set in Lambda code)
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+      Tags:
+        - Key: Project
+          Value: ple-financial
+        - Key: Component
+          Value: serving
+
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+
+Outputs:
+  PredictFunctionArn:
+    Description: "Predict Lambda function ARN"
+    Value: !GetAtt PredictFunction.Arn
+    Export:
+      Name: ple-predict-lambda-arn
+
+  PredictApiUrl:
+    Description: "API Gateway invoke URL"
+    Value: !Sub "https://${PredictApi}.execute-api.${AWS::Region}.amazonaws.com/prod/predict"
+    Export:
+      Name: ple-predict-api-url
+
+  PredictionLogTableArn:
+    Description: "DynamoDB prediction log table ARN"
+    Value: !GetAtt PredictionLogTable.Arn
+    Export:
+      Name: ple-prediction-log-table-arn
