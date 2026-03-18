@@ -104,6 +104,9 @@ from .feature_selector import (
     FeatureSelectionResult,
 )
 
+# Experiment comparison
+from .experiment_comparator import ExperimentComparator, RunSummary, ComparisonResult
+
 # Pre-existing modules
 from .checkpoint import CheckpointManager
 from .evaluator import ModelEvaluator
@@ -152,6 +155,10 @@ __all__ = [
     "FeatureSelector",
     "FeatureSelectionConfig",
     "FeatureSelectionResult",
+    # Experiment comparison
+    "ExperimentComparator",
+    "RunSummary",
+    "ComparisonResult",
     # Pre-existing
     "CheckpointManager",
     "ModelEvaluator",

@@ -17,7 +17,9 @@ from .dataloader import (
 from .query_engine import QueryEngine
 from .schema_registry import SchemaRegistry
 from .sequence_densifier import SequenceDensifier, SequenceDensifyConfig, SequenceSpec
+from .dataset_registry import DatasetRegistry, DatasetVersion
 from .validation import DataValidator, ValidationResult
+from .quality_gate import QualityGate, QualityGateResult, QualityGateError, Verdict
 
 __all__ = [
     "DataBackendConfig",
@@ -32,6 +34,12 @@ __all__ = [
     "SequenceDensifier",
     "SequenceDensifyConfig",
     "SequenceSpec",
+    "DatasetRegistry",
+    "DatasetVersion",
     "DataValidator",
     "ValidationResult",
+    "QualityGate",
+    "QualityGateResult",
+    "QualityGateError",
+    "Verdict",
 ]
