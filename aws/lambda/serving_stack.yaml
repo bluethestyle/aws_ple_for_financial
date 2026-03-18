@@ -70,6 +70,9 @@ Globals:
         CW_NAMESPACE: !Ref CWNamespace
         AWS_REGION_NAME: !Ref AWS::Region
         POPULARITY_CATALOG_URI: !Ref PopularityCatalogUri
+        AB_ENABLED: "false"
+        AB_CHALLENGER_VERSION: ""
+        AB_CHALLENGER_WEIGHT: "0.2"
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +226,7 @@ Resources:
             NonKeyAttributes:
               - predictions
               - user_id
+              - variant
               - elapsed_ms
               - channel
               - segment

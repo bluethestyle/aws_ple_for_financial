@@ -45,10 +45,18 @@ logger.setLevel(logging.INFO)
 
 _CACHE: Dict[str, Any] = {
     "version": None,
-    "models": {},           # task_name -> lgb.Booster
+    "models": {},           # task_name -> lgb.Booster (champion)
     "features": {},         # task_name -> {"indices": [...], "names": [...]}
     "tasks_meta": [],       # list of {"name": str, "type": str}
 }
+
+# Variant model cache: variant_name -> {"version": str, "models": {task->Booster}, "features": {}}
+_VARIANT_CACHE: Dict[str, Dict[str, Any]] = {}
+
+# A/B test configuration (from env or event)
+AB_ENABLED = os.environ.get("AB_ENABLED", "false").lower() == "true"
+AB_CHALLENGER_VERSION = os.environ.get("AB_CHALLENGER_VERSION", "")
+AB_CHALLENGER_WEIGHT = float(os.environ.get("AB_CHALLENGER_WEIGHT", "0.2"))
 
 # ---------------------------------------------------------------------------
 # Environment variables (set in Lambda config / CDK)
@@ -84,10 +92,27 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # --- Ensure models are loaded (cold start or version change) ---
     _ensure_loaded(s3)
 
+    # --- A/B variant selection ---
+    variant_name = "control"
     version = _CACHE["version"]
     models = _CACHE["models"]
     feat_meta = _CACHE["features"]
     tasks_meta = _CACHE["tasks_meta"]
+
+    if AB_ENABLED and AB_CHALLENGER_VERSION:
+        # Deterministic assignment: hash(user_id) → [0,1)
+        import hashlib
+        h = int(hashlib.sha256(f"ple_ab:{user_id}".encode()).hexdigest()[:8], 16) / 0x1_0000_0000
+        if h < AB_CHALLENGER_WEIGHT:
+            variant_name = "challenger"
+            # Load challenger models if not cached
+            _ensure_variant_loaded(s3, AB_CHALLENGER_VERSION)
+            vc = _VARIANT_CACHE.get(AB_CHALLENGER_VERSION, {})
+            if vc.get("models"):
+                version = AB_CHALLENGER_VERSION
+                models = vc["models"]
+                feat_meta = vc.get("features", feat_meta)
+                tasks_meta = vc.get("tasks_meta", tasks_meta)
 
     if not models:
         return {"error": "no models available", "status": 503}
@@ -144,13 +169,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     result = {
         "user_id": user_id,
         "version": version,
+        "variant": variant_name,
         "predictions": predictions,
         "elapsed_ms": elapsed,
     }
 
     # --- Async performance logging (best-effort) ---
     try:
-        _log_prediction(boto3, user_id, version, predictions, elapsed, ctx)
+        ctx_with_variant = {**ctx, "variant": variant_name}
+        _log_prediction(boto3, user_id, version, predictions, elapsed, ctx_with_variant)
         _emit_metrics(boto3, version, predictions, elapsed, tasks_meta)
     except Exception:
         logger.warning("Monitoring write failed (non-fatal)", exc_info=True)
@@ -244,6 +271,82 @@ def _ensure_loaded(s3) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _ensure_variant_loaded(s3, variant_version: str) -> None:
+    """Load a challenger model version into the variant cache."""
+    if variant_version in _VARIANT_CACHE and _VARIANT_CACHE[variant_version].get("models"):
+        return  # Already loaded
+
+    logger.info("Loading challenger model version: %s", variant_version)
+
+    tmp = __import__("tempfile").mkdtemp(prefix="lgbm_variant_")
+    try:
+        import lightgbm as lgb
+
+        bucket, prefix = _parse_s3_uri(
+            f"{REGISTRY_BASE.rstrip('/')}/{variant_version}/students/"
+        )
+        paginator = s3.get_paginator("list_objects_v2")
+        task_dirs: Dict[str, bool] = {}
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                rel = key[len(prefix):]
+                parts = rel.strip("/").split("/")
+                if len(parts) >= 1 and parts[0]:
+                    task_dirs[parts[0]] = True
+
+        models: Dict[str, Any] = {}
+        feat_meta: Dict[str, Any] = {}
+        tasks_meta: List[Dict[str, str]] = []
+
+        for task_name in task_dirs:
+            model_key = f"{prefix}{task_name}/model.lgbm"
+            feat_key = f"{prefix}{task_name}/selected_features.json"
+            meta_key = f"{prefix}{task_name}/metadata.json"
+
+            local_model = f"{tmp}/{task_name}.lgbm"
+            try:
+                s3.download_file(bucket, model_key, local_model)
+                booster = lgb.Booster(model_file=local_model)
+                models[task_name] = booster
+            except Exception as e:
+                logger.warning("Variant %s: skip task %s: %s", variant_version, task_name, e)
+                continue
+
+            try:
+                obj = s3.get_object(Bucket=bucket, Key=feat_key)
+                feat_meta[task_name] = json.loads(obj["Body"].read())
+            except Exception:
+                feat_meta[task_name] = {}
+
+            task_type = "binary"
+            try:
+                obj = s3.get_object(Bucket=bucket, Key=meta_key)
+                meta = json.loads(obj["Body"].read())
+                task_type = meta.get("task_type", "binary")
+            except Exception:
+                pass
+            tasks_meta.append({"name": task_name, "type": task_type})
+
+        _VARIANT_CACHE[variant_version] = {
+            "version": variant_version,
+            "models": models,
+            "features": feat_meta,
+            "tasks_meta": tasks_meta,
+        }
+
+        logger.info(
+            "Loaded %d challenger models for version %s",
+            len(models), variant_version,
+        )
+    except Exception as e:
+        logger.error("Failed to load variant %s: %s", variant_version, e)
+        _VARIANT_CACHE[variant_version] = {"models": {}}
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _read_promoted_version(s3) -> str:
     """Read the _promoted marker to get the active version."""
     bucket, key = _parse_s3_uri(f"{REGISTRY_BASE.rstrip('/')}/_promoted")
@@ -305,6 +408,7 @@ def _log_prediction(
         "prediction_id": str(uuid.uuid4()),
         "user_id": user_id,
         "version": version,
+        "variant": ctx.get("variant", "control"),
         "predictions": {k: str(v) for k, v in predictions.items()},
         "elapsed_ms": str(round(elapsed_ms, 2)),
         "channel": ctx.get("channel", "unknown"),

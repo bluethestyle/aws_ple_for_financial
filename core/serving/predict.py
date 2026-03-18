@@ -203,6 +203,7 @@ class RecommendationService:
         pipeline: Optional[Any] = None,
         pipeline_config: Optional[Dict[str, Any]] = None,
         cold_start_handler: Optional[Any] = None,
+        variant_models: Optional[Dict[str, Any]] = None,
     ) -> None:
         from .feature_store import AbstractFeatureStore
 
@@ -215,6 +216,12 @@ class RecommendationService:
         self._pipeline_config = pipeline_config or {}
         self._cold_start_handler = cold_start_handler
 
+        # Variant-specific models for A/B testing.
+        # Key: variant name (e.g. "control", "challenger").
+        # Value: model instance with a .predict() interface.
+        # When a variant has no entry here, falls back to self._model.
+        self._variant_models: Dict[str, Any] = variant_models or {}
+
         # Build task name -> type mapping for normalisation
         self._task_type_map: Dict[str, str] = {
             t["name"]: t["type"] for t in tasks_meta
@@ -225,12 +232,32 @@ class RecommendationService:
 
         logger.info(
             "RecommendationService initialised: tasks=%s, "
-            "kill_switch=%s, ab_test=%s, pipeline=%s, cold_start=%s",
+            "kill_switch=%s, ab_test=%s (%d variant models), "
+            "pipeline=%s, cold_start=%s",
             [t["name"] for t in tasks_meta],
             kill_switch is not None,
             ab_manager is not None,
+            len(self._variant_models),
             pipeline is not None,
             cold_start_handler is not None,
+        )
+
+    def register_variant_model(
+        self, variant_name: str, model: Any,
+    ) -> None:
+        """Register a model for a specific A/B variant at runtime.
+
+        Allows dynamic model loading when a new challenger is deployed
+        without restarting the service.
+
+        Args:
+            variant_name: Variant name matching :class:`ABVariant.name`.
+            model: Model instance with a ``.predict()`` method.
+        """
+        self._variant_models[variant_name] = model
+        logger.info(
+            "Registered variant model: %s (total variants: %d)",
+            variant_name, len(self._variant_models),
         )
 
     # ------------------------------------------------------------------
@@ -269,11 +296,19 @@ class RecommendationService:
 
         # ---- 2. A/B variant selection ----
         variant_name = ""
+        active_model = self._model  # default: champion
         if self._ab_manager is not None:
             assignment = self._ab_manager.assign(user_id)
             variant_name = assignment.variant_name
             metadata["ab_variant"] = variant_name
             metadata["ab_hash"] = assignment.hash_value
+
+            # Select the variant-specific model if registered
+            if variant_name in self._variant_models:
+                active_model = self._variant_models[variant_name]
+                metadata["ab_model_source"] = "variant"
+            else:
+                metadata["ab_model_source"] = "default"
 
         # ---- 3. Feature lookup (or cold-start synthesis) ----
         is_coldstart = False
@@ -312,11 +347,11 @@ class RecommendationService:
         # ---- 4. Context enrichment ----
         enriched_features = {**features, **ctx}
 
-        # ---- 5. LGBM inference ----
+        # ---- 5. LGBM inference (using variant-specific model) ----
         import pandas as pd
 
         feature_df = pd.DataFrame([enriched_features])
-        raw_predictions = self._model.predict(feature_df)
+        raw_predictions = active_model.predict(feature_df)
 
         # ---- 6. Output normalisation ----
         normalised: Dict[str, Any] = {}
