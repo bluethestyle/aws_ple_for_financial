@@ -271,6 +271,25 @@ class StudentTrainer:
         logger.info("Soft labels loaded from %s: %d tasks", path, len(soft_labels))
         return soft_labels
 
+    def get_soft_labels(self) -> Dict[str, np.ndarray]:
+        """Return the cached soft labels (teacher predictions).
+
+        Must be called after :meth:`generate_soft_labels` or
+        :meth:`load_soft_labels`.
+
+        Returns:
+            ``{task_name: soft_label_array}`` dict.
+
+        Raises:
+            RuntimeError: If soft labels have not been generated/loaded.
+        """
+        if self._soft_labels is None:
+            raise RuntimeError(
+                "Soft labels not available. "
+                "Call generate_soft_labels() or load_soft_labels() first."
+            )
+        return dict(self._soft_labels)
+
     # ------------------------------------------------------------------
     # Student training
     # ------------------------------------------------------------------

@@ -201,12 +201,99 @@ def main() -> None:
     logger.info("Training LGBM student models...")
     students = trainer.train_students(features, hard_labels)
 
-    # Save
-    saved = trainer.save_students(args.output_dir)
+    # Step 4: Fidelity validation — teacher-student agreement check
+    logger.info("Running fidelity validation (8 metrics per task)...")
+    from core.training.distillation_validator import (
+        DistillationValidator,
+        ValidationCriteria,
+    )
+
+    validator = DistillationValidator(criteria=ValidationCriteria())
+    fidelity_results = []
+
+    # Get teacher soft labels for comparison
+    soft_labels = trainer.get_soft_labels()  # Dict[task_name, np.ndarray]
+
+    for task_spec in pipeline_config.tasks:
+        task_name = task_spec.name
+        if task_name not in students:
+            continue
+
+        student_model = students[task_name]
+
+        # Student predictions on the same training features
+        student_preds = student_model.predict(features)
+
+        # Teacher predictions (soft labels)
+        teacher_preds = soft_labels.get(task_name)
+        if teacher_preds is None:
+            logger.warning("No soft labels for task %s, skipping fidelity", task_name)
+            continue
+
+        # Ground truth labels (for AUC, calibration)
+        labels = hard_labels.get(task_name)
+
+        result = validator.validate_task(
+            task_name=task_name,
+            task_type=task_spec.type,
+            teacher_preds=teacher_preds,
+            student_preds=student_preds,
+            labels=labels,
+        )
+        fidelity_results.append(result)
+
+        status = "PASS" if result.passed else "FAIL"
+        logger.info(
+            "  [%s] %s — metrics: %s%s",
+            status, task_name,
+            {k: round(v, 4) for k, v in result.metrics.items()},
+            f" failures: {result.failures}" if result.failures else "",
+        )
+
+    # Check overall fidelity
+    passed_count = sum(1 for r in fidelity_results if r.passed)
+    failed_count = len(fidelity_results) - passed_count
+    logger.info(
+        "Fidelity summary: %d/%d tasks passed",
+        passed_count, passed_count + failed_count,
+    )
+
+    if failed_count > 0:
+        failed_tasks = [r.task_name for r in fidelity_results if not r.passed]
+        logger.error(
+            "Fidelity FAILED for %d task(s): %s — aborting pipeline",
+            failed_count, failed_tasks,
+        )
+        # Save partial results for debugging before exit
+        output_path = Path(args.output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        fidelity_report = {
+            "status": "FAILED",
+            "passed": passed_count,
+            "failed": failed_count,
+            "failed_tasks": failed_tasks,
+            "details": {
+                r.task_name: {
+                    "passed": r.passed,
+                    "metrics": r.metrics,
+                    "failures": r.failures,
+                }
+                for r in fidelity_results
+            },
+        }
+        with open(output_path / "fidelity_report.json", "w") as f:
+            json.dump(fidelity_report, f, indent=2, default=str)
+        sys.exit(1)  # SageMaker Job fails → Step Functions catches
+
+    # Step 5: Save with fidelity results
+    saved = trainer.save_students(
+        args.output_dir,
+        fidelity_results=fidelity_results,
+    )
 
     # Summary
     logger.info("=" * 60)
-    logger.info("Distillation complete!")
+    logger.info("Distillation complete! (all fidelity checks passed)")
     logger.info("  Tasks distilled: %d", len(saved))
     for task_name, path in saved.items():
         logger.info("  %s -> %s", task_name, path)
@@ -224,10 +311,22 @@ def main() -> None:
         "output_dir": args.output_dir,
         "feature_count": len(feature_cols),
         "sample_count": len(features),
+        "fidelity": {
+            "all_passed": failed_count == 0,
+            "passed": passed_count,
+            "failed": failed_count,
+            "per_task": {
+                r.task_name: {
+                    "passed": r.passed,
+                    "metrics": {k: round(v, 4) for k, v in r.metrics.items()},
+                }
+                for r in fidelity_results
+            },
+        },
     }
     summary_path = output_path / "distillation_summary.json"
     with open(summary_path, "w") as f:
-        json.dump(summary, f, indent=2)
+        json.dump(summary, f, indent=2, default=str)
     logger.info("Summary saved to %s", summary_path)
 
 
