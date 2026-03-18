@@ -276,7 +276,18 @@ def stage_4_7_distillation(args, model_uri: str):
 
     session = sagemaker.Session()
 
+    # Upload source code to S3 as tar.gz (ProcessingInput)
     _prepare_source_package()
+    import tarfile
+    source_tar = "_source_pkg.tar.gz"
+    with tarfile.open(source_tar, "w:gz") as tar:
+        tar.add("_source_pkg", arcname=".")
+    s3_source = f"s3://{S3_BUCKET}/e2e-test/{TIMESTAMP}/source/source_pkg.tar.gz"
+    import boto3 as _b3
+    _b3.client("s3").upload_file(source_tar, S3_BUCKET,
+                                  f"e2e-test/{TIMESTAMP}/source/source_pkg.tar.gz")
+    Path(source_tar).unlink(missing_ok=True)
+    logger.info("Source package uploaded: %s", s3_source)
 
     processor = SKLearnProcessor(
         framework_version="1.2-1",
@@ -291,10 +302,40 @@ def stage_4_7_distillation(args, model_uri: str):
         logger.info("[DRY RUN] Teacher: %s", model_uri)
         return
 
+    # Create a wrapper script that unpacks source and runs distillation
+    wrapper_script = Path("_distill_wrapper.py")
+    wrapper_script.write_text("""\
+import subprocess, sys, os, tarfile
+# Unpack source code
+src_tar = "/opt/ml/processing/input/source/source_pkg.tar.gz"
+src_dir = "/opt/ml/processing/source"
+os.makedirs(src_dir, exist_ok=True)
+with tarfile.open(src_tar, "r:gz") as tar:
+    tar.extractall(src_dir)
+# Add to PYTHONPATH
+sys.path.insert(0, src_dir)
+os.chdir(src_dir)
+# Run distillation
+sys.argv = [
+    "scripts/run_distillation.py",
+    "--teacher-checkpoint", "/opt/ml/processing/input/teacher/model.pth",
+    "--data-path", "/opt/ml/processing/input/data/bank_churners_train.parquet",
+    "--output-dir", "/opt/ml/processing/output",
+    "--config", "configs/test/bank_churners_pipeline.yaml",
+    "--soft-label-path", "/opt/ml/processing/output/soft_labels.parquet",
+    "--temperature", "5.0",
+    "--alpha", "0.3",
+]
+exec(open("scripts/run_distillation.py").read())
+""")
+
     processor.run(
-        code="scripts/run_distillation.py",
-        source_dir="_source_pkg",
+        code=str(wrapper_script),
         inputs=[
+            ProcessingInput(
+                source=s3_source,
+                destination="/opt/ml/processing/input/source",
+            ),
             ProcessingInput(
                 source=model_uri,
                 destination="/opt/ml/processing/input/teacher",
@@ -310,18 +351,10 @@ def stage_4_7_distillation(args, model_uri: str):
                 destination=S3_STUDENTS,
             ),
         ],
-        arguments=[
-            "--teacher-checkpoint", "/opt/ml/processing/input/teacher/model.pth",
-            "--data-path", "/opt/ml/processing/input/data/bank_churners_train.parquet",
-            "--output-dir", "/opt/ml/processing/output",
-            "--config", "configs/test/bank_churners_pipeline.yaml",
-            "--soft-label-path", "/opt/ml/processing/output/soft_labels.parquet",
-            "--temperature", "5.0",
-            "--alpha", "0.3",
-        ],
         job_name=f"e2e-distill-{TIMESTAMP}",
         wait=True,
     )
+    wrapper_script.unlink(missing_ok=True)
 
     logger.info("Stage 4-7 complete. Students: %s", S3_STUDENTS)
 
