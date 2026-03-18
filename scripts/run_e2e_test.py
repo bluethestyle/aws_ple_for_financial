@@ -267,21 +267,22 @@ def stage_3_ple_training(args):
 def stage_4_7_distillation(args, model_uri: str):
     """Distillation + Fidelity + Feature Selection + Registration."""
     import sagemaker
-    from sagemaker.processing import ScriptProcessor, ProcessingInput, ProcessingOutput
+    from sagemaker.processing import ProcessingInput, ProcessingOutput
+    from sagemaker.sklearn.processing import SKLearnProcessor
 
     logger.info("=" * 60)
-    logger.info("Stage 4-7: Distillation → Fidelity → Selection → Registration")
+    logger.info("Stage 4-7: Distillation + Fidelity + Selection + Registration")
     logger.info("=" * 60)
 
     session = sagemaker.Session()
-    image_uri = sagemaker.image_uris.retrieve("sklearn", REGION, version="1.2-1")
 
-    processor = ScriptProcessor(
+    _prepare_source_package()
+
+    processor = SKLearnProcessor(
+        framework_version="1.2-1",
         role=ROLE_ARN,
-        image_uri=image_uri,
         instance_count=1,
         instance_type=args.instance_type_cpu,
-        command=["python3"],
         sagemaker_session=session,
     )
 
@@ -292,7 +293,7 @@ def stage_4_7_distillation(args, model_uri: str):
 
     processor.run(
         code="scripts/run_distillation.py",
-        source_dir=".",
+        source_dir="_source_pkg",
         inputs=[
             ProcessingInput(
                 source=model_uri,
