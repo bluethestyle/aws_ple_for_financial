@@ -201,6 +201,12 @@ class AbstractDomainIngestor(ABC):
             len(df), len(df.columns), self.source_name,
         )
 
+        # Step 1.5: Source schema contract check
+        # Detects upstream changes (renamed/added/removed/retyped columns)
+        # before they silently break downstream pipelines.
+        contract_warnings = self._check_source_contract(df)
+        warnings.extend(contract_warnings)
+
         # Step 2: Validate required columns
         valid, val_warnings = self._validate_required(df)
         warnings.extend(val_warnings)
@@ -358,6 +364,125 @@ class AbstractDomainIngestor(ABC):
             logger.error(msg)
             return False, [msg]
         return True, []
+
+    def _check_source_contract(self, df: Any) -> List[str]:
+        """Detect upstream source schema changes by comparing the incoming
+        DataFrame's columns against the expected schema.
+
+        Catches 4 types of breaking changes before they silently propagate:
+          1. Missing columns (renamed or deleted upstream)
+          2. New unexpected columns (schema evolution signal)
+          3. Type mismatches (e.g. float → string)
+          4. Row count anomalies (order-of-magnitude deviation)
+
+        Returns a list of warning strings.  Critical changes are also
+        logged at ERROR level.  Does not block ingestion — the decision
+        to block is made by _validate_required() and _validate_schema().
+        """
+        warnings: List[str] = []
+
+        if self._schema_registry is None:
+            return warnings
+
+        if not self._schema_registry.has(self.source_name):
+            return warnings
+
+        try:
+            schema = self._schema_registry.get(self.source_name)
+        except KeyError:
+            return warnings
+
+        expected_cols = set(schema.column_names)
+        actual_cols = set(df.columns)
+
+        # 1. Missing columns (upstream removed or renamed)
+        missing = expected_cols - actual_cols
+        if missing:
+            msg = (
+                f"[CONTRACT] {self.source_name}: {len(missing)} expected "
+                f"column(s) missing from source: {sorted(missing)[:10]}. "
+                f"Upstream schema may have changed."
+            )
+            logger.error(msg)
+            warnings.append(msg)
+
+        # 2. New unexpected columns (upstream added)
+        new_cols = actual_cols - expected_cols
+        if new_cols:
+            msg = (
+                f"[CONTRACT] {self.source_name}: {len(new_cols)} new "
+                f"column(s) not in schema: {sorted(new_cols)[:10]}. "
+                f"Consider updating schema.yaml via SchemaRegistry.evolve()."
+            )
+            logger.warning(msg)
+            warnings.append(msg)
+
+        # 3. Type mismatches for columns that exist in both
+        common = expected_cols & actual_cols
+        type_mismatches = []
+        for col_name in common:
+            col_spec = schema.columns.get(col_name)
+            if col_spec is None:
+                continue
+
+            expected_type = col_spec.type  # e.g. "float64", "int64", "string"
+            actual_type = str(df[col_name].dtype)
+
+            # Loose matching: allow compatible types
+            if not self._types_compatible(expected_type, actual_type):
+                type_mismatches.append(
+                    f"{col_name}: expected={expected_type}, got={actual_type}"
+                )
+
+        if type_mismatches:
+            msg = (
+                f"[CONTRACT] {self.source_name}: {len(type_mismatches)} "
+                f"column type mismatch(es): {type_mismatches[:5]}"
+            )
+            logger.error(msg)
+            warnings.append(msg)
+
+        # 4. Row count anomaly (log-scale deviation from typical)
+        if hasattr(self, "_expected_row_count_range"):
+            lo, hi = self._expected_row_count_range
+            if len(df) < lo or len(df) > hi:
+                msg = (
+                    f"[CONTRACT] {self.source_name}: row count {len(df):,} "
+                    f"outside expected range [{lo:,}, {hi:,}]"
+                )
+                logger.warning(msg)
+                warnings.append(msg)
+
+        if warnings:
+            logger.info(
+                "Source contract check for '%s': %d issue(s) detected",
+                self.source_name, len(warnings),
+            )
+
+        return warnings
+
+    @staticmethod
+    def _types_compatible(expected: str, actual: str) -> bool:
+        """Check if expected and actual dtypes are compatible.
+
+        Allows common implicit conversions:
+          float64 ↔ float32, int64 ↔ int32, object ↔ string
+        """
+        # Normalize
+        e = expected.lower().replace("string", "object")
+        a = actual.lower().replace("string", "object")
+
+        if e == a:
+            return True
+
+        # Numeric family: int* and float* are compatible
+        numeric_prefixes = ("int", "float", "uint")
+        e_numeric = any(e.startswith(p) for p in numeric_prefixes)
+        a_numeric = any(a.startswith(p) for p in numeric_prefixes)
+        if e_numeric and a_numeric:
+            return True
+
+        return False
 
     def _validate_schema(self, df: Any) -> Tuple[bool, List[str]]:
         """Validate DataFrame against SchemaRegistry if available.
