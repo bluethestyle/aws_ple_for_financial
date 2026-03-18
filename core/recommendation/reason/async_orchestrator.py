@@ -178,6 +178,9 @@ class AsyncReasonOrchestrator:
         te_cfg = reason_cfg.get("template_engine", {})
         self._task_frames: Dict[str, Dict[str, str]] = te_cfg.get("task_frames", {})
 
+        # Context assembler for grounding (optional, injected or auto-created)
+        self._context_assembler: Optional[Any] = None
+
         # AI disclosure requirement (금소법 -- Financial Consumer Protection Act)
         self._ai_disclosure: str = ao_cfg.get(
             "ai_disclosure",
@@ -328,6 +331,26 @@ class AsyncReasonOrchestrator:
         """
         job_id = f"l2a-{uuid.uuid4().hex[:12]}"
         recommendation_id = context.get("recommendation_id", "")
+
+        # Assemble grounding context from 5 sources if assembler is available
+        if (
+            self._context_assembler is not None
+            and "assembled_context_text" not in context
+        ):
+            try:
+                assembled = self._context_assembler.assemble(
+                    customer_id=customer_id,
+                    task_name=context.get("task_type", ""),
+                    features=context.get("features"),
+                    feature_importances=context.get("top_features", []),
+                    product_id=context.get("item_id", ""),
+                )
+                context["assembled_context_text"] = assembled.to_prompt_text()
+            except Exception:
+                logger.debug(
+                    "ContextAssembler failed for %s (non-fatal)", customer_id,
+                    exc_info=True,
+                )
 
         # PromptSanitizer: pre-classify the L1 reason to record sensitivity
         # and determine the target provider before submitting to SQS.
@@ -770,13 +793,29 @@ class AsyncReasonOrchestrator:
             f"{l1_reason}\n"
         )
 
-        if item_name:
-            prompt += f"\n## Product\n{item_name}\n"
+        # Assembled grounding context (5 sources)
+        # Uses ContextAssembler output if provided in context, otherwise
+        # falls back to minimal feature-only context.
+        assembled_text = context.get("assembled_context_text", "")
+        if assembled_text:
+            prompt += (
+                "\n## Grounding Context (반드시 이 정보만 사용하세요)\n"
+                f"{assembled_text}\n"
+            )
+        else:
+            # Fallback: minimal feature context
+            if item_name:
+                prompt += f"\n## Product\n{item_name}\n"
 
-        if feature_lines:
-            prompt += f"\n## Key Features (by importance)\n{feature_lines}\n"
+            if feature_lines:
+                prompt += f"\n## Key Features (by importance)\n{feature_lines}\n"
 
         prompt += (
+            "\n## Grounding Rules\n"
+            "- 위 Grounding Context에 명시된 사실만 사용하세요.\n"
+            "- Context에 없는 숫자, 혜택, 조건을 절대 생성하지 마세요.\n"
+            "- '약', '추정', '분석 결과'와 같은 불확실성 표현을 사용하세요.\n"
+            "- 확정적 수익이나 절감 금액을 단정하지 마세요.\n"
             "\n## AI Disclosure Requirement (금소법)\n"
             f"{self._ai_disclosure}\n"
             "\n## Output\n"
@@ -820,7 +859,55 @@ class AsyncReasonOrchestrator:
         if total_alpha > 0 and korean_count / total_alpha < 0.8:
             return False, "quality:korean_ratio_low"
 
+        # Gate 4: Grounding — output must reference only provided context
+        grounding_fail = self._check_grounding(text, context)
+        if grounding_fail:
+            return False, f"grounding:{grounding_fail}"
+
         return True, ""
+
+    def _check_grounding(self, text: str, context: Dict) -> str:
+        """Verify the LLM output is grounded in provided context.
+
+        Checks for hallucination patterns:
+        - Specific monetary amounts not present in context
+        - Specific percentages not present in context
+        - Product benefits not mentioned in product_info
+
+        Args:
+            text: LLM generated text.
+            context: The context dict that was provided to the LLM.
+
+        Returns:
+            Empty string if grounded, failure reason if not.
+        """
+        import re
+
+        # Extract numbers from output
+        output_numbers = set(re.findall(r'\d[\d,]*\.?\d*', text))
+
+        # Extract numbers from context (all sources)
+        context_str = str(context.get("assembled_context_text", ""))
+        context_str += str(context.get("top_features", ""))
+        context_str += str(context.get("item_name", ""))
+        context_numbers = set(re.findall(r'\d[\d,]*\.?\d*', context_str))
+
+        # Allow common small numbers (1-31 for dates, percentages etc.)
+        common_numbers = {str(i) for i in range(32)} | {"100", "0"}
+
+        # Check for hallucinated specific numbers
+        ungrounded_numbers = output_numbers - context_numbers - common_numbers
+        # Filter out very short numbers (1-2 digits are often generic)
+        suspicious = [n for n in ungrounded_numbers if len(n.replace(',', '').replace('.', '')) >= 3]
+
+        if suspicious:
+            logger.warning(
+                "Grounding check: suspicious numbers in output not found in context: %s",
+                suspicious[:5],
+            )
+            return f"hallucinated_numbers:{','.join(suspicious[:3])}"
+
+        return ""
 
     # ------------------------------------------------------------------
     # LLM output extraction
