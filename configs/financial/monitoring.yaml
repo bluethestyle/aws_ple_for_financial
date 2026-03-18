@@ -16,6 +16,10 @@
 # Fairness monitoring -- stricter for financial services
 # ===========================================================================
 fairness:
+  owner: fairness-monitoring-team
+  check_interval: daily
+  escalation_to: model-governance
+  last_checked: null
   thresholds:
     di_lower: 0.85                     # Disparate Impact lower bound (stricter than generic 0.8)
     di_upper: 1.20                     # Disparate Impact upper bound (stricter than generic 1.25)
@@ -67,6 +71,10 @@ fairness:
 # Drift detection -- tighter thresholds for financial data
 # ===========================================================================
 drift:
+  owner: data-science-team
+  check_interval: daily
+  escalation_to: model-governance
+  last_checked: null
   # Stricter PSI thresholds for financial stability
   psi_threshold_warning: 0.08          # PSI >= 0.08 triggers warning (generic: 0.1)
   psi_threshold_critical: 0.20         # PSI >= 0.20 triggers critical (generic: 0.25)
@@ -121,6 +129,10 @@ drift:
 # Incident management -- faster response for financial
 # ===========================================================================
 incidents:
+  owner: sre-team
+  check_interval: hourly
+  escalation_to: risk-management
+  last_checked: null
   severity_criteria:
     critical:
       conditions:
@@ -162,6 +174,10 @@ incidents:
 # Herding detection -- financial product concentration monitoring
 # ===========================================================================
 herding:
+  owner: risk-management-team
+  check_interval: daily
+  escalation_to: compliance-team
+  last_checked: null
   hhi_warning: 0.12                    # Stricter than generic 0.15
   hhi_critical: 0.20                   # Stricter than generic 0.25
 
@@ -175,6 +191,10 @@ herding:
 # Financial regulatory compliance checks
 # ===========================================================================
 compliance:
+  owner: compliance-team
+  check_interval: daily
+  escalation_to: chief-compliance-officer
+  last_checked: null
   # Fair lending checks (ECOA/FCRA inspired)
   fair_lending:
     enabled: true
@@ -229,6 +249,10 @@ compliance:
 # Task-specific monitoring thresholds
 # ===========================================================================
 task_monitoring:
+  owner: data-science-team
+  check_interval: daily
+  escalation_to: model-governance
+  last_checked: null
   # Per-task performance thresholds (below these triggers alert)
   performance_thresholds:
     ctr:
@@ -308,6 +332,10 @@ task_monitoring:
 # General monitoring settings
 # ===========================================================================
 general:
+  owner: platform-engineering-team
+  check_interval: hourly
+  escalation_to: sre-team
+  last_checked: null
   log_level: INFO
 
   output_dir: monitoring/reports

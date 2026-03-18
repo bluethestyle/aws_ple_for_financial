@@ -37,7 +37,11 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["RightsRequest", "ProfilingRightsManager"]
+__all__ = [
+    "RightsRequest",
+    "ProfilingRightsManager",
+    "RecommendationReviewHandler",
+]
 
 _VALID_RIGHT_TYPES = {"access", "rectify", "delete", "restrict", "port"}
 _VALID_STATUSES = {"pending", "processing", "completed", "denied"}
@@ -376,4 +380,356 @@ class ProfilingRightsManager:
             except Exception:
                 logger.exception(
                     "ProfilingRightsManager: audit_store callback failed",
+                )
+
+
+# ======================================================================
+# Recommendation Review Handler -- 이의제기 → 재심사
+# ======================================================================
+# AI기본법 '이의제기 절차 + 설명요구권' 충족을 위한 구현.
+# 고객이 AI 추천 결과에 이의를 제기하면, 현재 feature 기반으로
+# 재추천을 수행하고 원본 대비 변경사항을 투명하게 제공한다.
+# ======================================================================
+
+
+class RecommendationReviewHandler:
+    """AI 추천 결과 이의제기 및 재심사 처리기.
+
+    AI기본법이 요구하는 '이의제기 절차'와 '설명요구권'을 충족하기 위해,
+    고객이 추천 결과에 대해 이의를 제기하면 현재 데이터를 기반으로
+    재추천을 수행하고 원본과 비교 결과를 투명하게 반환한다.
+
+    Args:
+        pipeline: 추천 파이프라인 (``recommend(customer_id, ...)`` 메서드 필요).
+        feature_store: 고객 feature 조회용 스토어
+            (``get_features(customer_id)`` 메서드 필요).
+        cold_start_handler: 콜드스타트 핸들러 (feature 부재 시 대체 로직).
+        audit_store: 감사 로그 저장 콜러블 ``(event_dict) -> None``.
+    """
+
+    def __init__(
+        self,
+        pipeline: Any,
+        feature_store: Any,
+        cold_start_handler: Any = None,
+        audit_store: Any = None,
+    ) -> None:
+        self._pipeline = pipeline
+        self._feature_store = feature_store
+        self._cold_start_handler = cold_start_handler
+        self._audit_store = audit_store
+        # ProfilingRightsManager for rights request lifecycle
+        self._rights_manager = ProfilingRightsManager(
+            audit_store=audit_store,
+            use_dynamo=False,
+        )
+        # In-memory review registry: review_id -> review record
+        self._reviews: Dict[str, Dict[str, Any]] = {}
+
+    # ------------------------------------------------------------------
+    # Submit
+    # ------------------------------------------------------------------
+
+    def submit_review(
+        self,
+        customer_id: str,
+        original_recommendation_id: str,
+        reason: str,
+    ) -> str:
+        """이의제기 접수 — 고객의 추천 결과 재심사 요청을 등록한다.
+
+        내부적으로 :class:`ProfilingRightsManager` 의 ``submit_request``
+        를 활용하여 "access" 타입 권리 요청을 생성한다.
+
+        Args:
+            customer_id: 고객 식별자.
+            original_recommendation_id: 이의 대상인 원본 추천 ID.
+            reason: 이의제기 사유.
+
+        Returns:
+            생성된 ``review_id``.
+        """
+        # 1) ProfilingRightsManager 를 통해 "access" 권리 요청 등록
+        rights_request_id = self._rights_manager.submit_request(
+            customer_id=customer_id,
+            right_type="access",
+            details={
+                "purpose": "recommendation_review",
+                "original_recommendation_id": original_recommendation_id,
+                "reason": reason,
+            },
+        )
+
+        # 2) review 레코드 생성
+        review_id = f"RVW-{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc).isoformat()
+
+        review_record: Dict[str, Any] = {
+            "review_id": review_id,
+            "customer_id": customer_id,
+            "original_recommendation_id": original_recommendation_id,
+            "reason": reason,
+            "rights_request_id": rights_request_id,
+            "status": "pending",
+            "submitted_at": now,
+            "completed_at": None,
+            "result": None,
+        }
+        self._reviews[review_id] = review_record
+
+        # 3) 감사 로그
+        self._audit(
+            "REVIEW_SUBMITTED",
+            customer_id,
+            review_id=review_id,
+            original_recommendation_id=original_recommendation_id,
+            reason=reason,
+        )
+        logger.info(
+            "Review submitted: review_id=%s, customer=%s, "
+            "original_rec=%s",
+            review_id, customer_id, original_recommendation_id,
+        )
+        return review_id
+
+    # ------------------------------------------------------------------
+    # Process
+    # ------------------------------------------------------------------
+
+    def process_review(self, review_id: str) -> Dict[str, Any]:
+        """재심사 수행 — 현재 feature 기반으로 재추천하고 원본과 비교한다.
+
+        1. ``feature_store`` 에서 고객의 현재 features 조회.
+        2. ``pipeline.recommend()`` 로 재추천 생성.
+        3. 원본 추천과 재추천 비교 (score 차이, 순위 변경).
+        4. 결과를 ``audit_store`` 에 기록.
+
+        Args:
+            review_id: :meth:`submit_review` 가 반환한 리뷰 ID.
+
+        Returns:
+            ``{"review_id", "status", "original", "revised", "changes"}``
+            형태의 딕셔너리.
+
+        Raises:
+            KeyError: 리뷰를 찾을 수 없을 때.
+            ValueError: 이미 처리된 리뷰일 때.
+        """
+        record = self._reviews.get(review_id)
+        if record is None:
+            raise KeyError(f"Review not found: {review_id}")
+
+        if record["status"] == "completed":
+            raise ValueError(
+                f"Review {review_id} is already completed"
+            )
+
+        customer_id: str = record["customer_id"]
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Mark as processing
+        record["status"] = "processing"
+
+        # 1) 현재 features 조회
+        features = self._get_customer_features(customer_id)
+
+        # 2) 재추천 생성
+        revised_recommendation = self._pipeline.recommend(
+            customer_id=customer_id,
+            features=features,
+        )
+
+        # 3) 원본 추천 정보 수집
+        original_recommendation = self._get_original_recommendation(
+            record["original_recommendation_id"],
+        )
+
+        # 4) 비교
+        changes = self._compare_recommendations(
+            original_recommendation,
+            revised_recommendation,
+        )
+
+        # 5) 결과 조립
+        result: Dict[str, Any] = {
+            "review_id": review_id,
+            "status": "completed",
+            "original": original_recommendation,
+            "revised": revised_recommendation,
+            "changes": changes,
+        }
+
+        # 6) 레코드 업데이트
+        record["status"] = "completed"
+        record["completed_at"] = now
+        record["result"] = result
+
+        # 7) 연결된 rights request 도 완료 처리
+        try:
+            self._rights_manager.process_request(
+                record["rights_request_id"],
+            )
+        except Exception:
+            logger.warning(
+                "Could not complete rights request %s for review %s",
+                record["rights_request_id"], review_id,
+            )
+
+        # 8) 감사 로그
+        self._audit(
+            "REVIEW_COMPLETED",
+            customer_id,
+            review_id=review_id,
+            changes_summary={
+                "score_delta": changes.get("score_delta"),
+                "rank_changes_count": len(changes.get("rank_changes", [])),
+            },
+        )
+        logger.info(
+            "Review completed: review_id=%s, customer=%s, "
+            "score_delta=%.4f",
+            review_id, customer_id,
+            changes.get("score_delta", 0.0),
+        )
+        return result
+
+    # ------------------------------------------------------------------
+    # Query
+    # ------------------------------------------------------------------
+
+    def get_review_status(self, review_id: str) -> Dict[str, Any]:
+        """리뷰 상태 조회.
+
+        Args:
+            review_id: 조회할 리뷰 ID.
+
+        Returns:
+            리뷰 레코드 딕셔너리 (결과 포함).
+
+        Raises:
+            KeyError: 리뷰를 찾을 수 없을 때.
+        """
+        record = self._reviews.get(review_id)
+        if record is None:
+            raise KeyError(f"Review not found: {review_id}")
+        return dict(record)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get_customer_features(
+        self, customer_id: str,
+    ) -> Dict[str, Any]:
+        """feature_store 에서 고객 features 조회, 실패 시 cold_start."""
+        try:
+            features = self._feature_store.get_features(customer_id)
+            if features:
+                return features
+        except Exception:
+            logger.warning(
+                "Feature lookup failed for customer=%s, "
+                "falling back to cold_start",
+                customer_id,
+            )
+
+        # cold start fallback
+        if self._cold_start_handler is not None:
+            try:
+                return self._cold_start_handler.get_default_features(
+                    customer_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Cold start handler failed for customer=%s",
+                    customer_id,
+                )
+        return {}
+
+    @staticmethod
+    def _get_original_recommendation(
+        recommendation_id: str,
+    ) -> Dict[str, Any]:
+        """원본 추천 정보를 조회한다.
+
+        실제 운영 환경에서는 추천 결과 저장소(DynamoDB/S3)에서
+        조회한다.  현재는 ID 참조를 포함한 placeholder 를 반환.
+        """
+        return {
+            "recommendation_id": recommendation_id,
+            "items": [],
+            "scores": [],
+        }
+
+    @staticmethod
+    def _compare_recommendations(
+        original: Dict[str, Any],
+        revised: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """원본과 재추천 결과를 비교하여 변경사항을 산출한다.
+
+        Returns:
+            ``{"score_delta", "rank_changes", "added_items",
+            "removed_items"}`` 딕셔너리.
+        """
+        orig_scores = original.get("scores", [])
+        rev_scores = revised.get("scores", [])
+
+        # 평균 score 차이
+        orig_mean = (
+            sum(orig_scores) / len(orig_scores) if orig_scores else 0.0
+        )
+        rev_mean = (
+            sum(rev_scores) / len(rev_scores) if rev_scores else 0.0
+        )
+        score_delta = round(rev_mean - orig_mean, 6)
+
+        # 순위 변경 추적
+        orig_items = original.get("items", [])
+        rev_items = revised.get("items", [])
+
+        orig_rank = {item: idx for idx, item in enumerate(orig_items)}
+        rev_rank = {item: idx for idx, item in enumerate(rev_items)}
+
+        rank_changes: List[Dict[str, Any]] = []
+        all_items = set(orig_items) | set(rev_items)
+        for item in all_items:
+            o_rank = orig_rank.get(item)
+            r_rank = rev_rank.get(item)
+            if o_rank != r_rank:
+                rank_changes.append({
+                    "item": item,
+                    "original_rank": o_rank,
+                    "revised_rank": r_rank,
+                })
+
+        added_items = [i for i in rev_items if i not in orig_rank]
+        removed_items = [i for i in orig_items if i not in rev_rank]
+
+        return {
+            "score_delta": score_delta,
+            "rank_changes": rank_changes,
+            "added_items": added_items,
+            "removed_items": removed_items,
+        }
+
+    # ------------------------------------------------------------------
+    # Audit
+    # ------------------------------------------------------------------
+
+    def _audit(self, action: str, customer_id: str, **kwargs: Any) -> None:
+        event = {
+            "action": action,
+            "customer_id": customer_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **kwargs,
+        }
+        logger.info("RECOMMENDATION_REVIEW_AUDIT | %s", event)
+        if self._audit_store is not None:
+            try:
+                self._audit_store(event)
+            except Exception:
+                logger.exception(
+                    "RecommendationReviewHandler: "
+                    "audit_store callback failed",
                 )
