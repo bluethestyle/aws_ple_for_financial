@@ -1,0 +1,205 @@
+# =============================================================================
+# Test Pipeline: Bank Churners (10K customers × 34 features × 16 tasks)
+# =============================================================================
+# Lightweight config for testing the full pipeline with public data.
+# Adapted from configs/financial/pipeline.yaml.
+#
+# Data: data/adapted/bank_churners_train.parquet
+#       s3://aiops-ple-financial/data/adapted/bank_churners_train.parquet
+# =============================================================================
+
+task_name: bank_churners_test
+
+# ---------------------------------------------------------------------------
+# Tasks — same 16 tasks, matching label columns in the adapted data
+# ---------------------------------------------------------------------------
+tasks:
+  # Engagement
+  - name: ctr
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: label_ctr
+
+  - name: cvr
+    type: binary
+    loss: focal
+    loss_weight: 1.5
+    label_col: label_cvr
+
+  # Lifecycle
+  - name: churn
+    type: binary
+    loss: focal
+    loss_weight: 1.2
+    label_col: label_churn
+
+  - name: retention
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: label_retention
+
+  - name: life_stage
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_life_stage
+    num_classes: 6
+
+  - name: ltv
+    type: regression
+    loss: huber
+    loss_weight: 1.5
+    label_col: label_ltv
+
+  # Value
+  - name: balance_util
+    type: regression
+    loss: huber
+    loss_weight: 1.0
+    label_col: label_balance_util
+
+  - name: engagement
+    type: regression
+    loss: mse
+    loss_weight: 0.8
+    label_col: label_engagement
+
+  - name: channel
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_channel
+    num_classes: 3
+
+  - name: timing
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_timing
+    num_classes: 28
+
+  # Consumption
+  - name: nba
+    type: multiclass
+    loss: ce
+    loss_weight: 2.0
+    label_col: label_nba
+    num_classes: 12
+
+  - name: spending_category
+    type: multiclass
+    loss: ce
+    loss_weight: 1.2
+    label_col: label_spending_category
+    num_classes: 12
+
+  - name: consumption_cycle
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_consumption_cycle
+    num_classes: 7
+
+  - name: spending_bucket
+    type: regression
+    loss: huber
+    loss_weight: 0.8
+    label_col: label_spending_amount
+
+  - name: merchant_affinity
+    type: regression
+    loss: huber
+    loss_weight: 1.0
+    label_col: label_merchant_affinity
+
+  - name: brand_prediction
+    type: multiclass
+    loss: ce
+    loss_weight: 1.0
+    label_col: label_next_brand
+    num_classes: 24
+
+# ---------------------------------------------------------------------------
+# Task Groups
+# ---------------------------------------------------------------------------
+task_groups:
+  - name: engagement
+    tasks: [ctr, cvr]
+    task_experts: [mlp]
+    adatt_intra_strength: 0.8
+    adatt_inter_strength: 0.3
+
+  - name: lifecycle
+    tasks: [churn, retention, life_stage, ltv]
+    task_experts: [mlp]
+    adatt_intra_strength: 0.6
+    adatt_inter_strength: 0.3
+
+  - name: value
+    tasks: [balance_util, engagement, channel, timing]
+    task_experts: [mlp]
+    adatt_intra_strength: 0.5
+    adatt_inter_strength: 0.2
+
+  - name: consumption
+    tasks: [nba, spending_category, consumption_cycle, spending_bucket, merchant_affinity, brand_prediction]
+    task_experts: [mlp]
+    adatt_intra_strength: 0.5
+    adatt_inter_strength: 0.2
+
+# ---------------------------------------------------------------------------
+# Data
+# ---------------------------------------------------------------------------
+data:
+  backend: pandas
+  train_path: data/adapted/bank_churners_train.parquet
+  s3_path: s3://aiops-ple-financial/data/adapted/bank_churners_train.parquet
+
+features:
+  id_cols: [customer_id]
+  input_dim: 34
+
+# ---------------------------------------------------------------------------
+# Model (lightweight for test — MLP experts only, small dims)
+# ---------------------------------------------------------------------------
+model:
+  expert_basket:
+    shared: [mlp]
+  expert_config:
+    mlp:
+      hidden_dims: [64, 32]
+      dropout: 0.1
+  ple:
+    num_layers: 2
+    extraction_dim: 32
+    num_shared_experts: 2
+    num_task_experts: 1
+  task_tower:
+    default_dims: [32, 16]
+
+# ---------------------------------------------------------------------------
+# Training (fast test — small epochs)
+# ---------------------------------------------------------------------------
+training:
+  experiment_name: bank_churners_test
+  batch_size: 256
+  epochs: 10
+  learning_rate: 0.001
+  phase1:
+    epochs: 7
+  phase2:
+    epochs: 3
+
+# ---------------------------------------------------------------------------
+# Distillation
+# ---------------------------------------------------------------------------
+distillation:
+  temperature: 5.0
+  alpha: 0.3
+  lgbm:
+    num_leaves: 31
+    learning_rate: 0.05
+    n_estimators: 100
+    min_child_samples: 20
