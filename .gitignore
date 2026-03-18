@@ -37,6 +37,7 @@ env/
 *.bin
 mlruns/
 outputs/
+_source_pkg/
 
 # Data (exclude core/data/ which is source code)
 data/

@@ -111,6 +111,38 @@ def wait_for_job(sm_client, job_name: str, job_type: str = "training"):
 # Stages
 # ===========================================================================
 
+def _prepare_source_package():
+    """Create a lightweight source package excluding data/ and .git/.
+
+    SageMaker uploads source_dir to S3 as a tar.gz.  If source_dir="."
+    the 2.6GB data/ folder gets included.  This function copies only
+    the code directories into a temp folder.
+    """
+    import shutil
+
+    pkg_dir = Path("_source_pkg")
+    if pkg_dir.exists():
+        shutil.rmtree(pkg_dir)
+
+    dirs_to_copy = ["core", "configs", "containers", "scripts", "aws", "adapters"]
+    files_to_copy = ["pyproject.toml"]
+
+    for d in dirs_to_copy:
+        src = Path(d)
+        if src.exists():
+            shutil.copytree(src, pkg_dir / d, dirs_exist_ok=True,
+                           ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+
+    for f in files_to_copy:
+        src = Path(f)
+        if src.exists():
+            (pkg_dir).mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, pkg_dir / f)
+
+    size_mb = sum(f.stat().st_size for f in pkg_dir.rglob("*") if f.is_file()) / (1024 * 1024)
+    logger.info("Source package prepared: _source_pkg/ (%.1fMB)", size_mb)
+
+
 def stage_0_data_conversion(args):
     """Convert ealtman2019 CSV → Parquet on SageMaker (too large for local PC)."""
     import sagemaker
@@ -193,9 +225,12 @@ def stage_3_ple_training(args):
 
     session = sagemaker.Session()
 
+    # Package only code directories (exclude data/ which is multi-GB)
+    _prepare_source_package()
+
     estimator = PyTorch(
         entry_point="containers/training/train.py",
-        source_dir=".",  # project root → includes configs/, core/, containers/
+        source_dir="_source_pkg",  # lightweight copy, no data/
         role=ROLE_ARN,
         instance_count=1,
         instance_type=args.instance_type_gpu,
