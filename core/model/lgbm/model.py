@@ -5,7 +5,7 @@ Trains and predicts with independent LGBM models per task.
 Shares the same interface as PLE, so it can be swapped in pipelines.
 """
 
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -56,9 +56,9 @@ class LGBMModel:
 
     def fit(
         self,
-        X: pd.DataFrame | np.ndarray,
+        X: "pd.DataFrame | np.ndarray",
         y_dict: Dict[str, np.ndarray],
-        eval_set: tuple | None = None,
+        eval_set: Optional[tuple] = None,
     ) -> "LGBMModel":
         for task in self.tasks_meta:
             name = task["name"]
