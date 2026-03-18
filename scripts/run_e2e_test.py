@@ -71,6 +71,7 @@ def parse_args():
     parser.add_argument("--instance-type-gpu", type=str, default="ml.g4dn.xlarge")
     parser.add_argument("--instance-type-cpu", type=str, default="ml.m5.xlarge")
     parser.add_argument("--skip-data-prep", action="store_true", help="Skip stages 0-2 if data already exists")
+    parser.add_argument("--model-uri", type=str, default=None, help="S3 URI of teacher model.tar.gz (skip stage 3)")
     return parser.parse_args()
 
 
@@ -478,7 +479,7 @@ def main():
     logger.info("  Dry Run: %s", args.dry_run)
     logger.info("=" * 60)
 
-    model_uri = f"{S3_MODEL}/model.tar.gz"
+    model_uri = args.model_uri or f"{S3_MODEL}/model.tar.gz"
 
     if should_run(0, args):
         stage_0_data_conversion(args)
@@ -492,6 +493,7 @@ def main():
             model_uri = result
 
     if should_run(4, args) or should_run(5, args) or should_run(6, args) or should_run(7, args):
+        logger.info("Using teacher model: %s", model_uri)
         stage_4_7_distillation(args, model_uri)
 
     if should_run(8, args):
