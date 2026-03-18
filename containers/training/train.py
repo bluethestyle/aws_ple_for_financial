@@ -548,7 +548,11 @@ def main() -> None:
     hp = get_hyperparameters()
 
     model_dir = os.environ.get("SM_MODEL_DIR", "/opt/ml/model")
-    train_dir = os.environ.get("SM_CHANNEL_TRAIN", "/opt/ml/input/data/train")
+    # SageMaker channel name can be "train" or "training"
+    train_dir = os.environ.get(
+        "SM_CHANNEL_TRAIN",
+        os.environ.get("SM_CHANNEL_TRAINING", "/opt/ml/input/data/training"),
+    )
     val_dir = os.environ.get(
         "SM_CHANNEL_VALIDATION", "/opt/ml/input/data/validation",
     )
@@ -580,7 +584,9 @@ def main() -> None:
         import yaml
         config_path = Path(config_str)
         if not config_path.exists():
-            # Try relative to code dir
+            # SageMaker copies source_dir to /opt/ml/code/
+            config_path = Path("/opt/ml/code") / config_str
+        if not config_path.exists():
             code_dir = os.environ.get("SM_MODULE_DIR", "/opt/ml/code")
             config_path = Path(code_dir).parent / config_str
         if config_path.exists():

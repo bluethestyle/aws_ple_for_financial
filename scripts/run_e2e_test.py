@@ -194,8 +194,8 @@ def stage_3_ple_training(args):
     session = sagemaker.Session()
 
     estimator = PyTorch(
-        entry_point="train.py",
-        source_dir="containers/training",
+        entry_point="containers/training/train.py",
+        source_dir=".",  # project root → includes configs/, core/, containers/
         role=ROLE_ARN,
         instance_count=1,
         instance_type=args.instance_type_gpu,
@@ -204,7 +204,7 @@ def stage_3_ple_training(args):
         sagemaker_session=session,
         hyperparameters={
             "config": "configs/test/bank_churners_pipeline.yaml",
-            "data-path": f"s3://{S3_BUCKET}/data/adapted/bank_churners_train.parquet",
+            "data-path": "/opt/ml/input/data/training/",
             "epochs": "10",
             "batch-size": "256",
             "learning-rate": "0.001",
