@@ -567,11 +567,31 @@ def main() -> None:
     logger.info(f"Checkpoint dir: {checkpoint_dir}")
 
     # -- Parse config from hyperparameters --
+    # Supports three formats:
+    #   1. JSON string (inline config via hyperparameters)
+    #   2. YAML file path (relative to source_dir, e.g. "configs/test/xxx.yaml")
+    #   3. Dict (already parsed)
     config_str = hp.get("config", "{}")
-    if isinstance(config_str, str):
-        config = json.loads(config_str)
-    else:
+    if isinstance(config_str, dict):
         config = config_str
+    elif isinstance(config_str, str) and (
+        config_str.endswith(".yaml") or config_str.endswith(".yml")
+    ):
+        import yaml
+        config_path = Path(config_str)
+        if not config_path.exists():
+            # Try relative to code dir
+            code_dir = os.environ.get("SM_MODULE_DIR", "/opt/ml/code")
+            config_path = Path(code_dir).parent / config_str
+        if config_path.exists():
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+            logger.info("Config loaded from YAML: %s", config_path)
+        else:
+            logger.error("Config YAML not found: %s", config_str)
+            config = {}
+    else:
+        config = json.loads(config_str) if config_str else {}
 
     task_name = hp.get("task_name", config.get("task_name", "default"))
     batch_size = int(hp.get("batch_size", 2048))
