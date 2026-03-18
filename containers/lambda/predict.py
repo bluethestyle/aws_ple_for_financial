@@ -78,9 +78,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if not user_id:
         return {"error": "user_id required", "status": 400}
 
-    if not features:
-        return {"error": "features required", "status": 400}
-
     import boto3
     s3 = boto3.client("s3", region_name=REGION)
 
@@ -94,6 +91,16 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     if not models:
         return {"error": "no models available", "status": 503}
+
+    # --- Cold-start path: no features provided or empty ---
+    if not features:
+        elapsed = round((time.perf_counter() - t0) * 1000.0, 2)
+        result = _handle_coldstart(user_id, ctx, version, tasks_meta, models, feat_meta, elapsed)
+        try:
+            _log_prediction(boto3, user_id, version, {}, elapsed, ctx)
+        except Exception:
+            logger.warning("Monitoring write failed (non-fatal)", exc_info=True)
+        return result
 
     # --- Determine which tasks to score ---
     all_tasks = list(models.keys())
@@ -347,6 +354,132 @@ def _emit_metrics(
             Namespace=CW_NAMESPACE,
             MetricData=metric_data[i : i + 20],
         )
+
+
+# ---------------------------------------------------------------------------
+# Cold-start path
+# ---------------------------------------------------------------------------
+
+def _handle_coldstart(
+    user_id: str,
+    ctx: Dict[str, Any],
+    version: str,
+    tasks_meta: List[Dict[str, str]],
+    models: Dict[str, Any],
+    feat_meta: Dict[str, Any],
+    elapsed_ms: float,
+) -> Dict[str, Any]:
+    """Build a cold-start response using popularity candidates.
+
+    COLDSTART: user_id is known but no features are available.
+    ANONYMOUS: empty user_id (caller should set user_id="" for anonymous).
+
+    For COLDSTART users, we run LGBM inference with a default feature vector
+    (zeros + cold-start signal overrides) so the model can still rank items.
+    For ANONYMOUS users, we return the static popularity catalog directly.
+    """
+    import numpy as np
+
+    # Classify segment
+    is_anonymous = not user_id or ctx.get("is_anonymous", False)
+    explicit_seg = str(ctx.get("segment", "")).upper()
+    if explicit_seg in ("0", "ANONYMOUS") or is_anonymous:
+        segment = "ANONYMOUS"
+    else:
+        segment = "COLDSTART"
+
+    # Build default feature vector for LGBM (COLDSTART only)
+    coldstart_predictions: Dict[str, Any] = {}
+    if segment == "COLDSTART" and models:
+        # Determine number of expected features from first model
+        first_task = next(iter(models))
+        booster = models[first_task]
+        n_features = booster.num_feature()
+
+        # All-zero vector with cold-start overrides
+        default_vec = [0.0] * n_features
+
+        # Map well-known feature names to indices if feat_meta is available
+        for task_name, model in models.items():
+            sel = feat_meta.get(task_name, {})
+            indices = sel.get("indices", [])
+            names = sel.get("names", [])
+
+            if indices:
+                # Build per-task default vector
+                task_vec = [0.0] * len(indices)
+                # Apply cold-start overrides by name
+                cs_overrides = {
+                    "is_coldstart": 1.0,
+                    "customer_segment": 1.0,
+                    "coldstart_confidence": 1.0,
+                }
+                for feat_idx, feat_name in enumerate(names):
+                    if feat_name in cs_overrides:
+                        task_vec[feat_idx] = cs_overrides[feat_name]
+                X = np.array(task_vec, dtype=np.float32).reshape(1, -1)
+            else:
+                X = np.array(default_vec, dtype=np.float32).reshape(1, -1)
+
+            try:
+                raw = model.predict(X)
+                task_type = _get_task_type(task_name, tasks_meta)
+                coldstart_predictions[task_name] = _normalise(raw[0], task_type)
+            except Exception as e:
+                logger.debug("Cold-start inference failed for task=%s: %s", task_name, e)
+
+    # Load popularity catalog from Lambda environment variable (pre-loaded or S3)
+    catalog = _CACHE.get("popularity_catalog")
+    if catalog is None:
+        catalog = _load_popularity_catalog()
+        _CACHE["popularity_catalog"] = catalog
+
+    recommendations = []
+    for i, item in enumerate(catalog[:20], start=1):
+        recommendations.append({
+            "item_id": item.get("item_id", ""),
+            "rank": i,
+            "score": float(item.get("score", 0.0)),
+            "score_components": {"popularity": float(item.get("score", 0.0))},
+            "reasons": [],
+            "metadata": {
+                "is_coldstart_candidate": True,
+                "benefit_type": item.get("benefit_type", ""),
+            },
+        })
+
+    logger.info(
+        "Cold-start response: user_id=%s, segment=%s, candidates=%d",
+        user_id, segment, len(recommendations),
+    )
+
+    return {
+        "user_id": user_id,
+        "version": version,
+        "segment": segment,
+        "is_coldstart": True,
+        "predictions": coldstart_predictions,
+        "recommendations": recommendations,
+        "elapsed_ms": elapsed_ms,
+        "metadata": {"coldstart_path": True},
+    }
+
+
+def _load_popularity_catalog() -> List[Dict[str, Any]]:
+    """Load popularity catalog from S3 or return empty list."""
+    catalog_uri = os.environ.get("POPULARITY_CATALOG_URI", "")
+    if not catalog_uri:
+        return []
+    try:
+        import boto3, json
+        s3 = boto3.client("s3", region_name=REGION)
+        bucket, key = _parse_s3_uri(catalog_uri)
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        data = json.loads(obj["Body"].read())
+        return data if isinstance(data, list) else data.get("items", [])
+    except Exception as e:
+        logger.warning("Failed to load popularity catalog: %s", e)
+        return []
 
 
 # ---------------------------------------------------------------------------

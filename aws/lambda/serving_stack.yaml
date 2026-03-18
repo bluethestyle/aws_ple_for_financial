@@ -48,6 +48,11 @@ Parameters:
     Default: 30
     Description: CloudWatch log retention in days
 
+  PopularityCatalogUri:
+    Type: String
+    Default: ""
+    Description: "S3 URI for JSON popularity catalog used in cold-start path (e.g. s3://bucket/catalog/popularity.json)"
+
 
 # ---------------------------------------------------------------------------
 # Globals
@@ -64,6 +69,7 @@ Globals:
         MONITOR_TABLE: !Ref MonitorTable
         CW_NAMESPACE: !Ref CWNamespace
         AWS_REGION_NAME: !Ref AWS::Region
+        POPULARITY_CATALOG_URI: !Ref PopularityCatalogUri
 
 
 # ---------------------------------------------------------------------------

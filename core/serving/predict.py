@@ -187,6 +187,10 @@ class RecommendationService:
         pipeline: Optional :class:`~core.recommendation.pipeline.RecommendationPipeline`.
         pipeline_config: Config dict for the pipeline (used when
             ``pipeline`` is ``None`` but pipeline is enabled).
+        cold_start_handler: Optional :class:`~core.serving.cold_start.ColdStartHandler`.
+            When provided, users with no feature store entry are routed to the
+            cold-start path (popularity candidates + COLDSTART reasons) instead
+            of receiving an empty error response.
     """
 
     def __init__(
@@ -198,6 +202,7 @@ class RecommendationService:
         ab_manager: Optional["ABTestManager"] = None,
         pipeline: Optional[Any] = None,
         pipeline_config: Optional[Dict[str, Any]] = None,
+        cold_start_handler: Optional[Any] = None,
     ) -> None:
         from .feature_store import AbstractFeatureStore
 
@@ -208,6 +213,7 @@ class RecommendationService:
         self._ab_manager = ab_manager
         self._pipeline = pipeline
         self._pipeline_config = pipeline_config or {}
+        self._cold_start_handler = cold_start_handler
 
         # Build task name -> type mapping for normalisation
         self._task_type_map: Dict[str, str] = {
@@ -216,11 +222,12 @@ class RecommendationService:
 
         logger.info(
             "RecommendationService initialised: tasks=%s, "
-            "kill_switch=%s, ab_test=%s, pipeline=%s",
+            "kill_switch=%s, ab_test=%s, pipeline=%s, cold_start=%s",
             [t["name"] for t in tasks_meta],
             kill_switch is not None,
             ab_manager is not None,
             pipeline is not None,
+            cold_start_handler is not None,
         )
 
     # ------------------------------------------------------------------
@@ -268,8 +275,15 @@ class RecommendationService:
         # ---- 3. Feature lookup ----
         features = self._feature_store.get(user_id)
         if features is None:
+            # Route to cold-start path if handler is configured
+            if self._cold_start_handler is not None:
+                return self._coldstart_response(
+                    user_id, variant_name, metadata, ctx, t0,
+                )
             logger.warning(
-                "RecommendationService: no features for user_id=%s", user_id,
+                "RecommendationService: no features for user_id=%s "
+                "(cold_start_handler not configured)",
+                user_id,
             )
             return PredictionResponse(
                 user_id=user_id,
@@ -405,6 +419,115 @@ class RecommendationService:
     # ------------------------------------------------------------------
     # Fallback
     # ------------------------------------------------------------------
+
+    def _coldstart_response(
+        self,
+        user_id: str,
+        variant_name: str,
+        metadata: Dict[str, Any],
+        ctx: Dict[str, Any],
+        t0: float,
+    ) -> PredictionResponse:
+        """Route a user with no feature history to the cold-start path.
+
+        Classifies the user as COLDSTART or ANONYMOUS, fetches popularity
+        candidates, optionally runs them through the pipeline for scored
+        recommendations + reasons, then wraps the result in a
+        :class:`PredictionResponse`.
+        """
+        from .cold_start import UserSegment
+
+        handler = self._cold_start_handler
+
+        # Classify segment
+        segment = handler.classify(user_id=user_id, context=ctx)
+
+        # Try LGBM inference with default feature vector (COLDSTART only)
+        coldstart_predictions: Dict[str, Any] = {}
+        if segment == UserSegment.COLDSTART:
+            feature_names = [t["name"] for t in self._tasks_meta]
+            default_feats = handler.default_features(feature_names)
+            try:
+                import pandas as pd
+
+                feature_df = pd.DataFrame([default_feats])
+                raw_preds = self._model.predict(feature_df)
+                for task_name, raw in raw_preds.items():
+                    task_type = self._task_type_map.get(task_name, "regression")
+                    raw_val = (
+                        raw[0] if isinstance(raw, np.ndarray) and raw.ndim >= 1
+                        else raw
+                    )
+                    coldstart_predictions[task_name] = OutputNormalizer.normalise(
+                        raw_val, task_type
+                    )
+            except Exception:
+                logger.debug(
+                    "Cold-start LGBM inference failed for user_id=%s (non-fatal)",
+                    user_id,
+                    exc_info=True,
+                )
+
+        # Popularity candidates
+        candidates = handler.popularity_candidates(k=20, context=ctx)
+
+        # Route through pipeline if available
+        recommendations: List[Dict[str, Any]] = []
+        if self._pipeline is not None and candidates:
+            ctx_with_segment = {**ctx, "segment": segment}
+            try:
+                result = self._pipeline.recommend(
+                    customer_id=user_id,
+                    candidate_items=candidates,
+                    customer_context=ctx_with_segment,
+                )
+                recommendations = [
+                    {
+                        "item_id": item.item_id,
+                        "rank": item.rank,
+                        "score": item.score,
+                        "score_components": item.score_components,
+                        "reasons": item.reasons,
+                        "metadata": item.metadata,
+                    }
+                    for item in result.items
+                ]
+            except Exception:
+                logger.exception(
+                    "Cold-start pipeline failed for user_id=%s", user_id,
+                )
+        else:
+            # No pipeline: return raw ranked popularity list
+            for i, cand in enumerate(candidates, start=1):
+                recommendations.append({
+                    "item_id": cand["item_id"],
+                    "rank": i,
+                    "score": cand.get("popularity_score", 0.0),
+                    "score_components": {"popularity": cand.get("popularity_score", 0.0)},
+                    "reasons": [],
+                    "metadata": {"is_coldstart_candidate": True},
+                })
+
+        elapsed = self._elapsed(t0)
+        logger.info(
+            "ColdStart response: user_id=%s, segment=%s, candidates=%d",
+            user_id, segment, len(recommendations),
+        )
+
+        return PredictionResponse(
+            user_id=user_id,
+            predictions=coldstart_predictions,
+            recommendations=recommendations,
+            variant=variant_name,
+            kill_switch_active=False,
+            fallback_used=True,
+            elapsed_ms=elapsed,
+            metadata={
+                "coldstart_path": True,
+                "segment": segment,
+                **metadata,
+            },
+        )
 
     def _fallback_response(
         self,

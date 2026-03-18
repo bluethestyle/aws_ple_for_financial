@@ -25,6 +25,7 @@ from .kill_switch import KillSwitch, KillSwitchState, FallbackStrategy
 from .ab_test import ABTestManager, VariantAssignment
 from .model_registry import ModelRegistry, ModelVersion
 from .model_monitor import ModelMonitor, ChampionChallengerResult
+from .cold_start import ColdStartHandler, UserSegment
 
 __all__ = [
     # config
@@ -54,4 +55,7 @@ __all__ = [
     # model_monitor
     "ModelMonitor",
     "ChampionChallengerResult",
+    # cold_start
+    "ColdStartHandler",
+    "UserSegment",
 ]

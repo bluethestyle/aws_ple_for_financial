@@ -223,3 +223,60 @@ llm_provider:
     model: gpt-4o-mini
     max_tokens: 512
     temperature: 0.0
+
+# ===========================================================================
+# Cold-start / New customer handling
+# ===========================================================================
+cold_start:
+  # Days below which a known user is treated as ANONYMOUS instead of COLDSTART.
+  # Set to 0 to always treat known user_ids as COLDSTART regardless of age.
+  anonymous_threshold_days: 0
+
+  # S3 URI for a JSON popularity catalog.  Leave empty to use the static list below.
+  # Format: [{"item_id": "...", "score": 0.9, "name": "...", "benefit_type": "..."}, ...]
+  popularity_catalog_s3_uri: ""
+
+  # Static popularity catalog (fallback when S3 URI is not configured).
+  # Sorted descending by score at load time.
+  # Replace item_ids with real product codes for production.
+  popularity_catalog:
+    - item_id: "CARD_CASHBACK_PREMIUM"
+      score: 0.95
+      name: "Cashback Premium Card"
+      benefit_type: cashback
+      category: credit_card
+    - item_id: "CARD_TRAVEL_MILEAGE"
+      score: 0.90
+      name: "Travel Mileage Card"
+      benefit_type: mileage
+      category: credit_card
+    - item_id: "CARD_EVERYDAY_POINTS"
+      score: 0.85
+      name: "Everyday Points Card"
+      benefit_type: points
+      category: credit_card
+    - item_id: "LOAN_PERSONAL_FLEX"
+      score: 0.80
+      name: "Flexible Personal Loan"
+      benefit_type: rate
+      category: loan
+    - item_id: "SAVINGS_HIGH_YIELD"
+      score: 0.75
+      name: "High-Yield Savings Account"
+      benefit_type: interest
+      category: deposit
+    - item_id: "INSURANCE_LIFE_BASIC"
+      score: 0.70
+      name: "Basic Life Insurance"
+      benefit_type: protection
+      category: insurance
+    - item_id: "FUND_BALANCED"
+      score: 0.65
+      name: "Balanced Mutual Fund"
+      benefit_type: growth
+      category: investment
+    - item_id: "CARD_STUDENT"
+      score: 0.60
+      name: "Student Card"
+      benefit_type: cashback
+      category: credit_card
