@@ -307,6 +307,9 @@ def stage_4_7_distillation(args, model_uri: str):
     wrapper_script = Path("_distill_wrapper.py")
     wrapper_script.write_text("""\
 import subprocess, sys, os, tarfile
+# Install missing deps
+subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
+                       "pyyaml", "omegaconf", "lightgbm", "torch", "pyarrow"])
 # Unpack source code
 src_tar = "/opt/ml/processing/input/source/source_pkg.tar.gz"
 src_dir = "/opt/ml/processing/source"
