@@ -1,0 +1,130 @@
+# =============================================================================
+# Interpretation Matrix — Level 1 + Level 2 definitions
+# =============================================================================
+#
+# Level 1: feature_group × task_group → default interpretation direction
+#   13 groups × 4 task groups = 52 combinations (auto-generated if missing)
+#
+# Level 2: feature_group × task → specific interpretation (override)
+#   Only define where the default Level 1 is insufficient
+#
+# Level 3 lives in feature_glossary.yaml → task_interpretations (per-feature)
+#
+# Resolution: Level 3 → Level 2 → Level 1 → glossary fallback
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Level 1: FeatureGroup × TaskGroup (general direction)
+# ---------------------------------------------------------------------------
+# Auto-generated defaults exist, but these manual definitions take priority
+# when the auto-generated text is too generic.
+
+group_x_taskgroup:
+
+  tda_topology:
+    engagement: "소비 구조 변화가 관심도/참여도 변동과 연관됩니다"
+    lifecycle: "소비 구조의 위상적 변화가 고객 생애주기 전환 신호입니다"
+    value: "소비 구조 복잡도가 고객 가치 잠재력을 반영합니다"
+    consumption: "소비 패턴의 위상적 특성이 카테고리 선호를 나타냅니다"
+
+  mamba_temporal:
+    engagement: "시계열 거래 동향이 참여 활성화 수준을 반영합니다"
+    lifecycle: "시계열 변화 패턴이 고객 상태 전이를 감지합니다"
+    value: "시계열 추세가 고객 활동 가치를 예측합니다"
+    consumption: "시계열 패턴이 소비 행동 변화를 추적합니다"
+
+  economics:
+    engagement: "경제 행동 지표가 금융 상품 관심도를 반영합니다"
+    lifecycle: "재무 상태 변화가 고객 생애주기 관리의 핵심 지표입니다"
+    value: "경제 행동이 고객 가치와 잠재 성장력을 나타냅니다"
+    consumption: "재무 상태가 소비 여력과 상품 적합성을 결정합니다"
+
+  gmm_clustering:
+    engagement: "고객 세그먼트 특성이 관심 상품군을 결정합니다"
+    lifecycle: "세그먼트 이동이 생애주기 전환을 반영합니다"
+    value: "세그먼트 소속이 고객 가치 등급을 나타냅니다"
+    consumption: "고객군 특성이 소비 패턴과 니즈를 정의합니다"
+
+  multidisciplinary:
+    engagement: "다학제 소비 동태가 관심/반응 속도를 측정합니다"
+    lifecycle: "소비 반응 동태가 고객 활동 단계를 분류합니다"
+    value: "다학제 지표가 고객 활동의 질적 수준을 평가합니다"
+    consumption: "소비 동태 분석이 카테고리별 행동 특성을 포착합니다"
+
+  merchant_hierarchy:
+    engagement: "가맹점 이용 패턴이 서비스 활용도를 반영합니다"
+    lifecycle: "가맹점 충성도 변화가 이탈/유지 신호입니다"
+    value: "가맹점 다양성이 혜택 활용 잠재력을 나타냅니다"
+    consumption: "가맹점 구조가 소비 카테고리와 브랜드 선호를 정의합니다"
+
+  graph_embeddings:
+    engagement: "거래 네트워크 위치가 유사 고객 행동을 반영합니다"
+    lifecycle: "네트워크 중심성 변화가 고객 상태 전이를 감지합니다"
+    value: "네트워크 위치가 고객 영향력과 가치를 반영합니다"
+    consumption: "네트워크 기반 유사 고객 소비 패턴을 참조합니다"
+
+  hmm_states:
+    engagement: "행동 상태 전이가 참여도 변화를 추적합니다"
+    lifecycle: "은닉 상태 전이가 고객 여정 단계를 분류합니다"
+    value: "행동 상태가 고객 활동 가치 궤적을 나타냅니다"
+    consumption: "행동 상태가 소비 습관과 의사결정 패턴을 반영합니다"
+
+
+# ---------------------------------------------------------------------------
+# Level 2: FeatureGroup × Task (specific overrides)
+# ---------------------------------------------------------------------------
+# Only the most important group×task combinations that need more specific
+# interpretation than Level 1 provides.
+
+group_x_task:
+
+  # -- TDA × specific tasks --
+  tda_topology:
+    churn: "소비 구조의 위상적 불안정이 이탈 가능성을 시사합니다"
+    retention: "소비 구조 안정성이 유지 전략의 효과를 반영합니다"
+    ltv: "소비 구조 복잡도가 높은 장기 가치 잠재력을 나타냅니다"
+    nba: "소비 구조 변화점이 새로운 금융 니즈 발생을 알립니다"
+    ctr: "소비 패턴 변화가 신규 상품에 대한 관심 증가를 나타냅니다"
+
+  # -- Mamba × specific tasks --
+  mamba_temporal:
+    churn: "시계열 이상 패턴이 이탈 경고 수준으로 감지되었습니다"
+    ltv: "시계열 성장 추세가 장기 가치 상승을 예측합니다"
+    timing: "시계열 패턴 기반으로 최적 접촉 시점이 도출되었습니다"
+
+  # -- Economics × specific tasks --
+  economics:
+    churn: "재무 스트레스 지표가 비용 부담으로 인한 이탈 동기를 감지합니다"
+    ltv: "소득 안정성과 재무 건전성이 장기 상품 적합성을 나타냅니다"
+    cvr: "재무 여력 지표가 상품 가입 전환 가능성을 반영합니다"
+    balance_util: "경제 행동 지표가 잔액 활용 최적화 방향을 제시합니다"
+
+  # -- GMM × specific tasks --
+  gmm_clustering:
+    churn: "세그먼트 이동 불안정이 소속감 저하와 이탈 가능성을 나타냅니다"
+    life_stage: "세그먼트 전환이 생애 단계 변화를 반영합니다"
+    nba: "복수 세그먼트 특성이 다양한 상품 니즈를 시사합니다"
+
+  # -- Merchant × specific tasks --
+  merchant_hierarchy:
+    churn: "가맹점 이용 범위 축소가 서비스 활용도 저하 신호입니다"
+    brand_prediction: "가맹점 이용 구조가 브랜드 선호도를 직접 반영합니다"
+    nba: "가맹점 다양성에 맞는 폭넓은 혜택 상품이 적합합니다"
+    spending_category: "가맹점 업종 분포가 소비 카테고리 선호를 결정합니다"
+
+  # -- HMM × specific tasks --
+  hmm_states:
+    churn: "행동 상태가 이탈 전 단계로 분류되어 긴급 관리가 필요합니다"
+    retention: "행동 상태가 활성 단계에 있어 현재 혜택 강화가 효과적입니다"
+    nba: "행동 상태 전이에 맞는 다음 최적 행동이 도출되었습니다"
+
+  # -- Graph × specific tasks --
+  graph_embeddings:
+    churn: "거래 네트워크에서 주변부로 이동하는 패턴이 이탈 신호입니다"
+    nba: "유사 고객 네트워크 기반 선호 상품이 추천되었습니다"
+
+  # -- Multidisciplinary × specific tasks --
+  multidisciplinary:
+    ctr: "소비 반응 동태가 신규 상품에 대한 높은 관심을 나타냅니다"
+    churn: "소비 반응 둔화가 관심도 저하 신호입니다"
+    spending_category: "트렌드 확산 경로에 따라 새 카테고리 진입이 예상됩니다"
