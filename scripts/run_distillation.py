@@ -131,6 +131,27 @@ def main() -> None:
         df = pd.read_parquet(args.data_path)
         logger.info("Loaded %d rows", len(df))
 
+    # Step 1.5: Quality gate — block pipeline on critical data issues
+    logger.info("Running quality gate on loaded data...")
+    from core.data.quality_gate import QualityGate, QualityGateError
+
+    quality_gate = QualityGate()
+    try:
+        gate_result = quality_gate.evaluate_and_block(df, source_name="distillation_train")
+        logger.info(
+            "Quality gate PASSED (verdict=%s, checks=%d)",
+            gate_result.verdict.value, len(gate_result.checks),
+        )
+    except QualityGateError as exc:
+        logger.error("Quality gate FAILED: %s", exc)
+        # Save gate report for debugging before exit
+        output_path = Path(args.output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        gate_report = quality_gate.get_report(exc.result)
+        with open(output_path / "quality_gate_report.json", "w") as f:
+            json.dump(gate_report, f, indent=2, default=str)
+        sys.exit(1)
+
     # Separate features and labels
     label_cols = {t.label_col for t in pipeline_config.tasks}
     id_cols = set(pipeline_config.features.id_cols)
@@ -285,9 +306,59 @@ def main() -> None:
             json.dump(fidelity_report, f, indent=2, default=str)
         sys.exit(1)  # SageMaker Job fails → Step Functions catches
 
-    # Step 5: Save with fidelity results
+    # Step 4.5: Feature selection — per-task LGBM importance-based pruning
+    logger.info("Running adaptive feature selection per task...")
+    from core.training.feature_selector import FeatureSelector, FeatureSelectionConfig
+
+    feature_selector = FeatureSelector(config=FeatureSelectionConfig())
+    feature_selections = {}
+
+    for task_spec in pipeline_config.tasks:
+        task_name = task_spec.name
+        if task_name not in students:
+            continue
+
+        student_model = students[task_name]
+
+        # Use LGBM gain-based pruning (Stage 2 only — no teacher needed)
+        pruned_indices = feature_selector.prune_by_lgbm(
+            lgbm_model=student_model,
+            feature_names=feature_cols,
+        )
+        pruned_names = [feature_cols[i] for i in pruned_indices]
+
+        # Build a FeatureSelectionResult-compatible dict for save_students
+        from core.training.feature_selector import FeatureSelectionResult
+
+        selection_result = FeatureSelectionResult(
+            task_name=task_name,
+            original_count=len(feature_cols),
+            selected_count=len(pruned_indices),
+            reduction_pct=round((1 - len(pruned_indices) / len(feature_cols)) * 100, 1),
+            cumulative_threshold_used=0.0,
+            selection_method="lgbm",
+            selected_indices=sorted(pruned_indices),
+            selected_names=pruned_names,
+            feature_importances={
+                pruned_names[i]: float(
+                    student_model.feature_importance(importance_type="gain")[pruned_indices[i]]
+                )
+                for i in range(min(50, len(pruned_indices)))
+            },
+            mandatory_included=[],
+        )
+        feature_selections[task_name] = selection_result
+
+        logger.info(
+            "  %s: %d/%d features selected (%.1f%% reduction)",
+            task_name, selection_result.selected_count,
+            selection_result.original_count, selection_result.reduction_pct,
+        )
+
+    # Step 5: Save with fidelity results and feature selections
     saved = trainer.save_students(
         args.output_dir,
+        feature_selections=feature_selections,
         fidelity_results=fidelity_results,
     )
 
@@ -322,6 +393,14 @@ def main() -> None:
                 }
                 for r in fidelity_results
             },
+        },
+        "feature_selection": {
+            task_name: {
+                "selected": sel.selected_count,
+                "original": sel.original_count,
+                "reduction_pct": sel.reduction_pct,
+            }
+            for task_name, sel in feature_selections.items()
         },
     }
     summary_path = output_path / "distillation_summary.json"

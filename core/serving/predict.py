@@ -191,6 +191,11 @@ class RecommendationService:
             When provided, users with no feature store entry are routed to the
             cold-start path (popularity candidates + COLDSTART reasons) instead
             of receiving an empty error response.
+        consent_manager: Optional :class:`~core.compliance.consent_manager.ConsentManager`.
+            When provided, the ``predict()`` method checks channel-level
+            consent before running inference.  If the user has not granted
+            consent for the requested channel, a blocked response is returned
+            without generating recommendations.
     """
 
     def __init__(
@@ -204,6 +209,7 @@ class RecommendationService:
         pipeline_config: Optional[Dict[str, Any]] = None,
         cold_start_handler: Optional[Any] = None,
         variant_models: Optional[Dict[str, Any]] = None,
+        consent_manager: Optional[Any] = None,
     ) -> None:
         from .feature_store import AbstractFeatureStore
 
@@ -215,6 +221,7 @@ class RecommendationService:
         self._pipeline = pipeline
         self._pipeline_config = pipeline_config or {}
         self._cold_start_handler = cold_start_handler
+        self._consent_manager = consent_manager
 
         # Variant-specific models for A/B testing.
         # Key: variant name (e.g. "control", "challenger").
@@ -233,13 +240,14 @@ class RecommendationService:
         logger.info(
             "RecommendationService initialised: tasks=%s, "
             "kill_switch=%s, ab_test=%s (%d variant models), "
-            "pipeline=%s, cold_start=%s",
+            "pipeline=%s, cold_start=%s, consent_manager=%s",
             [t["name"] for t in tasks_meta],
             kill_switch is not None,
             ab_manager is not None,
             len(self._variant_models),
             pipeline is not None,
             cold_start_handler is not None,
+            consent_manager is not None,
         )
 
     def register_variant_model(
@@ -293,6 +301,24 @@ class RecommendationService:
                 return self._fallback_response(
                     user_id, ks_state, t0,
                 )
+
+        # ---- 1b. Consent check ----
+        if self._consent_manager is not None:
+            channel = ctx.get("channel")
+            if channel:
+                contactable, reason = self._consent_manager.is_contactable(
+                    user_id, channel,
+                )
+                if not contactable:
+                    logger.info(
+                        "Consent blocked: user_id=%s, channel=%s, reason=%s",
+                        user_id, channel, reason,
+                    )
+                    return PredictionResponse(
+                        user_id=user_id,
+                        elapsed_ms=self._elapsed(t0),
+                        metadata={"blocked": "consent_not_granted", "reason": reason},
+                    )
 
         # ---- 2. A/B variant selection ----
         variant_name = ""

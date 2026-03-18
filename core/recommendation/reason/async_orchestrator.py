@@ -323,6 +323,22 @@ class AsyncReasonOrchestrator:
         job_id = f"l2a-{uuid.uuid4().hex[:12]}"
         recommendation_id = context.get("recommendation_id", "")
 
+        # PromptSanitizer: pre-classify the L1 reason to record sensitivity
+        # and determine the target provider before submitting to SQS.
+        # This allows the SQS consumer to honour the routing decision.
+        sanitize_sensitivity = "LOW"
+        sanitize_provider = "bedrock"
+        if self._prompt_sanitizer is not None:
+            pre_prompt = self._build_llm_prompt(l1_reason.text, context)
+            _sanitized, sanitize_provider, sanitize_result = (
+                self._prompt_sanitizer.sanitize_and_route(pre_prompt)
+            )
+            sanitize_sensitivity = sanitize_result.sensitivity
+            logger.debug(
+                "Pre-submit sanitize: sensitivity=%s, provider=%s (job=%s)",
+                sanitize_sensitivity, sanitize_provider, job_id,
+            )
+
         message_body = {
             "job_id": job_id,
             "customer_id": customer_id,
@@ -338,6 +354,8 @@ class AsyncReasonOrchestrator:
             },
             "priority": priority,
             "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "sanitize_sensitivity": sanitize_sensitivity,
+            "sanitize_provider": sanitize_provider,
         }
 
         sqs = self._get_sqs_client()
@@ -829,6 +847,9 @@ class AsyncReasonOrchestrator:
         """L2b: Validate an L2a result for compliance and quality.
 
         Checks:
+            0. PromptSanitizer cross-check (if available): verify the
+               generated text does not reintroduce sensitive content that
+               was scrubbed during L2a.
             1. PII leakage detection (regex-based).
             2. Self-checker compliance + injection + factuality.
             3. Hallucination guard: LLM output must not introduce claims
@@ -846,6 +867,18 @@ class AsyncReasonOrchestrator:
         text = l2a_result.text
         passed = True
         confidence = l2a_result.confidence
+
+        # Check 0: PromptSanitizer cross-check on generated output
+        if passed and self._prompt_sanitizer is not None:
+            output_sensitivity = self._prompt_sanitizer.classify(text)
+            if output_sensitivity == "HIGH":
+                logger.warning(
+                    "L2b: Generated text classified as HIGH sensitivity "
+                    "(potential data leakage), rejecting (job=%s)",
+                    l2a_result.job_id,
+                )
+                passed = False
+                confidence = 0.0
 
         # Check 1: PII detection
         for pattern in _PII_PATTERNS:

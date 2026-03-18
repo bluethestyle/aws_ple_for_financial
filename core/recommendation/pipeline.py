@@ -119,11 +119,23 @@ class RecommendationPipeline:
     Args:
         config: Full pipeline configuration dict (typically loaded from
                 a YAML file).
+        audit_store: Optional event-level audit logger (lightweight).
+        audit_archiver: Optional
+            :class:`~core.recommendation.audit_archiver.RecommendationAuditArchiver`
+            for Parquet-based recommendation trace archival.  When provided,
+            each ``recommend()`` call writes per-item audit records and
+            flushes them at the end of the batch.
     """
 
-    def __init__(self, config: Dict[str, Any], audit_store=None) -> None:
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        audit_store=None,
+        audit_archiver: Optional[Any] = None,
+    ) -> None:
         self.config = config
         self._audit_store = audit_store
+        self._audit_archiver = audit_archiver
         pipe_cfg = config.get("pipeline", {})
 
         # ---- Scorer ----
@@ -168,9 +180,9 @@ class RecommendationPipeline:
 
         logger.info(
             "RecommendationPipeline initialised: scorer=%s, reasons=%s, "
-            "self_check=%s, reverse_map=%s",
+            "self_check=%s, reverse_map=%s, audit_archiver=%s",
             scorer_name, self.enable_reasons, self.enable_self_check,
-            self.enable_reverse_mapping,
+            self.enable_reverse_mapping, audit_archiver is not None,
         )
 
     # ------------------------------------------------------------------
@@ -379,6 +391,25 @@ class RecommendationPipeline:
                 "items_returned": len(result.items),
                 "elapsed_ms": result.elapsed_ms,
             })
+
+        # ---- Parquet-based audit archival ----
+        if self._audit_archiver and result.items:
+            try:
+                self._audit_archiver.start_batch()
+                for item in result.items:
+                    self._audit_archiver.record_from_result(
+                        result=item,
+                        check_result=item.check_result,
+                        feature_importances=item.metadata.get(
+                            "feature_interpretations", [],
+                        ),
+                    )
+                self._audit_archiver.flush()
+            except Exception:
+                logger.exception(
+                    "Audit archiver failed for customer_id=%s",
+                    customer_id,
+                )
 
         return result
 

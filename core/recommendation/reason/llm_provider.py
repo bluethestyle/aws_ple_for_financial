@@ -18,7 +18,7 @@ Usage::
 Config example::
 
     llm_provider:
-      backend: bedrock       # bedrock | openai | dummy
+      backend: bedrock       # bedrock | openai | gemini | dummy
       bedrock:
         model_id: anthropic.claude-3-haiku-20240307-v1:0
         region: us-east-1
@@ -29,6 +29,11 @@ Config example::
         max_tokens: 1024
         temperature: 0.2
         api_key_env: OPENAI_API_KEY
+      gemini:
+        model: gemini-2.0-flash    # gemini-2.0-flash | gemini-2.5-pro
+        max_tokens: 500
+        temperature: 0.3
+        api_key_env: GEMINI_API_KEY
       dummy:
         response: "This is a dummy LLM response."
 """
@@ -232,57 +237,61 @@ class GeminiProvider(AbstractLLMProvider):
     Supports gemini-2.0-flash (fast, cheap, L2a bulk) and
     gemini-2.5-pro (quality, L2b validation).
 
-    Requires: GEMINI_API_KEY environment variable or config.
+    Requires the ``google-generativeai`` package and ``GEMINI_API_KEY``
+    environment variable (or ``api_key_env`` config).
 
     Config::
 
         gemini:
-          api_key: ""              # or set GEMINI_API_KEY env var
-          model_id: gemini-2.0-flash
-          temperature: 0.3
+          model: gemini-2.0-flash    # gemini-2.0-flash | gemini-2.5-pro
           max_tokens: 500
+          temperature: 0.3
+          api_key_env: GEMINI_API_KEY
     """
 
     def __init__(self, config: Dict[str, Any] = None) -> None:
         super().__init__(config or {})
-        self._api_key: str = self.config.get("api_key") or os.environ.get("GEMINI_API_KEY", "")
-        self._model: str = self.config.get("model_id", "gemini-2.0-flash")
+        api_key_env: str = self.config.get("api_key_env", "GEMINI_API_KEY")
+        self._api_key: str = os.environ.get(api_key_env, "")
+        self._model: str = self.config.get("model", "gemini-2.0-flash")
         self._temperature: float = self.config.get("temperature", 0.3)
         self._max_tokens: int = self.config.get("max_tokens", 500)
-        self._base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+        self._client = None
+
+    def _get_client(self):
+        """Lazy-initialise the ``google.generativeai`` client."""
+        if self._client is None:
+            try:
+                import google.generativeai as genai
+
+                genai.configure(api_key=self._api_key)
+                self._client = genai.GenerativeModel(self._model)
+            except Exception as exc:
+                logger.error("Failed to create Gemini client: %s", exc)
+                raise
+        return self._client
 
     def generate(self, prompt: str, **kwargs) -> str:
-        """Call Gemini API via REST (no SDK dependency)."""
-        import urllib.request
-
+        """Generate a completion via the ``google.generativeai`` SDK."""
+        client = self._get_client()
         temperature = kwargs.get("temperature", self._temperature)
         max_tokens = kwargs.get("max_tokens", self._max_tokens)
 
-        url = f"{self._base_url}/models/{self._model}:generateContent?key={self._api_key}"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-            },
-        }
-
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                result = json.loads(resp.read().decode())
-                return result["candidates"][0]["content"]["parts"][0]["text"]
-        except Exception as e:
-            logger.warning("Gemini API call failed: %s", e)
+            response = client.generate_content(
+                prompt,
+                generation_config={
+                    "temperature": temperature,
+                    "max_output_tokens": max_tokens,
+                },
+            )
+            return response.text or ""
+        except Exception as exc:
+            logger.warning("Gemini API call failed: %s", exc)
             return ""
 
     def is_available(self) -> bool:
+        """Return ``True`` when an API key is configured."""
         return bool(self._api_key)
 
 
