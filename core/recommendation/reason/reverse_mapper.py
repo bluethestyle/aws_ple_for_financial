@@ -169,6 +169,10 @@ class ReverseMapper:
         self._glossary_group_descriptions: Dict[str, str] = {}
         self._glossary_task_weights: Dict[str, Dict[str, Any]] = {}
 
+        # Task-specific text interpretations: {feature_id: {task: text}}
+        # Populated by _load_glossary from task_interpretations section
+        self._task_interpretations: Dict[str, Dict[str, str]] = {}
+
         logger.info(
             "ReverseMapper initialised: %d groups, %d range bins",
             len(self.feature_groups),
@@ -403,10 +407,19 @@ class ReverseMapper:
                 "weight_overrides": task_def.get("weight_overrides", {}),
             }
 
+        # Parse task_interpretations section:
+        # {feature_id: {task: "Korean text interpretation"}}
+        self._task_interpretations = {}
+        for feat_id, task_map in data.get("task_interpretations", {}).items():
+            if isinstance(task_map, dict):
+                self._task_interpretations[feat_id] = task_map
+
         logger.debug(
-            "Glossary loaded: %d features across %d groups",
+            "Glossary loaded: %d features across %d groups, "
+            "%d task-specific interpretations",
             len(self._glossary_features),
             len(self._glossary_group_descriptions),
+            len(self._task_interpretations),
         )
 
     def interpret_financial(
@@ -417,28 +430,49 @@ class ReverseMapper:
     ) -> str:
         """Return a financial business language interpretation of a feature.
 
-        Uses the glossary template to produce human-readable Korean text::
+        When ``task`` is provided and the glossary contains a
+        ``task_interpretations`` entry for that feature+task pair,
+        the task-specific Korean text is returned instead of the
+        generic template.  This is critical for LLM input material:
+        the same TDA topology change means "이탈 위험" for churn
+        but "성장 잠재력" for ltv.
+
+        Lookup priority:
+            1. Exact ``feature_name`` + ``task`` in task_interpretations
+            2. Prefix match (``tda_short_`` etc.) + ``task``
+            3. Generic glossary template with ``{value}`` substitution
+            4. Range-label fallback
+
+        Examples::
+
+            interpret_financial("tda_short_001", 0.8, task="churn")
+            # => "최근 소비 패턴에 급격한 구조 변화가 감지되어 이탈 위험 신호로 분석됩니다"
+
+            interpret_financial("tda_short_001", 0.8, task="ltv")
+            # => "소비 영역이 새롭게 확장되는 패턴이 감지되어 성장 잠재력이 높습니다"
 
             interpret_financial("rfm_002", 47.0)
             # => "월 평균 47건 거래"
 
-        Falls back to the generic range-label interpretation when the
-        feature is not found in the glossary.
-
         Args:
             feature_name: Feature identifier (e.g. ``"rfm_002"``).
             value: Raw or transformed feature value.
-            task: Optional task for context (unused currently, reserved
-                  for future task-specific template variants).
+            task: Task name for task-specific interpretation.
 
         Returns:
             Korean financial language string.
         """
+        # 1. Task-specific text interpretation (exact match or prefix)
+        if task and self._task_interpretations:
+            task_text = self._lookup_task_interpretation(feature_name, task)
+            if task_text:
+                return task_text
+
+        # 2. Generic glossary template with value substitution
         glossary_entry = self._glossary_features.get(feature_name)
         if glossary_entry is not None:
             template = glossary_entry["template"]
             try:
-                # Format value: round floats for readability
                 if isinstance(value, float):
                     if value == int(value):
                         display_value = str(int(value))
@@ -455,10 +489,32 @@ class ReverseMapper:
             except (KeyError, IndexError, ValueError):
                 return f"{glossary_entry['name']}: {value}"
 
-        # Fallback: use generic range-label interpretation
+        # 3. Fallback: generic range-label interpretation
         range_label = self._classify_range(value)
         _, group_label = self._get_feature_group_by_name(feature_name)
         return self._render_interpretation(feature_name, group_label, range_label)
+
+    def _lookup_task_interpretation(
+        self,
+        feature_name: str,
+        task: str,
+    ) -> Optional[str]:
+        """Look up task-specific interpretation text.
+
+        Tries exact feature_name match first, then prefix match
+        (e.g. ``graph_embed`` matches ``graph_embed_001``).
+        """
+        # Exact match
+        entry = self._task_interpretations.get(feature_name, {})
+        if task in entry:
+            return entry[task]
+
+        # Prefix match: "tda_short_001" → check "tda_short_" prefix entries
+        for key, task_map in self._task_interpretations.items():
+            if feature_name.startswith(key) and task in task_map:
+                return task_map[task]
+
+        return None
 
     def _get_feature_group_by_name(
         self,
