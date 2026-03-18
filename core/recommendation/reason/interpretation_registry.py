@@ -165,24 +165,39 @@ class InterpretationRegistry:
         feature_name: str,
         value: float = 0.0,
         task: str = "",
+        signed_ig: Optional[float] = None,
     ) -> str:
         """Resolve the best interpretation for a feature × task combination.
 
-        Resolution cascade:
-            Level 3 (exact feature × task)
+        Resolution cascade (5 levels):
+            Level IG (signed IG auto-interpretation)
+            → Level 3 (exact feature × task)
             → Level 2 (feature group × task)
             → Level 1 (feature group × task group)
             → Fallback (glossary template with {value})
+
+        When ``signed_ig`` is provided, an automatic direction-aware
+        interpretation is generated from the IG sign, feature glossary
+        name, and task semantics.  This eliminates the need for most
+        manual Level 2/3 entries.
 
         Args:
             feature_name: Feature identifier (e.g. ``"tda_short_001"``).
             value: Feature value for template substitution.
             task: Task name (e.g. ``"churn"``). Empty → skip L1-L3.
+            signed_ig: Signed Integrated Gradient value.  Positive means
+                feature value ↑ → task prediction ↑.
 
         Returns:
             Korean text interpretation string.
         """
         if task:
+            # Level IG: auto-interpretation from signed gradient direction
+            if signed_ig is not None:
+                text = self._interpret_from_ig(feature_name, value, task, signed_ig)
+                if text:
+                    return text
+
             # Level 3: exact feature × task
             text = self._lookup_level3(feature_name, task)
             if text:
@@ -205,29 +220,150 @@ class InterpretationRegistry:
         # Fallback: glossary template
         return self._glossary_fallback(feature_name, value)
 
+    # ------------------------------------------------------------------
+    # IG-based auto interpretation
+    # ------------------------------------------------------------------
+
+    # Task prediction semantics: what does "prediction goes up" mean?
+    _TASK_PREDICTION_SEMANTICS: Dict[str, Dict[str, str]] = {
+        # binary: prediction ↑ = probability of positive class ↑
+        "ctr":       {"up": "클릭 가능성이 높아집니다",
+                      "down": "클릭 가능성이 낮아집니다"},
+        "cvr":       {"up": "전환 가능성이 높아집니다",
+                      "down": "전환 가능성이 낮아집니다"},
+        "churn":     {"up": "이탈 위험이 높아집니다",
+                      "down": "이탈 위험이 낮아집니다"},
+        "retention": {"up": "유지 가능성이 높아집니다",
+                      "down": "유지 가능성이 낮아집니다"},
+        # regression
+        "ltv":       {"up": "고객 생애 가치가 높아집니다",
+                      "down": "고객 생애 가치가 낮아집니다"},
+        "balance_util": {"up": "잔액 활용도가 높아집니다",
+                         "down": "잔액 활용도가 낮아집니다"},
+        "engagement":   {"up": "참여도가 높아집니다",
+                         "down": "참여도가 낮아집니다"},
+        "spending_bucket": {"up": "지출 규모가 커집니다",
+                            "down": "지출 규모가 작아집니다"},
+        "merchant_affinity": {"up": "가맹점 선호도가 높아집니다",
+                              "down": "가맹점 선호도가 낮아집니다"},
+        # multiclass — direction is less meaningful, but still useful
+        "nba":       {"up": "해당 행동 추천 확률이 높아집니다",
+                      "down": "해당 행동 추천 확률이 낮아집니다"},
+        "life_stage": {"up": "해당 생애 단계 분류 확률이 높아집니다",
+                       "down": "해당 생애 단계 분류 확률이 낮아집니다"},
+    }
+
+    # Feature value direction semantics (from glossary "direction" field)
+    _VALUE_DIRECTION_TEMPLATES: Dict[str, Dict[str, str]] = {
+        "higher_is_better": {
+            "high": "{name}이(가) 우수한 수준이어서",
+            "low":  "{name}이(가) 낮은 수준이어서",
+        },
+        "lower_is_better": {
+            "high": "{name}이(가) 높은 수준이어서",
+            "low":  "{name}이(가) 안정적인 수준이어서",
+        },
+        "": {  # neutral
+            "high": "{name}이(가) 높은 편이어서",
+            "low":  "{name}이(가) 낮은 편이어서",
+        },
+    }
+
+    def _interpret_from_ig(
+        self,
+        feature_name: str,
+        value: float,
+        task: str,
+        signed_ig: float,
+    ) -> Optional[str]:
+        """Auto-generate interpretation from signed IG direction.
+
+        Logic:
+            1. Get feature Korean name from glossary
+            2. Determine value level (high/low) from raw value
+            3. Get feature value direction (higher_is_better etc.)
+            4. Get task prediction semantic (churn ↑ = 이탈 위험 ↑)
+            5. Combine: "{feature}이 {high/low}여서 {task prediction} {up/down}"
+
+        Example:
+            IG("tda_short_001", churn) = -0.15, value = 0.8
+            → "단기 토폴로지 패턴이 높은 편이어서 이탈 위험이 낮아집니다"
+
+        Returns:
+            Korean text, or None if glossary/task info is missing.
+        """
+        # Get feature info from glossary
+        entry = self._glossary.get(feature_name)
+        if not entry:
+            return None
+
+        feat_name = entry.get("name", feature_name)
+        direction = entry.get("direction", "")
+
+        # Task prediction semantics
+        task_sem = self._TASK_PREDICTION_SEMANTICS.get(task)
+        if not task_sem:
+            return None
+
+        # Determine if feature value is high or low (simple threshold)
+        value_level = "high" if value >= 0.5 else "low"
+
+        # Feature value description
+        dir_templates = self._VALUE_DIRECTION_TEMPLATES.get(direction, self._VALUE_DIRECTION_TEMPLATES[""])
+        value_desc = dir_templates[value_level].format(name=feat_name)
+
+        # IG direction determines task prediction direction
+        # signed_ig > 0: feature value ↑ → prediction ↑
+        # signed_ig < 0: feature value ↑ → prediction ↓
+        if value >= 0.5:  # feature is high
+            # High value: IG sign directly maps to prediction direction
+            pred_desc = task_sem["up"] if signed_ig > 0 else task_sem["down"]
+        else:  # feature is low
+            # Low value: inverse of IG sign
+            pred_desc = task_sem["down"] if signed_ig > 0 else task_sem["up"]
+
+        return f"{value_desc} {pred_desc}"
+
     def interpret_batch(
         self,
         features: List[Tuple[str, float]],
         task: str = "",
+        signed_ig_values: Optional[Dict[str, float]] = None,
     ) -> List[Dict[str, Any]]:
         """Interpret a batch of (feature_name, value) pairs.
 
-        Convenience method for interpreting top-K features at once.
+        When ``signed_ig_values`` is provided (from
+        :meth:`FeatureSelector.get_signed_ig`), the IG sign is used for
+        automatic direction-aware interpretation, eliminating the need
+        for most manual Level 2/3 entries.
+
+        Args:
+            features: List of ``(feature_name, value)`` tuples.
+            task: Task name for task-specific interpretation.
+            signed_ig_values: Optional dict of ``{feature_name: signed_ig_float}``.
+                Positive = feature ↑ → task prediction ↑.
 
         Returns:
-            List of dicts with ``name``, ``value``, ``text``, ``level``.
+            List of dicts with ``name``, ``value``, ``text``, ``level``,
+            ``feature_group``, and optionally ``ig_direction``.
         """
+        ig_map = signed_ig_values or {}
         results = []
         for feat_name, feat_value in features:
-            text = self.interpret(feat_name, feat_value, task)
-            level = self._resolve_level(feat_name, task)
-            results.append({
+            sig_ig = ig_map.get(feat_name)
+            text = self.interpret(feat_name, feat_value, task, signed_ig=sig_ig)
+            level = self._resolve_level(feat_name, task, signed_ig=sig_ig)
+            entry = {
                 "name": feat_name,
                 "value": feat_value,
                 "text": text,
                 "level": level,
                 "feature_group": self._resolve_feature_group(feat_name) or "unknown",
-            })
+            }
+            if sig_ig is not None:
+                entry["ig_direction"] = "positive" if sig_ig > 0 else "negative"
+                entry["ig_value"] = round(sig_ig, 4)
+            results.append(entry)
         return results
 
     # ------------------------------------------------------------------
@@ -340,6 +476,7 @@ class InterpretationRegistry:
                             "name": feat_def.get("name", feat_id),
                             "template": feat_def.get("template", "{value}"),
                             "group": group_name,
+                            "direction": feat_def.get("direction", ""),
                         }
 
                 # Parse Level 3: task_interpretations
@@ -465,10 +602,17 @@ class InterpretationRegistry:
 
         return None
 
-    def _resolve_level(self, feature_name: str, task: str) -> str:
+    def _resolve_level(
+        self, feature_name: str, task: str, signed_ig: Optional[float] = None,
+    ) -> str:
         """Determine which level resolved for diagnostics."""
         if not task:
             return "fallback"
+        if signed_ig is not None:
+            entry = self._glossary.get(feature_name)
+            task_sem = self._TASK_PREDICTION_SEMANTICS.get(task)
+            if entry and task_sem:
+                return "IG"
         if self._lookup_level3(feature_name, task):
             return "L3"
         fg = self._resolve_feature_group(feature_name)

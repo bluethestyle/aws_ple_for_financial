@@ -144,6 +144,8 @@ class FeatureSelector:
     ) -> None:
         self._config = config or FeatureSelectionConfig()
         self._audit_store = audit_store
+        # Signed IG cache: task_name → np.ndarray (n_features,) with +/- direction
+        self._last_signed_ig: Dict[str, np.ndarray] = {}
 
     # ------------------------------------------------------------------
     # Stage 1: IG-based selection
@@ -427,11 +429,29 @@ class FeatureSelector:
 
         if all_grads:
             all_ig = np.concatenate(all_grads, axis=0)
-            # Mean absolute IG per feature
-            return all_ig.mean(axis=0)
+            # Mean absolute IG per feature (for feature selection)
+            abs_ig = np.abs(all_ig).mean(axis=0)
+
+            # Also store signed IG (mean, not abs) for direction interpretation
+            self._last_signed_ig[task_name] = all_ig.mean(axis=0)
+
+            return abs_ig
         else:
             # No gradients computed -- return uniform importance
             return np.ones(features.shape[1]) / features.shape[1]
+
+    def get_signed_ig(self, task_name: str) -> Optional[np.ndarray]:
+        """Return signed IG values from the last compute_ig call.
+
+        Positive = feature value ↑ → task prediction ↑
+        Negative = feature value ↑ → task prediction ↓
+
+        Must be called after :meth:`select` for the given task.
+
+        Returns:
+            Array of shape ``(n_features,)`` or ``None`` if not computed.
+        """
+        return self._last_signed_ig.get(task_name)
 
     # ------------------------------------------------------------------
     # Internal: cumulative selection
