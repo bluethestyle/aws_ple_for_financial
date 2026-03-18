@@ -128,6 +128,13 @@ class InterpretationRegistry:
         prefix_to_group: Feature name prefix → feature group name mapping.
     """
 
+    # Tasks where IG auto-interpretation is unreliable (multiclass with
+    # ambiguous class-summed gradients).  These fall through to L3→L2→L1.
+    _IG_SKIP_TASKS: set = {
+        "life_stage", "channel", "timing", "nba",
+        "spending_category", "consumption_cycle", "brand_prediction",
+    }
+
     def __init__(
         self,
         level1: Optional[Dict[str, Dict[str, str]]] = None,
@@ -136,6 +143,8 @@ class InterpretationRegistry:
         glossary: Optional[Dict[str, Dict[str, Any]]] = None,
         task_to_group: Optional[Dict[str, str]] = None,
         prefix_to_group: Optional[Dict[str, str]] = None,
+        feature_medians: Optional[Dict[str, float]] = None,
+        ig_sign_blacklist: Optional[Dict[str, set]] = None,
     ) -> None:
         # Level 1: feature_group × task_group → text
         self._level1: Dict[str, Dict[str, str]] = level1 or {}
@@ -148,6 +157,14 @@ class InterpretationRegistry:
 
         self._task_to_group = task_to_group or dict(_DEFAULT_TASK_TO_GROUP)
         self._prefix_to_group = prefix_to_group or dict(_DEFAULT_PREFIX_TO_GROUP)
+
+        # Per-feature median from training data (for high/low classification)
+        # Loaded from DatasetRegistry.feature_stats or passed directly.
+        self._feature_medians: Dict[str, float] = feature_medians or {}
+
+        # Features whose IG sign flipped between model versions.
+        # {task_name: {feature_name, ...}}  — IG interpretation disabled for these.
+        self._ig_sign_blacklist: Dict[str, set] = ig_sign_blacklist or {}
 
         logger.info(
             "InterpretationRegistry: L1=%d groups, L2=%d entries, "
@@ -278,20 +295,35 @@ class InterpretationRegistry:
     ) -> Optional[str]:
         """Auto-generate interpretation from signed IG direction.
 
+        Guards:
+            - Multiclass tasks (_IG_SKIP_TASKS) → returns None (fallback to L3-L1)
+            - Blacklisted feature×task (IG sign flipped between versions) → None
+            - Missing glossary entry or task semantics → None
+
         Logic:
             1. Get feature Korean name from glossary
-            2. Determine value level (high/low) from raw value
+            2. Determine value level (high/low) using per-feature median
+               (from training data statistics) instead of fixed 0.5
             3. Get feature value direction (higher_is_better etc.)
             4. Get task prediction semantic (churn ↑ = 이탈 위험 ↑)
             5. Combine: "{feature}이 {high/low}여서 {task prediction} {up/down}"
 
         Example:
-            IG("tda_short_001", churn) = -0.15, value = 0.8
+            IG("tda_short_001", churn) = -0.15, value = 0.8, median = 0.45
+            → value > median → "high"
             → "단기 토폴로지 패턴이 높은 편이어서 이탈 위험이 낮아집니다"
 
         Returns:
-            Korean text, or None if glossary/task info is missing.
+            Korean text, or None to fall through to L3→L2→L1.
         """
+        # Guard 1: Skip multiclass tasks where IG direction is ambiguous
+        if task in self._IG_SKIP_TASKS:
+            return None
+
+        # Guard 2: Skip features whose IG sign flipped between model versions
+        if feature_name in self._ig_sign_blacklist.get(task, set()):
+            return None
+
         # Get feature info from glossary
         entry = self._glossary.get(feature_name)
         if not entry:
@@ -305,24 +337,110 @@ class InterpretationRegistry:
         if not task_sem:
             return None
 
-        # Determine if feature value is high or low (simple threshold)
-        value_level = "high" if value >= 0.5 else "low"
+        # Determine if feature value is high or low
+        # Use per-feature median from training data when available,
+        # otherwise fall back to 0.5
+        median = self._feature_medians.get(feature_name, 0.5)
+        value_level = "high" if value >= median else "low"
 
         # Feature value description
-        dir_templates = self._VALUE_DIRECTION_TEMPLATES.get(direction, self._VALUE_DIRECTION_TEMPLATES[""])
+        dir_templates = self._VALUE_DIRECTION_TEMPLATES.get(
+            direction, self._VALUE_DIRECTION_TEMPLATES[""]
+        )
         value_desc = dir_templates[value_level].format(name=feat_name)
 
         # IG direction determines task prediction direction
         # signed_ig > 0: feature value ↑ → prediction ↑
         # signed_ig < 0: feature value ↑ → prediction ↓
-        if value >= 0.5:  # feature is high
-            # High value: IG sign directly maps to prediction direction
+        if value_level == "high":
             pred_desc = task_sem["up"] if signed_ig > 0 else task_sem["down"]
-        else:  # feature is low
-            # Low value: inverse of IG sign
+        else:
             pred_desc = task_sem["down"] if signed_ig > 0 else task_sem["up"]
 
         return f"{value_desc} {pred_desc}"
+
+    # ------------------------------------------------------------------
+    # IG sign stability check (called at model registration time)
+    # ------------------------------------------------------------------
+
+    def check_ig_sign_stability(
+        self,
+        prev_signed_ig: Dict[str, Dict[str, float]],
+        curr_signed_ig: Dict[str, Dict[str, float]],
+        flip_threshold: float = 0.01,
+    ) -> Dict[str, set]:
+        """Compare IG signs between two model versions.
+
+        Features whose IG sign flips (crosses zero beyond threshold)
+        are added to the blacklist — their IG auto-interpretation is
+        disabled and falls back to Level 3/2/1.
+
+        Args:
+            prev_signed_ig: ``{task: {feature: signed_ig_value}}`` from
+                previous model version.
+            curr_signed_ig: Same structure from current version.
+            flip_threshold: Minimum absolute IG value to consider a sign
+                meaningful.  Features with ``|ig| < threshold`` in either
+                version are ignored (too weak to be reliable).
+
+        Returns:
+            ``{task: {feature_names_that_flipped}}`` dict.
+            Also updates ``self._ig_sign_blacklist`` in-place.
+        """
+        flipped: Dict[str, set] = {}
+
+        for task in set(prev_signed_ig.keys()) | set(curr_signed_ig.keys()):
+            prev = prev_signed_ig.get(task, {})
+            curr = curr_signed_ig.get(task, {})
+            task_flipped: set = set()
+
+            for feat in set(prev.keys()) & set(curr.keys()):
+                prev_val = prev[feat]
+                curr_val = curr[feat]
+
+                # Only check features with meaningful IG in both versions
+                if abs(prev_val) < flip_threshold or abs(curr_val) < flip_threshold:
+                    continue
+
+                # Sign flip: positive → negative or vice versa
+                if (prev_val > 0) != (curr_val > 0):
+                    task_flipped.add(feat)
+
+            if task_flipped:
+                flipped[task] = task_flipped
+                # Update blacklist
+                if task not in self._ig_sign_blacklist:
+                    self._ig_sign_blacklist[task] = set()
+                self._ig_sign_blacklist[task] |= task_flipped
+
+                logger.warning(
+                    "IG sign flipped for %d features in task '%s': %s. "
+                    "IG auto-interpretation disabled for these (falling back to L3/L2/L1).",
+                    len(task_flipped), task,
+                    list(task_flipped)[:5],
+                )
+
+        return flipped
+
+    def load_feature_medians(
+        self, stats: Dict[str, Dict[str, float]],
+    ) -> None:
+        """Load per-feature medians from DatasetRegistry feature_stats.
+
+        Args:
+            stats: ``{feature_name: {"mean": ..., "std": ..., "null_pct": ...}}``
+                from :meth:`DatasetRegistry.register` output.
+                Uses ``mean`` as proxy for median when median is not available.
+        """
+        for feat_name, feat_stats in stats.items():
+            # Prefer median if available, fall back to mean
+            median = feat_stats.get("median", feat_stats.get("mean", 0.5))
+            self._feature_medians[feat_name] = float(median)
+
+        logger.info(
+            "Loaded %d feature medians for high/low classification",
+            len(self._feature_medians),
+        )
 
     def interpret_batch(
         self,
