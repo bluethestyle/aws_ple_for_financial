@@ -152,6 +152,19 @@ def main() -> None:
             json.dump(gate_report, f, indent=2, default=str)
         sys.exit(1)
 
+    # Step 1.7: Train / Val / Test split
+    logger.info("Splitting data into train / val / test...")
+    from core.training.label_preprocessor import LabelPreprocessor
+
+    label_preprocessor = LabelPreprocessor(pipeline_config.tasks)
+    train_df, val_df, test_df = label_preprocessor.split(
+        df, train_ratio=0.70, val_ratio=0.15, test_ratio=0.15,
+    )
+
+    # Step 1.8: Fit label preprocessor on TRAINING data only (no leakage)
+    logger.info("Fitting label preprocessor on training set...")
+    label_preprocessor.fit(train_df)
+
     # Separate features and labels
     label_cols = {t.label_col for t in pipeline_config.tasks}
     id_cols = set(pipeline_config.features.id_cols)
@@ -165,11 +178,20 @@ def main() -> None:
         len(id_cols),
     )
 
-    features = df[feature_cols].values.astype(np.float32)
-    hard_labels: dict[str, np.ndarray] = {}
-    for t in pipeline_config.tasks:
-        if t.label_col in df.columns:
-            hard_labels[t.name] = df[t.label_col].values
+    # Use TRAINING set for model training
+    features = train_df[feature_cols].values.astype(np.float32)
+    hard_labels = label_preprocessor.preprocess(train_df)
+
+    # Keep val/test for later evaluation
+    val_features = val_df[feature_cols].values.astype(np.float32)
+    val_labels = label_preprocessor.preprocess(val_df)
+    test_features = test_df[feature_cols].values.astype(np.float32)
+    test_labels = label_preprocessor.preprocess(test_df)
+
+    logger.info(
+        "Train: %d rows, Val: %d rows, Test: %d rows (held out)",
+        len(features), len(val_features), len(test_features),
+    )
 
     # Build student config
     student_config = StudentConfig(
@@ -362,15 +384,88 @@ def main() -> None:
         fidelity_results=fidelity_results,
     )
 
+    # ==================================================================
+    # Step 6: Offline evaluation on HELD-OUT TEST SET
+    # ==================================================================
+    logger.info("=" * 60)
+    logger.info("Step 6: Offline evaluation on held-out test set (%d rows)", len(test_features))
+    logger.info("=" * 60)
+
+    from sklearn.metrics import (
+        roc_auc_score, accuracy_score, f1_score,
+        mean_squared_error, mean_absolute_error, r2_score,
+    )
+
+    eval_results: dict = {}
+
+    for task_spec in pipeline_config.tasks:
+        task_name = task_spec.name
+        if task_name not in students or task_name not in test_labels:
+            continue
+
+        student_model = students[task_name]
+        y_true = test_labels[task_name]
+        y_pred = student_model.predict(test_features)
+
+        metrics: dict = {}
+
+        if task_spec.type == "binary":
+            # y_pred from LGBM is probability for binary
+            y_pred_class = (y_pred > 0.5).astype(int)
+            try:
+                metrics["auc"] = round(float(roc_auc_score(y_true, y_pred)), 4)
+            except ValueError:
+                metrics["auc"] = 0.0
+            metrics["accuracy"] = round(float(accuracy_score(y_true, y_pred_class)), 4)
+            metrics["f1"] = round(float(f1_score(y_true, y_pred_class, zero_division=0)), 4)
+            logger.info(
+                "  [%s] binary: AUC=%.4f, Acc=%.4f, F1=%.4f",
+                task_name, metrics["auc"], metrics["accuracy"], metrics["f1"],
+            )
+
+        elif task_spec.type == "regression":
+            # Inverse transform for meaningful error metrics
+            y_true_orig = label_preprocessor.inverse_transform(task_name, y_true)
+            y_pred_orig = label_preprocessor.inverse_transform(task_name, y_pred)
+            metrics["rmse"] = round(float(np.sqrt(mean_squared_error(y_true_orig, y_pred_orig))), 4)
+            metrics["mae"] = round(float(mean_absolute_error(y_true_orig, y_pred_orig)), 4)
+            metrics["r2"] = round(float(r2_score(y_true_orig, y_pred_orig)), 4)
+            logger.info(
+                "  [%s] regression: RMSE=%.4f, MAE=%.4f, R2=%.4f",
+                task_name, metrics["rmse"], metrics["mae"], metrics["r2"],
+            )
+
+        elif task_spec.type in ("multiclass", "contrastive"):
+            n_classes = getattr(task_spec, "num_classes", 2)
+            if y_pred.ndim > 1:
+                y_pred_class = y_pred.argmax(axis=1)
+            else:
+                y_pred_class = y_pred.astype(int)
+            y_true_int = y_true.astype(int)
+            metrics["accuracy"] = round(float(accuracy_score(y_true_int, y_pred_class)), 4)
+            metrics["f1_macro"] = round(
+                float(f1_score(y_true_int, y_pred_class, average="macro", zero_division=0)), 4
+            )
+            logger.info(
+                "  [%s] multiclass (%d classes): Acc=%.4f, F1_macro=%.4f",
+                task_name, n_classes, metrics["accuracy"], metrics["f1_macro"],
+            )
+
+        eval_results[task_name] = {
+            "task_type": task_spec.type,
+            "test_samples": len(y_true),
+            **metrics,
+        }
+
     # Summary
     logger.info("=" * 60)
-    logger.info("Distillation complete! (all fidelity checks passed)")
+    logger.info("Distillation complete!")
     logger.info("  Tasks distilled: %d", len(saved))
     for task_name, path in saved.items():
         logger.info("  %s -> %s", task_name, path)
     logger.info("=" * 60)
 
-    # Save summary JSON for SageMaker
+    # Save everything
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -381,7 +476,12 @@ def main() -> None:
         "alpha": args.alpha,
         "output_dir": args.output_dir,
         "feature_count": len(feature_cols),
-        "sample_count": len(features),
+        "data_split": {
+            "train": len(features),
+            "val": len(val_features),
+            "test": len(test_features),
+        },
+        "label_preprocessing": label_preprocessor.get_stats_report(),
         "fidelity": {
             "all_passed": failed_count == 0,
             "passed": passed_count,
@@ -402,11 +502,18 @@ def main() -> None:
             }
             for task_name, sel in feature_selections.items()
         },
+        "offline_evaluation": eval_results,
     }
     summary_path = output_path / "distillation_summary.json"
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2, default=str)
     logger.info("Summary saved to %s", summary_path)
+
+    # Save test evaluation separately for easy review
+    eval_path = output_path / "test_evaluation.json"
+    with open(eval_path, "w") as f:
+        json.dump(eval_results, f, indent=2)
+    logger.info("Test evaluation saved to %s", eval_path)
 
 
 if __name__ == "__main__":
