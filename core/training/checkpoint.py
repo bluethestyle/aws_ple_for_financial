@@ -42,7 +42,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 
@@ -85,7 +85,7 @@ class CheckpointManager:
 
     def __init__(
         self,
-        local_dir: str | Path = "/opt/ml/checkpoints",
+        local_dir: Union[str, Path] = "/opt/ml/checkpoints",
         s3_bucket: str = "",
         s3_prefix: str = "",
         max_keep: int = 3,
@@ -294,7 +294,7 @@ class CheckpointManager:
 
     def load_from_path(
         self,
-        path: str | Path,
+        path: Union[str, Path],
         model: torch.nn.Module,
         optimizer: Optional[torch.optim.Optimizer] = None,
         scheduler: Optional[Any] = None,

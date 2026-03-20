@@ -7,7 +7,7 @@ task definitions, training parameters, and AWS deployment settings.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import yaml
 
@@ -152,7 +152,7 @@ class PipelineConfig:
         return None
 
 
-def load_config(path: str | Path) -> PipelineConfig:
+def load_config(path: Union[str, Path]) -> PipelineConfig:
     """Parse a YAML file into a :class:`PipelineConfig` instance."""
     with open(path) as f:
         raw: dict[str, Any] = yaml.safe_load(f)

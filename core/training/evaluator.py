@@ -30,7 +30,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -499,7 +499,7 @@ class ModelEvaluator:
         }
 
     @staticmethod
-    def report_to_json(report: Dict[str, Any], path: str | Path) -> None:
+    def report_to_json(report: Dict[str, Any], path: Union[str, Path]) -> None:
         """Serialize an evaluation report to JSON.
 
         Parameters
