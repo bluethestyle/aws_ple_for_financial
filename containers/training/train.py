@@ -709,15 +709,17 @@ def main() -> None:
     tasks = config.get("tasks", [])
     task_names = [t["name"] for t in tasks]
 
-    # Determine input dimension from data or config
+    # Determine input dimension: config takes precedence over auto-detection
+    # (auto-detect may include ID columns, causing dimension mismatch)
     features_config = config.get("features", {})
-    sample_features = train_dataset[0][0] if hasattr(train_dataset, '__getitem__') else None
-    if sample_features is not None:
-        input_dim = sample_features.shape[0] if isinstance(sample_features, torch.Tensor) else len(sample_features)
-    elif features_config.get("input_dim"):
+    if features_config.get("input_dim"):
         input_dim = int(features_config["input_dim"])
     else:
-        input_dim = model_config.get("expert_hidden_dim", 128)
+        sample_features = train_dataset[0][0] if hasattr(train_dataset, '__getitem__') else None
+        if sample_features is not None:
+            input_dim = sample_features.shape[0] if isinstance(sample_features, torch.Tensor) else len(sample_features)
+        else:
+            input_dim = model_config.get("expert_hidden_dim", 128)
     logger.info("Model input_dim: %d", input_dim)
 
     # Build PLEConfig with proper expert dimensions
