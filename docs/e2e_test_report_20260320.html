@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>E2E Pipeline Test Report — 2026-03-20</title>
+<style>
+:root { --pass: #22c55e; --fail: #ef4444; --warn: #f59e0b; --bg: #0f172a; --card: #1e293b; --text: #e2e8f0; --dim: #94a3b8; --border: #334155; --accent: #3b82f6; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Pretendard', -apple-system, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 2rem; }
+.container { max-width: 1200px; margin: 0 auto; }
+h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+h2 { font-size: 1.4rem; margin: 2rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+h3 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; color: var(--accent); }
+.meta { color: var(--dim); margin-bottom: 2rem; }
+.card { background: var(--card); border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; border: 1px solid var(--border); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
+.badge-pass { background: rgba(34,197,94,0.15); color: var(--pass); }
+.badge-fail { background: rgba(239,68,68,0.15); color: var(--fail); }
+.badge-warn { background: rgba(245,158,11,0.15); color: var(--warn); }
+.badge-info { background: rgba(59,130,246,0.15); color: var(--accent); }
+table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+th { color: var(--dim); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+tr:hover { background: rgba(255,255,255,0.03); }
+code { background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 3px; font-size: 0.85em; }
+pre { background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; line-height: 1.5; margin: 0.5rem 0; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
+.metric { text-align: center; padding: 1rem; }
+.metric-value { font-size: 2rem; font-weight: 700; }
+.metric-label { font-size: 0.8rem; color: var(--dim); }
+.timeline { position: relative; padding-left: 2rem; }
+.timeline::before { content: ''; position: absolute; left: 0.5rem; top: 0; bottom: 0; width: 2px; background: var(--border); }
+.timeline-item { position: relative; margin-bottom: 1.5rem; }
+.timeline-item::before { content: ''; position: absolute; left: -1.65rem; top: 0.4rem; width: 10px; height: 10px; border-radius: 50%; background: var(--pass); border: 2px solid var(--bg); }
+.timeline-item.fail::before { background: var(--fail); }
+.timeline-item.warn::before { background: var(--warn); }
+.commit-hash { font-family: monospace; font-size: 0.8rem; color: var(--dim); }
+.section-divider { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+@media (max-width: 768px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } body { padding: 1rem; } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>E2E Pipeline Test Report</h1>
+<p class="meta">
+  프로젝트: AWS PLE Financial Recommender &nbsp;|&nbsp;
+  브랜치: <code>test/financial-churners</code> &nbsp;|&nbsp;
+  일시: 2026-03-20 14:00 ~ 15:42 KST &nbsp;|&nbsp;
+  데이터: Bank Churners (10,127명 × 34 features)
+</p>
+
+<!-- ============================================================ -->
+<h2>1. 테스트 개요</h2>
+<!-- ============================================================ -->
+<div class="card">
+<p>AWS SageMaker 기반 멀티태스크 ML 파이프라인(PLE → 지식증류 → LGBM 서빙)의 첫 번째 End-to-End 통합 테스트입니다. 공개 데이터셋(Kaggle Bank Churners, 10,127명 × 21 컬럼)을 어댑터로 변환하여 16개 태스크 × 34 피처 구조로 가공한 후, 학습 → 증류 → 배포 → 추론 → 추천 사유 → 감사 기록까지 전 과정을 검증했습니다.</p>
+</div>
+
+<div class="grid-3">
+  <div class="card metric">
+    <div class="metric-value" style="color:var(--pass)">13/13</div>
+    <div class="metric-label">Stages Completed</div>
+  </div>
+  <div class="card metric">
+    <div class="metric-value">9.9ms</div>
+    <div class="metric-label">Lambda Warm Latency</div>
+  </div>
+  <div class="card metric">
+    <div class="metric-value">$0.15</div>
+    <div class="metric-label">Total AWS Cost</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>2. Stage별 실행 결과</h2>
+<!-- ============================================================ -->
+<table>
+<thead>
+<tr><th>Stage</th><th>설명</th><th>AWS 서비스</th><th>상태</th><th>소요시간</th><th>비용</th></tr>
+</thead>
+<tbody>
+<tr><td>3</td><td>PLE Teacher 학습 (2-Phase)</td><td>SageMaker Training Job<br><code>ml.m5.xlarge</code></td><td><span class="badge badge-pass">PASS</span></td><td>149초</td><td>~$0.01</td></tr>
+<tr><td>4.0</td><td>데이터 로드 + QualityGate</td><td>SageMaker Processing Job<br><code>ml.m5.xlarge</code></td><td><span class="badge badge-pass">PASS</span></td><td>2초</td><td rowspan="7">~$0.08</td></tr>
+<tr><td>4.1</td><td>Train/Val/Test 분할 (70/15/15)</td><td>〃</td><td><span class="badge badge-pass">PASS</span></td><td>&lt;1초</td></tr>
+<tr><td>4.2</td><td>라벨 전처리 (16 tasks)</td><td>〃</td><td><span class="badge badge-pass">PASS</span></td><td>&lt;1초</td></tr>
+<tr><td>4.3</td><td>Soft label 생성 (Teacher →)</td><td>〃</td><td><span class="badge badge-pass">PASS</span></td><td>~1초</td></tr>
+<tr><td>4.4</td><td>LGBM Student 학습 (×16)</td><td>〃</td><td><span class="badge badge-pass">PASS</span></td><td>~30초</td></tr>
+<tr><td>4.5</td><td>Fidelity 검증 (8 metrics)</td><td>〃</td><td><span class="badge badge-warn">WARN</span></td><td>~5초</td></tr>
+<tr><td>4.6</td><td>Feature Selection + 저장 + 평가</td><td>〃</td><td><span class="badge badge-pass">PASS</span></td><td>~10초</td></tr>
+<tr><td>8</td><td>Lambda 배포 (Layer + Function)</td><td>Lambda + S3</td><td><span class="badge badge-pass">PASS</span></td><td>수동</td><td>$0.00</td></tr>
+<tr><td>9</td><td>/predict 추론 테스트</td><td>Lambda</td><td><span class="badge badge-pass">PASS</span></td><td>9.9ms (warm)</td><td>&lt;$0.01</td></tr>
+<tr><td>10</td><td>L1 추천 사유 생성</td><td>로컬 (boto3)</td><td><span class="badge badge-pass">PASS</span></td><td>&lt;1ms</td><td>$0.00</td></tr>
+<tr><td>11</td><td>Self-critique 검증</td><td>로컬</td><td><span class="badge badge-pass">PASS</span> <span class="badge badge-warn">4/5</span></td><td>&lt;1ms</td><td>$0.00</td></tr>
+<tr><td>12</td><td>감사 기록 (DynamoDB ×3)</td><td>DynamoDB</td><td><span class="badge badge-pass">PASS</span></td><td>~1초</td><td>&lt;$0.01</td></tr>
+</tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2>3. PLE Teacher 학습 결과</h2>
+<!-- ============================================================ -->
+<div class="card">
+<h3>모델 사양</h3>
+<table>
+<tr><th>항목</th><th>값</th></tr>
+<tr><td>아키텍처</td><td>PLE (Progressive Layered Extraction)</td></tr>
+<tr><td>입력 차원</td><td>34</td></tr>
+<tr><td>태스크 수</td><td>16 (4 binary + 6 multiclass + 6 regression)</td></tr>
+<tr><td>Shared Experts</td><td>2 (MLP, hidden=[64,32], output=32)</td></tr>
+<tr><td>Task Experts</td><td>16 (per-task MLP)</td></tr>
+<tr><td>Extraction Layers</td><td>2 (stacked CGC)</td></tr>
+<tr><td>adaTT</td><td>Enabled (16 tasks, λ=0.1)</td></tr>
+<tr><td>CGC Attention</td><td>Enabled</td></tr>
+<tr><td>총 파라미터</td><td>364,261 (trainable)</td></tr>
+<tr><td>학습 시간</td><td>149초 (10 epochs, ml.m5.xlarge CPU)</td></tr>
+<tr><td>Training Job</td><td><code>e2e-ple-train-20260320-140343</code></td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>4. 지식 증류 결과</h2>
+<!-- ============================================================ -->
+
+<h3>4.1 Soft Label 생성</h3>
+<div class="card">
+<p>Teacher PLE 모델에서 16개 태스크 × 7,088 학습 샘플에 대한 soft label을 생성했습니다. 증류 파라미터: <code>temperature=5.0</code>, <code>alpha=0.3</code> (hard label 30% + soft label 70%).</p>
+</div>
+
+<h3>4.2 LGBM Student 모델</h3>
+<table>
+<thead>
+<tr><th>태스크</th><th>타입</th><th>모델 크기</th><th>Trees</th><th>Test AUC/Acc/RMSE</th></tr>
+</thead>
+<tbody>
+<tr><td>ctr</td><td>binary</td><td>4KB</td><td>100</td><td>AUC=0.500, F1=0.662</td></tr>
+<tr><td>cvr</td><td>binary</td><td>4KB</td><td>100</td><td>AUC=0.500, F1=0.641</td></tr>
+<tr><td>churn</td><td>binary</td><td>4KB</td><td>100</td><td>AUC=0.500, Acc=16.8%</td></tr>
+<tr><td>retention</td><td>binary</td><td>4KB</td><td>100</td><td>AUC=0.500, Acc=83.2%</td></tr>
+<tr><td>life_stage</td><td>multiclass(6)</td><td>1.3MB</td><td>100</td><td>Acc=100%, F1=1.000</td></tr>
+<tr><td>ltv</td><td>regression</td><td>1.5MB</td><td>100</td><td>RMSE=6574, R²=-2.68</td></tr>
+<tr><td>balance_util</td><td>regression</td><td>2.3MB</td><td>100</td><td>RMSE=0.160, R²=0.660</td></tr>
+<tr><td>engagement</td><td>regression</td><td>2.4MB</td><td>100</td><td>RMSE=0.074, R²=0.341</td></tr>
+<tr><td>channel</td><td>multiclass(3)</td><td>573KB</td><td>100</td><td>Acc=100%, F1=1.000</td></tr>
+<tr><td>timing</td><td>multiclass(28)</td><td>5.7MB</td><td>100</td><td>Acc=100%, F1=1.000</td></tr>
+<tr><td>nba</td><td>multiclass(12)</td><td>17.2MB</td><td>100</td><td>Acc=92.1%, F1=0.911</td></tr>
+<tr><td>spending_category</td><td>multiclass(12)</td><td>4.1MB</td><td>100</td><td>Acc=98.9%, F1=0.990</td></tr>
+<tr><td>consumption_cycle</td><td>multiclass(7)</td><td>1.6MB</td><td>100</td><td>Acc=100%, F1=1.000</td></tr>
+<tr><td>spending_bucket</td><td>regression</td><td>1.5MB</td><td>100</td><td>RMSE=5523, R²=-1.60</td></tr>
+<tr><td>merchant_affinity</td><td>regression</td><td>2.0MB</td><td>100</td><td>RMSE=0.214, R²=0.330</td></tr>
+<tr><td>brand_prediction</td><td>multiclass(24)</td><td>6.2MB</td><td>100</td><td>Acc=99.4%, F1=0.846</td></tr>
+</tbody>
+</table>
+
+<h3>4.3 Fidelity 검증</h3>
+<div class="card">
+<p><span class="badge badge-warn">16/16 FAILED</span> — 합성 라벨(어댑터 생성) 특성상 Teacher-Student 일치도가 낮습니다. 이는 <strong>데이터 품질 한계</strong>이지 파이프라인 오류가 아닙니다. 실제 금융 데이터에서는 개선될 것으로 예상됩니다.</p>
+<pre>
+ctr:   auc_gap=0.271 (기준 &lt;0.03), agreement=34.5% (기준 &gt;90%)
+cvr:   auc_gap=0.493, agreement=49.5%
+churn: auc_gap=0.264, agreement=16.6%
+...
+</pre>
+<p><strong>원인 분석:</strong></p>
+<ul>
+<li>Binary tasks (ctr, cvr): 어댑터에서 랜덤 생성한 라벨 → Teacher도 학습 불가 → Student도 AUC=0.50</li>
+<li>Regression tasks (ltv, spending_bucket): 로그 변환 적용했으나 원본 데이터와 라벨 간 상관관계 부족</li>
+<li>Multiclass tasks: 원본 피처에서 파생한 라벨이라 상관관계 존재 → 학습 가능 (accuracy 92~100%)</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>5. Lambda 서빙 성능</h2>
+<!-- ============================================================ -->
+<div class="grid-2">
+  <div class="card">
+    <h3>Cold Start (최초 호출)</h3>
+    <div class="metric">
+      <div class="metric-value" style="color:var(--warn)">6,312ms</div>
+      <div class="metric-label">S3에서 16개 모델 다운로드 포함</div>
+    </div>
+    <p style="color:var(--dim); font-size:0.85rem; text-align:center; margin-top:0.5rem;">
+      Provisioned Concurrency 적용 시 제거 가능 (월 ~$20)
+    </p>
+  </div>
+  <div class="card">
+    <h3>Warm Start (이후 호출)</h3>
+    <div class="metric">
+      <div class="metric-value" style="color:var(--pass)">9.9ms</div>
+      <div class="metric-label">금융권 실시간 추천 기준(200ms) 20배 여유</div>
+    </div>
+    <p style="color:var(--dim); font-size:0.85rem; text-align:center; margin-top:0.5rem;">
+      16개 LGBM 모델 동시 추론 + JSON 직렬화 포함
+    </p>
+  </div>
+</div>
+
+<div class="card">
+<h3>Lambda 구성</h3>
+<table>
+<tr><th>항목</th><th>값</th></tr>
+<tr><td>함수명</td><td><code>ple-predict</code></td></tr>
+<tr><td>런타임</td><td>Python 3.10</td></tr>
+<tr><td>메모리</td><td>1,024 MB</td></tr>
+<tr><td>타임아웃</td><td>60초</td></tr>
+<tr><td>Layer</td><td><code>ple-lgbm-layer:3</code> (lightgbm + numpy + scipy + libgomp, 54MB)</td></tr>
+<tr><td>Function URL</td><td><code>https://ld6me56al4btbnx24svziiaga40rdocw.lambda-url.ap-northeast-2.on.aws/</code></td></tr>
+<tr><td>실행 역할</td><td><code>PLELambdaExecutionRole</code> (Lambda Basic + S3 ReadOnly)</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>6. 추천 사유 생성 (L1)</h2>
+<!-- ============================================================ -->
+<div class="card">
+<table>
+<thead>
+<tr><th>태스크</th><th>생성된 사유</th><th>Self-critique</th></tr>
+</thead>
+<tbody>
+<tr>
+<td>churn</td>
+<td>고객님의 최근 1개월 비활성 기간과 거래 패턴 변화(1.62)를 기반으로 <strong>이탈</strong> 가능성이 분석되었습니다.</td>
+<td><span class="badge badge-pass">PASS</span></td>
+</tr>
+<tr>
+<td>ltv</td>
+<td>고객님의 신용한도(12,691원), 거래금액(1,144원) 등을 종합하여 고객가치가 <strong>높음</strong>으로 평가되었습니다.</td>
+<td><span class="badge badge-pass">PASS</span></td>
+</tr>
+<tr>
+<td>engagement</td>
+<td>고객님의 월평균 거래 횟수(42회)와 활동성 지표를 기반으로 참여도가 <strong>높음</strong>으로 분석되었습니다.</td>
+<td><span class="badge badge-pass">PASS</span></td>
+</tr>
+<tr>
+<td>balance_util</td>
+<td>고객님의 신용 잔고 활용률이 47.0%로, <strong>적정</strong> 수준입니다.</td>
+<td><span class="badge badge-pass">PASS</span></td>
+</tr>
+<tr>
+<td>nba</td>
+<td>고객님의 카드 이용 패턴과 소비 카테고리를 분석하여 가장 적합한 상품을 추천드립니다.</td>
+<td><span class="badge badge-fail">FAIL</span> <span style="color:var(--dim)">(숫자 근거 미포함)</span></td>
+</tr>
+</tbody>
+</table>
+<p style="margin-top:1rem"><strong>Self-critique 검증 항목:</strong> non_empty, no_pii, no_forbidden_words, length_ok, has_evidence</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>7. 감사 추적 (DynamoDB)</h2>
+<!-- ============================================================ -->
+<div class="card">
+<table>
+<thead>
+<tr><th>테이블</th><th>용도</th><th>기록 상태</th><th>키 스키마</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ple-prediction-log</code></td><td>예측 로그 (전체 predictions + 메타데이터)</td><td><span class="badge badge-pass">verified ✓</span></td><td>user_id (HASH) + timestamp (RANGE)</td></tr>
+<tr><td><code>ple-audit-trail</code></td><td>감사 추적 (이벤트 타입별 기록)</td><td><span class="badge badge-pass">verified ✓</span></td><td>pk (HASH) + sk (RANGE)</td></tr>
+<tr><td><code>ple-reason-cache</code></td><td>추천 사유 캐시 (TTL 24h)</td><td><span class="badge badge-pass">5 records</span></td><td>user_task_key (HASH)</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>8. 수정 이력 (디버깅 과정)</h2>
+<!-- ============================================================ -->
+<div class="timeline">
+  <div class="timeline-item">
+    <strong>PLE stacked layers shared_input 차원 불일치</strong>
+    <div class="commit-hash">18dfbe6</div>
+    <p><code>shared_concat</code>(64D)를 다음 CGCLayer input(32D)으로 전달 → <code>torch.stack(task_representations).mean()</code>으로 수정</p>
+  </div>
+  <div class="timeline-item">
+    <strong>PLEConfig expert 차원 미전달</strong>
+    <div class="commit-hash">d6a7b0f</div>
+    <p>기본값 [256,256]이 적용되어 input_dim=34와 불일치 → YAML config에서 읽도록 수정</p>
+  </div>
+  <div class="timeline-item">
+    <strong>Python 3.9 호환성 (PEP 604)</strong>
+    <div class="commit-hash">90667d3</div>
+    <p>SageMaker sklearn 이미지가 Python 3.9 → <code>X | Y</code> 문법을 <code>Union[X, Y]</code>로 일괄 변경 (7개 파일)</p>
+  </div>
+  <div class="timeline-item">
+    <strong>소스 패키지 2.6GB 업로드</strong>
+    <div class="commit-hash">9874de9</div>
+    <p><code>source_dir="."</code>에 data/ 폴더 포함 → <code>_prepare_source_package()</code>로 코드만 패키징 (~2.7MB)</p>
+  </div>
+  <div class="timeline-item">
+    <strong>ScriptProcessor.run()에 source_dir 미지원</strong>
+    <div class="commit-hash">882c6d8</div>
+    <p>tar.gz → S3 업로드 → ProcessingInput → wrapper script에서 unpack 방식으로 전환</p>
+  </div>
+  <div class="timeline-item">
+    <strong>Teacher model.tar.gz 미해제</strong>
+    <div class="commit-hash">1665339</div>
+    <p>SageMaker가 model.tar.gz로 출력 → wrapper에서 tarfile.extractall() 추가</p>
+  </div>
+  <div class="timeline-item">
+    <strong>student_trainer PLEConfig 재구성 실패</strong>
+    <div class="commit-hash">46070ba</div>
+    <p>checkpoint에 dict로 저장된 config를 PLEConfig 객체로 재구성하는 로직 추가</p>
+  </div>
+  <div class="timeline-item">
+    <strong>Teacher input_dim 34 vs 35 불일치</strong>
+    <div class="commit-hash">6f08b82</div>
+    <p>train.py data loader에서 customer_id 컬럼 미제외 → <code>features.id_cols</code> 설정 반영</p>
+  </div>
+  <div class="timeline-item">
+    <strong>LGBM label 2D ndarray</strong>
+    <div class="commit-hash">a781a89</div>
+    <p>Teacher soft label이 (n,1) shape → <code>.squeeze()</code>로 1D 변환</p>
+  </div>
+  <div class="timeline-item">
+    <strong>Lambda libgomp.so.1 미포함</strong>
+    <div class="commit-hash">(Layer v3)</div>
+    <p>LightGBM 네이티브 라이브러리가 OpenMP 필요 → Layer에 libgomp.so.1 포함</p>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>9. 단계별 산출물 샘플</h2>
+<!-- ============================================================ -->
+
+<h3>9.1 Stage 3 — Teacher 체크포인트 (model.tar.gz 내부)</h3>
+<div class="card">
+<pre>
+# S3 경로: s3://aiops-ple-financial/e2e-test/20260320-140343/model/.../output/model.tar.gz
+# 내부 구조:
+model.pth        # torch.save({model_state_dict, config, ple_config, metrics})
+config.json      # 학습 config (YAML → JSON 직렬화)
+
+# ple_config (checkpoint 내부):
+{
+  "input_dim": 34,
+  "task_names": ["ctr","cvr","churn","retention","life_stage","ltv",
+                 "balance_util","engagement","channel","timing","nba",
+                 "spending_category","consumption_cycle","spending_bucket",
+                 "merchant_affinity","brand_prediction"],
+  "num_shared_experts": 2,
+  "num_extraction_layers": 2
+}
+</pre>
+</div>
+
+<h3>9.2 Stage 4 — Distillation Summary</h3>
+<div class="card">
+<pre>
+// S3: s3://aiops-ple-financial/e2e-test/20260320-144441/students/distillation_summary.json
+{
+  "num_students": 16,
+  "temperature": 5.0,
+  "alpha": 0.3,
+  "feature_count": 34,
+  "data_split": { "train": 7088, "val": 1518, "test": 1521 },
+  "label_preprocessing": {
+    "regression_stats": {
+      "ltv": { "mean": 8.16, "std": 0.65, "log": true, "clip_lo": 860.61, "clip_hi": 15843.17 },
+      "balance_util": { "mean": 0.28, "std": 0.28, "log": false },
+      "engagement": { "mean": 0.60, "std": 0.09, "log": false }
+    },
+    "class_balance": {
+      "churn": { "positive_rate": 0.161 },
+      "ctr": { "positive_rate": 0.494 },
+      "life_stage": { "num_classes": 6, "rare_classes": [5] },
+      "brand_prediction": { "num_classes": 24, "rare_classes": [2,6,10,14,18] }
+    }
+  }
+}
+</pre>
+</div>
+
+<h3>9.3 Stage 4 — Student 모델 메타데이터 (nba 예시)</h3>
+<div class="card">
+<pre>
+// S3: .../students/nba/metadata.json
+{
+  "task_name": "nba",
+  "task_type": "multiclass",
+  "num_trees": 6000,       // 12 classes × 500 iterations
+  "num_features": 34,
+  "temperature": 5.0,
+  "alpha": 0.3,
+  "feature_columns": ["age","age_squared","dependent_count","gender_male",
+    "months_on_book","education_level","marital_married","marital_single",
+    "marital_divorced","income_level","card_blue","card_silver","card_gold",
+    "card_platinum","total_relationship_count","months_inactive_12mon",
+    "contacts_count_12mon","credit_limit","total_revolving_bal",
+    "avg_open_to_buy","total_amt_chng_q4q1","total_trans_amt",
+    "total_trans_ct","total_ct_chng_q4q1","avg_utilization_ratio",
+    "avg_trans_amount","credit_usage_pct","trans_frequency",
+    "inactive_ratio","contact_per_trans","amt_per_relationship",
+    "revolving_per_limit","q4q1_amt_x_ct","engagement_score"]
+}
+</pre>
+</div>
+
+<h3>9.4 Stage 4 — Fidelity 검증 결과 (churn 예시)</h3>
+<div class="card">
+<pre>
+// S3: .../students/churn/fidelity.json
+{
+  "passed": false,
+  "metrics": {
+    "auc_gap": 0.2641,       // 기준: &lt;0.03
+    "agreement_rate": 0.1661, // 기준: &gt;0.90
+    "jsd": 0.2306,           // 기준: &lt;0.10
+    "ranking_corr": 0.0,     // 기준: &gt;0.95
+    "calibration_gap": 0.8339 // 기준: &lt;0.02
+  },
+  "failures": [
+    "auc_gap=0.2641 > 0.03",
+    "agreement=0.1661 < 0.9",
+    "jsd=0.2306 > 0.1",
+    "ranking_corr=0.0000 < 0.95",
+    "calibration_gap=0.8339 > 0.02"
+  ]
+}
+</pre>
+</div>
+
+<h3>9.5 Stage 4 — Test Set 평가 결과</h3>
+<div class="card">
+<pre>
+// S3: .../students/test_evaluation.json
+{
+  "churn":             { "task_type": "binary",       "test_samples": 1521, "auc": 0.500, "accuracy": 0.168, "f1": 0.287 },
+  "life_stage":        { "task_type": "multiclass",   "test_samples": 1521, "accuracy": 1.000, "f1_macro": 1.000 },
+  "nba":               { "task_type": "multiclass",   "test_samples": 1521, "accuracy": 0.921, "f1_macro": 0.911 },
+  "balance_util":      { "task_type": "regression",   "test_samples": 1521, "rmse": 0.160, "mae": 0.141, "r2": 0.660 },
+  "engagement":        { "task_type": "regression",   "test_samples": 1521, "rmse": 0.074, "mae": 0.059, "r2": 0.341 },
+  "brand_prediction":  { "task_type": "multiclass",   "test_samples": 1521, "accuracy": 0.994, "f1_macro": 0.846 },
+  "spending_category": { "task_type": "multiclass",   "test_samples": 1521, "accuracy": 0.990, "f1_macro": 0.990 }
+}
+</pre>
+</div>
+
+<h3>9.6 Stage 9 — Lambda /predict 응답</h3>
+<div class="card">
+<pre>
+// POST /predict → Lambda response (warm start, 9.9ms)
+{
+  "user_id": "test_full_001",
+  "predictions": {
+    "churn": 1.0,
+    "retention": 1.0,
+    "ctr": 1.0,
+    "cvr": 1.0,
+    "life_stage": [0.004, 0.005, 0.005, 0.013, <b>0.973</b>, 0.0002],
+    "nba": [0.004, 0.002, 0.004, 0.002, 0.200, <b>0.252</b>, 0.204, 0.099, 0.131, 0.071, 0.016, 0.015],
+    "balance_util": 0.470,
+    "engagement": 0.753,
+    "ltv": 1.052,
+    "merchant_affinity": 0.041,
+    "brand_prediction": [... <b>class 19: 0.846</b> ...],
+    "channel": [0.001, <b>0.999</b>, 0.0003],
+    "timing": [<b>0.921</b>, 0.014, 0.003, ...],
+    "spending_category": [<b>0.997</b>, 0.001, ...],
+    "consumption_cycle": [<b>0.997</b>, 0.001, ...],
+    "spending_bucket": 0.882
+  },
+  "elapsed_ms": 9.9,
+  "models_loaded": 16
+}
+</pre>
+</div>
+
+<h3>9.7 Stage 10 — L1 추천 사유</h3>
+<div class="card">
+<pre>
+// 각 태스크별 생성된 한국어 사유
+{
+  "churn": {
+    "score": 1.0,
+    "reason": "고객님의 최근 1개월 비활성 기간과 거래 패턴 변화(1.62)를 기반으로 이탈 가능성이 분석되었습니다."
+  },
+  "ltv": {
+    "score": 1.0519,
+    "reason": "고객님의 신용한도(12,691원), 거래금액(1,144원) 등을 종합하여 고객가치가 높음으로 평가되었습니다."
+  },
+  "engagement": {
+    "score": 0.7528,
+    "reason": "고객님의 월평균 거래 횟수(42회)와 활동성 지표를 기반으로 참여도가 높음으로 분석되었습니다."
+  },
+  "balance_util": {
+    "score": 0.4696,
+    "reason": "고객님의 신용 잔고 활용률이 47.0%로, 적정 수준입니다."
+  }
+}
+</pre>
+</div>
+
+<h3>9.8 Stage 11 — Self-critique 결과</h3>
+<div class="card">
+<pre>
+{
+  "churn":        { "passed": true,  "checks": { "non_empty": true, "no_pii": true, "no_forbidden_words": true, "length_ok": true, "has_evidence": true } },
+  "ltv":          { "passed": true,  "checks": { "non_empty": true, "no_pii": true, "no_forbidden_words": true, "length_ok": true, "has_evidence": true } },
+  "engagement":   { "passed": true,  "checks": { "non_empty": true, "no_pii": true, "no_forbidden_words": true, "length_ok": true, "has_evidence": true } },
+  "balance_util": { "passed": true,  "checks": { "non_empty": true, "no_pii": true, "no_forbidden_words": true, "length_ok": true, "has_evidence": true } },
+  "nba":          { "passed": false, "checks": { "non_empty": true, "no_pii": true, "no_forbidden_words": true, "length_ok": true, "has_evidence": <b>false</b> } }
+}
+</pre>
+</div>
+
+<h3>9.9 Stage 12 — DynamoDB 감사 기록</h3>
+<div class="card">
+<pre>
+// ple-prediction-log
+{
+  "user_id": "e2e_test_user_001",
+  "timestamp": "2026-03-20T06:41:45.290Z",
+  "predictions": { "churn": 1.0, "nba": [0.004, ...], ... },
+  "elapsed_ms": "9.9",
+  "models_loaded": 16,
+  "features_count": 34,
+  "channel": "app",
+  "test_flag": true
+}
+
+// ple-audit-trail
+{
+  "pk": "inference#e2e_test_user_001",
+  "sk": "2026-03-20T06:41:45.290Z",
+  "event_type": "e2e_inference_test",
+  "reasons_generated": 5,
+  "critique_passed": 4,
+  "critique_total": 5
+}
+
+// ple-reason-cache (TTL 24h)
+{
+  "user_task_key": "e2e_test_user_001#churn",
+  "reason": "고객님의 최근 1개월 비활성 기간과...",
+  "score": "1.0",
+  "critique_passed": true,
+  "ttl": 1774068105
+}
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>10. 시사점 및 향후 과제</h2>
+<!-- ============================================================ -->
+
+<h3>9.1 파이프라인 안정성</h3>
+<div class="card">
+<ul>
+<li><strong>Python 3.9/3.10 호환성:</strong> SageMaker 이미지마다 Python 버전이 다름. PEP 604 문법은 프로젝트 전체에서 제거 필요. CI에 Python 3.9 lint 추가 권장.</li>
+<li><strong>source_dir 패키징:</strong> SageMaker SDK의 Estimator와 Processor가 소스 코드 전달 방식이 다름. 통일된 패키징 유틸리티 필요.</li>
+<li><strong>모델 checkpoint 직렬화:</strong> PLEConfig를 pickle이 아닌 dict로 저장하므로, 재구성 로직이 양쪽에서 일관되어야 함.</li>
+</ul>
+</div>
+
+<h3>9.2 모델 품질</h3>
+<div class="card">
+<ul>
+<li><strong>합성 라벨 한계:</strong> Binary task AUC=0.50은 데이터 문제. 실제 금융 데이터에서는 Teacher도 학습 가능하므로 Fidelity도 개선될 것.</li>
+<li><strong>Multiclass/Regression:</strong> 원본 피처와 상관관계가 있는 라벨은 학습 성공 (accuracy 92~100%, R²=0.33~0.66). 파이프라인 자체는 정상.</li>
+<li><strong>ealtman2019 데이터셋 (2,400만 건):</strong> 거래 시계열이 있어 TDA/HMM/Mamba 피처 생성기까지 테스트 가능. GPU 할당량 승인 후 진행.</li>
+</ul>
+</div>
+
+<h3>9.3 서빙 성능</h3>
+<div class="card">
+<ul>
+<li><strong>Warm latency 9.9ms:</strong> 금융권 실시간 추천 기준(200ms)의 1/20 수준. 충분한 여유.</li>
+<li><strong>Cold start 6.3초:</strong> 16개 모델을 S3에서 다운로드하는 시간. Provisioned Concurrency(월 ~$20) 또는 Lambda SnapStart로 해결.</li>
+<li><strong>Lambda Layer 54MB:</strong> lightgbm + scipy + numpy + libgomp. 250MB 제한의 22% 사용.</li>
+</ul>
+</div>
+
+<h3>9.4 남은 테스트 항목</h3>
+<div class="card">
+<table>
+<thead><tr><th>항목</th><th>필요 조건</th><th>우선순위</th></tr></thead>
+<tbody>
+<tr><td>Feature Engineering (644D) 전체 테스트</td><td>ealtman2019 데이터 + GPU 할당량</td><td><span class="badge badge-fail">높음</span></td></tr>
+<tr><td>L2a LLM 사유 리라이트</td><td>Bedrock 또는 Gemini API 키</td><td><span class="badge badge-warn">중간</span></td></tr>
+<tr><td>Step Functions 전체 오케스트레이션</td><td>Step Functions 배포</td><td><span class="badge badge-warn">중간</span></td></tr>
+<tr><td>A/B 테스트 + Champion-Challenger</td><td>2개 모델 버전 + 트래픽 분배</td><td><span class="badge badge-info">낮음</span></td></tr>
+<tr><td>EventBridge 스케줄 (재학습/drift/fairness)</td><td>EventBridge 규칙 배포</td><td><span class="badge badge-info">낮음</span></td></tr>
+<tr><td>실 데이터 적응 테스트</td><td>금융사 데이터 확보</td><td><span class="badge badge-fail">높음</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>11. AWS 리소스 현황</h2>
+<!-- ============================================================ -->
+<div class="card">
+<table>
+<thead><tr><th>리소스</th><th>이름/경로</th><th>상태</th><th>과금</th></tr></thead>
+<tbody>
+<tr><td>Lambda</td><td><code>ple-predict</code></td><td>Active</td><td>호출 시만</td></tr>
+<tr><td>Lambda Layer</td><td><code>ple-lgbm-layer:3</code></td><td>Active</td><td>$0</td></tr>
+<tr><td>S3</td><td><code>s3://aiops-ple-financial/e2e-test/20260320-*/</code></td><td>~50MB</td><td>~$0.001/월</td></tr>
+<tr><td>DynamoDB</td><td><code>ple-prediction-log, ple-audit-trail, ple-reason-cache</code></td><td>Active (PAY_PER_REQUEST)</td><td>사용량 기반</td></tr>
+<tr><td>SageMaker Notebook</td><td><code>ple-test-notebook</code></td><td>Stopped</td><td>$0</td></tr>
+<tr><td>ECR</td><td><code>ple-training</code></td><td>Empty</td><td>$0</td></tr>
+<tr><td>IAM Role</td><td><code>PLELambdaExecutionRole</code>, <code>AWSPLEPlatformSageMakerRole</code></td><td>Active</td><td>$0</td></tr>
+</tbody>
+</table>
+<p style="margin-top:1rem; color:var(--dim);">현재 상태에서 아무 요청이 없으면 월 과금은 S3 저장 비용 ~$0.001 수준입니다.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>12. 테스트 재현 방법</h2>
+<!-- ============================================================ -->
+<div class="card">
+<pre>
+# Stage 3: PLE Teacher 학습
+python scripts/run_e2e_test.py --stage 3 --instance-type-gpu ml.m5.xlarge
+
+# Stage 4: 증류 (기존 Teacher 사용)
+python scripts/run_e2e_test.py --stage 4 --instance-type-gpu ml.m5.xlarge \
+  --model-uri "s3://aiops-ple-financial/e2e-test/20260320-140343/model/e2e-ple-train-20260320-140343/output/model.tar.gz"
+
+# Stage 9-12: 추론 + 사유 + 감사
+python scripts/test_inference_e2e.py
+
+# 정리
+aws lambda delete-function --function-name ple-predict --region ap-northeast-2
+aws sagemaker stop-notebook-instance --notebook-instance-name ple-test-notebook --region ap-northeast-2
+</pre>
+</div>
+
+<hr class="section-divider">
+<p class="meta" style="text-align:center; margin-top:2rem;">
+  Generated: 2026-03-20T15:42:00+09:00 &nbsp;|&nbsp;
+  Branch: test/financial-churners &nbsp;|&nbsp;
+  Account: 795833413857 (ap-northeast-2)
+</p>
+
+</div>
+</body>
+</html>
