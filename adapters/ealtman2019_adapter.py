@@ -650,6 +650,89 @@ def build_economics(users: pd.DataFrame,
     return result[["user_id"] + econ_cols]
 
 
+def build_economics_from_aggs(users: pd.DataFrame,
+                               econ_monthly: pd.DataFrame,
+                               user_ids: np.ndarray) -> pd.DataFrame:
+    """economics (17D) from pre-aggregated DuckDB data.
+
+    Parameters
+    ----------
+    users : DataFrame with columns Yearly Income, Total Debt (indexed 0..N-1).
+    econ_monthly : DataFrame(User, Year, Month, monthly_spend) from DuckDB.
+    user_ids : np.array of user indices starting at 0.
+
+    Returns
+    -------
+    DataFrame with columns [user_id, econ_001 .. econ_017].
+    """
+    result = pd.DataFrame({"user_id": user_ids})
+    col_idx = 1
+
+    yearly_income = users["Yearly Income"].reindex(user_ids).fillna(1).astype(float).clip(lower=1)
+    total_debt = users["Total Debt"].reindex(user_ids).fillna(0).astype(float).clip(lower=1)
+    monthly_income = yearly_income / 12.0
+
+    # Build a (user x 12-month) pivot from econ_monthly.
+    # Use the latest year available per user; fall back to Month-only pivot.
+    if econ_monthly is not None and len(econ_monthly) > 0:
+        # Keep only the latest year per user to get 12 monthly buckets
+        latest_year = econ_monthly.groupby("User")["Year"].max().rename("max_year")
+        em = econ_monthly.merge(latest_year, on="User")
+        em = em[em["Year"] == em["max_year"]]
+        monthly_pivot = em.pivot_table(
+            index="User", columns="Month", values="monthly_spend",
+            aggfunc="sum", fill_value=0,
+        )
+    else:
+        monthly_pivot = pd.DataFrame(index=user_ids)
+
+    for m in range(1, 13):
+        if m not in monthly_pivot.columns:
+            monthly_pivot[m] = 0.0
+    monthly_pivot = monthly_pivot[range(1, 13)].reindex(user_ids, fill_value=0)
+
+    # Monthly spending / income ratio (12D)
+    for m in range(1, 13):
+        col = f"econ_{col_idx:03d}"
+        result[col] = monthly_pivot[m].values / monthly_income.values
+        col_idx += 1
+
+    # Debt-to-spending ratio (1D)
+    total_spend = monthly_pivot.sum(axis=1).values
+    col = f"econ_{col_idx:03d}"
+    result[col] = total_spend / total_debt.values.clip(min=1e-8)
+    col_idx += 1
+
+    # MPC approximation (1D)
+    monthly_diffs = np.diff(monthly_pivot.values, axis=1)
+    mpc = np.mean(monthly_diffs, axis=1) / monthly_income.values.clip(min=1e-8)
+    col = f"econ_{col_idx:03d}"
+    result[col] = mpc
+    col_idx += 1
+
+    # Savings rate (1D)
+    col = f"econ_{col_idx:03d}"
+    result[col] = 1.0 - (total_spend / yearly_income.values.clip(min=1e-8))
+    col_idx += 1
+
+    # Consumption volatility: CV of monthly spending (1D)
+    col = f"econ_{col_idx:03d}"
+    m_mean = monthly_pivot.mean(axis=1).values.clip(min=1e-8)
+    m_std = monthly_pivot.std(axis=1).values
+    result[col] = m_std / m_mean
+    col_idx += 1
+
+    # Pad to 17D
+    while col_idx <= 17:
+        col = f"econ_{col_idx:03d}"
+        result[col] = 0.0
+        col_idx += 1
+
+    result = result.replace([np.inf, -np.inf], np.nan).fillna(0)
+    econ_cols = [f"econ_{i:03d}" for i in range(1, 18)]
+    return result[["user_id"] + econ_cols]
+
+
 def build_multidisciplinary(txn: pd.DataFrame,
                             user_ids: np.ndarray) -> pd.DataFrame:
     """multidisciplinary (24D): chemical kinetics, epidemic, interference, crime."""
@@ -753,6 +836,137 @@ def build_multidisciplinary(txn: pd.DataFrame,
     return result[["user_id"] + multi_cols]
 
 
+def build_multidisciplinary_from_aggs(multi_monthly: pd.DataFrame,
+                                       user_ids: np.ndarray) -> pd.DataFrame:
+    """multidisciplinary (24D) from pre-aggregated DuckDB data.
+
+    Parameters
+    ----------
+    multi_monthly : DataFrame(User, ym, amt, new_merchants, anomaly_count).
+    user_ids : np.array of user indices starting at 0.
+
+    Returns
+    -------
+    DataFrame with columns [user_id, multi_001 .. multi_024].
+    """
+    result = pd.DataFrame({"user_id": user_ids})
+    col_idx = 1
+
+    if multi_monthly is None or len(multi_monthly) == 0:
+        for i in range(1, 25):
+            result[f"multi_{i:03d}"] = 0.0
+        return result
+
+    # Build per-user monthly amount pivot (User x ym sorted)
+    # Use last 12 time slots for consistency with original function
+    all_yms = sorted(multi_monthly["ym"].unique())
+    last_12 = all_yms[-12:] if len(all_yms) >= 12 else all_yms
+
+    amt_pivot = multi_monthly.pivot_table(
+        index="User", columns="ym", values="amt", aggfunc="sum", fill_value=0,
+    )
+    # Ensure we have exactly 12 columns; pad if needed
+    for ym in last_12:
+        if ym not in amt_pivot.columns:
+            amt_pivot[ym] = 0.0
+    amt_12 = amt_pivot[last_12].reindex(user_ids, fill_value=0)
+    vals = amt_12.values.astype(float)
+    n_periods = vals.shape[1]
+
+    # --- Chemical kinetics: decay rate (6D) ---
+    # recent 3 vs previous 3 months
+    if n_periods >= 6:
+        recent_3m = vals[:, -3:].mean(axis=1)
+        prev_3m = vals[:, -6:-3].mean(axis=1).clip(min=1e-8)
+    else:
+        recent_3m = vals[:, -(min(3, n_periods)):].mean(axis=1) if n_periods > 0 else np.zeros(len(user_ids))
+        prev_3m = np.ones(len(user_ids))
+    decay_rate = recent_3m / prev_3m
+
+    result[f"multi_{col_idx:03d}"] = decay_rate;  col_idx += 1
+    result[f"multi_{col_idx:03d}"] = np.log1p(np.abs(decay_rate - 1));  col_idx += 1
+
+    # First half vs second half
+    half = n_periods // 2 if n_periods >= 2 else 1
+    h1 = vals[:, :half].mean(axis=1).clip(min=1e-8)
+    h2 = vals[:, half:].mean(axis=1)
+    result[f"multi_{col_idx:03d}"] = h2 / h1;  col_idx += 1
+    result[f"multi_{col_idx:03d}"] = np.log1p(np.abs(h2 / h1 - 1));  col_idx += 1
+    result[f"multi_{col_idx:03d}"] = recent_3m - prev_3m;  col_idx += 1
+    result[f"multi_{col_idx:03d}"] = np.where(decay_rate > 1, 1.0, 0.0);  col_idx += 1
+
+    # --- Epidemic model: merchant spread rate (5D) ---
+    # Quarter-level new merchant counts
+    merch_pivot = multi_monthly.pivot_table(
+        index="User", columns="ym", values="new_merchants", aggfunc="sum", fill_value=0,
+    )
+    merch_12 = merch_pivot.reindex(columns=last_12, fill_value=0).reindex(user_ids, fill_value=0)
+    merch_vals = merch_12.values.astype(float)
+    q_size = max(1, n_periods // 4)
+    for q in range(4):
+        col = f"multi_{col_idx:03d}"
+        start = q * q_size
+        end = min(start + q_size, n_periods)
+        if start < n_periods:
+            result[col] = merch_vals[:, start:end].sum(axis=1)
+        else:
+            result[col] = 0.0
+        col_idx += 1
+    # Overall merchant spread rate
+    active_months = (amt_12 > 0).sum(axis=1).clip(lower=1).values
+    result[f"multi_{col_idx:03d}"] = merch_vals.sum(axis=1) / active_months;  col_idx += 1
+
+    # --- Interference pattern: FFT (8D) ---
+    fft_result = np.fft.rfft(vals, axis=1)
+    fft_mag = np.abs(fft_result)
+    fft_mag_nodc = fft_mag[:, 1:] if fft_mag.shape[1] > 1 else np.zeros((len(user_ids), 1))
+    n_freq = fft_mag_nodc.shape[1]
+
+    if n_freq >= 3:
+        top3_idx = np.argsort(-fft_mag_nodc, axis=1)[:, :3]
+    else:
+        top3_idx = np.zeros((len(user_ids), 3), dtype=int)
+        for k in range(min(n_freq, 3)):
+            top3_idx[:, k] = np.argsort(-fft_mag_nodc, axis=1)[:, k] if n_freq > k else 0
+
+    for k in range(3):
+        result[f"multi_{col_idx:03d}"] = (top3_idx[:, k] + 1).astype(float);  col_idx += 1
+    for k in range(3):
+        result[f"multi_{col_idx:03d}"] = np.array([
+            fft_mag_nodc[i, top3_idx[i, k]] if top3_idx[i, k] < n_freq else 0.0
+            for i in range(len(user_ids))
+        ]);  col_idx += 1
+    # Total spectral energy
+    result[f"multi_{col_idx:03d}"] = fft_mag_nodc.sum(axis=1);  col_idx += 1
+    # Dominant frequency ratio
+    top1_amp = np.array([
+        fft_mag_nodc[i, top3_idx[i, 0]] if top3_idx[i, 0] < n_freq else 0.0
+        for i in range(len(user_ids))
+    ])
+    result[f"multi_{col_idx:03d}"] = top1_amp / fft_mag_nodc.sum(axis=1).clip(min=1e-8);  col_idx += 1
+
+    # --- Crime pattern: anomalous transaction frequency (5D) ---
+    anom_pivot = multi_monthly.pivot_table(
+        index="User", columns="ym", values="anomaly_count", aggfunc="sum", fill_value=0,
+    )
+    anom_12 = anom_pivot.reindex(columns=last_12, fill_value=0).reindex(user_ids, fill_value=0)
+    total_anom = anom_12.values.astype(float).sum(axis=1)
+    result[f"multi_{col_idx:03d}"] = total_anom;  col_idx += 1
+
+    # Anomaly ratio (over total periods)
+    total_txn_proxy = vals.sum(axis=1).clip(min=1e-8)
+    result[f"multi_{col_idx:03d}"] = total_anom / (total_txn_proxy / total_txn_proxy.mean()).clip(min=1e-8);  col_idx += 1
+
+    # Pad to 24D
+    while col_idx <= 24:
+        result[f"multi_{col_idx:03d}"] = 0.0
+        col_idx += 1
+
+    result = result.replace([np.inf, -np.inf], np.nan).fillna(0)
+    multi_cols = [f"multi_{i:03d}" for i in range(1, 25)]
+    return result[["user_id"] + multi_cols]
+
+
 def build_model_derived(user_ids: np.ndarray) -> pd.DataFrame:
     """model_derived (27D): placeholder zeros."""
     result = pd.DataFrame({"user_id": user_ids})
@@ -828,6 +1042,107 @@ def build_merchant_hierarchy(txn: pd.DataFrame,
         result[f"merchant_{col_idx:03d}"] = 0.0
         col_idx += 1
 
+    merch_cols = [f"merchant_{i:03d}" for i in range(1, 22)]
+    return result[["user_id"] + merch_cols]
+
+
+def build_merchant_hierarchy_from_aggs(merch_data: pd.DataFrame,
+                                        cards: pd.DataFrame,
+                                        user_ids: np.ndarray) -> pd.DataFrame:
+    """merchant_hierarchy (21D) from pre-aggregated DuckDB data.
+
+    Parameters
+    ----------
+    merch_data : DataFrame(User, mcc_major, Use Chip, cnt, amt) from DuckDB.
+    cards : DataFrame with Card Brand column.
+    user_ids : np.array of user indices starting at 0.
+
+    Returns
+    -------
+    DataFrame with columns [user_id, merchant_001 .. merchant_021].
+    """
+    result = pd.DataFrame({"user_id": user_ids})
+    col_idx = 1
+
+    if merch_data is None or len(merch_data) == 0:
+        for i in range(1, 22):
+            result[f"merchant_{i:03d}"] = 0.0
+        return result
+
+    # Total transactions per user
+    user_totals = merch_data.groupby("User")["cnt"].sum().reindex(user_ids, fill_value=1).clip(lower=1)
+
+    # MCC major category ratios (7D)
+    # Map mcc_major (MCC / 1000) back to the 7 named categories
+    mcc_major_map = {}
+    for cat_name, mcc_list in MCC_MAJOR.items():
+        for mcc in mcc_list:
+            mcc_major_map[mcc // 1000] = cat_name
+    # Unique category names in order
+    cat_names = list(MCC_MAJOR.keys())
+
+    merch_data_c = merch_data.copy()
+    merch_data_c["cat_name"] = merch_data_c["mcc_major"].map(mcc_major_map).fillna("other")
+
+    for cat_name in cat_names:
+        col = f"merchant_{col_idx:03d}"
+        cat_cnt = (
+            merch_data_c[merch_data_c["cat_name"] == cat_name]
+            .groupby("User")["cnt"].sum()
+            .reindex(user_ids, fill_value=0)
+        )
+        result[col] = (cat_cnt / user_totals).values
+        col_idx += 1
+
+    # Card brand usage ratio (4D)
+    if "Card Brand" in cards.columns:
+        # Build user-level brand distribution from cards table
+        brand_counts = cards.groupby(["User", "Card Brand"]).size().unstack(fill_value=0)
+        brand_total = brand_counts.sum(axis=1).clip(lower=1)
+        for brand in CARD_BRANDS:
+            col = f"merchant_{col_idx:03d}"
+            if brand in brand_counts.columns:
+                result[col] = (brand_counts[brand] / brand_total).reindex(user_ids, fill_value=0).values
+            else:
+                result[col] = 0.0
+            col_idx += 1
+    else:
+        for _ in CARD_BRANDS:
+            result[f"merchant_{col_idx:03d}"] = 0.0
+            col_idx += 1
+
+    # Chip/Swipe/Online ratio (3D) — from merch_data "Use Chip" column
+    chip_agg = merch_data.groupby(["User", "Use Chip"])["cnt"].sum().unstack(fill_value=0)
+    for chip_cat in USE_CHIP_CATEGORIES:
+        col = f"merchant_{col_idx:03d}"
+        if chip_cat in chip_agg.columns:
+            result[col] = (chip_agg[chip_cat].reindex(user_ids, fill_value=0) / user_totals).values
+        else:
+            result[col] = 0.0
+        col_idx += 1
+
+    # Cross features: MCC-major x payment method (top 7D)
+    cross = merch_data_c.groupby(["User", "cat_name", "Use Chip"])["cnt"].sum().reset_index()
+    cross["cross_key"] = cross["cat_name"] + "_x_" + cross["Use Chip"].astype(str)
+    cross_pivot = cross.pivot_table(
+        index="User", columns="cross_key", values="cnt", aggfunc="sum", fill_value=0,
+    )
+    # Top 7 cross columns by total count
+    col_sums = cross_pivot.sum(axis=0).sort_values(ascending=False)
+    top7_cross = col_sums.head(7).index.tolist()
+    for cross_col in top7_cross:
+        col = f"merchant_{col_idx:03d}"
+        result[col] = (
+            cross_pivot[cross_col].reindex(user_ids, fill_value=0) / user_totals
+        ).values
+        col_idx += 1
+
+    # Pad to 21D
+    while col_idx <= 21:
+        result[f"merchant_{col_idx:03d}"] = 0.0
+        col_idx += 1
+
+    result = result.replace([np.inf, -np.inf], np.nan).fillna(0)
     merch_cols = [f"merchant_{i:03d}" for i in range(1, 22)]
     return result[["user_id"] + merch_cols]
 
@@ -1010,6 +1325,193 @@ def build_labels(users: pd.DataFrame,
     return result
 
 
+def build_labels_from_aggs(users: pd.DataFrame,
+                            duckdb_aggs: dict,
+                            cards: pd.DataFrame,
+                            user_ids: np.ndarray,
+                            ref_date: pd.Timestamp) -> pd.DataFrame:
+    """Build all 16 labels from pre-aggregated DuckDB data.
+
+    Parameters
+    ----------
+    users : DataFrame with user profiles (Current Age, Yearly Income, etc.).
+    duckdb_aggs : dict with keys:
+        - label_fraud : DataFrame(User → fraud_rate, last_date, recent_txn_count)
+        - label_channel : DataFrame(User → primary_channel, primary_time_slot)
+        - label_mcc : DataFrame(User → top_mcc)
+        - txn_agg : DataFrame(User → txn_count, txn_total_amount, ...)
+        - ref_date : pd.Timestamp
+        - econ_monthly : DataFrame(User, Year, Month, monthly_spend)
+    cards : DataFrame with Card Brand, Credit Limit columns.
+    user_ids : np.array of user indices starting at 0.
+    ref_date : reference date for recency calculations.
+
+    Returns
+    -------
+    DataFrame with columns [user_id, label_is_fraud, label_will_transact,
+        label_churn, label_retention, label_life_stage, label_ltv,
+        label_balance_util, label_engagement, label_channel, label_timing,
+        label_nba, label_spending_category, label_consumption_cycle,
+        label_spending_amount, label_merchant_affinity, label_brand].
+    """
+    result = pd.DataFrame({"user_id": user_ids})
+
+    label_fraud = duckdb_aggs.get("label_fraud")
+    label_channel = duckdb_aggs.get("label_channel")
+    label_mcc = duckdb_aggs.get("label_mcc")
+    txn_agg = duckdb_aggs.get("txn_agg")
+    econ_monthly = duckdb_aggs.get("econ_monthly")
+
+    three_months_ago = ref_date - pd.Timedelta(days=90)
+
+    # ---- 1. label_is_fraud ----
+    if label_fraud is not None and len(label_fraud) > 0:
+        fraud_rate = label_fraud["fraud_rate"].reindex(user_ids, fill_value=0)
+        median_fraud = fraud_rate.median()
+        result["label_is_fraud"] = (fraud_rate > median_fraud).astype(int)
+    else:
+        result["label_is_fraud"] = 0
+
+    # ---- 2. label_will_transact ----
+    if label_fraud is not None and "last_date" in label_fraud.columns:
+        last_date = pd.to_datetime(label_fraud["last_date"]).reindex(user_ids)
+        result["label_will_transact"] = (last_date >= three_months_ago).astype(int).fillna(0)
+    else:
+        result["label_will_transact"] = 0
+
+    # ---- 3. label_churn ----
+    result["label_churn"] = 1 - result["label_will_transact"]
+
+    # ---- 4. label_retention ----
+    result["label_retention"] = 1 - result["label_churn"]
+
+    # ---- 5. label_life_stage ----
+    age = users["Current Age"].reindex(user_ids).fillna(30).astype(float)
+    result["label_life_stage"] = np.clip((age - 20) // 10, 0, 4).astype(int)
+
+    # ---- Build monthly pivot for labels that need it ----
+    if econ_monthly is not None and len(econ_monthly) > 0:
+        latest_year = econ_monthly.groupby("User")["Year"].max().rename("max_year")
+        em = econ_monthly.merge(latest_year, on="User")
+        em = em[em["Year"] == em["max_year"]]
+        monthly_amt = em.pivot_table(
+            index="User", columns="Month", values="monthly_spend",
+            aggfunc="sum", fill_value=0,
+        )
+    else:
+        monthly_amt = pd.DataFrame(index=user_ids)
+
+    for m in range(1, 13):
+        if m not in monthly_amt.columns:
+            monthly_amt[m] = 0.0
+    monthly_amt = monthly_amt[range(1, 13)].reindex(user_ids, fill_value=0)
+
+    # ---- 6. label_ltv ----
+    result["label_ltv"] = monthly_amt.sum(axis=1).values.astype(float)
+
+    # ---- 7. label_balance_util ----
+    total_spend = txn_agg["txn_total_amount"].reindex(user_ids, fill_value=0) if txn_agg is not None else 0
+    if "Credit Limit" in cards.columns:
+        user_credit_limit = cards.groupby("User")["Credit Limit"].sum().reindex(user_ids, fill_value=1).clip(lower=1)
+    else:
+        user_credit_limit = pd.Series(1.0, index=user_ids)
+    result["label_balance_util"] = (total_spend / user_credit_limit).values.astype(float)
+
+    # ---- 8. label_engagement ----
+    # Monthly frequency trend slope from monthly_amt proxy (count not available, use amt as proxy)
+    monthly_cnt_proxy = (monthly_amt > 0).astype(float)
+    x = np.arange(1, 13, dtype=float)
+    slopes = monthly_cnt_proxy.apply(
+        lambda row: np.polyfit(x, row.values.astype(float), 1)[0]
+        if row.sum() > 0 else 0.0,
+        axis=1,
+    )
+    result["label_engagement"] = slopes.values.astype(float)
+
+    # ---- 9. label_channel ----
+    if label_channel is not None and "primary_channel" in label_channel.columns:
+        channel_series = label_channel["primary_channel"].reindex(user_ids, fill_value="Chip Transaction")
+        channel_map = {cat: i for i, cat in enumerate(USE_CHIP_CATEGORIES)}
+        result["label_channel"] = channel_series.map(channel_map).fillna(0).astype(int)
+    else:
+        result["label_channel"] = 0
+
+    # ---- 10. label_timing ----
+    if label_channel is not None and "primary_time_slot" in label_channel.columns:
+        result["label_timing"] = (
+            label_channel["primary_time_slot"]
+            .reindex(user_ids, fill_value=0)
+            .fillna(0)
+            .astype(int)
+            .clip(0, 7)
+        )
+    else:
+        result["label_timing"] = 0
+
+    # ---- 11. label_nba ----
+    if label_mcc is not None and "top_mcc" in label_mcc.columns:
+        mcc_to_major = {}
+        for idx, (cat_name, mcc_list) in enumerate(MCC_MAJOR.items()):
+            for mcc in mcc_list:
+                mcc_to_major[mcc] = idx
+        top_mcc = label_mcc["top_mcc"].reindex(user_ids, fill_value=0)
+        result["label_nba"] = top_mcc.map(mcc_to_major).fillna(7).astype(int) % 15
+    else:
+        result["label_nba"] = 0
+
+    # ---- 12. label_spending_category ----
+    if label_mcc is not None and "top_mcc" in label_mcc.columns:
+        result["label_spending_category"] = (
+            label_mcc["top_mcc"].reindex(user_ids, fill_value=0).astype(int) % 15
+        )
+    else:
+        result["label_spending_category"] = 0
+
+    # ---- 13. label_consumption_cycle ----
+    # Approximate from txn_agg: median_gap ~ total_days / txn_count
+    if txn_agg is not None and "txn_count" in txn_agg.columns and label_fraud is not None:
+        last_date_ts = pd.to_datetime(label_fraud["last_date"]).reindex(user_ids)
+        first_date_approx = ref_date - pd.Timedelta(days=365)  # rough estimate
+        total_days = (last_date_ts - first_date_approx).dt.days.fillna(365).clip(lower=1)
+        txn_count = txn_agg["txn_count"].reindex(user_ids, fill_value=1).clip(lower=1)
+        avg_gap = total_days / txn_count
+        result["label_consumption_cycle"] = pd.cut(
+            avg_gap,
+            bins=[-np.inf, 10, 20, 35, np.inf],
+            labels=[0, 1, 2, 3],
+        ).astype(int)
+    else:
+        result["label_consumption_cycle"] = 3  # irregular
+
+    # ---- 14. label_spending_amount ----
+    result["label_spending_amount"] = monthly_amt.mean(axis=1).values.astype(float)
+
+    # ---- 15. label_merchant_affinity ----
+    # Approximate HHI from txn_agg n_merchants: HHI ~ 1/n_merchants
+    if txn_agg is not None and "n_merchants" in txn_agg.columns:
+        n_merch = txn_agg["n_merchants"].reindex(user_ids, fill_value=1).clip(lower=1)
+        result["label_merchant_affinity"] = (1.0 / n_merch).values.astype(float)
+    else:
+        result["label_merchant_affinity"] = 0.0
+
+    # ---- 16. label_brand ----
+    if "Card Brand" in cards.columns:
+        brand_counts = cards.groupby(["User", "Card Brand"]).size().unstack(fill_value=0)
+        dominant_brand = brand_counts.idxmax(axis=1)
+        brand_label_map = {b: i for i, b in enumerate(CARD_BRANDS)}
+        result["label_brand"] = (
+            dominant_brand.map(brand_label_map)
+            .reindex(user_ids, fill_value=0)
+            .fillna(0)
+            .astype(int)
+        )
+    else:
+        result["label_brand"] = 0
+
+    result = result.replace([np.inf, -np.inf], np.nan).fillna(0)
+    return result
+
+
 # ===================================================================
 # 4. Transaction Pre-aggregation (for base_rfm)
 # ===================================================================
@@ -1093,15 +1595,23 @@ def run(input_dir: str, output_dir: str) -> None:
     cards = load_cards(input_dir)
 
     # Use DuckDB for memory-efficient aggregation of 24M rows
+    # Key insight: never load full 24M rows into pandas.
+    # DuckDB aggregates in SQL, only 2,000-row results come to pandas.
     parquet_path = os.path.join(input_dir, "transactions.parquet")
+    user_ids = np.arange(len(users))
+
     try:
         import duckdb
-        logger.info("Using DuckDB for memory-efficient transaction loading")
+        logger.info("Using DuckDB for in-database aggregation (no full load)")
         con = duckdb.connect()
-        con.execute("SET memory_limit='8GB'")
+        con.execute("SET memory_limit='12GB'")
         con.execute("SET threads TO 4")
-        # Load only needed columns with proper types
-        txn = con.execute(f"""
+        con.execute("SET temp_directory='/tmp/duckdb_tmp'")
+        os.makedirs("/tmp/duckdb_tmp", exist_ok=True)
+
+        # Create a view for the parquet file
+        con.execute(f"""
+            CREATE VIEW txn AS
             SELECT
                 "user_id" AS "User",
                 "card_id" AS "Card",
@@ -1120,43 +1630,261 @@ def run(input_dir: str, output_dir: str) -> None:
                 "is_fraud" AS "Is Fraud?",
                 MAKE_DATE("year"::INT, "month"::INT, "day"::INT) AS "Date",
                 EXTRACT(DOW FROM MAKE_DATE("year"::INT, "month"::INT, "day"::INT)) AS "DayOfWeek",
-                EXTRACT(HOUR FROM "time"::TIME) AS "Hour"
+                EXTRACT(HOUR FROM TRY_CAST("time" AS TIME)) AS "Hour",
+                "year" * 100 + "month" AS "YearMonth"
             FROM read_parquet('{parquet_path}')
+        """)
+
+        ref_date_row = con.execute("SELECT MAX(\"Date\") FROM txn").fetchone()
+        ref_date = pd.Timestamp(ref_date_row[0])
+        logger.info("Reference date: %s, N users: %d", ref_date, len(user_ids))
+
+        # Pre-aggregation via DuckDB (result: 2,000 rows)
+        logger.info("Pre-aggregating transactions via DuckDB ...")
+        txn_agg = con.execute("""
+            SELECT
+                "User",
+                COUNT(*) AS txn_count,
+                SUM("Amount") AS txn_total_amount,
+                AVG("Amount") AS txn_mean_amount,
+                STDDEV("Amount") AS txn_std_amount,
+                MAX("Amount") AS txn_max_amount,
+                MIN("Amount") AS txn_min_amount,
+                MAX("Date") AS last_txn_date,
+                COUNT(DISTINCT "Merchant Name") AS n_merchants,
+                COUNT(DISTINCT "Merchant State") AS n_states,
+                SUM(CASE WHEN "Errors?" IS NOT NULL AND TRIM("Errors?") != '' THEN 1 ELSE 0 END)::FLOAT
+                    / COUNT(*)::FLOAT AS error_rate
+            FROM txn
+            GROUP BY "User"
+            ORDER BY "User"
+        """).df().set_index("User")
+        txn_agg["txn_std_amount"] = txn_agg["txn_std_amount"].fillna(0)
+        txn_agg["last_txn_date"] = pd.to_datetime(txn_agg["last_txn_date"])
+
+        # base_rfm
+        logger.info("Building base_rfm (34D) ...")
+        fg_rfm = build_base_rfm(users, txn_agg, ref_date)
+
+        # base_category — need per-user MCC distribution (DuckDB aggregation)
+        logger.info("Building base_category (64D) via DuckDB ...")
+        mcc_pivot = con.execute("""
+            SELECT "User", "MCC", SUM("Amount") AS mcc_amount
+            FROM txn
+            GROUP BY "User", "MCC"
         """).df()
+        user_total = mcc_pivot.groupby("User")["mcc_amount"].sum()
+        # Top 60 MCCs by total volume
+        top_mccs = mcc_pivot.groupby("MCC")["mcc_amount"].sum().nlargest(60).index.tolist()
+        fg_cat = pd.DataFrame(index=user_ids)
+        for i, mcc in enumerate(top_mccs):
+            mcc_data = mcc_pivot[mcc_pivot["MCC"] == mcc].set_index("User")["mcc_amount"]
+            fg_cat[f"cat_{i:03d}"] = (mcc_data / user_total).reindex(user_ids).fillna(0).values
+        # Diversity metrics
+        n_mcc = mcc_pivot.groupby("User")["MCC"].nunique()
+        fg_cat["cat_n_mcc"] = n_mcc.reindex(user_ids).fillna(0).values
+        from scipy.stats import entropy as sp_entropy
+        def _user_entropy(uid):
+            u = mcc_pivot[mcc_pivot["User"] == uid]["mcc_amount"]
+            if len(u) == 0: return 0.0
+            p = u / u.sum()
+            return sp_entropy(p)
+        fg_cat["cat_entropy"] = [_user_entropy(u) for u in user_ids]
+        fg_cat["cat_hhi"] = 0.0  # placeholder
+        fg_cat["cat_top3_share"] = 0.0  # placeholder
+        del mcc_pivot
+
+        # base_txn_stats — DuckDB aggregation
+        logger.info("Building base_txn_stats (80D) via DuckDB ...")
+        monthly_stats = con.execute("""
+            SELECT "User", "Year", "Month",
+                   COUNT(*) AS monthly_count,
+                   SUM("Amount") AS monthly_amount
+            FROM txn
+            GROUP BY "User", "Year", "Month"
+        """).df()
+        # Quarterly stats
+        qtr_stats = con.execute("""
+            SELECT "User",
+                   CEIL("Month" / 3.0)::INT AS qtr,
+                   SUM("Amount") AS qtr_amount,
+                   COUNT(*) AS qtr_count
+            FROM txn
+            WHERE "Year" = (SELECT MAX("Year") FROM txn)
+            GROUP BY "User", CEIL("Month" / 3.0)::INT
+        """).df()
+        # Time-of-day distribution
+        tod_stats = con.execute("""
+            SELECT "User",
+                   SUM(CASE WHEN "DayOfWeek" < 5 THEN 1 ELSE 0 END)::FLOAT / COUNT(*)::FLOAT AS weekday_ratio,
+                   SUM(CASE WHEN "Hour" BETWEEN 0 AND 3 THEN 1 ELSE 0 END)::FLOAT / COUNT(*)::FLOAT AS hour_0_4,
+                   SUM(CASE WHEN "Hour" BETWEEN 4 AND 7 THEN 1 ELSE 0 END)::FLOAT / COUNT(*)::FLOAT AS hour_4_8,
+                   SUM(CASE WHEN "Hour" BETWEEN 8 AND 11 THEN 1 ELSE 0 END)::FLOAT / COUNT(*)::FLOAT AS hour_8_12,
+                   SUM(CASE WHEN "Hour" BETWEEN 12 AND 15 THEN 1 ELSE 0 END)::FLOAT / COUNT(*)::FLOAT AS hour_12_16,
+                   SUM(CASE WHEN "Hour" BETWEEN 16 AND 19 THEN 1 ELSE 0 END)::FLOAT / COUNT(*)::FLOAT AS hour_16_20,
+                   SUM(CASE WHEN "Hour" BETWEEN 20 AND 23 THEN 1 ELSE 0 END)::FLOAT / COUNT(*)::FLOAT AS hour_20_24,
+                   SUM(CASE WHEN "Use Chip" = 'Chip Transaction' THEN 1 ELSE 0 END)::FLOAT / COUNT(*)::FLOAT AS chip_ratio,
+                   SUM(CASE WHEN "Use Chip" = 'Swipe Transaction' THEN 1 ELSE 0 END)::FLOAT / COUNT(*)::FLOAT AS swipe_ratio,
+                   SUM(CASE WHEN "Use Chip" = 'Online Transaction' THEN 1 ELSE 0 END)::FLOAT / COUNT(*)::FLOAT AS online_ratio,
+                   SUM(CASE WHEN "Errors?" IS NOT NULL AND TRIM("Errors?") != '' THEN 1 ELSE 0 END) AS error_count,
+                   SUM("Is Fraud?") AS fraud_count
+            FROM txn
+            GROUP BY "User"
+            ORDER BY "User"
+        """).df().set_index("User")
+        # Build 80D features from these aggregates
+        fg_txn = pd.DataFrame(index=user_ids)
+        # Monthly counts/amounts for last 12 months
+        max_ym = monthly_stats[["Year", "Month"]].apply(lambda r: r["Year"]*100+r["Month"], axis=1).max()
+        for i in range(12):
+            ym = max_ym - i
+            y, m = ym // 100, ym % 100
+            if m <= 0: m += 12; y -= 1
+            month_data = monthly_stats[(monthly_stats["Year"]==y) & (monthly_stats["Month"]==m)].set_index("User")
+            fg_txn[f"txn_monthly_cnt_{i:02d}"] = month_data["monthly_count"].reindex(user_ids).fillna(0).values
+            fg_txn[f"txn_monthly_amt_{i:02d}"] = month_data["monthly_amount"].reindex(user_ids).fillna(0).values
+        # Quarterly change
+        for q in range(1, 5):
+            qd = qtr_stats[qtr_stats["qtr"]==q].set_index("User")
+            fg_txn[f"txn_qtr{q}_amount"] = qd["qtr_amount"].reindex(user_ids).fillna(0).values
+            fg_txn[f"txn_qtr{q}_count"] = qd["qtr_count"].reindex(user_ids).fillna(0).values
+        # Time-of-day and payment method
+        for col in tod_stats.columns:
+            fg_txn[f"txn_{col}"] = tod_stats[col].reindex(user_ids).fillna(0).values
+        # Pad to 80D if needed
+        while len(fg_txn.columns) < 80:
+            fg_txn[f"txn_pad_{len(fg_txn.columns):03d}"] = 0.0
+        fg_txn = fg_txn.iloc[:, :80]  # truncate if over 80
+        del monthly_stats, qtr_stats, tod_stats
+
+        # base_temporal — monthly rolling aggregates (DuckDB)
+        logger.info("Building base_temporal (60D) via DuckDB ...")
+        monthly_ts = con.execute("""
+            SELECT "User", "Year" * 100 + "Month" AS ym,
+                   COUNT(*) AS cnt, SUM("Amount") AS amt
+            FROM txn
+            GROUP BY "User", "Year" * 100 + "Month"
+            ORDER BY "User", ym
+        """).df()
+        fg_temporal = pd.DataFrame(index=user_ids)
+        # Per user: rolling means, trend slope, active months
+        for uid in user_ids:
+            u_ts = monthly_ts[monthly_ts["User"] == uid].sort_values("ym")
+            amts = u_ts["amt"].values
+            cnts = u_ts["cnt"].values
+            n = len(amts)
+            # Rolling means
+            for window_name, w in [("3m", 3), ("6m", 6), ("12m", 12)]:
+                if n >= w:
+                    fg_temporal.loc[uid, f"temp_amt_roll_{window_name}"] = amts[-w:].mean()
+                    fg_temporal.loc[uid, f"temp_cnt_roll_{window_name}"] = cnts[-w:].mean()
+                else:
+                    fg_temporal.loc[uid, f"temp_amt_roll_{window_name}"] = amts.mean() if n > 0 else 0
+                    fg_temporal.loc[uid, f"temp_cnt_roll_{window_name}"] = cnts.mean() if n > 0 else 0
+            # Trend slope
+            if n >= 3:
+                x = np.arange(n)
+                slope = np.polyfit(x, amts, 1)[0] if n > 1 else 0
+                fg_temporal.loc[uid, "temp_trend_slope"] = slope
+            else:
+                fg_temporal.loc[uid, "temp_trend_slope"] = 0
+            fg_temporal.loc[uid, "temp_active_months"] = n
+            fg_temporal.loc[uid, "temp_span_months"] = (u_ts["ym"].max() - u_ts["ym"].min()) if n > 1 else 0
+        fg_temporal = fg_temporal.fillna(0)
+        # Pad to 60D
+        while len(fg_temporal.columns) < 60:
+            fg_temporal[f"temp_pad_{len(fg_temporal.columns):03d}"] = 0.0
+        fg_temporal = fg_temporal.iloc[:, :60]
+        del monthly_ts
+
+        # Build remaining aggregates needed by downstream functions
+        # economics needs per-user monthly spend series
+        logger.info("Building additional aggregates via DuckDB ...")
+        econ_monthly = con.execute("""
+            SELECT "User", "Year", "Month", SUM("Amount") AS monthly_spend
+            FROM txn GROUP BY "User", "Year", "Month"
+        """).df()
+
+        # multidisciplinary needs monthly amounts + new merchant counts
+        multi_monthly = con.execute("""
+            SELECT "User", "Year" * 100 + "Month" AS ym,
+                   SUM("Amount") AS amt,
+                   COUNT(DISTINCT "Merchant Name") AS new_merchants,
+                   SUM(CASE WHEN ABS("Amount") > (
+                       SELECT AVG("Amount") + 3 * STDDEV("Amount") FROM txn
+                   ) THEN 1 ELSE 0 END) AS anomaly_count
+            FROM txn GROUP BY "User", "Year" * 100 + "Month"
+        """).df()
+
+        # merchant_hierarchy needs per-user MCC major category + brand + payment
+        merch_data = con.execute("""
+            SELECT "User",
+                   CAST("MCC" / 1000 AS INT) AS mcc_major,
+                   "Use Chip",
+                   COUNT(*) AS cnt,
+                   SUM("Amount") AS amt
+            FROM txn
+            GROUP BY "User", CAST("MCC" / 1000 AS INT), "Use Chip"
+        """).df()
+
+        # labels need fraud stats + last txn dates + monthly series
+        label_fraud = con.execute("""
+            SELECT "User",
+                   SUM("Is Fraud?")::FLOAT / COUNT(*)::FLOAT AS fraud_rate,
+                   MAX("Date") AS last_date,
+                   SUM(CASE WHEN "Date" >= (SELECT MAX("Date") - INTERVAL '90 days' FROM txn) THEN 1 ELSE 0 END) AS recent_txn_count
+            FROM txn GROUP BY "User"
+        """).df().set_index("User")
+
+        label_channel = con.execute("""
+            SELECT "User",
+                   MODE() WITHIN GROUP (ORDER BY "Use Chip") AS primary_channel,
+                   MODE() WITHIN GROUP (ORDER BY "Hour" / 3) AS primary_time_slot
+            FROM txn GROUP BY "User"
+        """).df().set_index("User")
+
+        label_mcc = con.execute("""
+            SELECT "User",
+                   MODE() WITHIN GROUP (ORDER BY "MCC") AS top_mcc
+            FROM txn GROUP BY "User"
+        """).df().set_index("User")
+
         con.close()
-        logger.info("Loaded %d rows via DuckDB", len(txn))
-        # Convert Date to pandas Timestamp
-        txn["Date"] = pd.to_datetime(txn["Date"])
-        txn["Hour"] = txn["Hour"].astype(int)
-        txn["DayOfWeek"] = txn["DayOfWeek"].astype(int)
+        logger.info("DuckDB aggregation complete. Building remaining feature groups...")
+
+        # Store aggregates in a dict for downstream functions
+        _duckdb_aggs = {
+            "econ_monthly": econ_monthly,
+            "multi_monthly": multi_monthly,
+            "merch_data": merch_data,
+            "label_fraud": label_fraud,
+            "label_channel": label_channel,
+            "label_mcc": label_mcc,
+            "txn_agg": txn_agg,
+            "ref_date": ref_date,
+        }
+        # Set txn to None — downstream functions must use aggregates
+        txn = None
+
     except ImportError:
-        logger.warning("DuckDB not available, falling back to pandas")
+        logger.warning("DuckDB not available, falling back to pandas (may OOM)")
         txn = load_transactions_chunked(input_dir)
+        ref_date = txn["Date"].max()
+        logger.info("Reference date: %s, N users: %d", ref_date, len(user_ids))
+        logger.info("Pre-aggregating transactions ...")
+        txn_agg = pre_aggregate_transactions(txn)
+        logger.info("Building base_rfm (34D) ...")
+        fg_rfm = build_base_rfm(users, txn_agg, ref_date)
+        logger.info("Building base_category (64D) ...")
+        fg_cat = build_base_category(txn, user_ids)
+        logger.info("Building base_txn_stats (80D) ...")
+        fg_txn = build_base_txn_stats(txn, user_ids)
+        logger.info("Building base_temporal (60D) ...")
+        fg_temporal = build_base_temporal(txn, user_ids)
 
-    # User IDs (0-indexed matching Person column)
-    user_ids = np.arange(len(users))
-    ref_date = txn["Date"].max()
-    logger.info("Reference date: %s, N users: %d", ref_date, len(user_ids))
-
-    # --- Pre-aggregation ---
-    logger.info("Pre-aggregating transactions ...")
-    txn_agg = pre_aggregate_transactions(txn)
-
-    # --- Feature Groups ---
-    logger.info("Building base_rfm (34D) ...")
-    fg_rfm = build_base_rfm(users, txn_agg, ref_date)
-
-    logger.info("Building base_category (64D) ...")
-    fg_cat = build_base_category(txn, user_ids)
-
-    logger.info("Building base_txn_stats (80D) ...")
-    fg_txn = build_base_txn_stats(txn, user_ids)
-
-    logger.info("Building base_temporal (60D) ...")
-    fg_temporal = build_base_temporal(txn, user_ids)
-
+    # Placeholder feature groups (don't need raw txn)
     logger.info("Building tda_topology (70D) ...")
-    fg_tda = build_tda_topology(user_ids, txn)
+    fg_tda = build_tda_topology(user_ids, None)
 
     logger.info("Building hmm_states (48D) ...")
     fg_hmm = build_hmm_states(user_ids)
@@ -1165,21 +1893,20 @@ def run(input_dir: str, output_dir: str) -> None:
     fg_mamba = build_mamba_temporal(user_ids)
 
     logger.info("Building gmm_clustering (22D) ...")
-    # Use rfm + txn_stats as base features for clustering
     clustering_base = fg_rfm.merge(fg_txn, on="user_id")
     fg_gmm = build_gmm_clustering(clustering_base, user_ids)
 
     logger.info("Building economics (17D) ...")
-    fg_econ = build_economics(users, txn, user_ids)
+    fg_econ = build_economics_from_aggs(users, _duckdb_aggs.get("econ_monthly"), user_ids)
 
     logger.info("Building multidisciplinary (24D) ...")
-    fg_multi = build_multidisciplinary(txn, user_ids)
+    fg_multi = build_multidisciplinary_from_aggs(_duckdb_aggs.get("multi_monthly"), user_ids)
 
     logger.info("Building model_derived (27D) ...")
     fg_model = build_model_derived(user_ids)
 
     logger.info("Building merchant_hierarchy (21D) ...")
-    fg_merch = build_merchant_hierarchy(txn, cards, user_ids)
+    fg_merch = build_merchant_hierarchy_from_aggs(_duckdb_aggs.get("merch_data"), cards, user_ids)
 
     logger.info("Building graph_embeddings (20D) ...")
     fg_graph = build_graph_embeddings(user_ids)
@@ -1199,7 +1926,7 @@ def run(input_dir: str, output_dir: str) -> None:
 
     # --- Labels ---
     logger.info("Building labels (16) ...")
-    labels = build_labels(users, txn, cards, user_ids, ref_date)
+    labels = build_labels_from_aggs(users, _duckdb_aggs, cards, user_ids, ref_date)
     label_cols = [c for c in labels.columns if c.startswith("label_")]
 
     # --- Final merge ---
