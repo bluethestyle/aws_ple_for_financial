@@ -412,8 +412,8 @@ class StudentTrainer:
                 )
                 continue
 
-            soft = self._soft_labels[task_name]
-            hard = hard_labels[task_name]
+            soft = np.asarray(self._soft_labels[task_name]).squeeze()
+            hard = np.asarray(hard_labels[task_name]).squeeze()
 
             # Build LGBM params
             params = dict(self.config.lgbm_params)
