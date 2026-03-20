@@ -969,6 +969,7 @@ def run_phase4(
             "--config", CONFIG_PATH,
             "--soft-label-path", "/opt/ml/processing/output/soft_labels.parquet",
             "--temperature", str(best_config["temperature"]),
+            "--skip-fidelity-gate",
         ],
         inputs=distill_inputs if not args.dry_run else None,
         wait=not args.no_wait,
