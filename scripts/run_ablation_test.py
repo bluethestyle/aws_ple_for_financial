@@ -574,20 +574,28 @@ def run_phase0(s3_base: str, ts: str, args: argparse.Namespace) -> Dict[str, Any
     job_name = f"ablation-p0-data-prep-{ts}"
     s3_output = f"{s3_base}/phase0/data/"
 
+    from sagemaker.processing import ProcessingInput
+
     result = _submit_processing_job(
         job_name=job_name,
-        script="scripts/convert_raw_to_parquet.py",
+        script="adapters/ealtman2019_adapter.py",
         s3_output=s3_output,
         instance_type=args.instance_type_cpu,
+        inputs=[
+            ProcessingInput(
+                source=f"s3://{S3_BUCKET}/data/raw/ealtman2019/",
+                destination="/opt/ml/processing/input/raw",
+            ),
+        ],
         arguments=[
+            "--input-dir", "/opt/ml/processing/input/raw",
             "--output-dir", "/opt/ml/processing/output",
-            "--dataset", "ealtman2019",
         ],
         wait=not args.no_wait,
         dry_run=args.dry_run,
     )
 
-    result["data_uri"] = f"s3://{S3_BUCKET}/data/adapted/ealtman2019_features.parquet"
+    result["data_uri"] = f"{s3_output}ealtman2019_features.parquet"
     return result
 
 
