@@ -135,6 +135,8 @@ def load_transactions_chunked(input_dir: str) -> pd.DataFrame:
                 columns={"Year": "year", "Month": "month", "Day": "day"}
             )
         )
+        df["DayOfWeek"] = df["Date"].dt.dayofweek
+        df["YearMonth"] = df["Year"] * 100 + df["Month"]
         logger.info("Loaded %d rows from Parquet", len(df))
         return df
 
