@@ -224,7 +224,10 @@ def load_data(
         return loader
 
     # ---- Legacy TensorDataset path (backward compatible) ----
-    feature_cols = [c for c in df.columns if c not in label_cols]
+    features_config = config.get("features", {})
+    id_cols = set(features_config.get("id_cols", []))
+    exclude_cols = set(label_cols) | id_cols
+    feature_cols = [c for c in df.columns if c not in exclude_cols]
 
     features = torch.tensor(
         df[feature_cols].values, dtype=torch.float32,
