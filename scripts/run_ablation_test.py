@@ -504,7 +504,7 @@ def _submit_processing_job(
     wrapper.write_text(f"""\
 import subprocess, sys, os, tarfile
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
-                       "pyyaml", "omegaconf", "lightgbm", "pyarrow", "scipy", "scikit-learn"])
+                       "pyyaml", "omegaconf", "lightgbm", "pyarrow", "scipy", "scikit-learn", "duckdb"])
 src_tar = "/opt/ml/processing/input/source/source_pkg.tar.gz"
 src_dir = "/opt/ml/processing/source"
 os.makedirs(src_dir, exist_ok=True)

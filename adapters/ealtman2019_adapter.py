@@ -1091,7 +1091,47 @@ def run(input_dir: str, output_dir: str) -> None:
     # --- Load data ---
     users = load_users(input_dir)
     cards = load_cards(input_dir)
-    txn = load_transactions_chunked(input_dir)
+
+    # Use DuckDB for memory-efficient aggregation of 24M rows
+    parquet_path = os.path.join(input_dir, "transactions.parquet")
+    try:
+        import duckdb
+        logger.info("Using DuckDB for memory-efficient transaction loading")
+        con = duckdb.connect()
+        con.execute("SET memory_limit='8GB'")
+        con.execute("SET threads TO 4")
+        # Load only needed columns with proper types
+        txn = con.execute(f"""
+            SELECT
+                "user_id" AS "User",
+                "card_id" AS "Card",
+                "year" AS "Year",
+                "month" AS "Month",
+                "day" AS "Day",
+                "time" AS "Time",
+                "amount" AS "Amount",
+                "use_chip" AS "Use Chip",
+                "merchant_id" AS "Merchant Name",
+                "merchant_city" AS "Merchant City",
+                "merchant_state" AS "Merchant State",
+                "zip" AS "Zip",
+                "mcc" AS "MCC",
+                "errors" AS "Errors?",
+                "is_fraud" AS "Is Fraud?",
+                MAKE_DATE("year"::INT, "month"::INT, "day"::INT) AS "Date",
+                EXTRACT(DOW FROM MAKE_DATE("year"::INT, "month"::INT, "day"::INT)) AS "DayOfWeek",
+                EXTRACT(HOUR FROM "time"::TIME) AS "Hour"
+            FROM read_parquet('{parquet_path}')
+        """).df()
+        con.close()
+        logger.info("Loaded %d rows via DuckDB", len(txn))
+        # Convert Date to pandas Timestamp
+        txn["Date"] = pd.to_datetime(txn["Date"])
+        txn["Hour"] = txn["Hour"].astype(int)
+        txn["DayOfWeek"] = txn["DayOfWeek"].astype(int)
+    except ImportError:
+        logger.warning("DuckDB not available, falling back to pandas")
+        txn = load_transactions_chunked(input_dir)
 
     # User IDs (0-indexed matching Person column)
     user_ids = np.arange(len(users))
