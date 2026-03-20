@@ -171,8 +171,17 @@ class StudentTrainer:
         mlp_cfg = expert_cfg.get("mlp", {})
         ple_yaml = model_cfg.get("ple", {})
 
-        input_dim = ple_dict.get("input_dim", 128)
         task_names = ple_dict.get("task_names", [])
+
+        # Detect actual input_dim from saved model weights
+        # The first shared expert's first linear layer has shape (hidden, input_dim)
+        state_dict = checkpoint["model_state_dict"]
+        input_dim = ple_dict.get("input_dim", 128)
+        for key, tensor in state_dict.items():
+            if "extraction_layers.0.shared_experts.0" in key and "weight" in key:
+                input_dim = tensor.shape[1]  # Linear weight is (out, in)
+                logger.info("Detected input_dim=%d from state_dict key %s", input_dim, key)
+                break
         expert_hidden = mlp_cfg.get("hidden_dims", [input_dim * 2, input_dim])
         expert_output = ple_yaml.get("extraction_dim", 32)
 
