@@ -27,6 +27,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from core.model.ple.config import PLEConfig, ExpertConfig
 from core.model.ple.model import PLEModel, PLEInput, PLEOutput
 from core.pipeline.config import TaskSpec
 from core.training.distillation import DistillationConfig, SoftLabelGenerator
@@ -164,8 +165,6 @@ class StudentTrainer:
         # and "config" as the full raw YAML dict.
         ple_dict = checkpoint.get("ple_config", {})
         raw_config = checkpoint.get("config", {})
-
-        from core.model.ple.config import ExpertConfig
 
         model_cfg = raw_config.get("model", {})
         expert_cfg = model_cfg.get("expert_config", {})
