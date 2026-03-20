@@ -22,7 +22,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +152,7 @@ class ComplianceChecker:
     def __init__(
         self,
         compliance_items: Optional[Dict[str, Dict[str, Any]]] = None,
-        code_root: Optional[str | Path] = None,
+        code_root: Optional[Union[str, Path]] = None,
         s3_bucket: Optional[str] = None,
         s3_prefix: str = "compliance_reports",
     ) -> None:

@@ -30,7 +30,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -320,7 +320,7 @@ class ModelEvaluator:
     True
     """
 
-    def __init__(self, task_specs: Sequence[dict | TaskEvalSpec]):
+    def __init__(self, task_specs: Sequence[Union[dict, TaskEvalSpec]]):
         self.task_specs: List[TaskEvalSpec] = []
         for spec in task_specs:
             if isinstance(spec, TaskEvalSpec):
@@ -499,7 +499,7 @@ class ModelEvaluator:
         }
 
     @staticmethod
-    def report_to_json(report: Dict[str, Any], path: str | Path) -> None:
+    def report_to_json(report: Dict[str, Any], path: Union[str, Path]) -> None:
         """Serialize an evaluation report to JSON.
 
         Parameters

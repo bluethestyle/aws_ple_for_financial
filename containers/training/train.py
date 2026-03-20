@@ -224,7 +224,10 @@ def load_data(
         return loader
 
     # ---- Legacy TensorDataset path (backward compatible) ----
-    feature_cols = [c for c in df.columns if c not in label_cols]
+    features_config = config.get("features", {})
+    id_cols = set(features_config.get("id_cols", []))
+    exclude_cols = set(label_cols) | id_cols
+    feature_cols = [c for c in df.columns if c not in exclude_cols]
 
     features = torch.tensor(
         df[feature_cols].values, dtype=torch.float32,
@@ -548,7 +551,11 @@ def main() -> None:
     hp = get_hyperparameters()
 
     model_dir = os.environ.get("SM_MODEL_DIR", "/opt/ml/model")
-    train_dir = os.environ.get("SM_CHANNEL_TRAIN", "/opt/ml/input/data/train")
+    # SageMaker channel name can be "train" or "training"
+    train_dir = os.environ.get(
+        "SM_CHANNEL_TRAIN",
+        os.environ.get("SM_CHANNEL_TRAINING", "/opt/ml/input/data/training"),
+    )
     val_dir = os.environ.get(
         "SM_CHANNEL_VALIDATION", "/opt/ml/input/data/validation",
     )
@@ -567,11 +574,33 @@ def main() -> None:
     logger.info(f"Checkpoint dir: {checkpoint_dir}")
 
     # -- Parse config from hyperparameters --
+    # Supports three formats:
+    #   1. JSON string (inline config via hyperparameters)
+    #   2. YAML file path (relative to source_dir, e.g. "configs/test/xxx.yaml")
+    #   3. Dict (already parsed)
     config_str = hp.get("config", "{}")
-    if isinstance(config_str, str):
-        config = json.loads(config_str)
-    else:
+    if isinstance(config_str, dict):
         config = config_str
+    elif isinstance(config_str, str) and (
+        config_str.endswith(".yaml") or config_str.endswith(".yml")
+    ):
+        import yaml
+        config_path = Path(config_str)
+        if not config_path.exists():
+            # SageMaker copies source_dir to /opt/ml/code/
+            config_path = Path("/opt/ml/code") / config_str
+        if not config_path.exists():
+            code_dir = os.environ.get("SM_MODULE_DIR", "/opt/ml/code")
+            config_path = Path(code_dir).parent / config_str
+        if config_path.exists():
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+            logger.info("Config loaded from YAML: %s", config_path)
+        else:
+            logger.error("Config YAML not found: %s", config_str)
+            config = {}
+    else:
+        config = json.loads(config_str) if config_str else {}
 
     task_name = hp.get("task_name", config.get("task_name", "default"))
     batch_size = int(hp.get("batch_size", 2048))
@@ -683,28 +712,73 @@ def main() -> None:
     tasks = config.get("tasks", [])
     task_names = [t["name"] for t in tasks]
 
-    # Determine input dimension from data
-    sample_features = train_dataset[0][0] if hasattr(train_dataset, '__getitem__') else None
-    if sample_features is not None:
-        input_dim = sample_features.shape[0] if isinstance(sample_features, torch.Tensor) else len(sample_features)
+    # Determine input dimension: config takes precedence over auto-detection
+    # (auto-detect may include ID columns, causing dimension mismatch)
+    features_config = config.get("features", {})
+    if features_config.get("input_dim"):
+        input_dim = int(features_config["input_dim"])
     else:
-        input_dim = model_config.get("expert_hidden_dim", 128)
+        sample_features = train_dataset[0][0] if hasattr(train_dataset, '__getitem__') else None
+        if sample_features is not None:
+            input_dim = sample_features.shape[0] if isinstance(sample_features, torch.Tensor) else len(sample_features)
+        else:
+            input_dim = model_config.get("expert_hidden_dim", 128)
+    logger.info("Model input_dim: %d", input_dim)
 
-    # Build PLEConfig
-    ple_config = PLEConfig(
-        input_dim=input_dim,
-        task_names=task_names,
-        num_shared_experts=model_config.get("num_shared_experts", 2),
-        num_extraction_layers=model_config.get("num_layers", 2),
+    # Build PLEConfig with proper expert dimensions
+    ple_cfg = model_config.get("ple", {})
+    expert_cfg = model_config.get("expert_config", {})
+    tower_cfg = model_config.get("task_tower", {})
+
+    # Expert hidden dims — must be compatible with input_dim
+    mlp_cfg = expert_cfg.get("mlp", {})
+    expert_hidden = mlp_cfg.get("hidden_dims", [input_dim * 2, input_dim])
+    expert_output = ple_cfg.get("extraction_dim", 32)
+
+    from core.model.ple.config import ExpertConfig
+
+    shared_expert = ExpertConfig(
+        hidden_dims=expert_hidden,
+        output_dim=expert_output,
+        dropout=model_config.get("dropout", 0.1),
+    )
+    task_expert = ExpertConfig(
+        hidden_dims=expert_hidden,
+        output_dim=expert_output,
         dropout=model_config.get("dropout", 0.1),
     )
 
-    # Set task overrides
+    ple_config = PLEConfig(
+        input_dim=input_dim,
+        task_names=task_names,
+        num_shared_experts=ple_cfg.get("num_shared_experts", 2),
+        num_extraction_layers=ple_cfg.get("num_layers", 2),
+        num_task_experts_per_task=ple_cfg.get("num_task_experts", 1),
+        shared_expert=shared_expert,
+        task_expert=task_expert,
+        dropout=model_config.get("dropout", 0.1),
+    )
+
+    # Set task overrides (type + output_dim)
     for t in tasks:
         ple_config.task_overrides[t["name"]] = {
             "task_type": t.get("type", "binary"),
             "output_dim": t.get("num_classes", 1),
         }
+
+    # Task tower dims
+    default_tower_dims = tower_cfg.get("default_dims", [expert_output, expert_output // 2])
+    ple_config.task_tower.default_dims = default_tower_dims
+
+    logger.info(
+        "PLEConfig: input_dim=%d, expert_hidden=%s, expert_output=%d, "
+        "shared=%d, task_experts=%d, layers=%d, tower=%s",
+        input_dim, expert_hidden, expert_output,
+        ple_config.num_shared_experts,
+        ple_config.num_task_experts_per_task,
+        ple_config.num_extraction_layers,
+        default_tower_dims,
+    )
 
     model = PLEModel(ple_config).to(device)
     logger.info(model.summary())

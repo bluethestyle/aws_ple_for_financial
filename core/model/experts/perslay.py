@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -142,7 +142,7 @@ class WeightFunction(nn.Module):
         )
 
     def forward(
-        self, points: torch.Tensor, mask: torch.Tensor | None = None
+        self, points: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Parameters
@@ -183,7 +183,7 @@ class PermutationInvariantRho(nn.Module):
         self,
         features: torch.Tensor,
         weights: torch.Tensor,
-        mask: torch.Tensor | None = None,
+        mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Parameters
@@ -231,7 +231,7 @@ class PersLayBlock(nn.Module):
         self.rho = PermutationInvariantRho(rho_type=rho_type)
 
     def forward(
-        self, diagram: torch.Tensor, mask: torch.Tensor | None = None
+        self, diagram: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Parameters
@@ -318,7 +318,7 @@ class PersLayExpert(AbstractExpert):
             # as documentation of the expected TDA feature semantics but must
             # not be used for layer sizing -- the expert receives the full
             # feature vector from CGCLayer, not a pre-sliced TDA subset.
-            layers: list[nn.Module] = []
+            layers: List[nn.Module] = []
             prev_dim = input_dim
             for hdim in cfg.hidden_dims:
                 layers.append(nn.Linear(prev_dim, hdim))

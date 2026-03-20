@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -12,5 +13,5 @@ class LGBMConfig:
     colsample_bytree: float = 0.8
     reg_alpha: float = 0.1
     reg_lambda: float = 0.1
-    class_weight: str | None = "balanced"
+    class_weight: Optional[str] = "balanced"
     extra_params: dict = field(default_factory=dict)
