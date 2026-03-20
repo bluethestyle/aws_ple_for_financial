@@ -1859,6 +1859,15 @@ def run(input_dir: str, output_dir: str) -> None:
         con.close()
         logger.info("DuckDB aggregation complete. Building remaining feature groups...")
 
+        # Add user_id column to DuckDB-built DataFrames (they use index only)
+        for df_name in [fg_cat, fg_txn, fg_temporal]:
+            if "user_id" not in df_name.columns:
+                df_name.insert(0, "user_id", df_name.index)
+                df_name = df_name.reset_index(drop=True)
+        fg_cat["user_id"] = user_ids
+        fg_txn["user_id"] = user_ids
+        fg_temporal["user_id"] = user_ids
+
         # Store aggregates in a dict for downstream functions
         _duckdb_aggs = {
             "econ_monthly": econ_monthly,
