@@ -159,8 +159,49 @@ class StudentTrainer:
 
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
-        # Reconstruct PLEConfig and model from checkpoint
-        ple_config = checkpoint["config"]  # PLEConfig saved during training
+        # Reconstruct PLEConfig from checkpoint
+        # train.py saves "ple_config" as a dict with key fields,
+        # and "config" as the full raw YAML dict.
+        ple_dict = checkpoint.get("ple_config", {})
+        raw_config = checkpoint.get("config", {})
+
+        from core.model.ple.config import ExpertConfig
+
+        model_cfg = raw_config.get("model", {})
+        expert_cfg = model_cfg.get("expert_config", {})
+        mlp_cfg = expert_cfg.get("mlp", {})
+        ple_yaml = model_cfg.get("ple", {})
+
+        input_dim = ple_dict.get("input_dim", 128)
+        task_names = ple_dict.get("task_names", [])
+        expert_hidden = mlp_cfg.get("hidden_dims", [input_dim * 2, input_dim])
+        expert_output = ple_yaml.get("extraction_dim", 32)
+
+        shared_expert = ExpertConfig(
+            hidden_dims=expert_hidden,
+            output_dim=expert_output,
+        )
+        task_expert = ExpertConfig(
+            hidden_dims=expert_hidden,
+            output_dim=expert_output,
+        )
+
+        ple_config = PLEConfig(
+            input_dim=input_dim,
+            task_names=task_names,
+            num_shared_experts=ple_dict.get("num_shared_experts", 2),
+            num_extraction_layers=ple_dict.get("num_extraction_layers", 2),
+            shared_expert=shared_expert,
+            task_expert=task_expert,
+        )
+
+        # Apply task overrides from raw config
+        for t in raw_config.get("tasks", []):
+            ple_config.task_overrides[t["name"]] = {
+                "task_type": t.get("type", "binary"),
+                "output_dim": t.get("num_classes", 1),
+            }
+
         teacher = PLEModel(ple_config)
         teacher.load_state_dict(checkpoint["model_state_dict"])
         teacher.to(self.device)
