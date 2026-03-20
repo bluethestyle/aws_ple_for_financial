@@ -175,7 +175,7 @@ data:
 
 features:
   id_cols: [user_id]
-  input_dim: 469
+  input_dim: 537
 
 # ---------------------------------------------------------------------------
 # Model — Full Expert Basket (7 shared, production-equivalent)
