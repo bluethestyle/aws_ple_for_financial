@@ -46,6 +46,7 @@ class TaskSpec:
     num_classes: int = 1
     tower_type: str = ""        # "" = use default ("standard")
     tower_dims: List[int] = field(default_factory=list)  # [] = use global default
+    description: str = ""
 
 
 @dataclass
