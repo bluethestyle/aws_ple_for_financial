@@ -1,0 +1,332 @@
+# =============================================================================
+# Ablation Test Pipeline: ealtman2019 Credit Card Transactions
+# 2,000 users × 24M transactions × ~469D features × 16 tasks
+# =============================================================================
+# Full pipeline test with feature/expert/hyperparameter ablation.
+# Data: s3://aiops-ple-financial/data/test/01_financial_*.parquet (raw)
+#       s3://aiops-ple-financial/data/adapted/ealtman2019_features.parquet (generated)
+# =============================================================================
+
+task_name: ealtman2019_ablation
+
+# ---------------------------------------------------------------------------
+# Tasks — 16 tasks adapted for transaction-only data
+# (no click/view data → CTR/CVR replaced with fraud/will_transact)
+# ---------------------------------------------------------------------------
+tasks:
+  # Engagement (adapted — no click data available)
+  - name: is_fraud
+    type: binary
+    loss: focal
+    loss_weight: 2.0
+    label_col: label_is_fraud
+    description: "사기 거래 탐지 (Is Fraud? 실제 라벨)"
+
+  - name: will_transact
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: label_will_transact
+    description: "다음 달 거래 여부 예측"
+
+  # Lifecycle
+  - name: churn
+    type: binary
+    loss: focal
+    loss_weight: 1.5
+    label_col: label_churn
+    description: "최근 3개월 거래 없음 → 이탈"
+
+  - name: retention
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: label_retention
+
+  - name: life_stage
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_life_stage
+    num_classes: 5
+    description: "나이 기반 생애주기 (20대/30대/40대/50대/60대+)"
+
+  - name: ltv
+    type: regression
+    loss: huber
+    loss_weight: 1.5
+    label_col: label_ltv
+    description: "최근 12개월 총 거래금액"
+
+  # Value
+  - name: balance_util
+    type: regression
+    loss: huber
+    loss_weight: 1.0
+    label_col: label_balance_util
+    description: "거래금액 / 신용한도"
+
+  - name: engagement
+    type: regression
+    loss: mse
+    loss_weight: 0.8
+    label_col: label_engagement
+    description: "월 거래빈도 추세 기울기"
+
+  - name: channel
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_channel
+    num_classes: 3
+    description: "주 결제 방식 (Chip/Swipe/Online)"
+
+  - name: timing
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_timing
+    num_classes: 8
+    description: "주 거래 시간대 (아침/점심/저녁/야간 × 평일/주말)"
+
+  # Consumption
+  - name: nba
+    type: multiclass
+    loss: ce
+    loss_weight: 2.0
+    label_col: label_nba
+    num_classes: 15
+    description: "다음 월 최빈 MCC 카테고리 예측"
+
+  - name: spending_category
+    type: multiclass
+    loss: ce
+    loss_weight: 1.2
+    label_col: label_spending_category
+    num_classes: 15
+    description: "주요 MCC 그룹"
+
+  - name: consumption_cycle
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_consumption_cycle
+    num_classes: 4
+    description: "소비 주기 패턴 (주간/격주/월간/비정기)"
+
+  - name: spending_bucket
+    type: regression
+    loss: huber
+    loss_weight: 0.8
+    label_col: label_spending_amount
+    description: "월 평균 거래금액"
+
+  - name: merchant_affinity
+    type: regression
+    loss: huber
+    loss_weight: 1.0
+    label_col: label_merchant_affinity
+    description: "선호 가맹점 유형 집중도 (HHI)"
+
+  - name: brand_prediction
+    type: multiclass
+    loss: ce
+    loss_weight: 1.0
+    label_col: label_brand
+    num_classes: 4
+    description: "선호 카드 브랜드 (Visa/MC/Amex/Discover)"
+
+# ---------------------------------------------------------------------------
+# Task Groups (adaTT transfer units)
+# ---------------------------------------------------------------------------
+task_groups:
+  - name: engagement
+    tasks: [is_fraud, will_transact]
+    task_experts: [deepfm]
+    adatt_intra_strength: 0.8
+    adatt_inter_strength: 0.3
+
+  - name: lifecycle
+    tasks: [churn, retention, life_stage, ltv]
+    task_experts: [causal, mlp]
+    adatt_intra_strength: 0.6
+    adatt_inter_strength: 0.3
+
+  - name: value
+    tasks: [balance_util, engagement, channel, timing]
+    task_experts: [mlp]
+    adatt_intra_strength: 0.7
+    adatt_inter_strength: 0.2
+
+  - name: consumption
+    tasks: [nba, spending_category, consumption_cycle, spending_bucket, merchant_affinity, brand_prediction]
+    task_experts: [deepfm]
+    adatt_intra_strength: 0.7
+    adatt_inter_strength: 0.2
+
+# ---------------------------------------------------------------------------
+# Data
+# ---------------------------------------------------------------------------
+data:
+  backend: pandas
+  source: s3://aiops-ple-financial/data/adapted/ealtman2019_features.parquet
+  train_path: data/adapted/ealtman2019_features.parquet
+  s3_path: s3://aiops-ple-financial/data/adapted/ealtman2019_features.parquet
+
+features:
+  id_cols: [user_id]
+  input_dim: 469
+
+# ---------------------------------------------------------------------------
+# Model — Full Expert Basket (7 shared, production-equivalent)
+# ---------------------------------------------------------------------------
+model:
+  expert_basket:
+    shared:
+      - deepfm
+      - temporal_ensemble
+      - hgcn
+      - perslay
+      - causal
+      - lightgcn
+      - optimal_transport
+    task: [mlp]
+
+  expert_config:
+    deepfm:
+      embedding_dim: 8
+      hidden_dims: [256, 128]
+      dropout: 0.1
+    temporal_ensemble:
+      mamba_d_model: 64
+      mamba_n_layers: 2
+      transformer_n_heads: 4
+      transformer_n_layers: 2
+      lnn_hidden_dim: 64
+    hgcn:
+      hyperbolic_dim: 20
+      merchant_dim: 27
+      refine_hidden: 128
+    perslay:
+      phi_hidden_dim: 64
+      rho_hidden_dim: 64
+    causal:
+      dag_hidden_dims: [128, 64]
+      lambda_dag: 0.01
+    lightgcn:
+      embedding_dim: 64
+      n_layers: 3
+    optimal_transport:
+      hidden_dims: [128, 64]
+      sinkhorn_iterations: 50
+    mlp:
+      hidden_dims: [256, 128]
+      dropout: 0.1
+
+  ple:
+    num_layers: 3
+    extraction_dim: 64
+    num_shared_experts: 7
+    num_task_experts: 1
+
+  task_tower:
+    default_dims: [64, 32]
+    dropout: 0.1
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+training:
+  experiment_name: ealtman2019_ablation
+  batch_size: 128
+  epochs: 30
+  learning_rate: 0.001
+  weight_decay: 0.01
+  phase1:
+    epochs: 20
+  phase2:
+    epochs: 10
+    freeze_extraction: true
+  early_stopping:
+    patience: 5
+    metric: val_loss
+  scheduler:
+    type: cosine
+    warmup_epochs: 3
+
+# ---------------------------------------------------------------------------
+# Distillation
+# ---------------------------------------------------------------------------
+distillation:
+  temperature: 5.0
+  alpha: 0.3
+  lgbm:
+    num_leaves: 63
+    learning_rate: 0.05
+    n_estimators: 500
+    min_child_samples: 20
+    subsample: 0.8
+    colsample_bytree: 0.8
+
+# ---------------------------------------------------------------------------
+# Ablation Scenarios
+# ---------------------------------------------------------------------------
+ablation:
+  # Feature group ablation — remove one group at a time
+  feature_groups:
+    - name: full
+      remove: []
+    - name: no_tda
+      remove: [tda_topology]
+    - name: no_temporal
+      remove: [base_temporal, mamba_temporal]
+    - name: no_graph
+      remove: [graph_embeddings]
+    - name: no_economics
+      remove: [economics]
+    - name: no_multidisciplinary
+      remove: [multidisciplinary]
+    - name: no_hmm
+      remove: [hmm_states]
+    - name: no_merchant
+      remove: [merchant_hierarchy]
+    - name: base_only
+      remove: [tda_topology, mamba_temporal, hmm_states, graph_embeddings, economics, multidisciplinary, merchant_hierarchy, model_derived, gmm_clustering]
+
+  # Expert ablation — remove one expert at a time
+  experts:
+    - name: full_basket
+      shared: [deepfm, temporal_ensemble, hgcn, perslay, causal, lightgcn, optimal_transport]
+    - name: no_deepfm
+      shared: [temporal_ensemble, hgcn, perslay, causal, lightgcn, optimal_transport]
+    - name: no_temporal
+      shared: [deepfm, hgcn, perslay, causal, lightgcn, optimal_transport]
+    - name: no_hgcn
+      shared: [deepfm, temporal_ensemble, perslay, causal, lightgcn, optimal_transport]
+    - name: no_perslay
+      shared: [deepfm, temporal_ensemble, hgcn, causal, lightgcn, optimal_transport]
+    - name: no_causal
+      shared: [deepfm, temporal_ensemble, hgcn, perslay, lightgcn, optimal_transport]
+    - name: mlp_only
+      shared: [mlp]
+
+  # Hyperparameter sensitivity
+  hyperparams:
+    learning_rate: [0.0001, 0.0005, 0.001, 0.005]
+    temperature: [1.0, 3.0, 5.0, 10.0]
+    num_layers: [1, 2, 3]
+    extraction_dim: [32, 64, 128]
+
+# ---------------------------------------------------------------------------
+# Evaluation metrics per task type
+# ---------------------------------------------------------------------------
+evaluation:
+  binary:
+    metrics: [auc_roc, auc_pr, f1, precision, recall, accuracy, log_loss]
+    primary: auc_roc
+  multiclass:
+    metrics: [accuracy, f1_macro, f1_weighted, top_k_accuracy]
+    primary: f1_macro
+  regression:
+    metrics: [rmse, mae, r2, mape]
+    primary: rmse
