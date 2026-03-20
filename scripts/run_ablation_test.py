@@ -181,7 +181,7 @@ def _prepare_source_package(output_dir: str) -> str:
     tar_path = os.path.join(output_dir, "source.tar.gz")
     root = str(PROJECT_ROOT)
 
-    include_dirs = ["core", "configs", "containers", "scripts"]
+    include_dirs = ["core", "configs", "containers", "scripts", "adapters"]
     include_files = ["setup.py", "setup.cfg", "pyproject.toml", "requirements.txt"]
 
     skip_patterns = {"__pycache__", ".git", ".eggs", "*.egg-info", "node_modules", "data"}
