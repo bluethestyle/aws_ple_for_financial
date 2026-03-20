@@ -493,7 +493,7 @@ def _submit_processing_job(
     # Package source code as tar.gz (SKLearnProcessor.run() lacks source_dir)
     tmp_dir = tempfile.mkdtemp()
     source_tar = _prepare_source_package(tmp_dir)
-    s3_source_key = f"ablation-test/{TIMESTAMP}/source/source_pkg.tar.gz"
+    s3_source_key = f"ablation-test/{job_name}/source/source_pkg.tar.gz"
     s3_source = f"s3://{S3_BUCKET}/{s3_source_key}"
     import boto3 as _b3
     _b3.client("s3").upload_file(source_tar, S3_BUCKET, s3_source_key)
