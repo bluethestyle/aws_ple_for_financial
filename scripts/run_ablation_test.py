@@ -374,9 +374,24 @@ def _submit_training_job(
         "NCCL_DEBUG": "WARN",
     }
 
+    # Create lightweight source dir for Estimator (excludes data/)
+    import shutil
+    pkg_dir = Path("_source_pkg")
+    if pkg_dir.exists():
+        shutil.rmtree(pkg_dir)
+    for d in ["core", "configs", "containers", "scripts", "adapters"]:
+        src = PROJECT_ROOT / d
+        if src.exists():
+            shutil.copytree(src, pkg_dir / d, dirs_exist_ok=True,
+                           ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    for f in ["pyproject.toml", "requirements.txt"]:
+        src = PROJECT_ROOT / f
+        if src.exists():
+            shutil.copy2(src, pkg_dir / f)
+
     estimator = PyTorch(
         entry_point="containers/training/train.py",
-        source_dir=str(PROJECT_ROOT),
+        source_dir=str(pkg_dir),
         role=ROLE_ARN,
         instance_type=instance_type,
         instance_count=1,
@@ -470,10 +485,36 @@ def _submit_processing_job(
         return result
 
     import sagemaker
-    from sagemaker.processing import ProcessingOutput
+    from sagemaker.processing import ProcessingInput, ProcessingOutput
     from sagemaker.sklearn import SKLearnProcessor
 
     session = sagemaker.Session()
+
+    # Package source code as tar.gz (SKLearnProcessor.run() lacks source_dir)
+    tmp_dir = tempfile.mkdtemp()
+    source_tar = _prepare_source_package(tmp_dir)
+    s3_source_key = f"ablation-test/{TIMESTAMP}/source/source_pkg.tar.gz"
+    s3_source = f"s3://{S3_BUCKET}/{s3_source_key}"
+    import boto3 as _b3
+    _b3.client("s3").upload_file(source_tar, S3_BUCKET, s3_source_key)
+    logger.info("Source package uploaded: %s", s3_source)
+
+    # Create wrapper script that unpacks source + installs deps + runs target
+    wrapper = Path("_ablation_wrapper.py")
+    wrapper.write_text(f"""\
+import subprocess, sys, os, tarfile
+subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
+                       "pyyaml", "omegaconf", "lightgbm", "pyarrow", "scipy", "scikit-learn"])
+src_tar = "/opt/ml/processing/input/source/source_pkg.tar.gz"
+src_dir = "/opt/ml/processing/source"
+os.makedirs(src_dir, exist_ok=True)
+with tarfile.open(src_tar, "r:gz") as tar:
+    tar.extractall(src_dir)
+sys.path.insert(0, src_dir)
+os.chdir(src_dir)
+sys.argv = ["{script}"] + {arguments!r}
+exec(open("{script}").read())
+""")
 
     processor = SKLearnProcessor(
         role=ROLE_ARN,
@@ -484,6 +525,13 @@ def _submit_processing_job(
         env={"PYTHONIOENCODING": "utf-8"},
     )
 
+    all_inputs = [
+        ProcessingInput(
+            source=s3_source,
+            destination="/opt/ml/processing/input/source",
+        ),
+    ] + (inputs or [])
+
     outputs = [
         ProcessingOutput(
             source="/opt/ml/processing/output",
@@ -493,14 +541,13 @@ def _submit_processing_job(
 
     logger.info("Submitting Processing Job: %s", job_name)
     processor.run(
-        code=script,
-        source_dir=str(PROJECT_ROOT),
-        inputs=inputs or [],
+        code=str(wrapper),
+        inputs=all_inputs,
         outputs=outputs,
-        arguments=arguments,
         job_name=job_name,
         wait=False,
     )
+    wrapper.unlink(missing_ok=True)
 
     if wait:
         status = _wait_for_processing_job(job_name)
