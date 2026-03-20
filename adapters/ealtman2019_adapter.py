@@ -85,6 +85,12 @@ def load_users(input_dir: str) -> pd.DataFrame:
     path = os.path.join(input_dir, "01_financial_users.parquet")
     logger.info("Loading users from %s", path)
     df = pd.read_parquet(path)
+    # Normalize column names (Parquet may have full names from original CSV)
+    col_renames = {
+        "Yearly Income - Person": "Yearly Income",
+        "Per Capita Income - Zipcode": "Per Capita Income",
+    }
+    df = df.rename(columns=col_renames)
     logger.info("Users loaded: %d rows, %d cols", len(df), len(df.columns))
     return df
 
