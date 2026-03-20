@@ -462,7 +462,7 @@ def build_base_temporal(txn: pd.DataFrame, user_ids: np.ndarray) -> pd.DataFrame
 
 
 def build_tda_topology(user_ids: np.ndarray,
-                       txn: pd.DataFrame) -> pd.DataFrame:
+                       txn: "pd.DataFrame | None") -> pd.DataFrame:
     """tda_topology (70D): placeholder + autocorrelation / entropy stats."""
     result = pd.DataFrame({"user_id": user_ids})
     col_idx = 1
@@ -471,6 +471,13 @@ def build_tda_topology(user_ids: np.ndarray,
     for i in range(1, 51):
         result[f"tda_{col_idx:03d}"] = 0.0
         col_idx += 1
+
+    # If txn is None (DuckDB path), fill remaining 20D as 0
+    if txn is None:
+        for i in range(20):
+            result[f"tda_{col_idx:03d}"] = 0.0
+            col_idx += 1
+        return result
 
     # Autocorrelation of monthly amount (lag 1-12) → 12D
     monthly_amt = txn.groupby(["User", "Month"])["Amount"].sum().unstack(fill_value=0)
