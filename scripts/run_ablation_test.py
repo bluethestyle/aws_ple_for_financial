@@ -619,7 +619,8 @@ def run_phase1(
 
     for scenario in FEATURE_ABLATION_SCENARIOS:
         name = scenario["name"]
-        job_name = f"ablation-p1-{name}-{ts}"
+        safe_name = name.replace("_", "-")
+        job_name = f"ablation-p1-{safe_name}-{ts}"
         s3_output = f"{s3_base}/phase1/{name}/"
 
         hyperparameters = {
@@ -673,7 +674,8 @@ def run_phase2(
 
     for scenario in EXPERT_ABLATION_SCENARIOS:
         name = scenario["name"]
-        job_name = f"ablation-p2-{name}-{ts}"
+        safe_name = name.replace("_", "-")
+        job_name = f"ablation-p2-{safe_name}-{ts}"
         s3_output = f"{s3_base}/phase2/{name}/"
 
         hyperparameters = {
@@ -727,7 +729,8 @@ def run_phase3(
 
     for scenario in HP_SCENARIOS:
         name = scenario["name"]
-        job_name = f"ablation-p3-{name}-{ts}"
+        safe_name = name.replace("_", "-").replace(".", "-")
+        job_name = f"ablation-p3-{safe_name}-{ts}"
         s3_output = f"{s3_base}/phase3/{name}/"
 
         hyperparameters = {
