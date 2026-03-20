@@ -99,11 +99,41 @@ def load_cards(input_dir: str) -> pd.DataFrame:
 
 
 def load_transactions_chunked(input_dir: str) -> pd.DataFrame:
-    """Load transactions CSV in chunks, clean Amount and Is Fraud columns.
+    """Load transactions from Parquet (preferred) or CSV fallback.
 
-    Returns a DataFrame with cleaned columns ready for aggregation.
+    The Parquet file is pre-cleaned by DuckDB: Amount already float,
+    Is Fraud already int, column names already snake_case.
     """
-    path = os.path.join(input_dir, "credit_card_transactions-ibm_v2.csv")
+    parquet_path = os.path.join(input_dir, "transactions.parquet")
+    csv_path = os.path.join(input_dir, "credit_card_transactions-ibm_v2.csv")
+
+    if os.path.exists(parquet_path):
+        logger.info("Loading transactions from Parquet: %s", parquet_path)
+        df = pd.read_parquet(parquet_path)
+        # Parquet already has: user_id, card_id, year, month, day, time,
+        # amount, use_chip, merchant_id, merchant_city, merchant_state,
+        # zip, mcc, errors, is_fraud
+        # Rename to match downstream expectations
+        col_map = {
+            "user_id": "User", "card_id": "Card", "year": "Year",
+            "month": "Month", "day": "Day", "time": "Time",
+            "amount": "Amount", "use_chip": "Use Chip",
+            "merchant_id": "Merchant Name", "merchant_city": "Merchant City",
+            "merchant_state": "Merchant State", "zip": "Zip",
+            "mcc": "MCC", "errors": "Errors?", "is_fraud": "Is Fraud?",
+        }
+        df = df.rename(columns=col_map)
+        df["Hour"] = df["Time"].apply(_parse_hour)
+        df["Date"] = pd.to_datetime(
+            df[["Year", "Month", "Day"]].rename(
+                columns={"Year": "year", "Month": "month", "Day": "day"}
+            )
+        )
+        logger.info("Loaded %d rows from Parquet", len(df))
+        return df
+
+    # Fallback: CSV chunked read
+    path = csv_path
     logger.info("Loading transactions (chunked, %d rows/chunk) from %s",
                 CHUNK_SIZE, path)
 
