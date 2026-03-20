@@ -235,7 +235,7 @@ class CheckpointManager:
         model: torch.nn.Module,
         optimizer: Optional[torch.optim.Optimizer] = None,
         scheduler: Optional[Any] = None,
-        map_location: Optional[str | torch.device] = None,
+        map_location: Optional[Union[str, "torch.device"]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Load the most recent checkpoint.
 
@@ -273,7 +273,7 @@ class CheckpointManager:
         model: torch.nn.Module,
         optimizer: Optional[torch.optim.Optimizer] = None,
         scheduler: Optional[Any] = None,
-        map_location: Optional[str | torch.device] = None,
+        map_location: Optional[Union[str, "torch.device"]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Load the best model checkpoint.
 
@@ -298,7 +298,7 @@ class CheckpointManager:
         model: torch.nn.Module,
         optimizer: Optional[torch.optim.Optimizer] = None,
         scheduler: Optional[Any] = None,
-        map_location: Optional[str | torch.device] = None,
+        map_location: Optional[Union[str, "torch.device"]] = None,
     ) -> Dict[str, Any]:
         """Load a specific checkpoint file.
 
@@ -506,7 +506,7 @@ class CheckpointManager:
         model: torch.nn.Module,
         optimizer: Optional[torch.optim.Optimizer],
         scheduler: Optional[Any],
-        map_location: Optional[str | torch.device],
+        map_location: Optional[Union[str, "torch.device"]],
     ) -> Dict[str, Any]:
         """Load a checkpoint file and restore model/optimizer/scheduler state."""
         logger.info(f"Loading checkpoint: {path}")

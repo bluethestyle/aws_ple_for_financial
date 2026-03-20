@@ -5,7 +5,7 @@ Trains and predicts with independent LGBM models per task.
 Shares the same interface as PLE, so it can be swapped in pipelines.
 """
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -24,7 +24,7 @@ class LGBMModel:
         preds = model.predict(X_test)   # {"task_name": np.ndarray, ...}
     """
 
-    def __init__(self, config: LGBMConfig, tasks_meta: list[dict]):
+    def __init__(self, config: LGBMConfig, tasks_meta: List[dict]):
         """
         Args:
             tasks_meta: [{"name": "ctr", "type": "binary"}, ...]
@@ -56,7 +56,7 @@ class LGBMModel:
 
     def fit(
         self,
-        X: "pd.DataFrame | np.ndarray",
+        X: "Union[pd.DataFrame, np.ndarray]",
         y_dict: Dict[str, np.ndarray],
         eval_set: Optional[tuple] = None,
     ) -> "LGBMModel":
@@ -71,7 +71,7 @@ class LGBMModel:
             self.models[name] = booster
         return self
 
-    def predict(self, X: pd.DataFrame | np.ndarray) -> Dict[str, np.ndarray]:
+    def predict(self, X: Union[pd.DataFrame, np.ndarray]) -> Dict[str, np.ndarray]:
         results = {}
         for task in self.tasks_meta:
             name = task["name"]
@@ -92,7 +92,7 @@ class LGBMModel:
                 pickle.dump(model, f)
 
     @classmethod
-    def load(cls, dir_path: str, config: LGBMConfig, tasks_meta: list[dict]) -> "LGBMModel":
+    def load(cls, dir_path: str, config: LGBMConfig, tasks_meta: List[dict]) -> "LGBMModel":
         import pickle
         from pathlib import Path
         instance = cls(config, tasks_meta)

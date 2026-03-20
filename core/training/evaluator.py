@@ -320,7 +320,7 @@ class ModelEvaluator:
     True
     """
 
-    def __init__(self, task_specs: Sequence[dict | TaskEvalSpec]):
+    def __init__(self, task_specs: Sequence[Union[dict, TaskEvalSpec]]):
         self.task_specs: List[TaskEvalSpec] = []
         for spec in task_specs:
             if isinstance(spec, TaskEvalSpec):

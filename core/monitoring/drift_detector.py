@@ -19,7 +19,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 
@@ -245,7 +245,7 @@ class ConsecutiveDriftTracker:
 
     def __init__(
         self,
-        monitoring_dir: str | Path,
+        monitoring_dir: Union[str, Path],
         consecutive_threshold: int = 3,
         critical_feature_threshold: int = 5,
     ) -> None:
