@@ -7,7 +7,7 @@ task definitions, training parameters, and AWS deployment settings.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
@@ -27,8 +27,8 @@ class TaskGroupConfig:
     """
 
     name: str = ""
-    tasks: list[str] = field(default_factory=list)
-    task_experts: list[str] = field(default_factory=list)
+    tasks: List[str] = field(default_factory=list)
+    task_experts: List[str] = field(default_factory=list)
     adatt_intra_strength: float = 0.8   # intra-group transfer strength
     adatt_inter_strength: float = 0.3   # inter-group transfer strength
     description: str = ""
@@ -45,17 +45,20 @@ class TaskSpec:
     label_col: str = "label"
     num_classes: int = 1
     tower_type: str = ""        # "" = use default ("standard")
-    tower_dims: list[int] = field(default_factory=list)  # [] = use global default
+    tower_dims: List[int] = field(default_factory=list)  # [] = use global default
 
 
 @dataclass
 class DataSpec:
     """Data source specification."""
 
-    source: str         # s3://bucket/path or local file path
+    source: str = ""    # s3://bucket/path or local file path
     format: str = "parquet"
     train_split: float = 0.8
     val_split: float = 0.1
+    backend: str = "pandas"
+    train_path: str = ""
+    s3_path: str = ""
 
 
 @dataclass
@@ -67,12 +70,13 @@ class FeatureSpec:
     ``params``.
     """
 
-    numeric: list[str] = field(default_factory=list)
-    categorical: list[str] = field(default_factory=list)
-    sequence: list[str] = field(default_factory=list)
+    numeric: List[str] = field(default_factory=list)
+    categorical: List[str] = field(default_factory=list)
+    sequence: List[str] = field(default_factory=list)
     embedding_dim: int = 16
-    id_cols: list[str] = field(default_factory=list)
-    transformers: list[dict] = field(default_factory=list)
+    id_cols: List[str] = field(default_factory=list)
+    transformers: List[dict] = field(default_factory=list)
+    input_dim: int = 0
 
 
 @dataclass
@@ -92,7 +96,7 @@ class ModelSpec:
     num_task_experts: int = 2
     expert_hidden_dim: int = 256
     num_layers: int = 2
-    tower_dims: list[int] = field(default_factory=lambda: [128, 64])
+    tower_dims: List[int] = field(default_factory=lambda: [128, 64])
     dropout: float = 0.1
     expert_basket: Optional[dict] = None
     group_task_expert: Optional[dict] = None
@@ -136,13 +140,13 @@ class PipelineConfig:
     """
 
     task_name: str
-    tasks: list[TaskSpec]
+    tasks: List[TaskSpec]
     data: DataSpec
     features: FeatureSpec
     model: ModelSpec
     training: TrainingSpec
     aws: AWSSpec
-    task_groups: list[TaskGroupConfig] = field(default_factory=list)
+    task_groups: List[TaskGroupConfig] = field(default_factory=list)
 
     def get_task_group(self, task_name: str) -> Optional[str]:
         """Return the group name that *task_name* belongs to, or ``None``."""
@@ -155,7 +159,7 @@ class PipelineConfig:
 def load_config(path: Union[str, Path]) -> PipelineConfig:
     """Parse a YAML file into a :class:`PipelineConfig` instance."""
     with open(path) as f:
-        raw: dict[str, Any] = yaml.safe_load(f)
+        raw: Dict[str, Any] = yaml.safe_load(f)
 
     tasks = [TaskSpec(**t) for t in raw.get("tasks", [])]
     data = DataSpec(**raw.get("data", {}))
