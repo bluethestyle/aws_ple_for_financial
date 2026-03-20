@@ -306,7 +306,7 @@ def stage_4_7_distillation(args, model_uri: str):
     # Create a wrapper script that unpacks source and runs distillation
     wrapper_script = Path("_distill_wrapper.py")
     wrapper_script.write_text("""\
-import subprocess, sys, os, tarfile
+import subprocess, sys, os, tarfile, glob
 # Install missing deps
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
                        "pyyaml", "omegaconf", "lightgbm", "torch", "pyarrow"])
@@ -316,13 +316,28 @@ src_dir = "/opt/ml/processing/source"
 os.makedirs(src_dir, exist_ok=True)
 with tarfile.open(src_tar, "r:gz") as tar:
     tar.extractall(src_dir)
+# Unpack teacher model.tar.gz
+teacher_dir = "/opt/ml/processing/input/teacher"
+for tgz in glob.glob(os.path.join(teacher_dir, "*.tar.gz")):
+    with tarfile.open(tgz, "r:gz") as tar:
+        tar.extractall(teacher_dir)
+    print(f"Unpacked teacher: {os.listdir(teacher_dir)}")
+# Find teacher checkpoint
+teacher_path = "/opt/ml/processing/input/teacher/model.pth"
+if not os.path.exists(teacher_path):
+    for root, dirs, files in os.walk(teacher_dir):
+        for f in files:
+            if f.endswith(".pth"):
+                teacher_path = os.path.join(root, f)
+                break
+    print(f"Teacher checkpoint found: {teacher_path}")
 # Add to PYTHONPATH
 sys.path.insert(0, src_dir)
 os.chdir(src_dir)
 # Run distillation
 sys.argv = [
     "scripts/run_distillation.py",
-    "--teacher-checkpoint", "/opt/ml/processing/input/teacher/model.pth",
+    "--teacher-checkpoint", teacher_path,
     "--data-path", "/opt/ml/processing/input/data/bank_churners_train.parquet",
     "--output-dir", "/opt/ml/processing/output",
     "--config", "configs/test/bank_churners_pipeline.yaml",
