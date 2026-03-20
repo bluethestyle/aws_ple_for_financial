@@ -184,7 +184,9 @@ def _prepare_source_package(output_dir: str) -> str:
     include_dirs = ["core", "configs", "containers", "scripts", "adapters"]
     include_files = ["setup.py", "setup.cfg", "pyproject.toml", "requirements.txt"]
 
-    skip_patterns = {"__pycache__", ".git", ".eggs", "*.egg-info", "node_modules", "data"}
+    skip_patterns = {"__pycache__", ".git", ".eggs", "*.egg-info", "node_modules"}
+    # Skip top-level data/ dir but NOT core/data/ (source code)
+    skip_top_dirs = {"data"}
 
     def _should_skip(name: str) -> bool:
         for pat in skip_patterns:
@@ -194,6 +196,8 @@ def _prepare_source_package(output_dir: str) -> str:
 
     with tarfile.open(tar_path, "w:gz") as tar:
         for d in include_dirs:
+            if d in skip_top_dirs:
+                continue
             full_path = os.path.join(root, d)
             if os.path.isdir(full_path):
                 for dirpath, dirnames, filenames in os.walk(full_path):
