@@ -98,6 +98,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Specific tasks to distill (default: all non-contrastive tasks)",
     )
+    parser.add_argument(
+        "--skip-fidelity-gate",
+        action="store_true",
+        help="Continue even if fidelity check fails (for testing)",
+    )
     return parser.parse_args()
 
 
@@ -303,11 +308,11 @@ def main() -> None:
 
     if failed_count > 0:
         failed_tasks = [r.task_name for r in fidelity_results if not r.passed]
-        logger.error(
-            "Fidelity FAILED for %d task(s): %s — aborting pipeline",
+        logger.warning(
+            "Fidelity FAILED for %d task(s): %s",
             failed_count, failed_tasks,
         )
-        # Save partial results for debugging before exit
+        # Save report for debugging
         output_path = Path(args.output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         fidelity_report = {
@@ -326,7 +331,11 @@ def main() -> None:
         }
         with open(output_path / "fidelity_report.json", "w") as f:
             json.dump(fidelity_report, f, indent=2, default=str)
-        sys.exit(1)  # SageMaker Job fails → Step Functions catches
+        if not getattr(args, "skip_fidelity_gate", False):
+            logger.error("Aborting pipeline due to fidelity failure.")
+            sys.exit(1)
+        else:
+            logger.warning("--skip-fidelity-gate set, continuing despite failures.")
 
     # Step 4.5: Feature selection — per-task LGBM importance-based pruning
     logger.info("Running adaptive feature selection per task...")

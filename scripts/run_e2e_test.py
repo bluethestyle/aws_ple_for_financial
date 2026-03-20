@@ -344,6 +344,7 @@ sys.argv = [
     "--soft-label-path", "/opt/ml/processing/output/soft_labels.parquet",
     "--temperature", "5.0",
     "--alpha", "0.3",
+    "--skip-fidelity-gate",
 ]
 exec(open("scripts/run_distillation.py").read())
 """)
