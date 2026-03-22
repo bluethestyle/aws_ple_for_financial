@@ -1,233 +1,307 @@
 # =============================================================================
-# Santander — Item Universe (24 Financial Products)
+# Santander -- Item Universe (24 Financial Products)
 # =============================================================================
 # Defines the 24 financial products available in the Santander dataset,
 # organized into 6 L1 groups with hierarchy, substitute/complement
 # relationships, and column mappings.
 #
+# Column names matched EXACTLY to santander_final_schema.json
+#
 # Used by:
 #   - product_hierarchy feature group (Poincare embedding)
-#   - NBA task (next-best-action candidate set)
+#   - NBA task (next-best-action candidate set, indices 0-23)
 #   - Acquisition tasks (target product definitions)
 #   - LightGCN collaborative filtering (bipartite graph construction)
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# Product hierarchy: 6 L1 groups × 24 products
+# Product hierarchy: 6 L1 groups x 24 products
+# Product index (0-23) matches nba_label indices in order of prod_* columns
 # ---------------------------------------------------------------------------
 product_hierarchy:
 
   # =========================================================================
-  # L1: Deposits (4 products)
+  # L1: Deposits (4 products) -- indices 0, 8, 9, 10
   # =========================================================================
   - group_id: deposits
     group_name: Deposits
     description: "Savings and term deposit products"
     products:
       - id: saving
+        index: 0
         name: Saving Account
         column: prod_saving
         sequence_col: seq_saving
         tier: core
+        positive_rate: 0.003
         description: "Standard savings account"
 
-      - id: short_term_deposit
+      - id: short_deposit
+        index: 8
         name: Short-term Deposit
-        column: prod_short_term_deposit
+        column: prod_short_deposit
+        sequence_col: seq_short_deposit
         tier: growth
+        positive_rate: 0.04
         description: "Deposit with maturity < 1 year"
 
-      - id: medium_term_deposit
+      - id: medium_deposit
+        index: 9
         name: Medium-term Deposit
-        column: prod_medium_term_deposit
+        column: prod_medium_deposit
+        sequence_col: seq_medium_deposit
         tier: growth
+        positive_rate: 0.001
         description: "Deposit with maturity 1-3 years"
 
-      - id: long_term_deposit
+      - id: long_deposit
+        index: 10
         name: Long-term Deposit
-        column: prod_long_term_deposit
+        column: prod_long_deposit
+        sequence_col: seq_long_deposit
         tier: growth
+        positive_rate: 0.001
         description: "Deposit with maturity > 3 years"
 
   # =========================================================================
-  # L1: Investments (4 products)
+  # L1: Accounts (8 products) -- indices 2, 3, 4, 5, 6, 7, 11, 19
+  # =========================================================================
+  - group_id: accounts
+    group_name: Accounts
+    description: "Checking and special-purpose accounts"
+    products:
+      - id: checking
+        index: 2
+        name: Checking Account
+        column: prod_checking
+        sequence_col: seq_checking
+        tier: core
+        positive_rate: 0.60
+        description: "Standard checking / current account"
+
+      - id: derivados
+        index: 3
+        name: Derivados Account
+        column: prod_derivados
+        sequence_col: seq_derivados
+        tier: standard
+        positive_rate: 0.002
+        description: "Derivados account"
+
+      - id: payroll_acct
+        index: 4
+        name: Payroll Account
+        column: prod_payroll_acct
+        sequence_col: seq_payroll_acct
+        tier: core
+        positive_rate: 0.08
+        description: "Payroll deposit account"
+
+      - id: junior_acct
+        index: 5
+        name: Junior Account
+        column: prod_junior_acct
+        sequence_col: seq_junior_acct
+        tier: entry
+        positive_rate: 0.004
+        description: "Account for minors / young customers"
+
+      - id: particular_acct
+        index: 6
+        name: Particular Account
+        column: prod_particular_acct
+        sequence_col: seq_particular_acct
+        tier: standard
+        positive_rate: 0.01
+        description: "Particular account"
+
+      - id: particular_plus
+        index: 7
+        name: Particular Plus
+        column: prod_particular_plus
+        sequence_col: seq_particular_plus
+        tier: standard
+        positive_rate: 0.11
+        description: "Particular plus account"
+
+      - id: e_account
+        index: 11
+        name: E-Account
+        column: prod_e_account
+        sequence_col: seq_e_account
+        tier: standard
+        positive_rate: 0.03
+        description: "Electronic / online-only account"
+
+      - id: home_acct
+        index: 19
+        name: Home Account
+        column: prod_home_acct
+        sequence_col: seq_home_acct
+        tier: standard
+        positive_rate: 0.02
+        description: "Home account"
+
+  # =========================================================================
+  # L1: Investments (4 products) -- indices 12, 14, 18, 21
   # =========================================================================
   - group_id: investments
     group_name: Investments
     description: "Investment and wealth management products"
     products:
       - id: funds
+        index: 12
         name: Funds
         column: prod_funds
+        sequence_col: seq_funds
         tier: growth
+        positive_rate: 0.08
         description: "Mutual fund / investment fund"
 
-      - id: securities
-        name: Securities
-        column: prod_securities
-        tier: premium
-        description: "Securities / stock brokerage account"
-
-      - id: pensions
-        name: Pensions
-        column: prod_pensions
+      - id: pension_plan
+        index: 14
+        name: Pension Plan
+        column: prod_pension_plan
+        sequence_col: seq_pension_plan
         tier: core
+        positive_rate: 0.003
         description: "Pension plan"
 
-      - id: nom_pensions
-        name: Nominated Pensions
-        column: prod_nom_pensions
+      - id: securities
+        index: 18
+        name: Securities
+        column: prod_securities
+        sequence_col: seq_securities
+        tier: premium
+        positive_rate: 0.04
+        description: "Securities / stock brokerage account"
+
+      - id: pension_deposit
+        index: 21
+        name: Pension Deposit
+        column: prod_pension_deposit
+        sequence_col: seq_pension_deposit
         tier: core
-        description: "Nominated pension plan"
+        positive_rate: 0.05
+        description: "Pension deposit"
 
   # =========================================================================
-  # L1: Loans (2 products)
+  # L1: Loans (2 products) -- indices 13, 15
   # =========================================================================
   - group_id: loans
     group_name: Loans
     description: "Lending and mortgage products"
     products:
       - id: mortgage
+        index: 13
         name: Mortgage
         column: prod_mortgage
+        sequence_col: seq_mortgage
         tier: premium
+        positive_rate: 0.02
         description: "Home mortgage loan"
 
       - id: loans
+        index: 15
         name: Personal Loans
         column: prod_loans
+        sequence_col: seq_loans
         tier: growth
+        positive_rate: 0.01
         description: "Personal / consumer loan"
 
   # =========================================================================
-  # L1: Cards (2 products)
+  # L1: Cards & Payments (3 products) -- indices 17, 22, 23
   # =========================================================================
-  - group_id: cards
-    group_name: Cards
-    description: "Payment card products"
+  - group_id: cards_payments
+    group_name: Cards & Payments
+    description: "Payment card and debit products"
     products:
       - id: credit_card
+        index: 17
         name: Credit Card
         column: prod_credit_card
+        sequence_col: seq_credit_card
         tier: core
+        positive_rate: 0.05
         description: "Credit card"
 
       - id: direct_debit
+        index: 22
         name: Direct Debit
         column: prod_direct_debit
+        sequence_col: seq_direct_debit
         tier: core
+        positive_rate: 0.06
         description: "Direct debit facility"
 
-  # =========================================================================
-  # L1: Accounts (8 products)
-  # =========================================================================
-  - group_id: accounts
-    group_name: Accounts
-    description: "Current and special-purpose accounts"
-    products:
-      - id: current
-        name: Current Account
-        column: prod_current
-        sequence_col: seq_current
+      - id: auto_debit
+        index: 23
+        name: Auto Debit
+        column: prod_auto_debit
+        sequence_col: seq_auto_debit
         tier: core
-        description: "Standard current / checking account"
-
-      - id: derivada
-        name: Derivada Account
-        column: prod_derivada
-        tier: standard
-        description: "Derivada account"
-
-      - id: payroll_account
-        name: Payroll Account
-        column: prod_payroll_account
-        tier: core
-        description: "Payroll deposit account"
-
-      - id: junior
-        name: Junior Account
-        column: prod_junior
-        tier: entry
-        description: "Account for minors / young customers"
-
-      - id: particular_plus
-        name: Particular Plus
-        column: prod_particular_plus
-        tier: standard
-        description: "Particular plus account"
-
-      - id: particular
-        name: Particular Account
-        column: prod_particular
-        tier: standard
-        description: "Particular account"
-
-      - id: e_account
-        name: E-Account
-        column: prod_e_account
-        tier: standard
-        description: "Electronic / online-only account"
-
-      - id: home_account
-        name: Home Account
-        column: prod_home_account
-        tier: standard
-        description: "Home account"
+        positive_rate: 0.12
+        description: "Automatic debit / payment"
 
   # =========================================================================
-  # L1: Other (4 products)
+  # L1: Other Services (3 products) -- indices 1, 16, 20
   # =========================================================================
   - group_id: other
     group_name: Other Services
-    description: "Insurance, tax, payroll services"
+    description: "Guarantee, tax, and payroll services"
     products:
-      - id: home_insurance
-        name: Home Insurance
-        column: prod_home_insurance
+      - id: guarantee
+        index: 1
+        name: Guarantees
+        column: prod_guarantee
+        sequence_col: seq_guarantee
         tier: growth
-        description: "Home / property insurance"
+        positive_rate: 0.001
+        description: "Financial guarantees / surety"
 
       - id: taxes
+        index: 16
         name: Tax Services
         column: prod_taxes
+        sequence_col: seq_taxes
         tier: standard
+        positive_rate: 0.002
         description: "Tax filing / advisory service"
 
       - id: payroll
+        index: 20
         name: Payroll Service
         column: prod_payroll
+        sequence_col: seq_payroll
         tier: standard
+        positive_rate: 0.001
         description: "Payroll processing service"
-
-      - id: guarantees
-        name: Guarantees
-        column: prod_guarantees
-        tier: growth
-        description: "Financial guarantees / surety"
 
 # ---------------------------------------------------------------------------
 # Substitute relationships (products that compete for same need)
 # ---------------------------------------------------------------------------
 substitutes:
-  - [short_term_deposit, medium_term_deposit, long_term_deposit]
-  - [saving, current]
-  - [particular, particular_plus]
-  - [pensions, nom_pensions]
-  - [payroll_account, payroll]
+  - [short_deposit, medium_deposit, long_deposit]
+  - [saving, checking]
+  - [particular_acct, particular_plus]
+  - [pension_plan, pension_deposit]
+  - [payroll_acct, payroll]
   - [funds, securities]
 
 # ---------------------------------------------------------------------------
 # Complement relationships (products often acquired together)
 # ---------------------------------------------------------------------------
 complements:
-  - [current, credit_card]
-  - [current, direct_debit]
-  - [payroll_account, current]
-  - [saving, short_term_deposit]
-  - [mortgage, home_insurance]
+  - [checking, credit_card]
+  - [checking, direct_debit]
+  - [checking, auto_debit]
+  - [payroll_acct, checking]
+  - [saving, short_deposit]
   - [funds, securities]
-  - [current, taxes]
-  - [payroll_account, payroll]
+  - [checking, taxes]
+  - [payroll_acct, payroll]
+  - [pension_plan, pension_deposit]
 
 # ---------------------------------------------------------------------------
 # Product tiers (for acquisition sequencing / eligibility)
@@ -235,22 +309,24 @@ complements:
 product_tiers:
   entry:
     description: "Entry-level products for new customers"
-    products: [junior]
+    products: [junior_acct]
     min_tenure_months: 0
 
   core:
     description: "Core banking products"
-    products: [saving, current, payroll_account, credit_card, direct_debit, pensions, nom_pensions]
+    products: [saving, checking, payroll_acct, credit_card, direct_debit,
+               auto_debit, pension_plan, pension_deposit]
     min_tenure_months: 0
 
   standard:
     description: "Standard products requiring basic relationship"
-    products: [derivada, particular, particular_plus, e_account, home_account, taxes, payroll]
+    products: [derivados, particular_acct, particular_plus, e_account,
+               home_acct, taxes, payroll]
     min_tenure_months: 3
 
   growth:
     description: "Growth products for established customers"
-    products: [short_term_deposit, medium_term_deposit, long_term_deposit, funds, loans, home_insurance, guarantees]
+    products: [short_deposit, medium_deposit, long_deposit, funds, loans, guarantee]
     min_tenure_months: 6
 
   premium:

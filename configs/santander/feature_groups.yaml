@@ -1,62 +1,174 @@
 # =============================================================================
-# Santander — Feature Group Definitions
+# Santander -- Feature Group Definitions
 # =============================================================================
 # Mapped to 5-axis feature architecture:
-#   State axis     — static demographics / account attributes
-#   Snapshot axis  — long-term sequence summaries (TDA global, HMM, trends)
-#   Timeseries axis — short-term temporal patterns (TDA local, Mamba, txn)
-#   Hierarchy axis — product/MCC tree embeddings (Poincare)
-#   Item axis      — collaborative filtering (LightGCN, product holdings)
+#   State axis     -- static demographics / account attributes
+#   Snapshot axis  -- long-term sequence summaries (TDA global, HMM, trends)
+#   Timeseries axis -- short-term temporal patterns (TDA local, Mamba, txn)
+#   Hierarchy axis -- product/MCC tree embeddings (Poincare)
+#   Item axis      -- collaborative filtering (LightGCN, product holdings)
 #
 # Plus derived groups: GMM clustering, model-derived (KMeans, Bandit, LNN)
 #
+# Column names matched EXACTLY to santander_final_schema.json
 # Total estimated dimensions: ~500D
 # =============================================================================
 
 feature_groups:
 
   # =========================================================================
-  # STATE AXIS — static demographics / account attributes
+  # STATE AXIS -- static demographics / account attributes
   # =========================================================================
 
   # -------------------------------------------------------------------------
-  # 1. Demographics (transform) — ~20D
-  #    age, income, tenure, gender, segment, country, channel, age_group,
-  #    income_group + derived ratios
+  # 1. Demographics (transform) -- ~20D
+  #    Exact columns from schema: age, income, tenure_months, is_active,
+  #    num_products + encoded gender/segment/country/channel/age_group/income_group
+  #
+  #    NOTES:
+  #    - income: 25.4% missing (0 = not reported) -> median imputation
+  #    - tenure_months: -999999 sentinel -> clip to 0 + flag column
   # -------------------------------------------------------------------------
   - name: demographics
     group_type: transform
     transformers: [quantile_transformer]
     columns:
-      - age
-      - income
-      - tenure
-      - num_products
-      - is_active
-      - seniority
+      - age                    # INTEGER, 18-100
+      - income                 # DOUBLE, 0-28.8M EUR (25.4% null/zero)
+      - tenure_months          # INTEGER, -999999~256 (sentinel = unknown)
+      - num_products           # INTEGER, 0-15, avg 1.3
+      - is_active              # INTEGER, 0/1, 42% active
     categorical_columns:
-      - gender
-      - segment
-      - country
-      - channel
-      - age_group
-      - income_group
+      - gender                 # F, M (2 values)
+      - segment                # 01-TOP, 02-PARTICULARES, 03-UNIVERSITARIO, UNKNOWN (4 values)
+      - country                # 118 countries (ES 96%)
+      - channel                # 163 channel codes
+      - age_group              # young, adult, middle, senior, elderly (5 values)
+      - income_group           # low, mid, high, very_high, unknown (5 values)
+    preprocessing:
+      income:
+        null_indicator: 0
+        null_rate: 0.254
+        strategy: median
+      tenure_months:
+        sentinel: -999999
+        strategy: clip_and_flag
+        clip_min: 0
+        clip_max: 256
     output_dim: 38
     target_experts: [deepfm, mlp]
     interpretation:
       category: demographics
       template: "{feature} is {value}, indicating a {direction} customer profile"
       narrative_lens: lifecycle
-      primary_tasks: [churn, ltv, retention, life_stage, segment_pred]
+      primary_tasks: [churn_signal, product_stability, segment_prediction, tenure_stage]
     distill: true
     distill_weight: 1.0
 
+  # -------------------------------------------------------------------------
+  # 2. Product holdings (transform) -- 24D
+  #    All 24 binary prod_* columns from schema (exact names)
+  # -------------------------------------------------------------------------
+  - name: product_holdings
+    group_type: transform
+    transformers: []
+    columns:
+      - prod_saving            # 0.3%
+      - prod_guarantee         # 0.1%
+      - prod_checking          # 60%
+      - prod_derivados         # 0.2%
+      - prod_payroll_acct      # 8%
+      - prod_junior_acct       # 0.4%
+      - prod_particular_acct   # 1%
+      - prod_particular_plus   # 11%
+      - prod_short_deposit     # 4%
+      - prod_medium_deposit    # 0.1%
+      - prod_long_deposit      # 0.1%
+      - prod_e_account         # 3%
+      - prod_funds             # 8%
+      - prod_mortgage          # 2%
+      - prod_pension_plan      # 0.3%
+      - prod_loans             # 1%
+      - prod_taxes             # 0.2%
+      - prod_credit_card       # 5%
+      - prod_securities        # 4%
+      - prod_home_acct         # 2%
+      - prod_payroll           # 0.1%
+      - prod_pension_deposit   # 5%
+      - prod_direct_debit      # 6%
+      - prod_auto_debit        # 12%
+    output_dim: 24
+    target_experts: [deepfm, mlp]
+    interpretation:
+      category: product_ownership
+      template: "Customer {holds/does_not_hold} {product}, indicating {direction} portfolio"
+      narrative_lens: lifecycle
+      primary_tasks: [has_nba, nba_primary, churn_signal, product_stability]
+    distill: true
+    distill_weight: 1.0
+
+  # -------------------------------------------------------------------------
+  # 3. Transaction behavior (transform) -- 14D
+  #    All 14 synth_* columns from schema (exact names)
+  #    NOTE: synth_fraud_ratio is ALL ZERO -- included for completeness
+  #          but will have zero variance (may be dropped by pipeline)
+  # -------------------------------------------------------------------------
+  - name: txn_behavior
+    group_type: transform
+    transformers: [standard_scaler]
+    columns:
+      - synth_monthly_txns     # INTEGER, 20-157, avg 69
+      - synth_avg_amount       # DOUBLE, 1-218 USD, avg 49
+      - synth_monthly_spend    # DOUBLE, 536-7542 USD, avg 3146
+      - synth_unique_mcc       # INTEGER, 6-23, avg 16
+      - synth_unique_merchants # INTEGER, 11-33, avg 24
+      - synth_morning_ratio    # DOUBLE, 0.2-0.65
+      - synth_afternoon_ratio  # DOUBLE, 0.23-0.57
+      - synth_evening_ratio    # DOUBLE, 0.08-0.30
+      - synth_night_ratio      # DOUBLE, 0.02-0.14
+      - synth_recency_days     # DOUBLE, 0.2-1.0 (RFM recency normalized)
+      - synth_frequency        # INTEGER, 25-131 (RFM frequency)
+      - synth_monetary         # DOUBLE, 1250-5430 USD (RFM monetary)
+      - synth_stability        # DOUBLE, 0.58-1.76 (1=stable, CV-based)
+      - synth_fraud_ratio      # DOUBLE, ALL 0.0 (zero variance)
+    output_dim: 14
+    target_experts: [deepfm, temporal_ensemble]
+    interpretation:
+      category: transaction_behavior
+      template: "{feature} shows {direction} transaction behavior at {value}"
+      narrative_lens: engagement
+      primary_tasks: [spend_level, engagement_score, has_nba, nba_primary]
+    distill: true
+    distill_weight: 1.0
+
+  # -------------------------------------------------------------------------
+  # 4. Derived temporal aggregates (transform) -- 4D
+  #    From temporal_aggregate group in schema
+  # -------------------------------------------------------------------------
+  - name: derived_temporal
+    group_type: transform
+    transformers: [standard_scaler]
+    columns:
+      - total_acquisitions     # BIGINT, 0-22, avg 0.6
+      - total_churns           # BIGINT, 0-22, avg 0.56
+      - months_observed        # BIGINT, 1-17, avg 14.3
+      - product_diversity      # BIGINT, 0-15, avg 1.56
+    output_dim: 4
+    target_experts: [deepfm, causal]
+    interpretation:
+      category: product_lifecycle
+      template: "{feature} at {value} indicates {direction} product activity"
+      narrative_lens: lifecycle
+      primary_tasks: [churn_signal, cross_sell_count, has_nba, product_stability]
+    distill: true
+    distill_weight: 0.9
+
   # =========================================================================
-  # SNAPSHOT AXIS — long-term sequence summaries
+  # SNAPSHOT AXIS -- long-term sequence summaries (generated features)
   # =========================================================================
 
   # -------------------------------------------------------------------------
-  # 2. TDA Global topology (generate) — 36D
+  # 5. TDA Global topology (generate) -- 36D
   #    Population-level persistent homology from all user features.
   #    Long-window (365d) Rips complex summary.
   # -------------------------------------------------------------------------
@@ -67,19 +179,42 @@ feature_groups:
       mode: global
       window_days: 365
       persistence_dim: 36
-      input_columns: [age, income, tenure, num_products, txn_amount_seq, txn_count_seq]
+      input_columns: [age, income, tenure_months, num_products, txn_amount_seq]
     output_dim: 36
     target_experts: [perslay]
     interpretation:
       category: domain_topology
       template: "Global topology shows {pattern} pattern with {value} persistence"
       narrative_lens: lifecycle
-      primary_tasks: [churn, ltv, segment_pred]
+      primary_tasks: [churn_signal, product_stability, segment_prediction]
     distill: true
     distill_weight: 0.5
 
   # -------------------------------------------------------------------------
-  # 3. HMM states (generate) — 48D
+  # 6. TDA Local topology (generate) -- 24D
+  #    Individual-level persistent homology from txn sequences.
+  #    Short-window (90d) sliding window analysis.
+  # -------------------------------------------------------------------------
+  - name: tda_local
+    group_type: generate
+    generator: tda
+    generator_params:
+      mode: local
+      window_days: 90
+      persistence_dim: 24
+      input_columns: [txn_amount_seq, txn_mcc_seq, txn_hour_seq]
+    output_dim: 24
+    target_experts: [perslay]
+    interpretation:
+      category: domain_topology
+      template: "Local transaction topology shows {pattern} with {value} persistence"
+      narrative_lens: engagement
+      primary_tasks: [spend_level, engagement_score, has_nba]
+    distill: true
+    distill_weight: 0.5
+
+  # -------------------------------------------------------------------------
+  # 7. HMM states (generate) -- 48D
   #    Product holding state transitions from seq_* columns.
   #    Triple-mode: journey, lifecycle, behavior.
   # -------------------------------------------------------------------------
@@ -91,7 +226,7 @@ feature_groups:
       state_dim: 16
       input_sequences:
         - seq_saving
-        - seq_current
+        - seq_checking
         - seq_num_products
         - seq_acquisitions
         - seq_churns
@@ -101,64 +236,16 @@ feature_groups:
       category: behavioral_state
       template: "Customer {mode} state indicates {state} at confidence {value}"
       narrative_lens: lifecycle
-      primary_tasks: [churn, retention, life_stage, nba]
+      primary_tasks: [churn_signal, product_stability, has_nba, nba_primary]
     distill: false
 
-  # -------------------------------------------------------------------------
-  # 4. Product trends (generate) — 24D
-  #    Trend/seasonality/residual decomposition from seq_num_products,
-  #    seq_acquisitions, seq_churns.
-  # -------------------------------------------------------------------------
-  - name: product_trends
-    group_type: generate
-    generator: temporal_pattern
-    generator_params:
-      input_sequences:
-        - seq_num_products
-        - seq_acquisitions
-        - seq_churns
-      decomposition: [trend, seasonality, residual]
-      output_per_seq: 8
-    output_dim: 24
-    target_experts: [temporal_ensemble, causal]
-    interpretation:
-      category: product_lifecycle
-      template: "Product holding {metric} trend is {direction} at {value}"
-      narrative_lens: lifecycle
-      primary_tasks: [churn, product_churn_count, retention, nba]
-    distill: true
-    distill_weight: 0.9
-
   # =========================================================================
-  # TIMESERIES AXIS — short-term temporal patterns
+  # TIMESERIES AXIS -- short-term temporal patterns (generated features)
   # =========================================================================
 
   # -------------------------------------------------------------------------
-  # 5. TDA Local topology (generate) — 24D
-  #    Individual-level persistent homology from txn_*_seq columns.
-  #    Short-window (90d) sliding window analysis.
-  # -------------------------------------------------------------------------
-  - name: tda_local
-    group_type: generate
-    generator: tda
-    generator_params:
-      mode: local
-      window_days: 90
-      persistence_dim: 24
-      input_columns: [txn_amount_seq, txn_count_seq, txn_mcc_seq]
-    output_dim: 24
-    target_experts: [perslay]
-    interpretation:
-      category: domain_topology
-      template: "Local transaction topology shows {pattern} with {value} persistence"
-      narrative_lens: engagement
-      primary_tasks: [spending_trend, txn_frequency, nba]
-    distill: true
-    distill_weight: 0.5
-
-  # -------------------------------------------------------------------------
-  # 6. Mamba temporal features (generate) — 50D
-  #    Selective state-space model on txn_amount_seq.
+  # 8. Mamba temporal features (generate) -- 50D
+  #    Selective state-space model on transaction sequences.
   # -------------------------------------------------------------------------
   - name: mamba_temporal
     group_type: generate
@@ -169,72 +256,24 @@ feature_groups:
       expand: 2
       output_dim: 50
       input_sequences:
-        - txn_amount_seq
-        - txn_count_seq
+        - txn_amount_seq       # DOUBLE[], len 1-60
+        - txn_hour_seq         # INTEGER[], len 1-60
     output_dim: 50
     target_experts: [temporal_ensemble]
     interpretation:
       category: temporal_state
       template: "Mamba temporal state indicates {direction} trend at {value}"
       narrative_lens: engagement
-      primary_tasks: [spending_trend, spending_amount, txn_frequency]
+      primary_tasks: [spend_level, engagement_score, has_nba]
     distill: false
 
-  # -------------------------------------------------------------------------
-  # 7. Transaction behavior (transform) — ~30D
-  #    Synthetic derived features (synth_*) from data generation.
-  # -------------------------------------------------------------------------
-  - name: txn_behavior
-    group_type: transform
-    transformers: [standard_scaler]
-    columns:
-      - synth_txn_mean
-      - synth_txn_std
-      - synth_txn_max
-      - synth_txn_min
-      - synth_txn_count
-      - synth_txn_trend
-      - synth_txn_volatility
-      - synth_txn_skewness
-      - synth_txn_kurtosis
-      - synth_recency_days
-      - synth_frequency_monthly
-      - synth_monetary_total
-      - synth_rfm_score
-      - synth_avg_balance
-      - synth_balance_trend
-      - synth_utilization_ratio
-      - synth_dormancy_score
-      - synth_cross_sell_score
-      - synth_engagement_score
-      - synth_risk_score
-      - synth_digital_preference
-      - synth_seasonal_factor
-      - synth_weekend_ratio
-      - synth_large_txn_ratio
-      - synth_category_entropy
-      - synth_location_entropy
-      - synth_regularity_score
-      - synth_anomaly_score
-      - synth_growth_rate
-      - synth_loyalty_score
-    output_dim: 30
-    target_experts: [deepfm, temporal_ensemble]
-    interpretation:
-      category: transaction_behavior
-      template: "{feature} shows {direction} transaction behavior at {value}"
-      narrative_lens: engagement
-      primary_tasks: [spending_trend, spending_amount, txn_frequency, nba]
-    distill: true
-    distill_weight: 1.0
-
   # =========================================================================
-  # HIERARCHY AXIS — product / MCC tree embeddings
+  # HIERARCHY AXIS -- product tree embeddings (generated features)
   # =========================================================================
 
   # -------------------------------------------------------------------------
-  # 8. Product hierarchy (generate) — 32D
-  #    24 products in 6 L1 groups → Poincare embedding.
+  # 9. Product hierarchy (generate) -- 32D
+  #    24 products in 6 L1 groups -> Poincare embedding.
   #    Uses item_universe.yaml for hierarchy definition.
   # -------------------------------------------------------------------------
   - name: product_hierarchy
@@ -252,39 +291,19 @@ feature_groups:
       category: product_structure
       template: "Position in product hierarchy suggests {insight} at depth {value}"
       narrative_lens: consumption
-      primary_tasks: [nba, product_diversity, acquire_saving, acquire_current]
-    distill: false
-
-  # -------------------------------------------------------------------------
-  # 9. MCC hierarchy (generate) — 16D
-  #    MCC category tree from txn_mcc_seq (if present).
-  # -------------------------------------------------------------------------
-  - name: mcc_hierarchy
-    group_type: generate
-    generator: hyperbolic_embedding
-    generator_params:
-      hierarchy_source: mcc
-      input_sequence: txn_mcc_seq
-      curvature: 1.0
-      mcc_dim: 16
-    output_dim: 16
-    target_experts: [hgcn]
-    interpretation:
-      category: merchant_structure
-      template: "MCC hierarchy position shows {direction} preference at {value}"
-      narrative_lens: consumption
-      primary_tasks: [mcc_diversity, spending_trend, nba]
+      primary_tasks: [nba_primary, has_nba, acquire_checking, acquire_funds]
     distill: false
 
   # =========================================================================
-  # ITEM AXIS — collaborative filtering / product holdings
+  # ITEM AXIS -- collaborative filtering / product holdings (generated)
   # =========================================================================
 
   # -------------------------------------------------------------------------
-  # 10. Collaborative filtering (generate) — 64D
-  #     Customer-product bipartite graph → LightGCN embedding.
+  # 10. Graph collaborative filtering (generate) -- 64D
+  #     Customer-product bipartite graph -> LightGCN embedding.
+  #     Uses all 24 prod_* columns (exact names from schema).
   # -------------------------------------------------------------------------
-  - name: collaborative
+  - name: graph_collaborative
     group_type: generate
     generator: lightgcn
     generator_params:
@@ -292,86 +311,44 @@ feature_groups:
       n_layers: 3
       product_columns:
         - prod_saving
-        - prod_guarantees
-        - prod_current
-        - prod_derivada
-        - prod_payroll_account
-        - prod_junior
+        - prod_guarantee
+        - prod_checking
+        - prod_derivados
+        - prod_payroll_acct
+        - prod_junior_acct
+        - prod_particular_acct
         - prod_particular_plus
-        - prod_particular
-        - prod_short_term_deposit
-        - prod_medium_term_deposit
-        - prod_long_term_deposit
+        - prod_short_deposit
+        - prod_medium_deposit
+        - prod_long_deposit
         - prod_e_account
         - prod_funds
         - prod_mortgage
-        - prod_pensions
+        - prod_pension_plan
         - prod_loans
         - prod_taxes
         - prod_credit_card
         - prod_securities
-        - prod_home_account
+        - prod_home_acct
         - prod_payroll
-        - prod_nom_pensions
+        - prod_pension_deposit
         - prod_direct_debit
-        - prod_home_insurance
+        - prod_auto_debit
     output_dim: 64
     target_experts: [lightgcn]
     interpretation:
       category: collaborative
       template: "Collaborative signal suggests {insight} product affinity at {value}"
       narrative_lens: consumption
-      primary_tasks: [nba, acquire_saving, acquire_current, acquire_short_term_deposit]
+      primary_tasks: [nba_primary, has_nba, acquire_saving, acquire_checking]
     distill: false
 
-  # -------------------------------------------------------------------------
-  # 11. Product holdings (transform) — 24D
-  #     Binary prod_* features as-is.
-  # -------------------------------------------------------------------------
-  - name: product_holdings
-    group_type: transform
-    transformers: []
-    columns:
-      - prod_saving
-      - prod_guarantees
-      - prod_current
-      - prod_derivada
-      - prod_payroll_account
-      - prod_junior
-      - prod_particular_plus
-      - prod_particular
-      - prod_short_term_deposit
-      - prod_medium_term_deposit
-      - prod_long_term_deposit
-      - prod_e_account
-      - prod_funds
-      - prod_mortgage
-      - prod_pensions
-      - prod_loans
-      - prod_taxes
-      - prod_credit_card
-      - prod_securities
-      - prod_home_account
-      - prod_payroll
-      - prod_nom_pensions
-      - prod_direct_debit
-      - prod_home_insurance
-    output_dim: 24
-    target_experts: [deepfm, mlp]
-    interpretation:
-      category: product_ownership
-      template: "Customer {holds/does_not_hold} {product}, indicating {direction} portfolio"
-      narrative_lens: lifecycle
-      primary_tasks: [nba, churn, product_diversity, ltv]
-    distill: true
-    distill_weight: 1.0
-
   # =========================================================================
-  # DERIVED GROUPS
+  # DERIVED GROUPS (generated features)
   # =========================================================================
 
   # -------------------------------------------------------------------------
-  # 12. GMM clustering (generate) — 22D
+  # 11. GMM clustering (generate) -- 22D
   #     GMM on demographics + txn_behavior features.
   #     20 soft assignments + entropy + dominant cluster.
   # -------------------------------------------------------------------------
@@ -389,12 +366,12 @@ feature_groups:
       category: customer_segment
       template: "Customer belongs to cluster pattern {value}, suggesting {direction} segment"
       narrative_lens: lifecycle
-      primary_tasks: [segment_pred, nba, life_stage]
+      primary_tasks: [segment_prediction, nba_primary, tenure_stage]
     distill: true
     distill_weight: 0.8
 
   # -------------------------------------------------------------------------
-  # 13. Model-derived features (generate) — 27D
+  # 12. Model-derived features (generate) -- 27D
   #     KMeans(5) + Bandit/MAB(4) + LNN(18)
   # -------------------------------------------------------------------------
   - name: model_derived
@@ -411,5 +388,5 @@ feature_groups:
       category: model_insight
       template: "Model-derived {feature} at {value} indicates {direction} behavioral pattern"
       narrative_lens: lifecycle
-      primary_tasks: [churn, retention, nba, spending_trend]
+      primary_tasks: [churn_signal, product_stability, nba_primary, spend_level]
     distill: false
