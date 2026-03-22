@@ -27,6 +27,12 @@ from core.evaluation.expert_redundancy import (
     RedundancyResult,
 )
 from core.evaluation.gate_analyzer import GateAnalyzer, GateAnalysisResult
+from core.evaluation.multidisciplinary_interpreter import (
+    MultidisciplinaryInterpreter,
+    FeatureInterpretation as MultiFeatureInterpretation,
+)
+from core.evaluation.xai_quality_evaluator import XAIQualityEvaluator, XAIReport
+from core.evaluation.model_card import ModelCardGenerator
 
 __all__ = [
     "PropensityEstimator",
@@ -45,4 +51,9 @@ __all__ = [
     "RedundancyResult",
     "GateAnalyzer",
     "GateAnalysisResult",
+    "MultidisciplinaryInterpreter",
+    "MultiFeatureInterpretation",
+    "XAIQualityEvaluator",
+    "XAIReport",
+    "ModelCardGenerator",
 ]

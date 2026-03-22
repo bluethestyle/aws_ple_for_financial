@@ -1536,6 +1536,241 @@ class PipelineRunner:
                 logger.warning("[Stage 8.5] Expert redundancy CCA failed: %s", e)
                 analysis["expert_redundancy"] = {"error": str(e)}
 
+        # -- Multidisciplinary Feature Interpretation ----------------------------
+        multi_cfg = analysis_cfg.get("multidisciplinary_interpreter", {})
+        if multi_cfg.get("enabled", True):
+            try:
+                import numpy as _np
+                from ..evaluation.multidisciplinary_interpreter import (
+                    MultidisciplinaryInterpreter,
+                )
+
+                interpreter = MultidisciplinaryInterpreter(
+                    config=self._config_to_dict(),
+                )
+
+                # Collect multidisciplinary features from validation loader
+                multi_features = []
+                max_multi_batches = multi_cfg.get("max_batches", 10)
+                for batch_idx, batch in enumerate(val_loader):
+                    if batch_idx >= max_multi_batches:
+                        break
+                    # Try to extract multidisciplinary_features from batch
+                    if isinstance(batch, dict):
+                        mf = batch.get("multidisciplinary_features")
+                    elif hasattr(batch, "multidisciplinary_features"):
+                        mf = batch.multidisciplinary_features
+                    else:
+                        mf = None
+
+                    if mf is not None:
+                        if hasattr(mf, "cpu"):
+                            mf = mf.cpu().numpy()
+                        multi_features.append(mf)
+
+                if multi_features:
+                    all_features = _np.concatenate(multi_features, axis=0)
+                    multi_result = interpreter.to_json_serializable_batch(
+                        all_features,
+                        max_samples=multi_cfg.get("max_samples", 100),
+                    )
+                    analysis["multidisciplinary_interpretation"] = multi_result
+
+                    multi_path = analysis_dir / "multidisciplinary_interpretation.json"
+                    with open(multi_path, "w", encoding="utf-8") as f:
+                        json.dump(multi_result, f, indent=2, ensure_ascii=False, default=str)
+                    logger.info(
+                        "[Stage 8.5] Multidisciplinary interpretation saved to %s "
+                        "(%d samples)",
+                        multi_path, multi_result.get("interpreted_samples", 0),
+                    )
+                else:
+                    analysis["multidisciplinary_interpretation"] = {
+                        "status": "skipped",
+                        "reason": "no_multidisciplinary_features_in_loader",
+                    }
+                    logger.info(
+                        "[Stage 8.5] Multidisciplinary interpretation skipped: "
+                        "no features found in validation loader",
+                    )
+            except Exception as e:
+                logger.warning(
+                    "[Stage 8.5] Multidisciplinary interpretation failed: %s", e,
+                )
+                analysis["multidisciplinary_interpretation"] = {"error": str(e)}
+
+        # -- Template Reasons (sample) ------------------------------------------
+        template_cfg = analysis_cfg.get("template_reasons", {})
+        if template_cfg.get("enabled", True):
+            try:
+                from ..recommendation.reason.template_engine import TemplateEngine
+
+                ig_results = analysis.get("ig_attributions", {})
+                if ig_results and not all(
+                    isinstance(v, dict) and "error" in v
+                    for v in ig_results.values()
+                ):
+                    te = TemplateEngine(config=self._config_to_dict())
+                    max_reason_samples = template_cfg.get("max_samples", 100)
+
+                    # Build sample IG attributions for template generation
+                    sample_ig: List[Dict[str, Any]] = []
+                    for task_name, importance in ig_results.items():
+                        if isinstance(importance, dict) and "error" not in importance:
+                            sorted_feats = sorted(
+                                importance.items(),
+                                key=lambda x: abs(x[1]) if isinstance(x[1], (int, float)) else 0,
+                                reverse=True,
+                            )
+                            # Create sample entries (using feature indices as customers)
+                            for i, (feat, score) in enumerate(sorted_feats[:max_reason_samples]):
+                                sample_ig.append({
+                                    "customer_id": f"sample_{task_name}_{i}",
+                                    "item_id": task_name,
+                                    "ig_top_features": [
+                                        (f[0], float(f[1]) if isinstance(f[1], (int, float)) else 0.0)
+                                        for f in sorted_feats[:te.top_k_features]
+                                    ],
+                                })
+
+                    if sample_ig:
+                        reasons = te.generate_batch(
+                            ig_attributions=sample_ig[:max_reason_samples],
+                            product_info={},
+                            segments={},
+                        )
+                        analysis["template_reasons_sample"] = {
+                            "count": len(reasons),
+                            "samples": reasons[:10],  # Store first 10 in analysis dict
+                        }
+
+                        reasons_path = analysis_dir / "template_reasons_sample.json"
+                        with open(reasons_path, "w", encoding="utf-8") as f:
+                            json.dump(reasons[:max_reason_samples], f, indent=2,
+                                      ensure_ascii=False, default=str)
+                        logger.info(
+                            "[Stage 8.5] Template reasons sample saved to %s (%d reasons)",
+                            reasons_path, len(reasons),
+                        )
+                    else:
+                        analysis["template_reasons_sample"] = {
+                            "status": "skipped",
+                            "reason": "no_valid_ig_attributions",
+                        }
+                else:
+                    analysis["template_reasons_sample"] = {
+                        "status": "skipped",
+                        "reason": "no_ig_attributions_available",
+                    }
+            except Exception as e:
+                logger.warning(
+                    "[Stage 8.5] Template reason generation failed: %s", e,
+                )
+                analysis["template_reasons_sample"] = {"error": str(e)}
+
+        # -- XAI Quality Evaluation --------------------------------------------
+        xai_cfg = analysis_cfg.get("xai_quality", {})
+        if xai_cfg.get("enabled", True):
+            try:
+                from ..evaluation.xai_quality_evaluator import XAIQualityEvaluator
+
+                xai_evaluator = XAIQualityEvaluator()
+
+                # Build explanation texts and IG top features from analysis so far
+                ig_results = analysis.get("ig_attributions", {})
+                explanations: List[str] = []
+                ig_top_features: List[List[str]] = []
+
+                for task_name, importance in ig_results.items():
+                    if isinstance(importance, dict) and "error" not in importance:
+                        # Create a pseudo-explanation from top feature names
+                        sorted_feats = sorted(
+                            importance.items(),
+                            key=lambda x: abs(x[1]) if isinstance(x[1], (int, float)) else 0,
+                            reverse=True,
+                        )
+                        top_feat_names = [f[0] for f in sorted_feats[:10]]
+                        explanations.append(" ".join(top_feat_names))
+                        ig_top_features.append(top_feat_names[:5])
+
+                if explanations:
+                    xai_report = xai_evaluator.evaluate(
+                        explanations=explanations,
+                        ig_top_features=ig_top_features,
+                    )
+                    analysis["xai_quality"] = xai_report.to_dict()
+
+                    xai_path = analysis_dir / "xai_quality_report.json"
+                    with open(xai_path, "w") as f:
+                        json.dump(xai_report.to_dict(), f, indent=2, default=str)
+                    logger.info(
+                        "[Stage 8.5] XAI quality report saved to %s (passed=%s)",
+                        xai_path, xai_report.passed,
+                    )
+                else:
+                    analysis["xai_quality"] = {
+                        "status": "skipped",
+                        "reason": "no_ig_attributions_available",
+                    }
+            except Exception as e:
+                logger.warning("[Stage 8.5] XAI quality evaluation failed: %s", e)
+                analysis["xai_quality"] = {"error": str(e)}
+
+        # -- Model Card Generation (always) ------------------------------------
+        model_card_cfg = analysis_cfg.get("model_card", {})
+        if model_card_cfg.get("enabled", True):
+            try:
+                from ..evaluation.model_card import ModelCardGenerator
+
+                card_gen = ModelCardGenerator()
+
+                # Gather model info from config
+                model_cfg = self._config_to_dict().get("model", {})
+                task_names = getattr(model, "task_names", [])
+                total_params = sum(p.numel() for p in model.parameters())
+
+                model_info = {
+                    "name": self.config.task_name,
+                    "architecture": model_cfg.get("architecture", "PLE + adaTT"),
+                    "num_tasks": len(task_names),
+                    "num_experts": len(
+                        model_cfg.get("expert_basket", {}).get("shared", [])
+                    ),
+                    "total_params": total_params,
+                    "input_dim": getattr(self.config.features, "input_dim", "N/A"),
+                    "num_layers": model_cfg.get("ple", {}).get("num_layers", "N/A"),
+                    "expert_basket": model_cfg.get("expert_basket", {}).get(
+                        "shared", []
+                    ),
+                    "task_groups": [
+                        g.name for g in getattr(self.config, "task_groups", [])
+                    ],
+                }
+
+                # Build training_results from pipeline state
+                training_results = {}
+                state_path = out / "pipeline_state.json"
+                if state_path.exists():
+                    with open(state_path) as f:
+                        pipeline_state = json.load(f)
+                    training_results = pipeline_state.get("artifacts", {}).get(
+                        "stage8", {}
+                    )
+
+                card_path = str(analysis_dir / "model_card.md")
+                card_gen.generate(
+                    model_info=model_info,
+                    training_results=training_results,
+                    analysis_results=analysis,
+                    output_path=card_path,
+                )
+                analysis["model_card"] = {"path": card_path, "status": "generated"}
+                logger.info("[Stage 8.5] Model card saved to %s", card_path)
+
+            except Exception as e:
+                logger.warning("[Stage 8.5] Model card generation failed: %s", e)
+                analysis["model_card"] = {"error": str(e)}
+
         elapsed = time.time() - stage_start
         analysis["analysis_time_seconds"] = round(elapsed, 2)
         logger.info("[Stage 8.5] Analysis complete in %.2fs", elapsed)

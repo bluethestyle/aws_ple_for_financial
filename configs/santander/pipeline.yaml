@@ -790,6 +790,10 @@ analysis:
     max_batches: 20
     n_components: 10
     min_samples: 256
+  xai_quality:
+    enabled: true
+  model_card:
+    enabled: true
 
 # ---------------------------------------------------------------------------
 # AWS / SageMaker configuration

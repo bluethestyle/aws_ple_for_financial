@@ -486,6 +486,77 @@ class TemplateEngine:
         idx = int(digest, 16) % len(variants)
         return variants[idx]
 
+    # ------------------------------------------------------------------
+    # Batch generation (Stage B interpretability)
+    # ------------------------------------------------------------------
+
+    # AI disclosure notice per Korean financial regulations
+    AI_DISCLOSURE_KO = (
+        "[AI 자동 생성 안내] 본 추천 사유는 AI 모델의 분석 결과를 바탕으로 "
+        "자동 생성되었습니다. 최종 금융 의사결정은 전문 상담사와 상의하시기 바랍니다."
+    )
+
+    def generate_batch(
+        self,
+        ig_attributions: List[Dict[str, Any]],
+        product_info: Dict[str, Dict[str, Any]],
+        segments: Dict[str, str],
+        task_type: Optional[str] = None,
+        include_disclosure: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Generate reasons for all customers in batch.
+
+        Processes all customer-item pairs using IG Top-K feature
+        attribution and template matching.  No LLM calls are required,
+        so the full batch completes in minutes rather than hours.
+
+        Args:
+            ig_attributions: List of dicts, each with ``customer_id``,
+                ``item_id``, and ``ig_top_features`` (list of
+                ``(feature_name, ig_score)`` tuples sorted descending).
+            product_info: ``{item_id: {name, primary_category, ...}}``.
+            segments: ``{customer_id: segment}`` mapping.
+            task_type: Optional task type for narrative framing.
+            include_disclosure: Whether to append AI disclosure notice
+                per Korean financial regulations.
+
+        Returns:
+            List of reason dicts (same format as :meth:`generate_reason`).
+        """
+        results: List[Dict[str, Any]] = []
+
+        for entry in ig_attributions:
+            cust_id = entry.get("customer_id", "")
+            item_id = entry.get("item_id", "")
+            ig_feats = entry.get("ig_top_features", [])
+            segment = segments.get(cust_id, "WARMSTART")
+            item_info = product_info.get(item_id, {})
+
+            result = self.generate_reason(
+                customer_id=cust_id,
+                item_id=item_id,
+                ig_top_features=ig_feats,
+                segment=segment,
+                task_type=task_type,
+                item_info=item_info,
+            )
+
+            # Append AI disclosure notice
+            if include_disclosure:
+                result["ai_disclosure"] = self.AI_DISCLOSURE_KO
+
+            results.append(result)
+
+        logger.info(
+            "Batch generated %d template reasons (task_type=%s)",
+            len(results), task_type,
+        )
+        return results
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _render_template(
         template: str,
