@@ -82,3 +82,63 @@ class SantanderAdapter(DataAdapter):
         )
 
         return {"main": df}
+
+
+# ======================================================================
+# Standalone entry point for SageMaker Processing Job
+# ======================================================================
+
+if __name__ == "__main__":
+    import argparse
+    import os
+    import sys
+    import shutil
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    parser = argparse.ArgumentParser(description="Santander data adapter")
+    parser.add_argument("--input-dir", default="/opt/ml/processing/input/raw")
+    parser.add_argument("--output-dir", default="/opt/ml/processing/output")
+    parser.add_argument("--pipeline", default="", help="Pipeline config path (unused, for compat)")
+    parser.add_argument("--stages", default="1-6", help="Stages to run (unused, for compat)")
+    cli_args = parser.parse_args()
+
+    input_dir = cli_args.input_dir
+    output_dir = cli_args.output_dir
+
+    # Find the parquet file in input dir
+    import glob
+    parquet_files = glob.glob(os.path.join(input_dir, "*.parquet"))
+    if not parquet_files:
+        # Try subdirectories
+        parquet_files = glob.glob(os.path.join(input_dir, "**", "*.parquet"), recursive=True)
+
+    if not parquet_files:
+        logger.error("No parquet files found in %s", input_dir)
+        sys.exit(1)
+
+    source = parquet_files[0]
+    logger.info("Found source: %s", source)
+
+    # Load via adapter
+    config = {"data": {"source": source, "backend": ["duckdb", "pandas"]}}
+    adapter = SantanderAdapter(config)
+    raw_data = adapter.load_raw()
+    df = raw_data["main"]
+
+    # Save to output dir
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, "santander_final.parquet")
+    df.to_parquet(out_path, index=False)
+    logger.info("Saved %d rows to %s", len(df), out_path)
+
+    # Save metadata
+    import json
+    meta = adapter.metadata
+    with open(os.path.join(output_dir, "adapter_metadata.json"), "w") as f:
+        json.dump(meta.__dict__, f, indent=2, default=str)
+
+    logger.info("Phase 0 complete. Output: %s", output_dir)

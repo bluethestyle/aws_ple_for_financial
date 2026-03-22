@@ -785,7 +785,7 @@ def run_phase0(s3_base: str, ts: str, args: argparse.Namespace) -> Dict[str, Any
         instance_type=args.instance_type_cpu,
         inputs=[
             ProcessingInput(
-                source=f"s3://{S3_BUCKET}/data/raw/santander/",
+                source=f"s3://{S3_BUCKET}/data/santander/",
                 destination="/opt/ml/processing/input/raw",
             ),
         ],
