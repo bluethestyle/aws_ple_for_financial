@@ -659,9 +659,17 @@ class PLETrainer:
         device_type = getattr(self.device, "type", "cuda")
 
         self.optimizer.zero_grad()
+        logger.info("[%s] Starting epoch loop, loader has %d batches", phase_name, len(train_loader))
+        import sys; sys.stdout.flush(); sys.stderr.flush()
 
         for batch_idx, batch in enumerate(train_loader):
+            if batch_idx == 0:
+                logger.info("[%s] First batch received, type=%s", phase_name, type(batch).__name__)
+                sys.stdout.flush(); sys.stderr.flush()
             inputs = self._prepare_inputs(batch)
+            if batch_idx == 0:
+                logger.info("[%s] First batch prepared as PLEInput, features=%s", phase_name, inputs.features.shape if inputs.features is not None else None)
+                sys.stdout.flush(); sys.stderr.flush()
 
             # Forward pass
             try:
@@ -682,6 +690,10 @@ class PLETrainer:
                     self.optimizer.zero_grad()
                     continue
                 raise
+
+            if batch_idx == 0:
+                logger.info("[%s] First forward pass done, total_loss=%s", phase_name, outputs.total_loss)
+                sys.stdout.flush(); sys.stderr.flush()
 
             # NaN/Inf check before backward
             loss_val = outputs.total_loss.item()
