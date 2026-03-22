@@ -129,7 +129,7 @@ TASK_TIERS: Dict[str, List[str]] = {
         "will_acquire_deposits", "will_acquire_investments",
         "will_acquire_accounts", "will_acquire_lending",
         "will_acquire_payments", "segment_prediction", "income_tier",
-        "loyalty_score", "product_diversity", "activity_trend",
+        "next_mcc", "mcc_diversity_trend", "top_mcc_shift",
     ],
 }
 

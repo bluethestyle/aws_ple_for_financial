@@ -143,6 +143,15 @@ FEATURE_GROUP_COLUMN_PREFIXES: Dict[str, list] = {
     "merchant_hierarchy": ["merchant_hierarchy_", "mcc_", "brand_embed_", "merchant_"],
     "hmm_states": ["hmm_states_", "hmm_journey_", "hmm_lifecycle_", "hmm_behavior_", "hmm_"],
     "graph_embeddings": ["graph_embeddings_", "hyperbolic_", "hgcn_", "graph_"],
+    # Santander-specific groups
+    "demographics": ["age", "income", "tenure_months", "is_active", "num_products", "gender_", "segment_", "country_", "channel_", "age_group_", "income_group_"],
+    "product_holdings": ["prod_"],
+    "txn_behavior": ["synth_"],
+    "derived_temporal": ["total_acquisitions", "total_churns", "months_observed", "product_diversity"],
+    "tda_global": ["tda_global_"],
+    "tda_local": ["tda_local_"],
+    "product_hierarchy": ["product_hierarchy_", "ph_"],
+    "graph_collaborative": ["graph_collaborative_", "gc_"],
 }
 
 
@@ -903,6 +912,16 @@ def main() -> None:
     else:
         shared_experts_override = None
 
+    # Parse active_tasks HP for task scaling ablation
+    active_tasks_raw = hp.get("active_tasks")
+    if active_tasks_raw:
+        active_tasks = json.loads(active_tasks_raw) if isinstance(active_tasks_raw, str) else active_tasks_raw
+        # Filter config tasks to only active ones
+        all_tasks = config.get("tasks", [])
+        config["tasks"] = [t for t in all_tasks if t["name"] in active_tasks]
+        logger.info("Task scaling ablation: %d/%d tasks active: %s",
+                    len(config["tasks"]), len(all_tasks), active_tasks)
+
     # Hyperparameter ablation: num_layers and temperature
     hp_num_layers = hp.get("num_layers")
     hp_temperature = hp.get("temperature")
@@ -1000,6 +1019,27 @@ def main() -> None:
     from core.model.ple.config import PLEConfig
 
     model_config = config.get("model", {})
+
+    # Structure ablation: PLE toggle
+    use_ple_raw = hp.get("use_ple")
+    if use_ple_raw is not None:
+        use_ple = json.loads(use_ple_raw) if isinstance(use_ple_raw, str) else use_ple_raw
+        if not use_ple:
+            # Disable CGC gating — use single shared expert (shared-bottom baseline)
+            model_config["ple"] = model_config.get("ple", {})
+            model_config["ple"]["num_layers"] = 1
+            model_config["ple"]["num_shared_experts"] = 1
+            model_config.pop("expert_basket", None)  # Remove expert basket → MLP only
+            logger.info("Structure ablation: PLE disabled (shared-bottom mode)")
+
+    # Structure ablation: adaTT toggle
+    use_adatt_raw = hp.get("use_adatt")
+    if use_adatt_raw is not None:
+        use_adatt = json.loads(use_adatt_raw) if isinstance(use_adatt_raw, str) else use_adatt_raw
+        if not use_adatt:
+            model_config["adatt"] = {"enabled": False}
+            logger.info("Structure ablation: adaTT disabled")
+
     tasks = config.get("tasks", [])
     task_names = [t["name"] for t in tasks]
 
@@ -1160,7 +1200,7 @@ def main() -> None:
         )
 
     # -- Multidisciplinary feature routing ---
-    md_routing = model_cfg.get("multidisciplinary_routing", {})
+    md_routing = model_config.get("multidisciplinary_routing", {})
     if md_routing:
         ple_config.multidisciplinary_routing = {
             str(k): list(v) for k, v in md_routing.items()
