@@ -1280,7 +1280,10 @@ class PLEModel(nn.Module):
             # Gradient extraction for adaTT (at configured interval)
             task_gradients = None
             if self.training and self.adatt is not None:
-                if self.global_step % self._adatt_grad_interval == 0:
+                # Skip gradient extraction during warmup and first step
+                if (self.global_step > 0
+                        and self.global_step >= self._adatt_grad_interval
+                        and self.global_step % self._adatt_grad_interval == 0):
                     task_gradients = self._extract_task_gradients(task_losses)
 
             # Apply adaTT transfer enhancement
