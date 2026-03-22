@@ -354,6 +354,39 @@ def load_data(
     tasks = config.get("tasks", [])
     label_cols = [t["label_col"] for t in tasks]
 
+    # -- Derive missing labels if LabelDeriver config is present --
+    missing_labels = [lc for lc in label_cols if lc not in df.columns]
+    if missing_labels:
+        logger.info("Missing %d label columns, attempting derivation: %s",
+                     len(missing_labels), missing_labels)
+        try:
+            from core.pipeline.label_deriver import LabelDeriver, LabelConfig
+            labels_cfg = config.get("labels", {})
+            if labels_cfg:
+                deriver = LabelDeriver()
+                label_configs = []
+                for name, cfg in labels_cfg.items():
+                    if isinstance(cfg, dict):
+                        label_configs.append(LabelConfig(name=name, **{
+                            k: v for k, v in cfg.items()
+                            if k in LabelConfig.__dataclass_fields__
+                        }))
+                derived = deriver.derive(df, label_configs)
+                for col in derived.columns:
+                    df[col] = derived[col]
+                logger.info("Derived %d label columns", len(derived.columns))
+            else:
+                logger.warning("No labels config found for derivation")
+        except Exception as e:
+            logger.warning("Label derivation failed: %s", e)
+
+    # Re-check after derivation — skip tasks whose labels still don't exist
+    available_labels = set(df.columns)
+    tasks = [t for t in tasks if t["label_col"] in available_labels]
+    label_cols = [t["label_col"] for t in tasks]
+    if not tasks:
+        raise ValueError("No tasks have valid label columns in the data.")
+
     # ---- PLEDataset path ----
     feature_spec = _parse_feature_column_spec(config, list(df.columns))
     if feature_spec is None:
