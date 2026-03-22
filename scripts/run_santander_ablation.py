@@ -538,7 +538,7 @@ def _submit_training_job(
         environment=env,
         use_spot_instances=use_spot,
         max_run=14400,       # 4 hours
-        max_wait=18000 if use_spot else 14400,
+        **({"max_wait": 18000} if use_spot else {}),
         tags=[
             {"Key": "Project", "Value": "santander-ablation"},
             {"Key": "Phase", "Value": hyperparameters.get("ablation_phase", "unknown")},
