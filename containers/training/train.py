@@ -301,7 +301,14 @@ def load_data(
     logger.info(f"Loading {len(parquet_files)} Parquet file(s) from {channel_dir}")
     dfs = [pd.read_parquet(f) for f in parquet_files]
     df = pd.concat(dfs, ignore_index=True)
-    df = df.fillna(0)
+    # Subsample if max_rows HP is set (for fast testing)
+    max_rows = config.get("max_rows", 0)
+    if max_rows and max_rows > 0 and len(df) > max_rows:
+        df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
+        logger.info(f"Subsampled to {max_rows} rows for fast testing")
+    # fillna(0) only on numeric columns to avoid string issues
+    numeric_cols = df.select_dtypes(include="number").columns
+    df[numeric_cols] = df[numeric_cols].fillna(0)
     logger.info(f"Loaded {len(df)} rows, {len(df.columns)} columns")
 
     # -- Load event sequence .npy files if present --
