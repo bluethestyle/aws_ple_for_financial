@@ -1,5 +1,5 @@
 """
-PipelineRunner -- 8-stage universal pipeline orchestrator.
+PipelineRunner -- 9-stage universal pipeline orchestrator.
 
 Stages:
   1. Load raw data via DataAdapter
@@ -9,7 +9,8 @@ Stages:
   5. Label derivation
   6. Sequence building (flat -> 3D tensors)
   7. Build DataLoaders (PLEDataset)
-  8. Train (PLE or LGBM)
+  8. Train teacher model (PLE)
+  9. Knowledge distillation (teacher -> LGBM students)
 
 Each stage is independently testable and logs entry/exit.
 
@@ -38,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 class PipelineRunner:
-    """Execute an 8-stage training pipeline driven by :class:`PipelineConfig`.
+    """Execute a 9-stage training pipeline driven by :class:`PipelineConfig`.
 
     The runner wires together data loading (adapter), schema classification,
     encryption, feature engineering, label derivation, sequence building,
@@ -146,13 +147,25 @@ class PipelineRunner:
             len(train_loader), len(val_loader),
         )
 
-        # Stage 8: Train
+        # Stage 8: Train teacher model
         results["training"] = self._train(train_loader, val_loader, output_dir)
 
         # Save feature pipeline alongside the model
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         feature_pipeline.save(str(out / "feature_pipeline"))
+
+        # Stage 9: Knowledge distillation (teacher → LGBM students)
+        distill_cfg = self._config_to_dict().get("distillation", {})
+        if distill_cfg.get("enabled", True):
+            results["distillation"] = self._distill(
+                teacher_checkpoint=str(out / "model.pth"),
+                feature_df=df_features,
+                label_df=df_labels,
+                output_dir=output_dir,
+            )
+        else:
+            logger.info("[Stage 9] Distillation disabled in config, skipping.")
 
         elapsed = time.time() - pipeline_start
         results["total_time_seconds"] = round(elapsed, 2)
@@ -993,6 +1006,156 @@ class PipelineRunner:
                 "categorical": list(self.config.features.categorical),
                 "sequence": list(self.config.features.sequence),
             },
+        }
+
+    # ------------------------------------------------------------------
+    # Stage 9: Knowledge Distillation
+    # ------------------------------------------------------------------
+
+    def _distill(
+        self,
+        teacher_checkpoint: str,
+        feature_df: Any,
+        label_df: Any,
+        output_dir: str,
+    ) -> dict:
+        """Distill PLE teacher into per-task LGBM student models.
+
+        Uses :class:`~core.training.student_trainer.StudentTrainer` to:
+        1. Load the trained PLE teacher from checkpoint
+        2. Generate soft labels (temperature-scaled predictions)
+        3. Train per-task LGBM students on blended hard + soft targets
+        4. Validate fidelity (teacher-student agreement)
+        5. Save student models
+
+        Returns:
+            Dict with distillation results and per-task metrics.
+        """
+        import numpy as np
+        stage_start = time.time()
+        logger.info("[Stage 9] Starting knowledge distillation...")
+
+        try:
+            import torch
+            from ..training.student_trainer import StudentTrainer, StudentConfig
+            from ..pipeline.config import TaskSpec
+        except ImportError as e:
+            logger.warning("[Stage 9] Distillation skipped — missing dependency: %s", e)
+            return {"status": "skipped", "reason": str(e)}
+
+        # Build StudentConfig from pipeline config
+        distill_cfg = self._config_to_dict().get("distillation", {})
+        student_config = StudentConfig(
+            teacher_checkpoint=teacher_checkpoint,
+            temperature=distill_cfg.get("temperature", 5.0),
+            alpha=distill_cfg.get("alpha", 0.5),
+            lgbm_params=distill_cfg.get("lgbm_params", {}),
+        )
+
+        # Feature columns (exclude labels and IDs)
+        id_cols = set(self.config.features.id_cols or ["user_id"])
+        label_cols = set(label_df.columns) if hasattr(label_df, 'columns') else set()
+        feature_columns = [
+            c for c in feature_df.columns
+            if c not in id_cols and c not in label_cols
+        ]
+
+        # Build task specs list
+        task_specs = self.config.tasks
+
+        trainer = StudentTrainer(
+            config=student_config,
+            task_specs=task_specs,
+            feature_columns=feature_columns,
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        )
+
+        # Step 1: Load teacher
+        teacher = trainer.load_teacher(teacher_checkpoint)
+        logger.info("[Stage 9] Teacher loaded: %d params",
+                    sum(p.numel() for p in teacher.parameters()))
+
+        # Step 2: Generate soft labels
+        # Build a simple DataLoader from feature_df for teacher inference
+        import pandas as pd
+        merged = pd.concat([feature_df, label_df], axis=1)
+        from ..data.dataloader import build_ple_dataloader, FeatureColumnSpec
+        spec = FeatureColumnSpec(static_features=feature_columns)
+        label_map = {t.name: t.label_col for t in task_specs}
+        loader = build_ple_dataloader(
+            df=merged,
+            feature_spec=spec,
+            label_columns=label_map,
+            batch_size=self.config.training.batch_size,
+            shuffle=False,
+        )
+        soft_labels = trainer.generate_soft_labels(loader)
+        logger.info("[Stage 9] Soft labels generated: %d tasks", len(soft_labels))
+
+        # Step 3: Train students
+        features_np = feature_df[feature_columns].values
+        hard_labels = {}
+        for t in task_specs:
+            if t.label_col in label_df.columns:
+                hard_labels[t.name] = label_df[t.label_col].values
+
+        trainer.train_students(features_np, hard_labels)
+        logger.info("[Stage 9] Students trained: %d tasks", len(trainer._students))
+
+        # Step 4: Save students
+        out = Path(output_dir) / "distillation"
+        out.mkdir(parents=True, exist_ok=True)
+        trainer.save_students(str(out))
+
+        # Step 5: Fidelity validation (optional)
+        fidelity_results = {}
+        try:
+            from ..training.distillation_validator import DistillationValidator
+            validator = DistillationValidator()
+            for task_name in trainer._students:
+                t_spec = self.config.tasks[0]  # placeholder
+                for t in self.config.tasks:
+                    if t.name == task_name:
+                        t_spec = t
+                        break
+                teacher_preds = soft_labels.get(task_name)
+                student_preds = trainer.predict(
+                    task_name, features_np,
+                )
+                if teacher_preds is not None and student_preds is not None:
+                    try:
+                        result = validator.validate_task(
+                            task_name=task_name,
+                            task_type=t_spec.type,
+                            teacher_preds=teacher_preds,
+                            student_preds=student_preds,
+                            labels=hard_labels.get(task_name),
+                        )
+                        fidelity_results[task_name] = {
+                            "passed": result.passed,
+                            "metrics": result.metrics,
+                        }
+                    except Exception as e:
+                        fidelity_results[task_name] = {
+                            "passed": False,
+                            "error": str(e),
+                        }
+        except ImportError:
+            logger.info("[Stage 9] Fidelity validator not available, skipping.")
+
+        elapsed = time.time() - stage_start
+        logger.info(
+            "[Stage 9] Distillation complete in %.1fs — %d students, artifacts at %s",
+            elapsed, len(trainer._students), out,
+        )
+
+        return {
+            "status": "completed",
+            "num_students": len(trainer._students),
+            "tasks": list(trainer._students.keys()),
+            "fidelity": fidelity_results,
+            "time_seconds": round(elapsed, 2),
+            "output_dir": str(out),
         }
 
 

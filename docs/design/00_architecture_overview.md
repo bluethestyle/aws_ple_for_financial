@@ -32,9 +32,9 @@ Raw Data Load    Feature              Preprocessing        Encryption +
   → SNS 알림    │ item         │                                  │
                 └──────────────┘                                  │
                                                                   ▼
-Stage 5              Stage 6              Stage 7              Stage 8
-Feature Eng.         Feature Integration  Label Generation     Item Universe +
-(per axis)           + Normalization      + Transforms         Product Hierarchy
+Stage 5              Stage 6              Stage 7              Stage 8-9
+Feature Eng.         Feature Integration  Label Generation     Training +
+(per axis)           + Normalization      + Transforms         Distillation
 ┌──────────────┐    ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │ State→RFM,   │───▶│ Power-law    │────▶│ clip(99.5p)  │────▶│ Product      │
 │   Demographics│    │ auto-detect  │     │ + log1p      │     │ Hierarchy    │
@@ -291,8 +291,11 @@ PipelineRunner.run()
     │
     ├── Stage 7: Label derivation + transforms
     │
-    └── Stage 8: Training (PLETrainer)
-        └── containers/training/train.py::main_pipeline()
+    ├── Stage 8: Training (PLETrainer)
+    │   └── containers/training/train.py::main_pipeline()
+    │
+    └── Stage 9: Knowledge Distillation (StudentTrainer)
+        └── PLE teacher → LGBM students (soft label + fidelity validation)
 ```
 
 ### DataAdapter 패턴
