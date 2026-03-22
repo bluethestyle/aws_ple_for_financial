@@ -188,19 +188,45 @@ class StudentTrainer:
         shared_expert = ExpertConfig(
             hidden_dims=expert_hidden,
             output_dim=expert_output,
+            dropout=mlp_cfg.get("dropout", 0.1),
         )
         task_expert = ExpertConfig(
             hidden_dims=expert_hidden,
             output_dim=expert_output,
+            dropout=mlp_cfg.get("dropout", 0.1),
         )
+
+        # Reconstruct ExpertBasketConfig from checkpoint config
+        # This is critical: the teacher may use specialized experts
+        # (DeepFM, TemporalEnsemble, HGCN, etc.), not simple MLPs.
+        from core.model.ple.config import ExpertBasketConfig
+        expert_basket = None
+        eb_cfg = model_cfg.get("expert_basket", {})
+        ablation_meta = checkpoint.get("ablation", {})
+        shared_experts_list = ablation_meta.get("shared_experts") or eb_cfg.get("shared")
+        if shared_experts_list:
+            expert_basket = ExpertBasketConfig(
+                shared_experts=shared_experts_list,
+                task_experts=eb_cfg.get("task", ["mlp"]),
+                expert_configs={
+                    name: expert_cfg.get(name, {})
+                    for name in shared_experts_list
+                    if name in expert_cfg
+                },
+            )
+            num_shared = len(shared_experts_list)
+        else:
+            num_shared = ple_dict.get("num_shared_experts", 2)
 
         ple_config = PLEConfig(
             input_dim=input_dim,
             task_names=task_names,
-            num_shared_experts=ple_dict.get("num_shared_experts", 2),
+            num_shared_experts=num_shared,
             num_extraction_layers=ple_dict.get("num_extraction_layers", 2),
             shared_expert=shared_expert,
             task_expert=task_expert,
+            dropout=model_cfg.get("dropout", 0.1),
+            expert_basket=expert_basket,
         )
 
         # Apply task overrides from raw config

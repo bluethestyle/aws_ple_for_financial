@@ -341,6 +341,13 @@ class CGCLayer(nn.Module):
                 expert_input = self.feature_router.route(shared_input, expert_name)
             else:
                 expert_input = shared_input
+
+            # Handle 3D sequence tensors: flatten to 2D for non-sequence
+            # experts; keep 3D for sequence-aware experts (Mamba, etc.).
+            if expert_input.dim() == 3 and not getattr(expert, "expects_sequence", False):
+                batch_size = expert_input.size(0)
+                expert_input = expert_input.reshape(batch_size, -1)
+
             shared_expert_outputs.append(expert(expert_input))
 
         shared_outs = torch.stack(shared_expert_outputs, dim=1)

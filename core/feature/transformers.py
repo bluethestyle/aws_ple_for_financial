@@ -35,6 +35,35 @@ from .registry import FeatureRegistry
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# cuML availability check (lazy, cached)
+# ---------------------------------------------------------------------------
+
+_cuml_available: Optional[bool] = None
+
+
+def _has_cuml() -> bool:
+    """Check whether cuML is importable. Result is cached."""
+    global _cuml_available
+    if _cuml_available is not None:
+        return _cuml_available
+    try:
+        import cuml  # noqa: F401
+        _cuml_available = True
+    except Exception:
+        _cuml_available = False
+    return _cuml_available
+
+
+def _is_cudf_dataframe(df: Any) -> bool:
+    """Check if *df* is a cuDF DataFrame without importing cudf at top level."""
+    try:
+        import cudf
+        return isinstance(df, cudf.DataFrame)
+    except ImportError:
+        return False
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Numeric scalers
 # ──────────────────────────────────────────────────────────────────────
@@ -66,10 +95,36 @@ class StandardScaler(AbstractFeatureTransformer):
         self.clip_std = clip_std
         self._mean: Optional[pd.Series] = None
         self._std: Optional[pd.Series] = None
+        self._cuml_scaler: Any = None  # cuML StandardScaler when available
 
     def fit(self, df: pd.DataFrame) -> "StandardScaler":
         cols = self._resolve_columns(df)
         self._fit_columns = cols
+        self._cuml_scaler = None
+
+        # Try cuML GPU acceleration for large datasets or cuDF input
+        if _has_cuml() and (_is_cudf_dataframe(df) or len(df) > 100_000):
+            try:
+                from cuml.preprocessing import StandardScaler as CuMLScaler
+                import cudf
+
+                cuml_scaler = CuMLScaler()
+                if isinstance(df, cudf.DataFrame):
+                    cuml_scaler.fit(df[cols])
+                else:
+                    gdf = cudf.DataFrame(df[cols])
+                    cuml_scaler.fit(gdf)
+                self._cuml_scaler = cuml_scaler
+                self._fitted = True
+                logger.debug(
+                    "StandardScaler fitted on %d columns (cuML GPU)",
+                    len(cols),
+                )
+                return self
+            except Exception as exc:
+                logger.debug("cuML StandardScaler failed, falling back to CPU: %s", exc)
+
+        # CPU fallback: pandas-based z-score
         self._mean = df[cols].mean()
         self._std = df[cols].std().replace(0, 1.0)
         self._fitted = True
@@ -81,6 +136,25 @@ class StandardScaler(AbstractFeatureTransformer):
             raise RuntimeError("StandardScaler must be fitted before transform().")
         df = df.copy()
         cols = self._fit_columns
+
+        # cuML GPU path
+        if self._cuml_scaler is not None:
+            try:
+                import cudf
+
+                if isinstance(df, cudf.DataFrame):
+                    df[cols] = self._cuml_scaler.transform(df[cols])
+                else:
+                    gdf = cudf.DataFrame(df[cols])
+                    transformed = self._cuml_scaler.transform(gdf)
+                    df[cols] = transformed.to_pandas().values
+                if self.clip_std is not None:
+                    df[cols] = df[cols].clip(-self.clip_std, self.clip_std)
+                return df
+            except Exception as exc:
+                logger.debug("cuML transform failed, falling back to CPU: %s", exc)
+
+        # CPU fallback
         scaled = (df[cols] - self._mean) / self._std
         if self.clip_std is not None:
             scaled = scaled.clip(-self.clip_std, self.clip_std)
@@ -127,15 +201,45 @@ class QuantileTransformer(AbstractFeatureTransformer):
         self.n_quantiles = n_quantiles
         self.output_distribution = output_distribution
         self.random_state = random_state
-        self._qt = None  # sklearn QuantileTransformer
+        self._qt = None  # sklearn or cuML QuantileTransformer
+        self._use_cuml: bool = False
 
     def fit(self, df: pd.DataFrame) -> "QuantileTransformer":
+        cols = self._resolve_columns(df)
+        self._fit_columns = cols
+        self._use_cuml = False
+
+        # Try cuML GPU acceleration for large datasets or cuDF input
+        if _has_cuml() and (_is_cudf_dataframe(df) or len(df) > 100_000):
+            try:
+                from cuml.preprocessing import QuantileTransformer as CuMLQT
+                import cudf
+
+                self._qt = CuMLQT(
+                    n_quantiles=self.n_quantiles,
+                    output_distribution=self.output_distribution,
+                    random_state=self.random_state,
+                )
+                if isinstance(df, cudf.DataFrame):
+                    self._qt.fit(df[cols])
+                else:
+                    gdf = cudf.DataFrame(df[cols].astype(np.float64))
+                    self._qt.fit(gdf)
+                self._use_cuml = True
+                self._fitted = True
+                logger.debug(
+                    "QuantileTransformer fitted on %d columns (cuML GPU)",
+                    len(cols),
+                )
+                return self
+            except Exception as exc:
+                logger.debug("cuML QuantileTransformer failed, falling back to sklearn: %s", exc)
+
+        # CPU fallback: sklearn
         from sklearn.preprocessing import (
             QuantileTransformer as SklearnQT,
         )
 
-        cols = self._resolve_columns(df)
-        self._fit_columns = cols
         self._qt = SklearnQT(
             n_quantiles=self.n_quantiles,
             output_distribution=self.output_distribution,
@@ -151,6 +255,23 @@ class QuantileTransformer(AbstractFeatureTransformer):
             raise RuntimeError("QuantileTransformer must be fitted before transform().")
         df = df.copy()
         cols = self._fit_columns
+
+        # cuML GPU path
+        if self._use_cuml:
+            try:
+                import cudf
+
+                if isinstance(df, cudf.DataFrame):
+                    df[cols] = self._qt.transform(df[cols])
+                else:
+                    gdf = cudf.DataFrame(df[cols].astype(np.float64))
+                    transformed = self._qt.transform(gdf)
+                    df[cols] = transformed.to_pandas().values
+                return df
+            except Exception as exc:
+                logger.debug("cuML QT transform failed, falling back to sklearn: %s", exc)
+
+        # CPU fallback
         df[cols] = self._qt.transform(df[cols].values.astype(np.float64))
         return df
 

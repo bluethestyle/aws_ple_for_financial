@@ -1,63 +1,145 @@
-# 04. Training Pipeline — SageMaker Training, 2-Phase, 실험 관리
+# 04. Training Pipeline — PLETrainer 단일 경로, 4-Dimension Ablation 설계
 
-## 현재 (On-Prem) 분석
+## 9-Stage 파이프라인에서의 위치
 
-### 학습 구조
-- **2-Phase**: Phase1 (Shared Expert 15 epoch) → Phase2 (Cluster Head 8 epoch)
-- **옵티마이저**: AdamW (lr=0.0005, weight_decay=0.01)
-- **스케줄러**: CosineAnnealingWarmRestarts (T0=10, Tmult=2)
-- **Mixed Precision**: fp16 (AMP)
-- **Gradient**: Clip=5.0, Accumulation=4 (effective batch: 16384)
-- **실험 관리**: MLflow (Docker 자체 호스팅)
-- **체크포인트**: 로컬 디스크, max 5개
-
-### 문제점
-1. **학습 환경 고정**: 특정 GPU 머신에 종속
-2. **MLflow 서버 유지비용**: Docker로 상시 가동 필요
-3. **체크포인트 유실 위험**: 로컬 디스크만 사용
-4. **재현성 미흡**: 환경 + 코드 + 데이터 버전이 느슨하게 연결
-
-### 유지할 패턴
-- **2-Phase Training**: 검증된 전략
-- **Dynamic Loss Weighting**: 불확실성 기반 태스크 가중치 조절
-- **Expert별 Learning Rate**: 안정적 학습에 효과적
+Training Pipeline은 Stage 9를 담당한다.
 
 ---
 
-## AWS 설계
+## PipelineRunner 통합 진입점 (Step 14)
 
-### 학습 파이프라인 흐름
+`containers/training/train.py`에 두 가지 진입 경로가 존재한다:
+
+### 1. Legacy 경로 — `main()`
+기존 SageMaker Training Job에서 직접 호출하는 경로. Parquet 로드 → PLETrainer 실행.
+
+### 2. Pipeline 경로 — `main_pipeline(config_path)`
+`--pipeline config.yaml` 플래그로 활성화. PipelineRunner가 Stage 1~8 전체를 오케스트레이션.
+
+```bash
+# Legacy (기존 호환)
+python train.py
+
+# Pipeline (PipelineRunner 경유)
+python train.py --pipeline configs/financial/pipeline.yaml
+```
+
+`main_pipeline()`은 다음을 수행한다:
+1. `load_config(config_path)` — YAML 로드
+2. SageMaker HP 오버라이드 적용 (`SM_HPS` 환경변수)
+3. `PipelineRunner(config).run(output_dir=SM_MODEL_DIR)` — 전체 파이프라인 실행
+
+Adapter-specific 코드(ealtman2019 DuckDB 집계 등)는 PipelineRunner 내부에서 `AdapterRegistry`를 통해 호출되므로, `train.py`에는 adapter별 로직이 없다.
+
+### Label Derivation 및 Sequence Building
+
+PipelineRunner 내부에서 수행되는 추가 단계:
+- **Stage 7: Label Derivation** — config의 `labels:` 정의에서 자동 생성 (clip + log1p)
+- **Sequence Building** — event_sequences.npy 생성 (Mamba/Temporal Expert 입력)
+
+---
+
+## 학습 파이프라인 흐름
 
 ```
-configs/training.yaml
+configs/training.yaml + pipeline.yaml
          ↓
 Step Functions (오케스트레이션)
          ↓
-   ┌─────────────┐
-   │ Phase 1     │ SageMaker Training Job #1
-   │ Shared      │ - Spot Instance (g4dn.xlarge)
-   │ Experts     │ - 체크포인트 → S3 (Spot 중단 대비)
-   │ (15 epoch)  │ - 메트릭 → SageMaker Experiments
-   └──────┬──────┘
-          │ S3에 Phase1 체크포인트 저장
-          ▼
-   ┌─────────────┐
-   │ Phase 2     │ SageMaker Training Job #2
-   │ Task Heads  │ - Phase1 체크포인트 로드
-   │ Fine-tune   │ - Shared Expert freeze (선택적)
-   │ (8 epoch)   │ - 최종 모델 → S3
-   └──────┬──────┘
-          │
-          ▼
-   ┌─────────────┐
-   │ 평가         │ SageMaker Processing Job
-   │ + 등록       │ - 테스트셋 평가
-   │              │ - Champion/Challenger 비교
-   │              │ - 합격 시 Model Registry 등록
-   └─────────────┘
+   ┌──────────────────────────────────────────────────────────────┐
+   │                     PLETrainer 단일 경로                      │
+   │                                                              │
+   │  ┌─────────────┐                                            │
+   │  │ Phase 1     │ SageMaker Training Job #1                  │
+   │  │ Shared      │ - Spot Instance (g4dn.xlarge)              │
+   │  │ Experts     │ - 체크포인트 → S3 (Spot 중단 대비)            │
+   │  │ (15 epoch)  │ - Per-task loss: build_loss() 팩토리         │
+   │  │             │ - Uncertainty weighting: Kendall et al.     │
+   │  └──────┬──────┘                                            │
+   │         │ S3에 Phase1 체크포인트 저장                          │
+   │         ▼                                                    │
+   │  ┌─────────────┐                                            │
+   │  │ Phase 2     │ SageMaker Training Job #2                  │
+   │  │ Task Heads  │ - Phase1 체크포인트 로드                     │
+   │  │ Fine-tune   │ - Shared Expert freeze (선택적)              │
+   │  │ (8 epoch)   │ - Task Tower + adaTT 미세 조정               │
+   │  └──────┬──────┘                                            │
+   │         │                                                    │
+   │         ▼                                                    │
+   │  ┌─────────────┐                                            │
+   │  │ 평가         │ SageMaker Processing Job                   │
+   │  │ + 등록       │ - 테스트셋 평가                              │
+   │  │              │ - Champion/Challenger 비교                  │
+   │  │              │ - 합격 시 Model Registry 등록                │
+   │  └─────────────┘                                            │
+   └──────────────────────────────────────────────────────────────┘
 ```
 
-### Training Config (YAML)
+---
+
+## PLETrainer — 단일 학습 경로
+
+### 제거된 레거시 코드 경로
+
+| 제거 항목 | 이유 |
+|----------|------|
+| `TensorDataset` 경로 | → `PLEDataset` 단일 경로만 유지 |
+| `train.py` 내 인라인 학습 루프 | → `PLETrainer` 단일 경로만 유지 |
+| `_source_pkg/` 정적 복사 | → 동적 패키징만 사용 |
+
+### PLETrainer 핵심 기능
+
+```python
+# core/training/trainer.py
+class PLETrainer:
+    """
+    PLE 2-Phase Training, AMP, gradient accumulation, callbacks.
+
+    핵심 기능:
+    1. Phase 1/2 자동 전환 (freeze/unfreeze 관리)
+    2. Per-task loss dispatch (build_loss 팩토리)
+    3. Uncertainty weighting (Kendall et al.) — learnable log_var
+    4. Mixed Precision (fp16 AMP)
+    5. Gradient clipping + accumulation
+    6. Expert별 learning rate override
+    7. S3 체크포인트 (Spot 중단 자동 대비)
+    8. SageMaker Experiments 메트릭 로깅
+
+    사용법:
+        config = TrainingConfig.from_yaml("training.yaml")
+        model = PLEModel(ple_config)
+        trainer = PLETrainer(model, config, device=torch.device("cuda"))
+        results = trainer.train(train_loader, val_loader)
+    """
+```
+
+### Per-Task Loss 계산 흐름
+
+```python
+# PLETrainer._compute_loss() 내부
+def _compute_loss(self, predictions, labels, task_configs):
+    task_losses = {}
+
+    for task in task_configs:
+        pred = predictions[task.name]
+        label = labels[task.label_col]
+
+        # 1. Per-task loss dispatch
+        loss_fn = self._loss_fns[task.name]  # build_loss()로 사전 생성
+        raw_loss = loss_fn(pred, label)
+
+        task_losses[task.name] = raw_loss
+
+    # 2. Uncertainty weighting (Kendall et al.)
+    # loss_total = Σ [exp(-log_var_k) * L_k + log_var_k / 2]
+    total_loss = self._loss_weighting(task_losses)
+
+    return total_loss, task_losses
+```
+
+---
+
+## Training Config
 
 ```yaml
 # configs/training.yaml
@@ -79,23 +161,23 @@ training:
       T_mult: 2
     gradient:
       clip_norm: 5.0
-      accumulation_steps: 4
-    mixed_precision: true     # fp16
+      accumulation_steps: 4     # effective batch: 4096 × 4 = 16384
+    mixed_precision: true       # fp16
 
     # Expert별 학습률 (선택적)
     expert_lr_overrides:
-      temporal: 0.0003        # 시퀀스 Expert는 보수적으로
+      temporal_ensemble: 0.0003 # 시퀀스 Expert는 보수적으로
       hgcn: 0.0005
-      causal: 0.0001          # DAG 제약 → 매우 보수적
+      causal: 0.0001            # DAG 제약 → 매우 보수적
 
   # ── Phase 2: Task Head 미세 조정 ──
   phase2:
     epochs: 8
-    freeze_shared: true       # Shared Expert 동결
+    freeze_shared: true         # Shared Expert 동결
     batch_size: 4096
     optimizer:
       type: adamw
-      lr: 0.0002              # Phase1보다 낮은 lr
+      lr: 0.0002                # Phase1보다 낮은 lr
       weight_decay: 0.01
     scheduler:
       type: cosine_warmup
@@ -116,27 +198,216 @@ training:
 
   # ── Loss 가중치 전략 ──
   loss_weighting:
-    strategy: uncertainty      # uncertainty | fixed | gradnorm
-    # uncertainty: 각 태스크의 불확실성(σ²)으로 자동 가중치 조절
+    strategy: uncertainty        # 기본: Kendall et al. uncertainty weighting
+    # uncertainty: 태스크별 learnable log_var → 자동 밸런싱
+    # fixed: pipeline.yaml의 loss_weight 고정 사용
+    # gradnorm: Chen et al. (ICML 2018) gradient 균형
+    # dwa: Dynamic Weight Averaging
+
+  # ── Per-task Loss 함수 ──
+  # pipeline.yaml의 tasks[].loss 필드에서 지정
+  # build_loss() 팩토리가 focal/huber/mse/ce/infonce 디스패치
+  # multiclass 태스크는 class_weights 자동 계산
 
 # ── SageMaker 설정 ──
 aws:
   instance_type: ml.g4dn.xlarge
   use_spot: true
-  max_run_seconds: 14400      # 4시간
+  max_run_seconds: 14400        # 4시간
   volume_size_gb: 50
 ```
 
-### SageMaker Training 래퍼
+---
+
+## 4-Dimension Ablation 설계
+
+### 개요
+
+4개 차원에서 체계적으로 ablation 실험을 설계:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    4-Dimension Ablation Framework                │
+│                                                                  │
+│  Dim 1: Feature Ablation                                        │
+│    5-Axis별 피처 그룹 제거 → 축 기여도 측정                        │
+│                                                                  │
+│  Dim 2: Expert Ablation                                         │
+│    개별/그룹 Expert 제거 → Expert 기여도 측정                      │
+│    (피처-전문가 연동: 피처 제거 시 대응 Expert도 함께 비활성화)      │
+│                                                                  │
+│  Dim 3: Task Ablation                                           │
+│    태스크 수 스케일링 (4 → 8 → 16) + 구조 변형                    │
+│    PLE only / adaTT only / PLE+adaTT / baseline                 │
+│                                                                  │
+│  Dim 4: Structure Ablation                                      │
+│    Loss weighting: Uncertainty vs GradNorm vs DWA vs Fixed      │
+│    PLE stacking depth: 1 → 2 → 3 layers                        │
+│    adaTT intra/inter strength 변형                               │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Dim 1: Feature Ablation (5-Axis 기반)
+
+```yaml
+# Ablation 시나리오
+feature_ablation:
+  # 축별 제거
+  - name: no_state
+    remove_axes: [state]
+    description: "State 축 전체 제거 (314D) → RFM/demographics 없이"
+
+  - name: no_snapshot
+    remove_axes: [snapshot]
+    description: "Snapshot 축 전체 제거 (139D) → 장기 TDA/HMM 없이"
+
+  - name: no_timeseries
+    remove_axes: [timeseries]
+    description: "Timeseries 축 전체 제거 (214D) → 단기 시퀀스 없이"
+
+  - name: no_hierarchy
+    remove_axes: [hierarchy]
+    description: "Hierarchy 축 전체 제거 (41D) → 계층 구조 없이"
+
+  - name: no_item
+    remove_axes: [item]
+    description: "Item 축 전체 제거 (64D) → 협업 필터링 없이"
+
+  # 개별 그룹 제거
+  - name: no_tda
+    remove_groups: [tda_global, tda_local]
+    description: "TDA 피처 전체 제거 (70D)"
+
+  - name: no_graph
+    remove_groups: [graph_embeddings, merchant_hierarchy]
+    description: "Graph 피처 전체 제거 (41D)"
+```
+
+### Dim 2: Expert Ablation (피처-전문가 연동)
+
+```yaml
+expert_ablation:
+  # 피처 제거 시 대응 Expert도 함께 비활성화
+  - name: no_graph_coupled
+    remove_groups: [graph_embeddings]
+    remove_experts: [lightgcn, hgcn]
+    description: "Graph 피처 + LightGCN/HGCN Expert 동시 제거"
+
+  - name: no_tda_coupled
+    remove_groups: [tda_global, tda_local]
+    remove_experts: [perslay]
+    description: "TDA 피처 + PersLay Expert 동시 제거"
+
+  - name: no_temporal_coupled
+    remove_groups: [base_temporal, mamba_temporal]
+    remove_experts: [temporal_ensemble, mamba]
+    description: "Temporal 피처 + Temporal/Mamba Expert 동시 제거"
+
+  # 개별 Expert 제거 (피처는 유지)
+  - name: no_causal
+    remove_experts: [causal]
+    description: "Causal Expert만 제거 → DAG 인과 구조 기여도"
+
+  - name: no_ot
+    remove_experts: [optimal_transport]
+    description: "OT Expert만 제거 → 최적 수송 기여도"
+```
+
+### Dim 3: Task Ablation (태스크 수 스케일링 + 구조 변형)
+
+```yaml
+task_ablation:
+  # 태스크 수 스케일링
+  task_subsets:
+    4_tasks: [ctr, churn, ltv, life_stage]
+    8_tasks: [ctr, churn, ltv, life_stage, channel, nba, spending_category, merchant_affinity]
+    16_tasks: all
+
+  # 구조 변형 (각 태스크 서브셋에 대해 4가지 구성 실행)
+  structure_variants:
+    - name: ple_adatt         # PLE(stacked CGC) + adaTT — full
+      ple_stacking: true
+      adatt: true
+
+    - name: ple_only          # PLE만 (adaTT 없음)
+      ple_stacking: true
+      adatt: false
+
+    - name: adatt_only        # adaTT만 (단일 MLP shared)
+      ple_stacking: false
+      adatt: true
+
+    - name: baseline          # 단순 멀티태스크 MLP
+      ple_stacking: false
+      adatt: false
+
+  # 총 시나리오: 3 subsets × 4 variants = 12 실험
+  # 기대 결과: 태스크 수 증가 → PLE+adaTT 조합의 이점 커짐
+```
+
+### Dim 4: Structure Ablation (Loss/Layer/adaTT 변형)
+
+```yaml
+structure_ablation:
+  # Loss weighting 비교
+  loss_weighting_variants:
+    - {strategy: uncertainty, description: "Kendall et al. (기본)"}
+    - {strategy: gradnorm, description: "Chen et al. gradient 균형"}
+    - {strategy: dwa, description: "Dynamic Weight Averaging"}
+    - {strategy: fixed, description: "고정 가중치 (pipeline.yaml loss_weight)"}
+
+  # PLE stacking depth
+  ple_layers: [1, 2, 3]
+
+  # adaTT strength 변형
+  adatt_variants:
+    - {intra: 0.5, inter: 0.1, description: "약한 전이"}
+    - {intra: 0.7, inter: 0.3, description: "기본 (현재 설정)"}
+    - {intra: 0.9, inter: 0.5, description: "강한 전이"}
+```
+
+### Ablation 구현 HP (Hyperparameters)
+
+PipelineRunner 경로에서는 ablation config가 YAML에서 직접 지정된다. Legacy 경로에서는 HP로 전달:
 
 ```python
-# aws/sagemaker/trainer.py (확장)
+# train.py에 추가되는 HP (legacy 경로)
+# PipelineRunner 경로에서는 config.ablation.* 섹션 사용
+ablation_hps = {
+    # Feature ablation
+    "--removed-feature-groups": "쉼표로 구분된 제거할 feature group 이름",
+    "--removed-axes": "쉼표로 구분된 제거할 axis (state,snapshot,...)",
+
+    # Expert ablation
+    "--removed-experts": "쉼표로 구분된 제거할 expert 이름",
+
+    # Task ablation
+    "--num-active-tasks": "활성 태스크 수 (4/8/16)",
+    "--active-tasks": "쉼표로 구분된 활성 태스크 이름",
+
+    # Structure ablation
+    "--disable-adatt": "adaTT 비활성화",
+    "--disable-ple-stacking": "PLE stacking 비활성화 (단일 CGC)",
+    "--loss-weighting-strategy": "uncertainty/gradnorm/dwa/fixed",
+    "--ple-num-layers": "PLE stacking depth (1/2/3)",
+    "--skip-fidelity-gate": "Fidelity gate 비활성화 (증류 ablation용)",
+}
+```
+
+---
+
+## SageMaker Training 래퍼
+
+```python
+# aws/sagemaker/trainer.py
 class SageMakerTrainer:
     """
-    2-Phase Training을 SageMaker Job 2개로 분리 실행합니다.
+    2-Phase Training을 SageMaker Job 2개로 분리 실행.
 
-    Phase1 완료 → S3에 체크포인트 → Phase2에서 로드
-    Spot 인스턴스 중단 시 → S3 체크포인트에서 자동 재개
+    내부적으로 PLETrainer만 사용 (레거시 인라인 루프 제거됨).
+    PLETrainer가 optimizer, scheduler, AMP, freeze/unfreeze를 일괄 관리.
+    데이터 로딩은 PLEDataset → DataLoader 단일 경로.
+    소스 패키징은 동적 패키징만 (_source_pkg/ 제거됨).
     """
 
     def launch(self) -> dict:
@@ -152,13 +423,14 @@ class SageMakerTrainer:
             phase="phase2",
             hyperparameters=self.config.training.phase2,
             model_uri=phase1_result["s3_model_uri"],
-            checkpoint_s3=self.config.training.checkpoint.s3_path,
         )
 
         return phase2_result
 ```
 
-### 실험 관리 — MLflow vs SageMaker Experiments
+---
+
+## 실험 관리
 
 | 항목 | MLflow (현재) | SageMaker Experiments (AWS) |
 |------|-------------|---------------------------|
@@ -182,17 +454,14 @@ class ExperimentTracker:
         if backend == "auto":
             self.backend = "sagemaker" if self._in_sagemaker() else "mlflow"
 
-    def log_metric(self, name: str, value: float, step: int = None):
-        ...
-
-    def log_params(self, params: dict):
-        ...
-
-    def log_model(self, model_path: str, metadata: dict):
-        ...
+    def log_metric(self, name: str, value: float, step: int = None): ...
+    def log_params(self, params: dict): ...
+    def log_model(self, model_path: str, metadata: dict): ...
 ```
 
-### Champion/Challenger 평가
+---
+
+## Champion/Challenger 평가
 
 ```
 현재 모델 (Champion)
@@ -206,6 +475,7 @@ class ExperimentTracker:
 │    - Binary: AUC-ROC > champion - 0.01  │
 │    - Regression: MAE < champion + 5%    │
 │    - Multiclass: F1-macro > champion    │
+│    - Contrastive: Recall@K > champion   │
 │                                         │
 │ 2. 추론 성능                             │
 │    - Latency p99 < 100ms               │
@@ -247,7 +517,13 @@ Spot 중단 대비:
 |------|---------------|-----------|----------|
 | 실행 환경 | 고정 GPU 서버 | SageMaker Spot (필요 시만) | 비용 70% 절감 |
 | 2-Phase | trainer.py 내부 로직 | SageMaker Job 2개 분리 | 각 Phase 독립 재실행 가능 |
+| 데이터 로딩 | TensorDataset + PLEDataset 이중 경로 | **PLEDataset 단일 경로** | 레거시 제거 |
+| 학습 루프 | 인라인 루프 + PLETrainer 이중 경로 | **PLETrainer 단일 경로** | AMP/체크포인트 일관성 |
+| Loss 함수 | 코드 내 하드코딩 | **build_loss() 팩토리** (focal/huber/mse/ce/infonce) | config 선언적 지정 |
+| Loss 가중치 | 불확실성 기반 (미활성화) | **Uncertainty weighting 활성화** (Kendall et al.) | 태스크 간 자동 밸런싱 |
+| Class weight | 수동 | **자동 계산** (multiclass) | 불균형 자동 대응 |
+| 패키징 | `_source_pkg/` 정적 복사 | 동적 패키징만 | 스테일 코드 위험 제거 |
 | 체크포인트 | 로컬 디스크 | S3 (Spot 중단 자동 대비) | 내구성, 재개 |
 | 실험 관리 | MLflow Docker | SageMaker Experiments | 서버 유지비 0 |
-| 모델 비교 | 수동 | Champion/Challenger 자동화 | 배포 안정성 |
+| Ablation | 없음 | **4-Dimension** (feature/expert/task/structure) | 체계적 실험 설계 |
 | 재현성 | 느슨 (코드+데이터 별도) | YAML config + S3 데이터 버전 | 완전 재현 |

@@ -331,6 +331,7 @@ class MambaExpert(AbstractExpert):
 
     def __init__(self, input_dim: int, config: Dict[str, Any]):
         super().__init__(input_dim, config)
+        self.expects_sequence = True
 
         self._output_dim: int = config.get("output_dim", 64)
         d_model: int = config.get("d_model", 128)
@@ -378,6 +379,11 @@ class MambaExpert(AbstractExpert):
         torch.Tensor
             ``[batch, output_dim]``
         """
+        # Guard: if routing collapsed the input to 2D, add a length-1
+        # sequence dimension so downstream Conv1d / SSM layers work.
+        if x.dim() == 2:
+            x = x.unsqueeze(1)  # (batch, 1, features)
+
         h = self.blocks(x)  # [B, L, d_model]
         if self._pool == "mean":
             h = h.mean(dim=1)

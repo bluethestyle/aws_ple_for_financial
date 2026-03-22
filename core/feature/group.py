@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
@@ -296,6 +297,93 @@ class FeatureGroupConfig:
                 f"FeatureGroupConfig '{self.name}' has runtime='container' "
                 f"but no container.image specified"
             )
+        # Auto-generate output_columns if not explicitly provided
+        if not self.output_columns and self.output_dim > 0:
+            self.output_columns = [
+                f"{self.name}_{i}" for i in range(self.output_dim)
+            ]
+
+    # -- Query helpers -------------------------------------------------
+
+    def compute_range(self, offset: int = 0) -> Tuple[int, int]:
+        """Compute the (start, end) index range for this group.
+
+        Parameters
+        ----------
+        offset : int
+            Starting index for this group in the concatenated feature vector.
+
+        Returns
+        -------
+        tuple[int, int]
+            ``(start_index, end_index)`` -- end is exclusive.
+        """
+        return offset, offset + self.output_dim
+
+    @staticmethod
+    def compute_group_ranges(
+        groups: List["FeatureGroupConfig"],
+    ) -> Dict[str, Tuple[int, int]]:
+        """Compute feature index ranges for all enabled groups.
+
+        Parameters
+        ----------
+        groups : list[FeatureGroupConfig]
+            Ordered list of feature group configs.
+
+        Returns
+        -------
+        dict[str, tuple[int, int]]
+            Maps group name to ``(start, end)`` index tuple.
+        """
+        ranges: Dict[str, Tuple[int, int]] = {}
+        offset = 0
+        for group in groups:
+            if not group.enabled:
+                continue
+            start = offset
+            end = offset + group.output_dim
+            ranges[group.name] = (start, end)
+            offset = end
+        return ranges
+
+    @staticmethod
+    def total_dim(groups: List["FeatureGroupConfig"]) -> int:
+        """Compute total feature dimension across all enabled groups.
+
+        Parameters
+        ----------
+        groups : list[FeatureGroupConfig]
+
+        Returns
+        -------
+        int
+            Sum of ``output_dim`` for all enabled groups.
+        """
+        return sum(g.output_dim for g in groups if g.enabled)
+
+    @classmethod
+    def from_yaml_list(
+        cls, items: List[Dict[str, Any]]
+    ) -> List["FeatureGroupConfig"]:
+        """Parse a list of YAML-style dicts into FeatureGroupConfig objects.
+
+        Parameters
+        ----------
+        items : list[dict]
+            Each dict describes one feature group.
+
+        Returns
+        -------
+        list[FeatureGroupConfig]
+        """
+        groups = [cls.from_dict(item) for item in items]
+        logger.info(
+            "Loaded %d feature group configs: %s",
+            len(groups),
+            [g.name for g in groups],
+        )
+        return groups
 
     # -- Serialisation -------------------------------------------------
 
@@ -566,3 +654,50 @@ class FeatureGroupRegistry:
 
     def __repr__(self) -> str:  # pragma: no cover
         return self.summary()
+
+
+# ======================================================================
+# Module-level helpers
+# ======================================================================
+
+# Backward-compatible alias -- group_config.py used InterpretationConfig
+InterpretationConfig = FeatureInterpretationConfig
+
+
+def load_feature_groups(path: str) -> List[FeatureGroupConfig]:
+    """Load feature group configs from a YAML file.
+
+    The YAML file must have a top-level ``feature_groups`` key containing
+    a list of group definitions.
+
+    Parameters
+    ----------
+    path : str
+        Path to the YAML file.
+
+    Returns
+    -------
+    list[FeatureGroupConfig]
+
+    Raises
+    ------
+    FileNotFoundError
+        If the path does not exist.
+    KeyError
+        If the YAML file has no ``feature_groups`` key.
+    """
+    import yaml
+
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Feature groups config not found: {path}")
+
+    with open(p, "r", encoding="utf-8") as fh:
+        raw = yaml.safe_load(fh)
+
+    if "feature_groups" not in raw:
+        raise KeyError(
+            f"YAML file {path} must have a top-level 'feature_groups' key"
+        )
+
+    return FeatureGroupConfig.from_yaml_list(raw["feature_groups"])

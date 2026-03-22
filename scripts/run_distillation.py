@@ -98,6 +98,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Specific tasks to distill (default: all non-contrastive tasks)",
     )
+    parser.add_argument(
+        "--skip-fidelity-gate",
+        action="store_true",
+        help="Continue even if fidelity check fails (for testing)",
+    )
     return parser.parse_args()
 
 
@@ -254,13 +259,21 @@ def main() -> None:
         # Ground truth labels (for AUC, calibration)
         labels = hard_labels.get(task_name)
 
-        result = validator.validate_task(
-            task_name=task_name,
-            task_type=task_spec.type,
-            teacher_preds=teacher_preds,
-            student_preds=student_preds,
-            labels=labels,
-        )
+        try:
+            result = validator.validate_task(
+                task_name=task_name,
+                task_type=task_spec.type,
+                teacher_preds=teacher_preds,
+                student_preds=student_preds,
+                labels=labels,
+            )
+        except Exception as e:
+            logger.warning("Fidelity validation failed for %s: %s", task_name, e)
+            from core.training.distillation_validator import FidelityResult
+            result = FidelityResult(
+                task_name=task_name, passed=False,
+                metrics={}, failures=[str(e)],
+            )
         fidelity_results.append(result)
 
         status = "PASS" if result.passed else "FAIL"
@@ -304,7 +317,11 @@ def main() -> None:
         }
         with open(output_path / "fidelity_report.json", "w") as f:
             json.dump(fidelity_report, f, indent=2, default=str)
-        sys.exit(1)  # SageMaker Job fails → Step Functions catches
+        if not getattr(args, "skip_fidelity_gate", False):
+            logger.error("Aborting pipeline due to fidelity failure.")
+            sys.exit(1)
+        else:
+            logger.warning("--skip-fidelity-gate set, continuing despite failures.")
 
     # Step 4.5: Feature selection — per-task LGBM importance-based pruning
     logger.info("Running adaptive feature selection per task...")

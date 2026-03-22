@@ -1,40 +1,48 @@
 """
-PipelineRunner -- orchestrates the full train pipeline locally or on SageMaker.
+PipelineRunner -- 8-stage universal pipeline orchestrator.
 
-Integrates:
-  - FeaturePipelineBuilder / FeaturePipeline for config-driven feature engineering.
-  - PLEModel + PLETrainer for PLE training with 2-phase support.
-  - LGBMModel for lightweight tree-based training.
+Stages:
+  1. Load raw data via DataAdapter
+  2. Schema classification
+  3. PII encryption (optional)
+  4. Feature engineering + normalization via FeatureGroupPipeline
+  5. Label derivation
+  6. Sequence building (flat -> 3D tensors)
+  7. Build DataLoaders (PLEDataset)
+  8. Train (PLE or LGBM)
+
+Each stage is independently testable and logs entry/exit.
 
 Usage::
 
     config = load_config("configs/examples/multitask.yaml")
     runner = PipelineRunner(config)
-    runner.run(mode="local")       # local dev/test
-    runner.run(mode="sagemaker")   # AWS Spot training
+    results = runner.run(output_dir="outputs/")
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import numpy as np
     import pandas as pd
 
+from .adapter import DataAdapter
 from .config import PipelineConfig
 
 logger = logging.getLogger(__name__)
 
 
 class PipelineRunner:
-    """Execute a training pipeline driven by :class:`PipelineConfig`.
+    """Execute an 8-stage training pipeline driven by :class:`PipelineConfig`.
 
-    The runner selects an execution mode (local or SageMaker) and wires
-    together data loading, feature engineering, model training, and
-    artifact saving.
+    The runner wires together data loading (adapter), schema classification,
+    encryption, feature engineering, label derivation, sequence building,
+    DataLoader construction, and model training.
 
     Args:
         config: A fully populated :class:`PipelineConfig`.
@@ -47,302 +55,762 @@ class PipelineRunner:
     # Public API
     # ------------------------------------------------------------------
 
-    def run(self, mode: str = "local", output_dir: str = "outputs/") -> dict:
-        """Run the pipeline in the specified mode.
+    def run(self, output_dir: str = "outputs/") -> dict:
+        """Run the full 8-stage pipeline.
 
         Args:
-            mode: ``"local"`` for single-machine training,
-                  ``"sagemaker"`` for AWS SageMaker.
-            output_dir: Directory for model artifacts (local mode only).
+            output_dir: Directory for model artifacts.
 
         Returns:
-            A result dict containing at least ``"status"`` and ``"model"``.
+            A result dict with metadata from each stage.
         """
-        if mode == "local":
-            return self._run_local(output_dir)
-        elif mode == "sagemaker":
-            return self._run_sagemaker()
-        else:
-            raise ValueError(f"Unknown mode '{mode}'. Use 'local' or 'sagemaker'.")
+        results: Dict[str, Any] = {}
+        pipeline_start = time.time()
 
-    # ------------------------------------------------------------------
-    # Local execution
-    # ------------------------------------------------------------------
+        logger.info("=" * 60)
+        logger.info("[PIPELINE] Starting 8-stage pipeline: %s", self.config.task_name)
+        logger.info("=" * 60)
 
-    def _run_local(self, output_dir: str) -> dict:
-        """Execute the full pipeline locally.
+        # Stage 1: Load raw data
+        adapter = self._build_adapter()
+        raw_data = adapter.load_raw()
+        results["stage1_metadata"] = adapter.metadata
+        logger.info(
+            "[PIPELINE] Stage 1 complete: loaded %d DataFrames",
+            len(raw_data),
+        )
 
-        Steps:
-          1. Load raw data.
-          2. Build and fit the feature pipeline, then transform the data.
-          3. Split into train / validation sets.
-          4. Train the model (PLE or LGBM).
-          5. Save artifacts.
-        """
-        import numpy as np  # noqa: F811 -- deferred to keep module importable
-        import pandas as pd  # noqa: F811
+        # Stage 2: Schema classification
+        schema = self._classify_schema(raw_data["main"])
+        results["stage2_schema"] = schema
+        logger.info(
+            "[PIPELINE] Stage 2 complete: %d numeric, %d categorical, %d sequence cols",
+            len(schema.get("numeric", [])),
+            len(schema.get("categorical", [])),
+            len(schema.get("sequence", [])),
+        )
 
-        logger.info("[LOCAL] Starting pipeline: %s", self.config.task_name)
+        # Stage 3: Encryption
+        df_main = self._encrypt(raw_data["main"])
+        results["stage3_encryption"] = {
+            "applied": df_main is not raw_data["main"],
+            "rows": len(df_main),
+            "cols": len(df_main.columns),
+        }
+        logger.info(
+            "[PIPELINE] Stage 3 complete: %d rows x %d cols after encryption",
+            len(df_main), len(df_main.columns),
+        )
 
-        # 1. Data loading
-        df = self._load_data_local()
-        logger.info("[LOCAL] Loaded %d rows x %d columns", len(df), len(df.columns))
+        # Stage 4: Feature engineering + normalization
+        feature_pipeline, df_features = self._engineer_features(df_main, raw_data)
+        results["feature_metadata"] = feature_pipeline.get_ple_input_metadata()
+        logger.info(
+            "[PIPELINE] Stage 4 complete: %d features across %d groups",
+            feature_pipeline.total_dim, len(feature_pipeline),
+        )
 
-        # 2. Feature engineering via FeaturePipeline
-        feature_pipeline, processed = self._build_features(df)
+        # Stage 5: Label derivation
+        df_labels = self._derive_labels(raw_data["main"])
+        results["stage5_labels"] = {
+            "label_columns": list(df_labels.columns),
+            "rows": len(df_labels),
+        }
+        logger.info(
+            "[PIPELINE] Stage 5 complete: %d label columns",
+            len(df_labels.columns),
+        )
 
-        # 3. Train/val split
-        train_df, val_df = self._split_data(processed)
+        # Stage 6: Sequence building
+        sequences = self._build_sequences(raw_data)
+        results["stage6_sequences"] = {
+            "has_sequences": sequences is not None,
+        }
+        if sequences is not None:
+            results["stage6_sequences"]["keys"] = list(sequences.keys())
+        logger.info(
+            "[PIPELINE] Stage 6 complete: sequences=%s",
+            "present" if sequences else "none",
+        )
 
-        # 4. Model training
-        results = self._train(train_df, val_df, output_dir)
+        # Stage 7: Build DataLoaders
+        train_loader, val_loader = self._build_dataloaders(
+            df_features, df_labels, sequences, feature_pipeline,
+        )
+        results["stage7_dataloaders"] = {
+            "train_batches": len(train_loader),
+            "val_batches": len(val_loader),
+        }
+        logger.info(
+            "[PIPELINE] Stage 7 complete: train=%d batches, val=%d batches",
+            len(train_loader), len(val_loader),
+        )
 
-        # 5. Save feature pipeline alongside the model
+        # Stage 8: Train
+        results["training"] = self._train(train_loader, val_loader, output_dir)
+
+        # Save feature pipeline alongside the model
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         feature_pipeline.save(str(out / "feature_pipeline"))
-        logger.info(
-            "[LOCAL] Pipeline complete. Artifacts saved to %s", output_dir,
-        )
 
-        results["output_dir"] = output_dir
+        elapsed = time.time() - pipeline_start
+        results["total_time_seconds"] = round(elapsed, 2)
+
+        logger.info("=" * 60)
+        logger.info(
+            "[PIPELINE] Complete in %.1fs. Artifacts saved to %s",
+            elapsed, output_dir,
+        )
+        logger.info("=" * 60)
+
         return results
 
     # ------------------------------------------------------------------
-    # SageMaker execution
+    # Stage 1: Build adapter and load raw data
     # ------------------------------------------------------------------
 
-    def _run_sagemaker(self) -> dict:
-        """Launch training on SageMaker."""
-        from ...aws.sagemaker.trainer import SageMakerTrainer  # type: ignore[import]
+    def _build_adapter(self) -> Any:
+        """Build a DataAdapter from config or fall back to GenericAdapter.
 
-        trainer = SageMakerTrainer(self.config)
-        return trainer.launch()
+        Returns:
+            A DataAdapter instance ready for ``load_raw()``.
+        """
+        from .adapter import AdapterRegistry, DataAdapter
 
-    # ------------------------------------------------------------------
-    # Data loading
-    # ------------------------------------------------------------------
+        stage_start = time.time()
+        logger.info("[Stage 1] Building data adapter...")
 
-    def _load_data_local(self) -> pd.DataFrame:
-        """Load the raw dataset from a local path or S3."""
-        import pandas as pd
+        adapter_name = getattr(self.config, "adapter", None)
 
-        source = self.config.data.source
-        fmt = self.config.data.format
-        if fmt == "parquet":
-            return pd.read_parquet(source)
-        elif fmt == "csv":
-            return pd.read_csv(source)
+        if adapter_name:
+            # Use registered adapter
+            logger.info("[Stage 1] Using registered adapter: %s", adapter_name)
+            adapter = AdapterRegistry.build(adapter_name, self._config_to_dict())
         else:
-            raise ValueError(f"Unsupported data format: {fmt}")
+            # Fall back to GenericAdapter that reads config.data.source
+            logger.info("[Stage 1] No adapter specified, using GenericAdapter")
+            adapter = _GenericAdapter(self._config_to_dict())
+
+        logger.info("[Stage 1] Adapter built in %.2fs", time.time() - stage_start)
+        return adapter
 
     # ------------------------------------------------------------------
-    # Feature engineering
+    # Stage 2: Schema classification
     # ------------------------------------------------------------------
 
-    def _build_features(
-        self, df: pd.DataFrame
+    def _classify_schema(self, df: pd.DataFrame) -> Dict[str, List[str]]:
+        """Classify DataFrame columns into numeric, categorical, and sequence.
+
+        Uses config.features if available, otherwise auto-detects from
+        DataFrame dtypes.
+
+        Args:
+            df: The main entity-level DataFrame.
+
+        Returns:
+            Dict with keys ``"numeric"``, ``"categorical"``, ``"sequence"``.
+        """
+        stage_start = time.time()
+        logger.info("[Stage 2] Classifying schema...")
+
+        # Try to import a dedicated SchemaClassifier
+        try:
+            from .schema_classifier import SchemaClassifier
+            classifier = SchemaClassifier(self.config)
+            schema = classifier.classify(df)
+            logger.info("[Stage 2] Schema classified via SchemaClassifier in %.2fs",
+                        time.time() - stage_start)
+            return schema
+        except (ImportError, ModuleNotFoundError):
+            pass
+
+        # Inline implementation: 5-axis schema matching SchemaClassifier
+        schema: Dict[str, List[str]] = {
+            "state": [],
+            "snapshot": [],
+            "timeseries": [],
+            "hierarchy": [],
+            "item": [],
+        }
+
+        if self.config.features.numeric or self.config.features.categorical:
+            # Use config as source of truth, mapped to 5-axis keys
+            schema["state"] = list(self.config.features.numeric)
+            schema["item"] = list(self.config.features.categorical)
+            schema["timeseries"] = list(self.config.features.sequence)
+            logger.info("[Stage 2] Schema from config in %.2fs",
+                        time.time() - stage_start)
+            return schema
+
+        # Auto-detect from dtypes
+        import numpy as np
+
+        for col in df.columns:
+            dtype = df[col].dtype
+            if np.issubdtype(dtype, np.number):
+                # Binary 0/1 -> item, otherwise state
+                nunique = df[col].nunique()
+                if nunique <= 2:
+                    unique_vals = set(df[col].dropna().unique())
+                    if unique_vals.issubset({0, 1, 0.0, 1.0, True, False}):
+                        schema["item"].append(col)
+                        continue
+                schema["state"].append(col)
+            elif dtype == object or str(dtype) == "category":
+                sample = df[col].dropna().iloc[0] if len(df[col].dropna()) > 0 else None
+                if isinstance(sample, (list, np.ndarray)):
+                    schema["snapshot"].append(col)
+                else:
+                    schema["state"].append(col)
+            else:
+                schema["state"].append(col)
+
+        logger.info("[Stage 2] Schema auto-detected in %.2fs",
+                    time.time() - stage_start)
+        return schema
+
+    # ------------------------------------------------------------------
+    # Stage 3: Encryption
+    # ------------------------------------------------------------------
+
+    def _encrypt(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply PII encryption if security is configured.
+
+        Args:
+            df: Raw main DataFrame.
+
+        Returns:
+            Encrypted DataFrame (or original if encryption is disabled).
+        """
+        stage_start = time.time()
+        logger.info("[Stage 3] Checking encryption configuration...")
+
+        # Check if security config exists and is enabled
+        security_cfg = getattr(self.config, "security", None)
+        if security_cfg is None or not getattr(security_cfg, "enabled", False):
+            logger.info("[Stage 3] Encryption disabled or not configured, passing through")
+            return df
+
+        try:
+            from ..security.pipeline import EncryptionPipeline
+            from ..security.salt_manager import LocalSaltManager
+            from ..security.integer_indexer import PIIIntegerIndexer
+            from ..security.encryption_policy import derive_from_config
+
+            salt_mgr = LocalSaltManager()
+            indexer = PIIIntegerIndexer(
+                getattr(security_cfg, "index_store", "pii-indices/")
+            )
+            policies = derive_from_config(security_cfg)
+
+            pipeline = EncryptionPipeline(salt_mgr, indexer, policies)
+            source_name = getattr(security_cfg, "source_name", self.config.task_name)
+            result = pipeline.process_source(source_name, df)
+
+            logger.info("[Stage 3] Encryption complete in %.2fs", time.time() - stage_start)
+            return result
+
+        except (ImportError, ModuleNotFoundError) as e:
+            logger.warning(
+                "[Stage 3] Security module not available (%s), skipping encryption", e,
+            )
+            return df
+        except Exception as e:
+            logger.error(
+                "[Stage 3] Encryption failed (%s), passing through raw data", e,
+            )
+            return df
+
+    # ------------------------------------------------------------------
+    # Stage 4: Feature engineering + normalization
+    # ------------------------------------------------------------------
+
+    def _engineer_features(
+        self,
+        df: pd.DataFrame,
+        raw_data: Dict[str, pd.DataFrame],
     ) -> Tuple[Any, pd.DataFrame]:
-        """Build and fit a FeaturePipeline from the config, then transform *df*.
+        """Build and fit FeatureGroupPipeline, then transform data.
 
-        Uses :class:`FeaturePipelineBuilder` so transformer steps, column
-        mappings, and power-law auto-detection are all config-driven.
+        If ``feature_groups`` are defined in config, uses the new
+        FeatureGroupPipeline.  Otherwise falls back to the legacy
+        FeaturePipelineBuilder.
+
+        Args:
+            df: Main DataFrame (post-encryption).
+            raw_data: All raw DataFrames from adapter (for multi-source features).
 
         Returns:
             ``(fitted_pipeline, transformed_df)``
         """
-        from ..feature.pipeline_builder import FeaturePipelineBuilder
-        from ..feature.pipeline import FeaturePipeline
+        stage_start = time.time()
+        logger.info("[Stage 4] Engineering features...")
 
-        label_cols = [t.label_col for t in self.config.tasks]
-        id_cols = getattr(self.config.features, "id_cols", [])
+        feature_groups_cfg = self.config.feature_groups
 
-        # Build a config dict compatible with FeaturePipelineBuilder
-        pipeline_cfg: Dict[str, Any] = {
-            "feature_pipeline": {
-                "name": f"{self.config.task_name}_features",
-                "schema": {
-                    "numeric": list(self.config.features.numeric),
-                    "categorical": list(self.config.features.categorical),
-                    "sequence": list(self.config.features.sequence),
-                    "label_cols": label_cols,
-                    "id_cols": id_cols,
-                },
-                "steps": self._build_transformer_steps(),
-            }
-        }
+        if feature_groups_cfg:
+            return self._engineer_features_grouped(df, feature_groups_cfg)
 
-        builder = FeaturePipelineBuilder(pipeline_cfg)
-        feature_pipeline: FeaturePipeline = builder.build_and_fit(df)
-        transformed = feature_pipeline.transform(df)
+        # Try to build FeatureGroupConfig from config.features
+        return self._engineer_features_from_config(df)
 
-        logger.info(
-            "[FEATURES] Pipeline '%s': %d transformers, output %d cols",
-            feature_pipeline.name,
-            len(feature_pipeline),
-            len(transformed.columns),
+    def _engineer_features_grouped(
+        self,
+        df: pd.DataFrame,
+        groups_cfg: List[Dict[str, Any]],
+    ) -> Tuple[Any, pd.DataFrame]:
+        """Feature engineering via FeatureGroupPipeline with explicit group configs."""
+        from ..feature.group_pipeline import FeatureGroupPipeline
+        from ..feature.group import FeatureGroupConfig
+
+        groups = [FeatureGroupConfig.from_dict(g) for g in groups_cfg]
+
+        pipeline = FeatureGroupPipeline(
+            groups=groups,
+            name=f"{self.config.task_name}_features",
         )
 
-        return feature_pipeline, transformed
+        df_features = pipeline.fit_transform(df)
 
-    def _build_transformer_steps(self) -> list:
-        """Convert the config's transformer list into FeaturePipelineBuilder steps.
+        logger.info(
+            "[Stage 4] FeatureGroupPipeline '%s': %d groups, total_dim=%d, "
+            "output %d cols in %.2fs",
+            pipeline.name, len(pipeline), pipeline.total_dim,
+            len(df_features.columns), time.time() - time.time(),
+        )
 
-        If no transformers are specified in the config, provide a sensible
-        default chain (null_filler + standard_scaler + label_encoder).
+        return pipeline, df_features
+
+    def _engineer_features_from_config(
+        self,
+        df: pd.DataFrame,
+    ) -> Tuple[Any, pd.DataFrame]:
+        """Feature engineering via auto-built FeatureGroupPipeline from FeatureSpec.
+
+        Constructs FeatureGroupConfig objects from the flat config.features
+        specification (numeric, categorical, sequence) and wraps them in a
+        FeatureGroupPipeline.  This provides the same get_ple_input_metadata()
+        API as the explicit grouped path.
         """
-        raw_steps = self.config.features.transformers
-        if raw_steps:
-            # Each raw step may use "name" or "transformer"; normalise.
-            steps = []
-            for step in raw_steps:
-                entry: Dict[str, Any] = {}
-                entry["transformer"] = step.get("transformer") or step.get("name")
-                if "params" in step:
-                    entry["params"] = step["params"]
-                elif "cols" in step:
-                    # Shorthand used in example YAMLs
-                    entry["params"] = {"columns": step["cols"]}
-                steps.append(entry)
-            return steps
+        from ..feature.group_pipeline import FeatureGroupPipeline
+        from ..feature.group import FeatureGroupConfig
 
-        # Default transformer chain
-        steps = [
-            {
-                "transformer": "null_filler",
-                "params": {"strategy": "median"},
-            },
-        ]
+        groups: List[FeatureGroupConfig] = []
+
+        # Numeric features group
         if self.config.features.numeric:
-            steps.append({
-                "transformer": "standard_scaler",
-                "params": {"columns": list(self.config.features.numeric)},
-            })
+            numeric_cols = list(self.config.features.numeric)
+            groups.append(FeatureGroupConfig(
+                name="numeric_features",
+                group_type="transform",
+                transformers=["standard_scaler"],
+                columns=numeric_cols,
+                output_columns=numeric_cols,
+                output_dim=len(numeric_cols),
+            ))
+
+        # Categorical features group
         if self.config.features.categorical:
-            steps.append({
-                "transformer": "label_encoder",
-                "params": {"columns": list(self.config.features.categorical)},
-            })
-        return steps
+            cat_cols = list(self.config.features.categorical)
+            groups.append(FeatureGroupConfig(
+                name="categorical_features",
+                group_type="transform",
+                transformers=["label_encoder"],
+                columns=cat_cols,
+                output_columns=cat_cols,
+                output_dim=len(cat_cols),
+            ))
+
+        if not groups:
+            # Fallback: treat all non-label columns as numeric
+            label_cols = {t.label_col for t in self.config.tasks}
+            id_cols = set(getattr(self.config.features, "id_cols", []))
+            exclude = label_cols | id_cols
+            all_cols = [c for c in df.columns if c not in exclude]
+
+            groups.append(FeatureGroupConfig(
+                name="all_features",
+                group_type="transform",
+                transformers=["null_filler"],
+                transformer_params={"null_filler": {"strategy": "median"}},
+                columns=all_cols,
+                output_columns=all_cols,
+                output_dim=len(all_cols),
+            ))
+
+        pipeline = FeatureGroupPipeline(
+            groups=groups,
+            name=f"{self.config.task_name}_features",
+        )
+        df_features = pipeline.fit_transform(df)
+
+        logger.info(
+            "[Stage 4] Auto-built FeatureGroupPipeline: %d groups, total_dim=%d, "
+            "output %d cols",
+            len(pipeline), pipeline.total_dim, len(df_features.columns),
+        )
+
+        return pipeline, df_features
 
     # ------------------------------------------------------------------
-    # Data splitting
+    # Stage 5: Label derivation
     # ------------------------------------------------------------------
 
-    def _split_data(
-        self, df: pd.DataFrame
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Split a DataFrame into train and validation sets.
+    def _derive_labels(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Derive label columns from raw data.
 
-        Uses ``data.train_split`` from the config. The remaining rows
-        form the validation set.
+        Tries to use a dedicated LabelDeriver if available.
+        Falls back to extracting label columns directly from config.
+
+        Args:
+            df: Raw main DataFrame (pre-feature-engineering).
+
+        Returns:
+            DataFrame containing only label columns, aligned with df index.
         """
+        import pandas as pd
+
+        stage_start = time.time()
+        logger.info("[Stage 5] Deriving labels...")
+
+        # Try dedicated LabelDeriver
+        try:
+            from .label_deriver import LabelDeriver
+            deriver = LabelDeriver(self.config)
+            labels = deriver.derive(df)
+            logger.info("[Stage 5] Labels derived via LabelDeriver in %.2fs",
+                        time.time() - stage_start)
+            return labels
+        except (ImportError, ModuleNotFoundError):
+            pass
+
+        # Inline implementation: extract configured label columns
+        label_cols = []
+        for task in self.config.tasks:
+            col = task.label_col
+            if col in df.columns:
+                label_cols.append(col)
+            else:
+                logger.warning(
+                    "[Stage 5] Label column '%s' for task '%s' not found in DataFrame",
+                    col, task.name,
+                )
+
+        if not label_cols:
+            raise ValueError(
+                f"No label columns found in DataFrame. "
+                f"Expected: {[t.label_col for t in self.config.tasks]}, "
+                f"Available: {list(df.columns[:20])}..."
+            )
+
+        df_labels = df[label_cols].copy()
+
+        logger.info("[Stage 5] Extracted %d label columns in %.2fs",
+                    len(label_cols), time.time() - stage_start)
+        return df_labels
+
+    # ------------------------------------------------------------------
+    # Stage 6: Sequence building
+    # ------------------------------------------------------------------
+
+    def _build_sequences(
+        self, raw_data: Dict[str, pd.DataFrame],
+    ) -> Optional[Dict[str, Any]]:
+        """Build sequence tensors from raw data.
+
+        Tries a dedicated SequenceBuilder if available.  Falls back to
+        loading .npy files or detecting list-like columns in raw_data.
+
+        Args:
+            raw_data: Dict of DataFrames from adapter.
+
+        Returns:
+            Dict of sequence arrays keyed by name, or None if no sequences.
+        """
+        import numpy as np
+
+        stage_start = time.time()
+        logger.info("[Stage 6] Building sequences...")
+
+        # Try dedicated SequenceBuilder
+        try:
+            from .sequence_builder import SequenceBuilder
+            builder = SequenceBuilder(self.config)
+            sequences = builder.build(raw_data)
+            logger.info("[Stage 6] Sequences built via SequenceBuilder in %.2fs",
+                        time.time() - stage_start)
+            return sequences
+        except (ImportError, ModuleNotFoundError):
+            pass
+
+        # Inline: check for pre-computed .npy sequence files
+        sequences: Dict[str, Any] = {}
+
+        data_dir = Path(self.config.data.source).parent if self.config.data.source else None
+
+        if data_dir and data_dir.exists():
+            for npy_file in data_dir.glob("*_sequences.npy"):
+                key = npy_file.stem.replace("_sequences", "")
+                try:
+                    arr = np.load(str(npy_file), allow_pickle=False)
+                    sequences[key] = arr
+                    logger.info(
+                        "[Stage 6] Loaded sequence '%s' from %s: shape=%s",
+                        key, npy_file, arr.shape,
+                    )
+                except Exception as e:
+                    logger.warning("[Stage 6] Failed to load %s: %s", npy_file, e)
+
+        # Check for list-like columns in raw_data["main"]
+        if not sequences and "main" in raw_data:
+            main_df = raw_data["main"]
+            seq_cols = list(self.config.features.sequence)
+
+            for col in seq_cols:
+                if col in main_df.columns:
+                    sample = main_df[col].dropna().iloc[0] if len(main_df[col].dropna()) > 0 else None
+                    if isinstance(sample, (list, np.ndarray)):
+                        try:
+                            # Convert list column to padded 2D/3D array
+                            max_len = max(len(x) for x in main_df[col].dropna())
+                            padded = np.zeros((len(main_df), max_len), dtype=np.float32)
+                            for i, val in enumerate(main_df[col]):
+                                if val is not None and hasattr(val, "__len__"):
+                                    length = min(len(val), max_len)
+                                    padded[i, :length] = np.array(val[:length], dtype=np.float32)
+                            sequences[col] = padded
+                            logger.info(
+                                "[Stage 6] Built sequence '%s' from list column: shape=%s",
+                                col, padded.shape,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "[Stage 6] Failed to convert column '%s' to sequence: %s",
+                                col, e,
+                            )
+
+        if not sequences:
+            logger.info("[Stage 6] No sequences found")
+            return None
+
+        logger.info("[Stage 6] Built %d sequence arrays in %.2fs",
+                    len(sequences), time.time() - stage_start)
+        return sequences
+
+    # ------------------------------------------------------------------
+    # Stage 7: Build DataLoaders
+    # ------------------------------------------------------------------
+
+    def _build_dataloaders(
+        self,
+        df_features: pd.DataFrame,
+        df_labels: pd.DataFrame,
+        sequences: Optional[Dict[str, Any]],
+        feature_pipeline: Any,
+    ) -> Tuple[Any, Any]:
+        """Build train and validation DataLoaders.
+
+        Uses build_ple_dataloader with FeatureColumnSpec constructed from
+        the feature pipeline metadata.
+
+        Args:
+            df_features: Transformed feature DataFrame.
+            df_labels: Label DataFrame (aligned with df_features).
+            sequences: Optional dict of sequence arrays.
+            feature_pipeline: Fitted FeatureGroupPipeline.
+
+        Returns:
+            ``(train_loader, val_loader)``
+        """
+        import numpy as np
+        import pandas as pd
+
+        stage_start = time.time()
+        logger.info("[Stage 7] Building DataLoaders...")
+
+        # Merge features and labels into a single DataFrame
+        df_combined = pd.concat([df_features.reset_index(drop=True),
+                                 df_labels.reset_index(drop=True)], axis=1)
+
+        # Split into train / val
         train_frac = self.config.data.train_split
-        n_train = int(len(df) * train_frac)
+        seed = self.config.training.seed
+        n_total = len(df_combined)
+        n_train = int(n_total * train_frac)
 
         # Deterministic shuffle
-        seed = self.config.training.seed
-        shuffled = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+        rng = np.random.RandomState(seed)
+        indices = rng.permutation(n_total)
 
-        train_df = shuffled.iloc[:n_train]
-        val_df = shuffled.iloc[n_train:]
+        train_idx = indices[:n_train]
+        val_idx = indices[n_train:]
+
+        train_df = df_combined.iloc[train_idx].reset_index(drop=True)
+        val_df = df_combined.iloc[val_idx].reset_index(drop=True)
 
         logger.info(
-            "[SPLIT] train=%d rows, val=%d rows (split=%.2f)",
+            "[Stage 7] Split: train=%d rows, val=%d rows (split=%.2f)",
             len(train_df), len(val_df), train_frac,
         )
-        return train_df, val_df
+
+        # Build FeatureColumnSpec from pipeline metadata
+        ple_metadata = feature_pipeline.get_ple_input_metadata()
+        feature_spec = self._build_feature_spec(ple_metadata)
+
+        # Label column mapping: task_name -> column_name
+        label_map = {
+            task.name: task.label_col
+            for task in self.config.tasks
+            if task.label_col in df_labels.columns
+        }
+
+        # Build DataLoaders
+        from ..data.dataloader import build_ple_dataloader
+
+        batch_size = self.config.training.batch_size
+
+        train_loader = build_ple_dataloader(
+            df=train_df,
+            feature_spec=feature_spec,
+            label_columns=label_map,
+            batch_size=batch_size,
+            shuffle=True,
+            pin_memory=True,
+        )
+
+        val_loader = build_ple_dataloader(
+            df=val_df,
+            feature_spec=feature_spec,
+            label_columns=label_map,
+            batch_size=batch_size,
+            shuffle=False,
+            pin_memory=True,
+        )
+
+        logger.info("[Stage 7] DataLoaders built in %.2fs", time.time() - stage_start)
+        return train_loader, val_loader
+
+    @staticmethod
+    def _build_feature_spec(ple_metadata: Dict[str, Any]) -> Any:
+        """Construct a FeatureColumnSpec from pipeline metadata.
+
+        Args:
+            ple_metadata: Dict from FeatureGroupPipeline.get_ple_input_metadata().
+
+        Returns:
+            A FeatureColumnSpec instance.
+        """
+        from ..data.dataloader import FeatureColumnSpec
+
+        output_columns = ple_metadata.get("output_columns", [])
+        expert_routing = ple_metadata.get("expert_routing", {})
+
+        # Map feature group names to the FeatureColumnSpec fields
+        spec_kwargs: Dict[str, Any] = {
+            "static_features": list(output_columns),
+        }
+
+        # Route columns to specialized fields based on expert routing
+        _EXPERT_FIELD_MAP = {
+            "hyperbolic": "hyperbolic_columns",
+            "tda": "tda_columns",
+            "collaborative": "collaborative_columns",
+            "hmm_journey": "hmm_journey_columns",
+            "hmm_lifecycle": "hmm_lifecycle_columns",
+            "hmm_behavior": "hmm_behavior_columns",
+            "multidisciplinary": "multidisciplinary_columns",
+            "coldstart": "coldstart_columns",
+            "anonymous": "anonymous_columns",
+        }
+
+        group_ranges = ple_metadata.get("feature_group_ranges", {})
+
+        for expert_name, group_names in expert_routing.items():
+            field_name = _EXPERT_FIELD_MAP.get(expert_name)
+            if field_name:
+                expert_cols: List[str] = []
+                for gname in group_names:
+                    start, end = group_ranges.get(gname, (0, 0))
+                    expert_cols.extend(output_columns[start:end])
+                if expert_cols:
+                    spec_kwargs[field_name] = expert_cols
+
+        return FeatureColumnSpec(**spec_kwargs)
 
     # ------------------------------------------------------------------
-    # Training
+    # Stage 8: Training
     # ------------------------------------------------------------------
 
     def _train(
         self,
-        train_df: pd.DataFrame,
-        val_df: pd.DataFrame,
+        train_loader: Any,
+        val_loader: Any,
         output_dir: str,
     ) -> dict:
-        """Dispatch training to the configured architecture (PLE or LGBM)."""
+        """Dispatch training to the configured architecture.
+
+        Args:
+            train_loader: Training DataLoader.
+            val_loader: Validation DataLoader.
+            output_dir: Directory for model artifacts.
+
+        Returns:
+            Training results dict.
+        """
         arch = self.config.model.architecture
 
-        if arch == "lgbm":
-            return self._train_lgbm(train_df, val_df, output_dir)
-        elif arch == "ple":
-            return self._train_ple(train_df, val_df, output_dir)
+        stage_start = time.time()
+        logger.info("[Stage 8] Starting training (architecture=%s)...", arch)
+
+        if arch == "ple":
+            results = self._train_ple(train_loader, val_loader, output_dir)
+        elif arch == "lgbm":
+            results = self._train_lgbm(train_loader, val_loader, output_dir)
         else:
             raise ValueError(f"Unknown architecture: {arch}")
 
-    # -- LGBM ----------------------------------------------------------
-
-    def _train_lgbm(
-        self,
-        train_df: pd.DataFrame,
-        val_df: pd.DataFrame,
-        output_dir: str,
-    ) -> dict:
-        """Train per-task LGBM models."""
-        from ..model.lgbm.model import LGBMModel
-        from ..model.lgbm.config import LGBMConfig
-
-        label_cols = [t.label_col for t in self.config.tasks]
-        feat_cols = [c for c in train_df.columns if c not in label_cols]
-
-        X_train = train_df[feat_cols].values
-        y_train = {t.name: train_df[t.label_col].values for t in self.config.tasks}
-
-        cfg = LGBMConfig(
-            learning_rate=self.config.training.learning_rate,
-            n_estimators=self.config.training.epochs * 25,  # rough mapping
-        )
-        tasks_meta = [{"name": t.name, "type": t.type} for t in self.config.tasks]
-
-        model = LGBMModel(cfg, tasks_meta)
-        model.fit(X_train, y_train)
-
-        out = Path(output_dir)
-        out.mkdir(parents=True, exist_ok=True)
-        model.save(str(out))
-
-        logger.info("[LGBM] Training complete. Model saved to %s", output_dir)
-        return {"status": "success", "model": "lgbm"}
-
-    # -- PLE -----------------------------------------------------------
+        logger.info("[Stage 8] Training complete in %.2fs", time.time() - stage_start)
+        return results
 
     def _train_ple(
         self,
-        train_df: pd.DataFrame,
-        val_df: pd.DataFrame,
+        train_loader: Any,
+        val_loader: Any,
         output_dir: str,
     ) -> dict:
-        """Build a PLEModel and train it with PLETrainer.
+        """Build a PLEModel and train with PLETrainer.
 
-        The method:
-          1. Computes input_dim from the feature columns.
-          2. Constructs a PLEConfig from the pipeline config.
-          3. Builds train/val DataLoaders.
-          4. Creates a PLETrainer and runs 2-phase training.
-          5. Saves the model checkpoint.
+        Steps:
+          1. Compute input_dim from the feature columns.
+          2. Construct a PLEConfig from the pipeline config.
+          3. Create a PLETrainer and run 2-phase training.
+          4. Save the model checkpoint.
         """
         import torch
-        from torch.utils.data import DataLoader, TensorDataset
 
-        from ..model.ple.config import PLEConfig, ExpertConfig, TaskTowerConfig, ExpertBasketConfig, AdaTTConfig, GroupTaskExpertConfig
+        from ..model.ple.config import (
+            PLEConfig, ExpertConfig, TaskTowerConfig,
+            ExpertBasketConfig, AdaTTConfig, GroupTaskExpertConfig,
+        )
         from ..model.ple.model import PLEModel
         from ..training.trainer import PLETrainer
         from ..training.config import TrainingConfig
 
-        label_cols = [t.label_col for t in self.config.tasks]
-        feat_cols = [c for c in train_df.columns if c not in label_cols]
-        input_dim = len(feat_cols)
+        # -- Determine input_dim from first batch or config ----------------
+        input_dim = self.config.features.input_dim
+        if input_dim == 0:
+            # Peek at first batch to determine input_dim
+            for batch in train_loader:
+                if "features" in batch:
+                    input_dim = batch["features"].shape[-1]
+                break
 
-        logger.info(
-            "[PLE] Building model: input_dim=%d, tasks=%d",
-            input_dim, len(self.config.tasks),
-        )
-
-        # -- PLEConfig -------------------------------------------------
         task_names = [t.name for t in self.config.tasks]
+        logger.info("[PLE] Building model: input_dim=%d, tasks=%d",
+                    input_dim, len(task_names))
+
+        # -- Task overrides ------------------------------------------------
         task_overrides: Dict[str, Dict[str, Any]] = {}
         for t in self.config.tasks:
             override: Dict[str, Any] = {"task_type": t.type}
@@ -358,7 +826,6 @@ class PipelineRunner:
             else:
                 override["output_dim"] = 1
                 override["activation"] = "sigmoid"
-            # Per-task tower overrides
             if t.tower_type:
                 override["tower_type"] = t.tower_type
             if t.tower_dims:
@@ -367,7 +834,7 @@ class PipelineRunner:
 
         expert_output_dim = max(self.config.model.expert_hidden_dim // 4, 64)
 
-        # Build ExpertBasketConfig if expert_basket is defined in model spec
+        # -- ExpertBasketConfig --------------------------------------------
         expert_basket_cfg: Optional[ExpertBasketConfig] = None
         if self.config.model.expert_basket is not None:
             eb = self.config.model.expert_basket
@@ -377,32 +844,25 @@ class PipelineRunner:
                 expert_configs=eb.get("expert_configs", {}),
             )
 
-        # -- adaTT config from pipeline task_groups (single source of truth) --
+        # -- AdaTTConfig ---------------------------------------------------
         adatt_cfg: Optional[AdaTTConfig] = None
         if self.config.task_groups:
             adatt_cfg = AdaTTConfig.from_pipeline_groups(self.config.task_groups)
-            logger.info(
-                "[PLE] adaTT task_groups from pipeline config: %d groups",
-                len(self.config.task_groups),
-            )
+            logger.info("[PLE] adaTT: %d task groups", len(self.config.task_groups))
 
-        # -- Build GroupTaskExpertConfig from pipeline model config --------------
+        # -- GroupTaskExpertConfig -----------------------------------------
         group_task_expert_cfg: Optional[GroupTaskExpertConfig] = None
         if self.config.model.group_task_expert is not None:
             gte = self.config.model.group_task_expert
             group_task_expert_cfg = GroupTaskExpertConfig(**gte)
-            logger.info(
-                "[PLE] GroupTaskExpertBasket: enabled=%s, output_dim=%d",
-                gte.get("enabled", True),
-                gte.get("task_output_dim", 32),
-            )
 
-        # -- Build task_group_map from pipeline task_groups -------------------
+        # -- task_group_map ------------------------------------------------
         task_group_map: Dict[str, str] = {}
         for tg in self.config.task_groups:
             for t in tg.tasks:
                 task_group_map[t] = tg.name
 
+        # -- Build PLEConfig -----------------------------------------------
         ple_config = PLEConfig(
             input_dim=input_dim,
             task_names=task_names,
@@ -427,19 +887,7 @@ class PipelineRunner:
 
         model = PLEModel(ple_config)
 
-        # -- DataLoaders -----------------------------------------------
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        train_loader = self._build_dataloader(
-            train_df, feat_cols, label_cols, task_names,
-            batch_size=self.config.training.batch_size, shuffle=True,
-        )
-        val_loader = self._build_dataloader(
-            val_df, feat_cols, label_cols, task_names,
-            batch_size=self.config.training.batch_size, shuffle=False,
-        )
-
-        # -- TrainingConfig --------------------------------------------
+        # -- TrainingConfig ------------------------------------------------
         total_epochs = self.config.training.epochs
         phase1_epochs = max(1, total_epochs * 3 // 5)
         phase2_epochs = max(1, total_epochs - phase1_epochs)
@@ -455,11 +903,12 @@ class PipelineRunner:
             "experiment_name": self.config.task_name,
         })
 
-        # -- Train -----------------------------------------------------
+        # -- Train ---------------------------------------------------------
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         trainer = PLETrainer(model, training_config, device=device)
         results = trainer.train(train_loader, val_loader, phase="full")
 
-        # -- Save ------------------------------------------------------
+        # -- Save ----------------------------------------------------------
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         checkpoint_path = out / "ple_model.pt"
@@ -472,98 +921,141 @@ class PipelineRunner:
         }, str(checkpoint_path))
 
         logger.info(
-            "[PLE] Training complete. best_val_loss=%.6f, saved to %s",
+            "[PLE] best_val_loss=%.6f, saved to %s",
             results.get("best_val_loss", float("inf")),
             checkpoint_path,
         )
         return {"status": "success", "model": "ple", **results}
 
+    def _train_lgbm(
+        self,
+        train_loader: Any,
+        val_loader: Any,
+        output_dir: str,
+    ) -> dict:
+        """Train per-task LGBM models.
+
+        Extracts features and labels from DataLoaders to build flat
+        numpy arrays for LightGBM.
+        """
+        import numpy as np
+        from ..model.lgbm.model import LGBMModel
+        from ..model.lgbm.config import LGBMConfig
+
+        # Collect all data from loaders into flat arrays
+        X_train_parts, y_train_parts = [], {}
+        for batch in train_loader:
+            features = batch.get("features")
+            if features is not None:
+                X_train_parts.append(features.numpy())
+            targets = batch.get("targets", {})
+            for task_name, vals in targets.items():
+                y_train_parts.setdefault(task_name, []).append(vals.numpy())
+
+        X_train = np.concatenate(X_train_parts, axis=0)
+        y_train = {k: np.concatenate(v) for k, v in y_train_parts.items()}
+
+        cfg = LGBMConfig(
+            learning_rate=self.config.training.learning_rate,
+            n_estimators=self.config.training.epochs * 25,
+        )
+        tasks_meta = [{"name": t.name, "type": t.type} for t in self.config.tasks]
+
+        model = LGBMModel(cfg, tasks_meta)
+        model.fit(X_train, y_train)
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        model.save(str(out))
+
+        logger.info("[LGBM] Training complete. Model saved to %s", output_dir)
+        return {"status": "success", "model": "lgbm"}
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _build_dataloader(
-        df: pd.DataFrame,
-        feat_cols: list,
-        label_cols: list,
-        task_names: list,
-        batch_size: int = 2048,
-        shuffle: bool = True,
-        feature_spec: Optional[Any] = None,
-        use_gpu_loading: bool = False,
-    ) -> Any:
-        """Convert a DataFrame into a PyTorch DataLoader of dicts.
+    def _config_to_dict(self) -> dict:
+        """Convert PipelineConfig to a plain dict for adapter consumption."""
+        return {
+            "task_name": self.config.task_name,
+            "data": {
+                "source": self.config.data.source,
+                "format": self.config.data.format,
+                "train_split": self.config.data.train_split,
+                "backend": self.config.data.backend,
+                "train_path": self.config.data.train_path,
+                "s3_path": self.config.data.s3_path,
+                "parquet_file": self.config.data.parquet_file,
+            },
+            "features": {
+                "numeric": list(self.config.features.numeric),
+                "categorical": list(self.config.features.categorical),
+                "sequence": list(self.config.features.sequence),
+            },
+        }
 
-        Each batch is a ``dict`` with ``"features"`` and ``"targets"`` keys,
-        compatible with :meth:`PLETrainer._prepare_inputs`.
 
-        When *feature_spec* (a :class:`FeatureColumnSpec`) is provided, the
-        new GPU-capable ``build_ple_dataloader`` is used.  Otherwise, the
-        simple legacy path is preserved for backward compatibility.
+# ======================================================================
+# GenericAdapter (fallback when no adapter is registered)
+# ======================================================================
+
+class _GenericAdapter(DataAdapter):
+    """Fallback adapter that reads a single file from config.data.source.
+
+    This adapter is used when no adapter name is specified in config.
+    It reads the data source directly (CSV or Parquet) and returns it
+    as the "main" DataFrame.
+    """
+
+    def __init__(self, config: dict) -> None:
+        self.config = config
+        self._metadata = None
+
+    def load_raw(self) -> Dict[str, pd.DataFrame]:
+        """Load raw data from the configured source path.
+
+        Returns:
+            Dict with "main" key containing the loaded DataFrame.
         """
-        if feature_spec is not None:
-            from ..data.dataloader import build_ple_dataloader
+        import pandas as pd
+        from .adapter import AdapterMetadata
 
-            label_map = {
-                task_name: label_col
-                for task_name, label_col in zip(task_names, label_cols)
-            }
-            return build_ple_dataloader(
-                df=df,
-                feature_spec=feature_spec,
-                label_columns=label_map,
-                batch_size=batch_size,
-                shuffle=shuffle,
-                use_gpu_loading=use_gpu_loading,
-                pin_memory=True,
+        data_cfg = self.config.get("data", {})
+        source = data_cfg.get("source", "")
+        fmt = data_cfg.get("format", "parquet")
+
+        if not source:
+            # Try alternative path fields
+            source = data_cfg.get("train_path") or data_cfg.get("s3_path") or ""
+
+        if not source:
+            raise ValueError(
+                "No data source specified. Set data.source, data.train_path, "
+                "or data.s3_path in config."
             )
 
-        # ---- Legacy simple path (backward compatible) ----
-        import numpy as np
-        import torch
-        from torch.utils.data import DataLoader
+        logger.info("[GenericAdapter] Loading '%s' (format=%s)", source, fmt)
 
-        features = torch.tensor(
-            df[feat_cols].values.astype(np.float32),
-            dtype=torch.float32,
+        if fmt == "parquet":
+            df = pd.read_parquet(source)
+        elif fmt == "csv":
+            df = pd.read_csv(source)
+        else:
+            raise ValueError(f"Unsupported data format: {fmt}")
+
+        self._metadata = AdapterMetadata(
+            num_entities=len(df),
+            num_raw_rows=len(df),
+            source_files=[source],
+            backend_used="pandas",
         )
 
-        targets: Dict[str, torch.Tensor] = {}
-        for task_name, label_col in zip(task_names, label_cols):
-            if label_col in df.columns:
-                targets[task_name] = torch.tensor(
-                    df[label_col].values.astype(np.float32),
-                    dtype=torch.float32,
-                )
+        logger.info("[GenericAdapter] Loaded %d rows x %d cols", len(df), len(df.columns))
+        return {"main": df}
 
-        class _DictDataset(torch.utils.data.Dataset):
-            """Simple dataset that yields dict batches."""
-
-            def __init__(self, feats, tgts):
-                self.feats = feats
-                self.tgts = tgts
-
-            def __len__(self):
-                return len(self.feats)
-
-            def __getitem__(self, idx):
-                item = {"features": self.feats[idx]}
-                item["targets"] = {k: v[idx] for k, v in self.tgts.items()}
-                return item
-
-        def _collate(batch):
-            feats = torch.stack([b["features"] for b in batch])
-            tgts: Dict[str, torch.Tensor] = {}
-            for key in batch[0]["targets"]:
-                tgts[key] = torch.stack([b["targets"][key] for b in batch])
-            return {"features": feats, "targets": tgts}
-
-        dataset = _DictDataset(features, targets)
-        return DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            collate_fn=_collate,
-            drop_last=False,
-        )
+    @property
+    def metadata(self) -> Any:
+        if self._metadata is None:
+            raise RuntimeError("Call load_raw() before accessing metadata")
+        return self._metadata

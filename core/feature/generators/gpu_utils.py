@@ -365,6 +365,7 @@ class StepTimer:
 _cupy_available: Optional[bool] = None
 _cudf_available: Optional[bool] = None
 _cuml_available: Optional[bool] = None
+_duckdb_available: Optional[bool] = None
 
 
 def has_cupy() -> bool:
@@ -419,6 +420,43 @@ def has_cuml() -> bool:
     except Exception:
         _cuml_available = False
     return _cuml_available
+
+
+def has_duckdb() -> bool:
+    """Check whether DuckDB is importable.
+
+    Result is cached after the first call.
+    """
+    global _duckdb_available
+    if _duckdb_available is not None:
+        return _duckdb_available
+    try:
+        import duckdb  # noqa: F401
+        _duckdb_available = True
+        logger.info("DuckDB detected: analytical query engine available")
+    except Exception:
+        _duckdb_available = False
+    return _duckdb_available
+
+
+def get_dataframe_backend() -> str:
+    """Determine the best available DataFrame backend.
+
+    Checks availability in order of preference and returns one of:
+    - ``"cudf"`` -- GPU-accelerated RAPIDS DataFrames
+    - ``"duckdb"`` -- analytical SQL engine with vectorized execution
+    - ``"pandas"`` -- standard CPU DataFrames (always available)
+
+    Returns
+    -------
+    str
+        One of ``"cudf"``, ``"duckdb"``, or ``"pandas"``.
+    """
+    if has_cudf():
+        return "cudf"
+    if has_duckdb():
+        return "duckdb"
+    return "pandas"
 
 
 def cupy_pairwise_distances(X: np.ndarray) -> np.ndarray:

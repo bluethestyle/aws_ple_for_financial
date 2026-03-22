@@ -365,6 +365,7 @@ class TemporalEnsembleExpert(AbstractExpert):
 
     def __init__(self, input_dim: int, config: Dict[str, Any]):
         super().__init__(input_dim, config)
+        self.expects_sequence = True
 
         self._output_dim: int = config.get("output_dim", 64)
         aux_input_dim: Optional[int] = config.get("aux_input_dim")
@@ -525,6 +526,11 @@ class TemporalEnsembleExpert(AbstractExpert):
         torch.Tensor
             ``[batch, output_dim]``
         """
+        # Guard: if routing collapsed the input to 2D, add a length-1
+        # sequence dimension so sub-models (Mamba, PatchTST, LNN) work.
+        if x.dim() == 2:
+            x = x.unsqueeze(1)  # (batch, 1, features)
+
         aux_seq: Optional[torch.Tensor] = kwargs.get("aux_seq")
         time_delta: Optional[torch.Tensor] = kwargs.get("time_delta")
         outputs: list[torch.Tensor] = []

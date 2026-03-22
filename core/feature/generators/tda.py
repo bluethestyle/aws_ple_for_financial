@@ -42,6 +42,12 @@ from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
 from .gpu_utils import has_cupy, cupy_pairwise_distances
 
+try:
+    from joblib import Parallel, delayed
+    _HAS_JOBLIB = True
+except ImportError:
+    _HAS_JOBLIB = False
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -654,4 +660,376 @@ class TDAFeatureGenerator(AbstractFeatureGenerator):
             dist_matrix,
             self.max_homology_dim,
             self.max_edge_length,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Global TDA Generator
+# ---------------------------------------------------------------------------
+
+
+@FeatureGeneratorRegistry.register(
+    "tda_global",
+    description="Global TDA features: population-level topology (same values for all rows).",
+    tags=["topology", "advanced", "shape", "global"],
+)
+class TDAGlobalGenerator(TDAFeatureGenerator):
+    """Global TDA: persistent homology on the ENTIRE population point cloud.
+
+    Computes one mean feature vector per entity (customer), builds a single
+    population-level point cloud, runs persistent homology ONCE, and
+    broadcasts the resulting topological features to ALL rows.  This
+    captures the overall *population topology* -- how entities are
+    distributed in feature space.
+
+    Parameters
+    ----------
+    entity_column : str
+        Column identifying entities (e.g. ``"customer_id"``).
+    input_columns : list[str], optional
+        Numeric columns forming the point-cloud coordinates.
+    prefix : str
+        Column name prefix (default ``"tda_global"``).
+    **kwargs
+        Forwarded to :class:`TDAFeatureGenerator`.
+    """
+
+    def __init__(
+        self,
+        entity_column: str = "customer_id",
+        prefix: str = "tda_global",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(prefix=prefix, **kwargs)
+        self.entity_column = entity_column
+        self._global_features: Optional[Dict[str, float]] = None
+
+    def fit(self, df: Any, **context: Any) -> "TDAGlobalGenerator":
+        """Group by entity, compute mean per entity -> population point cloud -> persistence."""
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        cols = self._resolve_input_columns(pdf)
+        data = pdf[cols].values.astype(np.float64)
+
+        # Learn normalisation parameters (reuse parent logic)
+        self._col_means = np.nanmean(data, axis=0)
+        self._col_stds = np.nanstd(data, axis=0)
+        self._col_stds[self._col_stds == 0] = 1.0
+        self._global_scale = float(np.nanstd(data))
+
+        # Adaptive max_dim
+        n_features = data.shape[1]
+        effective_max_dim = min(self.max_homology_dim, max(n_features - 1, 0))
+        if effective_max_dim < self.max_homology_dim:
+            logger.warning(
+                "Reducing max_homology_dim from %d to %d (only %d input features)",
+                self.max_homology_dim,
+                effective_max_dim,
+                n_features,
+            )
+            self.max_homology_dim = effective_max_dim
+
+        # --- Global TDA: one point per entity (mean of their features) ---
+        normed = (data - self._col_means) / self._col_stds
+        pdf_normed = pd.DataFrame(normed, columns=cols, index=pdf.index)
+        if self.entity_column in pdf.columns:
+            pdf_normed[self.entity_column] = pdf[self.entity_column].values
+            entity_means = pdf_normed.groupby(self.entity_column)[cols].mean()
+        else:
+            # No entity column -- treat each row as an entity
+            entity_means = pdf_normed[cols]
+
+        point_cloud = entity_means.values.astype(np.float64)
+        # Remove rows with NaN
+        valid_mask = ~np.isnan(point_cloud).any(axis=1)
+        point_cloud = point_cloud[valid_mask]
+
+        if point_cloud.shape[0] < 2:
+            logger.warning("TDAGlobalGenerator: fewer than 2 entities, global features will be zero")
+            self._global_features = {col: 0.0 for col in self.output_columns}
+            self._fitted = True
+            return self
+
+        # Subsample if too large
+        if point_cloud.shape[0] > self.n_points_subsample:
+            rng = np.random.RandomState(42)
+            indices = rng.choice(
+                point_cloud.shape[0],
+                size=self.n_points_subsample,
+                replace=False,
+            )
+            point_cloud = point_cloud[indices]
+
+        # Pairwise distances
+        dist_matrix = self._pairwise_distances(point_cloud)
+
+        # Run persistence ONCE on the population
+        try:
+            diagrams = _compute_persistence(
+                dist_matrix,
+                self.max_homology_dim,
+                self.max_edge_length,
+            )
+        except Exception as exc:
+            logger.warning("TDAGlobalGenerator persistence failed: %s", exc)
+            self._global_features = {col: 0.0 for col in self.output_columns}
+            self._fitted = True
+            return self
+
+        # Extract statistics and store as global features
+        self._global_features = {}
+        for h_dim in range(self.max_homology_dim + 1):
+            dgm = diagrams.get(h_dim, np.empty((0, 2)))
+            stats = _extract_diagram_stats(dgm, self.stats_to_compute)
+            for stat_name in self.stats_to_compute:
+                col_name = f"{self.prefix}_h{h_dim}_{stat_name}"
+                self._global_features[col_name] = stats.get(stat_name, 0.0)
+
+        self._fitted = True
+        logger.info(
+            "TDAGlobalGenerator fitted: %d entities -> %d output features, backend=%s",
+            point_cloud.shape[0],
+            self.output_dim,
+            _BACKEND,
+        )
+        return self
+
+    def generate(self, df: Any, **context: Any) -> Any:
+        """Broadcast the SAME global features to every row."""
+        if not self._fitted:
+            raise RuntimeError("TDAGlobalGenerator must be fitted before generate().")
+
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        n_rows = len(pdf)
+
+        # Broadcast global features to all rows
+        result_dict = {}
+        for col_name in self.output_columns:
+            val = self._global_features.get(col_name, 0.0)
+            result_dict[col_name] = np.full(n_rows, val, dtype=np.float32)
+
+        return df_backend.from_dict(result_dict, index=pdf.index)
+
+
+# ---------------------------------------------------------------------------
+# Local TDA Generator
+# ---------------------------------------------------------------------------
+
+
+def _compute_entity_tda(
+    entity_data: np.ndarray,
+    max_homology_dim: int,
+    max_edge_length: float,
+    n_points_subsample: int,
+    stats_to_compute: List[str],
+    entity_seed: int,
+) -> Dict[str, float]:
+    """Compute TDA features for a single entity's transaction point cloud.
+
+    This is a module-level function so it can be pickled by joblib for
+    parallel execution.
+    """
+    # Remove NaN rows
+    valid_mask = ~np.isnan(entity_data).any(axis=1)
+    entity_data = entity_data[valid_mask]
+
+    result: Dict[str, float] = {}
+    n_stats = (max_homology_dim + 1) * len(stats_to_compute)
+
+    if entity_data.shape[0] < 2:
+        for h_dim in range(max_homology_dim + 1):
+            for stat_name in stats_to_compute:
+                result[f"h{h_dim}_{stat_name}"] = 0.0
+        return result
+
+    point_cloud = entity_data
+
+    # Subsample if too large
+    if point_cloud.shape[0] > n_points_subsample:
+        rng = np.random.RandomState(entity_seed)
+        indices = rng.choice(
+            point_cloud.shape[0],
+            size=n_points_subsample,
+            replace=False,
+        )
+        point_cloud = point_cloud[indices]
+
+    # Pairwise distances (CPU only -- called inside joblib worker)
+    sq_norms = np.sum(point_cloud ** 2, axis=1)
+    dist_sq = sq_norms[:, None] + sq_norms[None, :] - 2.0 * point_cloud @ point_cloud.T
+    np.clip(dist_sq, 0.0, None, out=dist_sq)
+    dist_matrix = np.sqrt(dist_sq)
+
+    try:
+        diagrams = _compute_persistence(dist_matrix, max_homology_dim, max_edge_length)
+    except Exception:
+        for h_dim in range(max_homology_dim + 1):
+            for stat_name in stats_to_compute:
+                result[f"h{h_dim}_{stat_name}"] = 0.0
+        return result
+
+    for h_dim in range(max_homology_dim + 1):
+        dgm = diagrams.get(h_dim, np.empty((0, 2)))
+        stats = _extract_diagram_stats(dgm, stats_to_compute)
+        for stat_name in stats_to_compute:
+            result[f"h{h_dim}_{stat_name}"] = stats.get(stat_name, 0.0)
+
+    return result
+
+
+@FeatureGeneratorRegistry.register(
+    "tda_local",
+    description="Local TDA features: per-entity topology from individual transaction histories.",
+    tags=["topology", "advanced", "shape", "local"],
+)
+class TDALocalGenerator(TDAFeatureGenerator):
+    """Local TDA: persistent homology PER ENTITY on their transaction data.
+
+    For each entity (customer), treats their individual transactions as
+    points in feature space, builds a per-entity point cloud, and computes
+    persistent homology independently.  This captures the *individual
+    behaviour topology* -- each entity gets UNIQUE topological features.
+
+    Uses joblib parallelization for per-entity computation when available.
+
+    Parameters
+    ----------
+    entity_column : str
+        Column identifying entities (e.g. ``"customer_id"``).
+    n_jobs : int
+        Number of parallel jobs for per-entity computation (default ``-1``
+        for all CPUs).  Requires joblib.
+    input_columns : list[str], optional
+        Numeric columns forming the point-cloud coordinates.
+    prefix : str
+        Column name prefix (default ``"tda_local"``).
+    **kwargs
+        Forwarded to :class:`TDAFeatureGenerator`.
+    """
+
+    def __init__(
+        self,
+        entity_column: str = "customer_id",
+        n_jobs: int = -1,
+        prefix: str = "tda_local",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(prefix=prefix, **kwargs)
+        self.entity_column = entity_column
+        self.n_jobs = n_jobs
+
+    def fit(self, df: Any, **context: Any) -> "TDALocalGenerator":
+        """Store normalisation parameters (actual computation is per-entity at generate time)."""
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        cols = self._resolve_input_columns(pdf)
+        data = pdf[cols].values.astype(np.float64)
+
+        # Learn normalisation parameters
+        self._col_means = np.nanmean(data, axis=0)
+        self._col_stds = np.nanstd(data, axis=0)
+        self._col_stds[self._col_stds == 0] = 1.0
+        self._global_scale = float(np.nanstd(data))
+
+        # Adaptive max_dim
+        n_features = data.shape[1]
+        effective_max_dim = min(self.max_homology_dim, max(n_features - 1, 0))
+        if effective_max_dim < self.max_homology_dim:
+            logger.warning(
+                "Reducing max_homology_dim from %d to %d (only %d input features)",
+                self.max_homology_dim,
+                effective_max_dim,
+                n_features,
+            )
+            self.max_homology_dim = effective_max_dim
+
+        _resolve_tda_backend()
+        self._fitted = True
+        logger.info(
+            "TDALocalGenerator fitted: %d input cols -> %d output features, "
+            "max_homology_dim=%d, backend=%s, n_jobs=%d, joblib=%s",
+            len(cols),
+            self.output_dim,
+            self.max_homology_dim,
+            _BACKEND,
+            self.n_jobs,
+            _HAS_JOBLIB,
+        )
+        return self
+
+    def generate(self, df: Any, **context: Any) -> Any:
+        """Compute TDA features per entity, with joblib parallelization."""
+        if not self._fitted:
+            raise RuntimeError("TDALocalGenerator must be fitted before generate().")
+
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        cols = self._resolve_input_columns(pdf)
+        data = pdf[cols].values.astype(np.float64)
+        n_rows = len(pdf)
+
+        # Normalise
+        normed = (data - self._col_means) / self._col_stds
+
+        result = np.zeros((n_rows, self.output_dim), dtype=np.float32)
+
+        if self.entity_column not in pdf.columns:
+            # Fall back to parent row-by-row behaviour
+            logger.warning(
+                "TDALocalGenerator: entity_column '%s' not found, falling back to row-by-row",
+                self.entity_column,
+            )
+            return super().generate(df, **context)
+
+        # Group rows by entity
+        entity_col = pdf[self.entity_column].values
+        unique_entities = pd.unique(entity_col)
+        entity_to_rows: Dict[Any, np.ndarray] = {}
+        for entity in unique_entities:
+            mask = entity_col == entity
+            entity_to_rows[entity] = np.where(mask)[0]
+
+        # Build per-entity data
+        entity_items = []
+        for i, entity in enumerate(unique_entities):
+            row_indices = entity_to_rows[entity]
+            entity_data = normed[row_indices]
+            entity_items.append((entity, row_indices, entity_data, i))
+
+        if _HAS_JOBLIB and len(unique_entities) > 1:
+            # Parallel per-entity TDA computation
+            entity_results = Parallel(n_jobs=self.n_jobs, prefer="threads")(
+                delayed(_compute_entity_tda)(
+                    entity_data,
+                    self.max_homology_dim,
+                    self.max_edge_length,
+                    self.n_points_subsample,
+                    self.stats_to_compute,
+                    seed,
+                )
+                for _, _, entity_data, seed in entity_items
+            )
+        else:
+            # Sequential fallback
+            entity_results = [
+                _compute_entity_tda(
+                    entity_data,
+                    self.max_homology_dim,
+                    self.max_edge_length,
+                    self.n_points_subsample,
+                    self.stats_to_compute,
+                    seed,
+                )
+                for _, _, entity_data, seed in entity_items
+            ]
+
+        # Map results back to row indices
+        for (entity, row_indices, _, _), entity_feat in zip(entity_items, entity_results):
+            col_idx = 0
+            for h_dim in range(self.max_homology_dim + 1):
+                for stat_name in self.stats_to_compute:
+                    val = entity_feat.get(f"h{h_dim}_{stat_name}", 0.0)
+                    result[row_indices, col_idx] = val
+                    col_idx += 1
+
+        return df_backend.from_dict(
+            {col: result[:, j] for j, col in enumerate(self.output_columns)},
+            index=pdf.index,
         )
