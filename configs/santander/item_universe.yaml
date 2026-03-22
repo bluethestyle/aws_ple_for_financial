@@ -1,0 +1,273 @@
+# =============================================================================
+# Santander — Item Universe (24 Financial Products)
+# =============================================================================
+# Defines the 24 financial products available in the Santander dataset,
+# organized into 6 L1 groups with hierarchy, substitute/complement
+# relationships, and column mappings.
+#
+# Used by:
+#   - product_hierarchy feature group (Poincare embedding)
+#   - NBA task (next-best-action candidate set)
+#   - Acquisition tasks (target product definitions)
+#   - LightGCN collaborative filtering (bipartite graph construction)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Product hierarchy: 6 L1 groups × 24 products
+# ---------------------------------------------------------------------------
+product_hierarchy:
+
+  # =========================================================================
+  # L1: Deposits (4 products)
+  # =========================================================================
+  - group_id: deposits
+    group_name: Deposits
+    description: "Savings and term deposit products"
+    products:
+      - id: saving
+        name: Saving Account
+        column: prod_saving
+        sequence_col: seq_saving
+        tier: core
+        description: "Standard savings account"
+
+      - id: short_term_deposit
+        name: Short-term Deposit
+        column: prod_short_term_deposit
+        tier: growth
+        description: "Deposit with maturity < 1 year"
+
+      - id: medium_term_deposit
+        name: Medium-term Deposit
+        column: prod_medium_term_deposit
+        tier: growth
+        description: "Deposit with maturity 1-3 years"
+
+      - id: long_term_deposit
+        name: Long-term Deposit
+        column: prod_long_term_deposit
+        tier: growth
+        description: "Deposit with maturity > 3 years"
+
+  # =========================================================================
+  # L1: Investments (4 products)
+  # =========================================================================
+  - group_id: investments
+    group_name: Investments
+    description: "Investment and wealth management products"
+    products:
+      - id: funds
+        name: Funds
+        column: prod_funds
+        tier: growth
+        description: "Mutual fund / investment fund"
+
+      - id: securities
+        name: Securities
+        column: prod_securities
+        tier: premium
+        description: "Securities / stock brokerage account"
+
+      - id: pensions
+        name: Pensions
+        column: prod_pensions
+        tier: core
+        description: "Pension plan"
+
+      - id: nom_pensions
+        name: Nominated Pensions
+        column: prod_nom_pensions
+        tier: core
+        description: "Nominated pension plan"
+
+  # =========================================================================
+  # L1: Loans (2 products)
+  # =========================================================================
+  - group_id: loans
+    group_name: Loans
+    description: "Lending and mortgage products"
+    products:
+      - id: mortgage
+        name: Mortgage
+        column: prod_mortgage
+        tier: premium
+        description: "Home mortgage loan"
+
+      - id: loans
+        name: Personal Loans
+        column: prod_loans
+        tier: growth
+        description: "Personal / consumer loan"
+
+  # =========================================================================
+  # L1: Cards (2 products)
+  # =========================================================================
+  - group_id: cards
+    group_name: Cards
+    description: "Payment card products"
+    products:
+      - id: credit_card
+        name: Credit Card
+        column: prod_credit_card
+        tier: core
+        description: "Credit card"
+
+      - id: direct_debit
+        name: Direct Debit
+        column: prod_direct_debit
+        tier: core
+        description: "Direct debit facility"
+
+  # =========================================================================
+  # L1: Accounts (8 products)
+  # =========================================================================
+  - group_id: accounts
+    group_name: Accounts
+    description: "Current and special-purpose accounts"
+    products:
+      - id: current
+        name: Current Account
+        column: prod_current
+        sequence_col: seq_current
+        tier: core
+        description: "Standard current / checking account"
+
+      - id: derivada
+        name: Derivada Account
+        column: prod_derivada
+        tier: standard
+        description: "Derivada account"
+
+      - id: payroll_account
+        name: Payroll Account
+        column: prod_payroll_account
+        tier: core
+        description: "Payroll deposit account"
+
+      - id: junior
+        name: Junior Account
+        column: prod_junior
+        tier: entry
+        description: "Account for minors / young customers"
+
+      - id: particular_plus
+        name: Particular Plus
+        column: prod_particular_plus
+        tier: standard
+        description: "Particular plus account"
+
+      - id: particular
+        name: Particular Account
+        column: prod_particular
+        tier: standard
+        description: "Particular account"
+
+      - id: e_account
+        name: E-Account
+        column: prod_e_account
+        tier: standard
+        description: "Electronic / online-only account"
+
+      - id: home_account
+        name: Home Account
+        column: prod_home_account
+        tier: standard
+        description: "Home account"
+
+  # =========================================================================
+  # L1: Other (4 products)
+  # =========================================================================
+  - group_id: other
+    group_name: Other Services
+    description: "Insurance, tax, payroll services"
+    products:
+      - id: home_insurance
+        name: Home Insurance
+        column: prod_home_insurance
+        tier: growth
+        description: "Home / property insurance"
+
+      - id: taxes
+        name: Tax Services
+        column: prod_taxes
+        tier: standard
+        description: "Tax filing / advisory service"
+
+      - id: payroll
+        name: Payroll Service
+        column: prod_payroll
+        tier: standard
+        description: "Payroll processing service"
+
+      - id: guarantees
+        name: Guarantees
+        column: prod_guarantees
+        tier: growth
+        description: "Financial guarantees / surety"
+
+# ---------------------------------------------------------------------------
+# Substitute relationships (products that compete for same need)
+# ---------------------------------------------------------------------------
+substitutes:
+  - [short_term_deposit, medium_term_deposit, long_term_deposit]
+  - [saving, current]
+  - [particular, particular_plus]
+  - [pensions, nom_pensions]
+  - [payroll_account, payroll]
+  - [funds, securities]
+
+# ---------------------------------------------------------------------------
+# Complement relationships (products often acquired together)
+# ---------------------------------------------------------------------------
+complements:
+  - [current, credit_card]
+  - [current, direct_debit]
+  - [payroll_account, current]
+  - [saving, short_term_deposit]
+  - [mortgage, home_insurance]
+  - [funds, securities]
+  - [current, taxes]
+  - [payroll_account, payroll]
+
+# ---------------------------------------------------------------------------
+# Product tiers (for acquisition sequencing / eligibility)
+# ---------------------------------------------------------------------------
+product_tiers:
+  entry:
+    description: "Entry-level products for new customers"
+    products: [junior]
+    min_tenure_months: 0
+
+  core:
+    description: "Core banking products"
+    products: [saving, current, payroll_account, credit_card, direct_debit, pensions, nom_pensions]
+    min_tenure_months: 0
+
+  standard:
+    description: "Standard products requiring basic relationship"
+    products: [derivada, particular, particular_plus, e_account, home_account, taxes, payroll]
+    min_tenure_months: 3
+
+  growth:
+    description: "Growth products for established customers"
+    products: [short_term_deposit, medium_term_deposit, long_term_deposit, funds, loans, home_insurance, guarantees]
+    min_tenure_months: 6
+
+  premium:
+    description: "Premium products for high-value customers"
+    products: [mortgage, securities]
+    min_tenure_months: 12
+
+# ---------------------------------------------------------------------------
+# Embedding configuration for Poincare space
+# ---------------------------------------------------------------------------
+embedding:
+  method: poincare
+  curvature: 1.0
+  dim: 32
+  learning_rate: 0.01
+  num_epochs: 100
+  negative_samples: 10
+  # Hierarchy edges: group -> product (parent-child)
+  # Substitute edges: bidirectional same-level
+  # Complement edges: bidirectional cross-group

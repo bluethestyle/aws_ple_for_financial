@@ -6,6 +6,39 @@ Training Pipeline은 Stage 9를 담당한다.
 
 ---
 
+## PipelineRunner 통합 진입점 (Step 14)
+
+`containers/training/train.py`에 두 가지 진입 경로가 존재한다:
+
+### 1. Legacy 경로 — `main()`
+기존 SageMaker Training Job에서 직접 호출하는 경로. Parquet 로드 → PLETrainer 실행.
+
+### 2. Pipeline 경로 — `main_pipeline(config_path)`
+`--pipeline config.yaml` 플래그로 활성화. PipelineRunner가 Stage 1~8 전체를 오케스트레이션.
+
+```bash
+# Legacy (기존 호환)
+python train.py
+
+# Pipeline (PipelineRunner 경유)
+python train.py --pipeline configs/financial/pipeline.yaml
+```
+
+`main_pipeline()`은 다음을 수행한다:
+1. `load_config(config_path)` — YAML 로드
+2. SageMaker HP 오버라이드 적용 (`SM_HPS` 환경변수)
+3. `PipelineRunner(config).run(output_dir=SM_MODEL_DIR)` — 전체 파이프라인 실행
+
+Adapter-specific 코드(ealtman2019 DuckDB 집계 등)는 PipelineRunner 내부에서 `AdapterRegistry`를 통해 호출되므로, `train.py`에는 adapter별 로직이 없다.
+
+### Label Derivation 및 Sequence Building
+
+PipelineRunner 내부에서 수행되는 추가 단계:
+- **Stage 7: Label Derivation** — config의 `labels:` 정의에서 자동 생성 (clip + log1p)
+- **Sequence Building** — event_sequences.npy 생성 (Mamba/Temporal Expert 입력)
+
+---
+
 ## 학습 파이프라인 흐름
 
 ```
@@ -335,8 +368,11 @@ structure_ablation:
 
 ### Ablation 구현 HP (Hyperparameters)
 
+PipelineRunner 경로에서는 ablation config가 YAML에서 직접 지정된다. Legacy 경로에서는 HP로 전달:
+
 ```python
-# train.py에 추가되는 HP
+# train.py에 추가되는 HP (legacy 경로)
+# PipelineRunner 경로에서는 config.ablation.* 섹션 사용
 ablation_hps = {
     # Feature ablation
     "--removed-feature-groups": "쉼표로 구분된 제거할 feature group 이름",

@@ -1,0 +1,608 @@
+# =============================================================================
+# Santander Customer Transactions Pipeline Configuration
+# 941,132 users × 89 columns × 28 tasks × 7 shared experts
+# =============================================================================
+# User-level synthetic dataset with product holdings, transaction sequences,
+# and demographic attributes.  Pre-aggregated — no transaction-level joins.
+#
+# Data: data/synthetic/santander_final.parquet
+# =============================================================================
+
+task_name: santander_ple
+
+adapter: santander
+
+# ---------------------------------------------------------------------------
+# Tasks — 28 tasks across 4 tiers
+# ---------------------------------------------------------------------------
+# Tier 1: Acquisition (product cross-sell / upsell)
+# Tier 2: Retention (churn / lifecycle)
+# Tier 3: Segmentation (customer understanding)
+# Tier 4: Behavior (transaction pattern prediction)
+# ---------------------------------------------------------------------------
+tasks:
+
+  # ===== Tier 1: Acquisition — product adoption prediction (12 tasks) =====
+
+  - name: acquire_saving
+    type: binary
+    loss: focal
+    loss_weight: 1.5
+    label_col: label_acquire_saving
+    description: "Will customer open a savings account?"
+    derive:
+      method: product_not_held
+      product_col: prod_saving
+      sequence_col: seq_saving
+
+  - name: acquire_guarantees
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: label_acquire_guarantees
+    description: "Will customer acquire guarantees product?"
+    derive:
+      method: product_not_held
+      product_col: prod_guarantees
+
+  - name: acquire_current
+    type: binary
+    loss: focal
+    loss_weight: 1.2
+    label_col: label_acquire_current
+    description: "Will customer open a current account?"
+    derive:
+      method: product_not_held
+      product_col: prod_current
+      sequence_col: seq_current
+
+  - name: acquire_derivada
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: label_acquire_derivada
+    description: "Will customer acquire derivada product?"
+    derive:
+      method: product_not_held
+      product_col: prod_derivada
+
+  - name: acquire_payroll_account
+    type: binary
+    loss: focal
+    loss_weight: 1.2
+    label_col: label_acquire_payroll_account
+    description: "Will customer open a payroll account?"
+    derive:
+      method: product_not_held
+      product_col: prod_payroll_account
+
+  - name: acquire_junior
+    type: binary
+    loss: focal
+    loss_weight: 0.8
+    label_col: label_acquire_junior
+    description: "Will customer open a junior account?"
+    derive:
+      method: product_not_held
+      product_col: prod_junior
+
+  - name: acquire_particular_plus
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: label_acquire_particular_plus
+    description: "Will customer acquire particular plus?"
+    derive:
+      method: product_not_held
+      product_col: prod_particular_plus
+
+  - name: acquire_particular
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: label_acquire_particular
+    description: "Will customer acquire particular account?"
+    derive:
+      method: product_not_held
+      product_col: prod_particular
+
+  - name: acquire_short_term_deposit
+    type: binary
+    loss: focal
+    loss_weight: 1.3
+    label_col: label_acquire_short_term_deposit
+    description: "Will customer open a short-term deposit?"
+    derive:
+      method: product_not_held
+      product_col: prod_short_term_deposit
+
+  - name: acquire_medium_term_deposit
+    type: binary
+    loss: focal
+    loss_weight: 1.3
+    label_col: label_acquire_medium_term_deposit
+    description: "Will customer open a medium-term deposit?"
+    derive:
+      method: product_not_held
+      product_col: prod_medium_term_deposit
+
+  - name: acquire_long_term_deposit
+    type: binary
+    loss: focal
+    loss_weight: 1.3
+    label_col: label_acquire_long_term_deposit
+    description: "Will customer open a long-term deposit?"
+    derive:
+      method: product_not_held
+      product_col: prod_long_term_deposit
+
+  - name: acquire_direct_debit
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: label_acquire_direct_debit
+    description: "Will customer set up direct debit?"
+    derive:
+      method: product_not_held
+      product_col: prod_direct_debit
+
+  # ===== Tier 2: Retention — churn / lifecycle (6 tasks) =====
+
+  - name: churn
+    type: binary
+    loss: focal
+    loss_weight: 2.0
+    label_col: label_churn
+    description: "Will customer churn (drop all products)?"
+    derive:
+      method: sequence_decline
+      sequence_col: seq_num_products
+      threshold: 0
+
+  - name: product_churn_count
+    type: regression
+    loss: huber
+    loss_weight: 1.2
+    label_col: label_product_churn_count
+    description: "How many products will be churned?"
+    derive:
+      method: sequence_last
+      sequence_col: seq_churns
+
+  - name: retention
+    type: binary
+    loss: focal
+    loss_weight: 1.5
+    label_col: label_retention
+    description: "Will customer retain all current products?"
+    derive:
+      method: sequence_stable
+      sequence_col: seq_num_products
+
+  - name: ltv
+    type: regression
+    loss: huber
+    loss_weight: 1.5
+    label_col: label_ltv
+    description: "Customer lifetime value (total products × tenure)"
+    derive:
+      method: computed
+      formula: "num_products * tenure"
+
+  - name: life_stage
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_life_stage
+    num_classes: 5
+    description: "Life stage (young/growing/mature/declining/dormant)"
+    derive:
+      method: age_group_map
+      source_col: age_group
+
+  - name: tenure_bucket
+    type: multiclass
+    loss: ce
+    loss_weight: 0.6
+    label_col: label_tenure_bucket
+    num_classes: 5
+    description: "Tenure bucket (0-1y/1-3y/3-5y/5-10y/10y+)"
+    derive:
+      method: bucket
+      source_col: tenure
+      boundaries: [12, 36, 60, 120]
+
+  # ===== Tier 3: Segmentation — customer understanding (5 tasks) =====
+
+  - name: segment_pred
+    type: multiclass
+    loss: ce
+    loss_weight: 1.0
+    label_col: label_segment
+    num_classes: 3
+    description: "Customer segment (VIP/Individuals/College)"
+    derive:
+      method: categorical_encode
+      source_col: segment
+
+  - name: channel_pred
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_channel
+    num_classes: 5
+    description: "Primary interaction channel"
+    derive:
+      method: categorical_encode
+      source_col: channel
+
+  - name: income_tier
+    type: multiclass
+    loss: ce
+    loss_weight: 0.8
+    label_col: label_income_tier
+    num_classes: 5
+    description: "Income tier classification"
+    derive:
+      method: categorical_encode
+      source_col: income_group
+
+  - name: country_cluster
+    type: multiclass
+    loss: ce
+    loss_weight: 0.5
+    label_col: label_country_cluster
+    num_classes: 6
+    description: "Country-based customer cluster"
+    derive:
+      method: categorical_encode
+      source_col: country
+
+  - name: product_diversity
+    type: regression
+    loss: mse
+    loss_weight: 1.0
+    label_col: label_product_diversity
+    description: "Number of distinct product types held"
+    derive:
+      method: count_active
+      product_prefix: prod_
+
+  # ===== Tier 4: Behavior — transaction patterns (5 tasks) =====
+
+  - name: nba
+    type: multiclass
+    loss: ce
+    loss_weight: 2.0
+    label_col: label_nba
+    num_classes: 24
+    description: "Next best action — which product to recommend"
+    derive:
+      method: nba_from_sequences
+      sequence_cols: [seq_saving, seq_current, seq_num_products]
+
+  - name: spending_trend
+    type: multiclass
+    loss: ce
+    loss_weight: 1.0
+    label_col: label_spending_trend
+    num_classes: 3
+    description: "Transaction amount trend (up/flat/down)"
+    derive:
+      method: sequence_trend
+      sequence_col: txn_amount_seq
+
+  - name: txn_frequency
+    type: regression
+    loss: huber
+    loss_weight: 1.0
+    label_col: label_txn_frequency
+    description: "Average monthly transaction count"
+    derive:
+      method: sequence_mean
+      sequence_col: txn_count_seq
+
+  - name: spending_amount
+    type: regression
+    loss: huber
+    loss_weight: 0.8
+    label_col: label_spending_amount
+    description: "Average monthly transaction amount"
+    derive:
+      method: sequence_mean
+      sequence_col: txn_amount_seq
+
+  - name: mcc_diversity
+    type: regression
+    loss: mse
+    loss_weight: 0.6
+    label_col: label_mcc_diversity
+    description: "MCC category diversity (entropy)"
+    derive:
+      method: sequence_entropy
+      sequence_col: txn_mcc_seq
+
+# ---------------------------------------------------------------------------
+# Task Groups (adaTT transfer units)
+# ---------------------------------------------------------------------------
+task_groups:
+  - name: acquisition
+    tasks:
+      - acquire_saving
+      - acquire_guarantees
+      - acquire_current
+      - acquire_derivada
+      - acquire_payroll_account
+      - acquire_junior
+      - acquire_particular_plus
+      - acquire_particular
+      - acquire_short_term_deposit
+      - acquire_medium_term_deposit
+      - acquire_long_term_deposit
+      - acquire_direct_debit
+    task_experts: [deepfm]
+    adatt_intra_strength: 0.8
+    adatt_inter_strength: 0.2
+    description: "Product acquisition / cross-sell prediction"
+
+  - name: retention
+    tasks: [churn, product_churn_count, retention, ltv, life_stage, tenure_bucket]
+    task_experts: [causal, mlp]
+    adatt_intra_strength: 0.7
+    adatt_inter_strength: 0.3
+    description: "Customer retention and lifecycle management"
+
+  - name: segmentation
+    tasks: [segment_pred, channel_pred, income_tier, country_cluster, product_diversity]
+    task_experts: [mlp]
+    adatt_intra_strength: 0.6
+    adatt_inter_strength: 0.2
+    description: "Customer segmentation and profiling"
+
+  - name: behavior
+    tasks: [nba, spending_trend, txn_frequency, spending_amount, mcc_diversity]
+    task_experts: [deepfm, temporal_ensemble]
+    adatt_intra_strength: 0.7
+    adatt_inter_strength: 0.3
+    description: "Transaction behavior and spending patterns"
+
+# ---------------------------------------------------------------------------
+# Data
+# ---------------------------------------------------------------------------
+data:
+  source: data/synthetic/santander_final.parquet
+  s3_path: s3://aiops-ple-financial/data/santander/
+  backend: [cudf, duckdb, pandas]
+  format: parquet
+  train_split: 0.8
+  val_split: 0.1
+
+# ---------------------------------------------------------------------------
+# Features
+# ---------------------------------------------------------------------------
+features:
+  id_cols: [customer_id]
+  input_dim: 512
+
+  # Categorical columns requiring embedding
+  categorical:
+    - name: gender
+      cardinality: 3
+      embedding_dim: 4
+    - name: segment
+      cardinality: 4
+      embedding_dim: 4
+    - name: country
+      cardinality: 10
+      embedding_dim: 8
+    - name: channel
+      cardinality: 10
+      embedding_dim: 8
+    - name: age_group
+      cardinality: 8
+      embedding_dim: 4
+    - name: income_group
+      cardinality: 8
+      embedding_dim: 4
+
+  # Sequence columns (list-type in parquet)
+  sequences:
+    txn_amount_seq:
+      max_len: 24
+      feat_dim: 1
+      description: "Monthly transaction amounts"
+    txn_count_seq:
+      max_len: 24
+      feat_dim: 1
+      description: "Monthly transaction counts"
+    txn_mcc_seq:
+      max_len: 24
+      feat_dim: 1
+      description: "Monthly dominant MCC code"
+    seq_saving:
+      max_len: 18
+      feat_dim: 1
+      description: "Savings account holding history"
+    seq_current:
+      max_len: 18
+      feat_dim: 1
+      description: "Current account holding history"
+    seq_num_products:
+      max_len: 18
+      feat_dim: 1
+      description: "Total products held over time"
+    seq_acquisitions:
+      max_len: 18
+      feat_dim: 1
+      description: "Monthly product acquisitions"
+    seq_churns:
+      max_len: 18
+      feat_dim: 1
+      description: "Monthly product churns"
+
+# ---------------------------------------------------------------------------
+# Model — PLE architecture with 7 shared experts
+# ---------------------------------------------------------------------------
+model:
+  architecture: ple
+
+  expert_basket:
+    shared:
+      - deepfm
+      - temporal_ensemble
+      - hgcn
+      - perslay
+      - causal
+      - lightgcn
+      - optimal_transport
+    task: [mlp]
+
+  expert_config:
+    deepfm:
+      embedding_dim: 8
+      hidden_dims: [256, 128]
+      dropout: 0.1
+    temporal_ensemble:
+      mamba_d_model: 64
+      mamba_n_layers: 2
+      transformer_n_heads: 4
+      transformer_n_layers: 2
+      lnn_hidden_dim: 64
+    hgcn:
+      hyperbolic_dim: 20
+      product_dim: 24
+      refine_hidden: 128
+    perslay:
+      phi_hidden_dim: 64
+      rho_hidden_dim: 64
+    causal:
+      dag_hidden_dims: [128, 64]
+      lambda_dag: 0.01
+    lightgcn:
+      embedding_dim: 64
+      n_layers: 3
+    optimal_transport:
+      hidden_dims: [128, 64]
+      sinkhorn_iterations: 50
+    mlp:
+      hidden_dims: [256, 128]
+      dropout: 0.1
+
+  ple:
+    num_layers: 3
+    extraction_dim: 64
+    num_shared_experts: 7
+    num_task_experts: 1
+
+  loss_weighting:
+    strategy: uncertainty
+
+  task_tower:
+    default_dims: [64, 32]
+    dropout: 0.1
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+training:
+  experiment_name: santander_ple
+  batch_size: 2048
+  epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.01
+  seed: 42
+  phase1:
+    epochs: 30
+    description: "Joint training of all tasks"
+  phase2:
+    epochs: 20
+    freeze_extraction: true
+    description: "Fine-tune towers with frozen extraction"
+  early_stopping:
+    patience: 7
+    metric: val_loss
+  scheduler:
+    type: cosine
+    warmup_epochs: 3
+
+# ---------------------------------------------------------------------------
+# Distillation
+# ---------------------------------------------------------------------------
+distillation:
+  temperature: 5.0
+  alpha: 0.3
+  lgbm:
+    num_leaves: 127
+    learning_rate: 0.05
+    n_estimators: 500
+    min_child_samples: 50
+    subsample: 0.8
+    colsample_bytree: 0.8
+
+# ---------------------------------------------------------------------------
+# Ablation Scenarios
+# ---------------------------------------------------------------------------
+ablation:
+  feature_groups:
+    - name: full
+      remove: []
+    - name: no_tda
+      remove: [tda_global, tda_local]
+    - name: no_temporal
+      remove: [mamba_temporal]
+    - name: no_graph
+      remove: [collaborative, product_hierarchy]
+    - name: no_hmm
+      remove: [hmm_states]
+    - name: no_demographics
+      remove: [demographics]
+    - name: base_only
+      remove: [tda_global, tda_local, mamba_temporal, hmm_states, collaborative,
+               product_hierarchy, gmm_clustering, model_derived]
+
+  experts:
+    - name: full_basket
+      shared: [deepfm, temporal_ensemble, hgcn, perslay, causal, lightgcn, optimal_transport]
+    - name: no_deepfm
+      shared: [temporal_ensemble, hgcn, perslay, causal, lightgcn, optimal_transport]
+    - name: no_temporal
+      shared: [deepfm, hgcn, perslay, causal, lightgcn, optimal_transport]
+    - name: no_hgcn
+      shared: [deepfm, temporal_ensemble, perslay, causal, lightgcn, optimal_transport]
+    - name: no_perslay
+      shared: [deepfm, temporal_ensemble, hgcn, causal, lightgcn, optimal_transport]
+    - name: no_causal
+      shared: [deepfm, temporal_ensemble, hgcn, perslay, lightgcn, optimal_transport]
+    - name: mlp_only
+      shared: [mlp]
+
+  hyperparams:
+    learning_rate: [0.0001, 0.0005, 0.001, 0.005]
+    temperature: [1.0, 3.0, 5.0, 10.0]
+    num_layers: [1, 2, 3]
+    extraction_dim: [32, 64, 128]
+
+# ---------------------------------------------------------------------------
+# Evaluation metrics per task type
+# ---------------------------------------------------------------------------
+evaluation:
+  binary:
+    metrics: [auc_roc, auc_pr, f1, precision, recall, accuracy, log_loss]
+    primary: auc_roc
+  multiclass:
+    metrics: [accuracy, f1_macro, f1_weighted, top_k_accuracy]
+    primary: f1_macro
+  regression:
+    metrics: [rmse, mae, r2, mape]
+    primary: rmse
+
+# ---------------------------------------------------------------------------
+# AWS / SageMaker configuration
+# ---------------------------------------------------------------------------
+aws:
+  region: ap-northeast-2
+  s3_bucket: aiops-ple-financial
+  instance_type: ml.g4dn.xlarge
+  use_spot: true
+  max_run_seconds: 43200
+  role_arn: arn:aws:iam::ACCOUNT_ID:role/SageMakerExecutionRole

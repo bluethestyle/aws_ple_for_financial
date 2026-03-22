@@ -483,6 +483,42 @@ class ModelBuilder:
 
 ---
 
+## Per-task Loss Dispatch 확인 (Step 13)
+
+`build_loss()` 팩토리가 config의 `tasks[].loss` 필드에서 loss 함수를 결정한다. 현재 지원:
+
+| loss type | nn.Module | 용도 | 태스크 타입 |
+|-----------|-----------|------|-----------|
+| `focal` | FocalLoss | 불균형 이진 분류 | binary |
+| `huber` | SmoothL1Loss | 이상치 강건 회귀 | regression |
+| `mse` | MSELoss | 기본 회귀 | regression |
+| `ce` | CrossEntropyLoss | 다중 클래스 (auto class_weights) | multiclass |
+| `infonce` | InfoNCELoss | 대조 학습 | contrastive |
+
+### Item Universe 및 Product Hierarchy
+
+Item 축 피처의 경우 Product Hierarchy config가 필요하다:
+
+- `product_hierarchy.json` — 상품 카테고리 트리 (Level 1/2)
+- `customer_product_graph.parquet` — 고객-상품 bipartite graph
+
+이 정보는 `FeatureGroupPipeline`의 Item 축 generator에서 참조된다.
+
+### FeatureColumnSpec 자동 구성
+
+`FeatureColumnSpec`은 `FeatureGroupPipeline`의 메타데이터에서 자동 구성된다:
+
+```python
+# FeatureGroupPipeline이 생성한 피처 목록에서 자동 추론
+feature_spec = FeatureColumnSpec.from_feature_metadata(
+    pipeline.get_metadata()  # axis별 피처 목록 + dim 정보
+)
+```
+
+이로써 `train.py`에서 수동으로 `feature_columns` config를 작성할 필요가 없어진다.
+
+---
+
 ## 지식 증류 (PLE → LGBM)
 
 ```

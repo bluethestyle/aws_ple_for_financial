@@ -11,6 +11,40 @@ Stage 6: Feature Integration + Normalization (power-law auto-detect → log1p+ra
 
 ---
 
+## FeatureGroupPipeline — 피처 엔지니어링 오케스트레이터 (Step 12-13)
+
+`core/pipeline/features.py`의 `FeatureGroupPipeline`이 Stage 5 피처 엔지니어링의 주 진입점이다. 기존 `FeaturePipelineBuilder`는 개별 generator 호출에 사용되지만, 전체 오케스트레이션은 `FeatureGroupPipeline`이 담당한다.
+
+### FeatureGroupPipeline vs Adapter 역할 분리
+
+| 역할 | DataAdapter (Stage 1) | FeatureGroupPipeline (Stage 5) |
+|------|----------------------|-------------------------------|
+| DuckDB 집계 | O (24M → 2,000 user) | X |
+| RFM 기본 피처 | O (base aggregation) | X |
+| TDA (global/local) | X | O — Generator 호출 |
+| HMM 상태 추정 | X | O — Generator 호출 |
+| Mamba SSM | X | O — Generator 호출 |
+| Graph 임베딩 | X | O — Generator 호출 |
+| GMM 클러스터링 | X | O — Generator 호출 |
+
+### TDA Global/Local 구분
+
+TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
+
+- **TDA Global** (Snapshot 축, 36D+10D): 12개월 장기 윈도우 Persistence Diagram
+- **TDA Local** (Timeseries 축, 24D): 90일 단기 윈도우 Persistence Diagram
+
+### cuML Fallback
+
+scikit-learn transformer가 대규모 데이터에서 느린 경우, cuML이 설치되어 있으면 자동으로 GPU 가속 경로를 사용한다:
+
+```
+cuML StandardScaler  →  sklearn StandardScaler  (fallback)
+cuML PCA             →  sklearn PCA             (fallback)
+```
+
+---
+
 ## 5-Axis Feature Group 매핑 (Santander 데이터)
 
 ### 전체 구조

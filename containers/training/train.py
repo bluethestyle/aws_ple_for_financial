@@ -754,7 +754,55 @@ def _download_pretrained_from_s3(s3_uri: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# PipelineRunner entry point (Stage 8 integration)
+# ---------------------------------------------------------------------------
+
+def main_pipeline(config_path: str, **overrides) -> dict:
+    """Entry point when called via PipelineRunner.
+
+    Runs the full 9-stage pipeline (data loading through training) using
+    :class:`PipelineRunner`.  This path is activated by passing
+    ``--pipeline <config.yaml>`` on the command line.
+
+    Parameters
+    ----------
+    config_path : str
+        Path to pipeline YAML config.
+    **overrides
+        Hyperparameter overrides from SageMaker (merged into config).
+
+    Returns
+    -------
+    dict
+        Training results from PipelineRunner.run().
+    """
+    from core.pipeline.config import load_config
+    from core.pipeline.runner import PipelineRunner
+
+    config = load_config(config_path)
+
+    # Apply HP overrides from SageMaker environment as attributes
+    sm_hps = get_hyperparameters()
+    if sm_hps:
+        for k, v in sm_hps.items():
+            if hasattr(config.training, k):
+                setattr(config.training, k, type(getattr(config.training, k))(v))
+    if overrides:
+        for k, v in overrides.items():
+            if hasattr(config.training, k):
+                setattr(config.training, k, type(getattr(config.training, k))(v))
+
+    output_dir = os.environ.get("SM_MODEL_DIR", "outputs/")
+
+    runner = PipelineRunner(config)
+    results = runner.run(output_dir=output_dir)
+
+    logger.info("PipelineRunner completed. Results: %s", list(results.keys()))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Main (legacy SageMaker Training Job entry point)
 # ---------------------------------------------------------------------------
 
 def main() -> None:
@@ -1356,4 +1404,19 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse as _argparse
+
+    _parser = _argparse.ArgumentParser(add_help=False)
+    _parser.add_argument("--pipeline", type=str, default=None,
+                         help="Path to pipeline YAML config. "
+                              "When set, runs via PipelineRunner "
+                              "instead of legacy SageMaker path.")
+    _known, _remaining = _parser.parse_known_args()
+
+    if _known.pipeline:
+        # Route to PipelineRunner-based entry point
+        logger.info("Running via PipelineRunner (config=%s)", _known.pipeline)
+        main_pipeline(_known.pipeline)
+    else:
+        # Legacy SageMaker Training Job path
+        main()

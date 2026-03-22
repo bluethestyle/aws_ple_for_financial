@@ -57,7 +57,7 @@ class DataSpec:
     format: str = "parquet"
     train_split: float = 0.8
     val_split: float = 0.1
-    backend: str = "pandas"
+    backend: Any = "pandas"  # str or List[str] (e.g. ["cudf", "duckdb", "pandas"])
     train_path: str = ""
     s3_path: str = ""
     parquet_file: str = ""
@@ -73,12 +73,24 @@ class FeatureSpec:
     """
 
     numeric: List[str] = field(default_factory=list)
-    categorical: List[str] = field(default_factory=list)
+    categorical: List[Any] = field(default_factory=list)
     sequence: List[str] = field(default_factory=list)
     embedding_dim: int = 16
     id_cols: List[str] = field(default_factory=list)
     transformers: List[dict] = field(default_factory=list)
     input_dim: int = 0
+
+    @property
+    def categorical_names(self) -> List[str]:
+        """Extract plain column names from categorical, which may contain
+        dicts with a ``name`` key or plain strings."""
+        names: List[str] = []
+        for entry in self.categorical:
+            if isinstance(entry, dict):
+                names.append(entry.get("name", ""))
+            else:
+                names.append(str(entry))
+        return names
 
 
 @dataclass
@@ -102,6 +114,60 @@ class ModelSpec:
     dropout: float = 0.1
     expert_basket: Optional[dict] = None
     group_task_expert: Optional[dict] = None
+
+
+@dataclass
+class SecuritySpec:
+    """Security / encryption specification."""
+
+    enabled: bool = False
+    salt_source: str = "env"  # "env" | "ssm" | "file"
+    policies: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class LabelSpec:
+    """Specification for a single label (target column or derived label)."""
+
+    name: str = ""
+    source: str = "column"  # "column" | "derive"
+    method: str = ""        # derivation method when source="derive"
+    input_col: str = ""
+    type: str = "binary"    # "binary" | "multiclass" | "regression"
+    num_classes: int = 2
+
+
+@dataclass
+class SequenceSpec:
+    """Specification for a sequential / temporal input."""
+
+    source: str = "parquet_list"  # "parquet_list" | "npy"
+    columns: List[str] = field(default_factory=list)
+    seq_len: int = 50
+    pad_value: float = 0.0
+
+
+@dataclass
+class ItemUniverseSpec:
+    """Item universe definition for recommendation tasks."""
+
+    name: str = ""
+    items: List[str] = field(default_factory=list)
+    hierarchy: List[str] = field(default_factory=list)
+    relationships: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class FeatureGroupSpec:
+    """Thin wrapper bridging pipeline config to FeatureGroupConfig.
+
+    Raw dicts from the YAML ``feature_groups`` section are stored here and
+    later forwarded to :class:`core.feature.group.FeatureGroupConfig` by
+    :class:`FeatureGroupPipeline`.
+    """
+
+    name: str = ""
+    config: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -149,6 +215,12 @@ class PipelineConfig:
     training: TrainingSpec
     aws: AWSSpec
     task_groups: List[TaskGroupConfig] = field(default_factory=list)
+    security: SecuritySpec = field(default_factory=SecuritySpec)
+    labels: List[LabelSpec] = field(default_factory=list)
+    sequences: Dict[str, SequenceSpec] = field(default_factory=dict)
+    item_universe: Optional[ItemUniverseSpec] = None
+    feature_groups: List[dict] = field(default_factory=list)
+    adapter: str = ""
 
     def get_task_group(self, task_name: str) -> Optional[str]:
         """Return the group name that *task_name* belongs to, or ``None``."""
@@ -163,7 +235,7 @@ def load_config(path: Union[str, Path]) -> PipelineConfig:
     with open(path) as f:
         raw: Dict[str, Any] = yaml.safe_load(f)
 
-    tasks = [TaskSpec(**t) for t in raw.get("tasks", [])]
+    tasks = [TaskSpec(**{k: v for k, v in t.items() if k in TaskSpec.__dataclass_fields__}) for t in raw.get("tasks", [])]
     data = DataSpec(**raw.get("data", {}))
     features = FeatureSpec(**{
         k: v for k, v in raw.get("features", {}).items()
@@ -180,6 +252,50 @@ def load_config(path: Union[str, Path]) -> PipelineConfig:
     aws = AWSSpec(**raw.get("aws", {}))
     task_groups = [TaskGroupConfig(**tg) for tg in raw.get("task_groups", [])]
 
+    # --- New pipeline sections (optional, backward-compatible) ---
+    security = SecuritySpec(**{
+        k: v for k, v in raw.get("security", {}).items()
+        if k in SecuritySpec.__dataclass_fields__
+    })
+    labels = [LabelSpec(**lb) for lb in raw.get("labels", [])]
+
+    # Fallback: extract labels from tasks[].derive blocks if no top-level labels
+    if not labels:
+        for t in raw.get("tasks", []):
+            derive_block = t.get("derive")
+            if derive_block:
+                labels.append(LabelSpec(
+                    name=t.get("label_col", t.get("name", "")),
+                    source="derive",
+                    method=derive_block.get("method", ""),
+                    input_col=derive_block.get("input_col", derive_block.get("source_col", "")),
+                    type=t.get("type", "binary"),
+                    num_classes=t.get("num_classes", 2),
+                ))
+
+    # Top-level sequences section
+    sequences_raw = raw.get("sequences", {})
+
+    # Fallback: extract sequences from features.sequences if no top-level sequences
+    if not sequences_raw:
+        feat_raw = raw.get("features", {})
+        sequences_raw = feat_raw.get("sequences", {})
+
+    sequences = {
+        name: SequenceSpec(**{
+            k: v for k, v in spec.items()
+            if k in SequenceSpec.__dataclass_fields__
+        })
+        for name, spec in sequences_raw.items()
+    }
+    raw_item_universe = raw.get("item_universe")
+    item_universe = ItemUniverseSpec(**{
+        k: v for k, v in raw_item_universe.items()
+        if k in ItemUniverseSpec.__dataclass_fields__
+    }) if raw_item_universe else None
+    feature_groups_raw = raw.get("feature_groups", [])
+    adapter_name = raw.get("adapter", "")
+
     return PipelineConfig(
         task_name=raw["task_name"],
         tasks=tasks,
@@ -189,4 +305,10 @@ def load_config(path: Union[str, Path]) -> PipelineConfig:
         training=training,
         aws=aws,
         task_groups=task_groups,
+        security=security,
+        labels=labels,
+        sequences=sequences,
+        item_universe=item_universe,
+        feature_groups=feature_groups_raw,
+        adapter=adapter_name,
     )

@@ -47,6 +47,15 @@ from scipy import stats as sp_stats
 import duckdb as _duckdb
 
 # ---------------------------------------------------------------------------
+# DataAdapter framework (optional — available when core.pipeline is present)
+# ---------------------------------------------------------------------------
+try:
+    from core.pipeline.adapter import DataAdapter, AdapterMetadata, AdapterRegistry
+    _HAS_ADAPTER_FRAMEWORK = True
+except ImportError:
+    _HAS_ADAPTER_FRAMEWORK = False
+
+# ---------------------------------------------------------------------------
 # Real feature generators (from core/feature/generators/)
 # All have numpy fallbacks and do not require GPU or heavy dependencies.
 # ---------------------------------------------------------------------------
@@ -2984,6 +2993,198 @@ def parse_args() -> argparse.Namespace:
         help="Directory to write output parquet and stats JSON",
     )
     return parser.parse_args()
+
+
+# ===================================================================
+# DataAdapter subclass (PipelineRunner integration)
+# ===================================================================
+
+if _HAS_ADAPTER_FRAMEWORK:
+
+    @AdapterRegistry.register("ealtman2019")
+    class EaltmanAdapter(DataAdapter):
+        """DataAdapter subclass for the ealtman2019 credit-card dataset.
+
+        Wraps the existing DuckDB aggregation logic to produce user-level
+        DataFrames.  Feature generation (TDA, HMM, GMM, etc.) is NOT
+        performed here — that is the responsibility of FeatureGroupPipeline.
+
+        Config keys used::
+
+            data.input_dir   — path to raw parquet/csv directory
+            data.backend     — backend preference list (default: ["duckdb"])
+        """
+
+        def load_raw(self) -> Dict[str, pd.DataFrame]:
+            """Load & aggregate 24M transactions → 2,000 user-level rows.
+
+            Returns
+            -------
+            dict
+                ``"main"``  — user-level DataFrame with base aggregation
+                    columns (rfm, category ratios, txn stats, temporal).
+                ``"transactions_raw"`` — lightweight metadata dict (not a
+                    full DataFrame) describing the transaction parquet
+                    location so downstream stages can access raw rows if
+                    needed (e.g. for sequence building).
+            """
+            input_dir = self.config.get("data", {}).get(
+                "input_dir", "/opt/ml/processing/input"
+            )
+            backend = self._select_backend()
+
+            # --- Load user / card tables (small) ---
+            users = load_users(input_dir)
+            cards = load_cards(input_dir)  # noqa: F841 — kept for future use
+            user_ids = np.arange(len(users))
+
+            # --- DuckDB aggregation (24M → 2,000) ---
+            parquet_path = os.path.join(input_dir, "transactions.parquet")
+            con = _duckdb.connect()
+            con.execute("SET memory_limit='12GB'")
+            con.execute("SET threads TO 4")
+
+            tmp_dir = "/tmp/duckdb_tmp"
+            os.makedirs(tmp_dir, exist_ok=True)
+            con.execute(f"SET temp_directory='{tmp_dir}'")
+
+            con.execute(f"""
+                CREATE VIEW txn AS
+                SELECT
+                    "user_id" AS "User",
+                    "card_id" AS "Card",
+                    "year" AS "Year",
+                    "month" AS "Month",
+                    "day" AS "Day",
+                    "time" AS "Time",
+                    "amount" AS "Amount",
+                    "use_chip" AS "Use Chip",
+                    "merchant_id" AS "Merchant Name",
+                    "merchant_city" AS "Merchant City",
+                    "merchant_state" AS "Merchant State",
+                    "zip" AS "Zip",
+                    "mcc" AS "MCC",
+                    "errors" AS "Errors?",
+                    "is_fraud" AS "Is Fraud?",
+                    MAKE_DATE("year"::INT, "month"::INT, "day"::INT) AS "Date",
+                    EXTRACT(DOW FROM MAKE_DATE("year"::INT, "month"::INT, "day"::INT)) AS "DayOfWeek",
+                    EXTRACT(HOUR FROM TRY_CAST("time" AS TIME)) AS "Hour",
+                    "year" * 100 + "month" AS "YearMonth"
+                FROM read_parquet('{parquet_path}')
+            """)
+
+            # Row count for metadata
+            total_rows = con.execute("SELECT COUNT(*) FROM txn").fetchone()[0]
+            ref_date_row = con.execute(
+                'SELECT MAX("Date") FROM txn'
+            ).fetchone()
+            ref_date = pd.Timestamp(ref_date_row[0])
+
+            logger.info(
+                "EaltmanAdapter: %d total txn rows, ref_date=%s, %d users",
+                total_rows, ref_date, len(user_ids),
+            )
+
+            # --- Pre-aggregation (2,000-row result) ---
+            txn_agg = con.execute("""
+                SELECT
+                    "User",
+                    COUNT(*) AS txn_count,
+                    SUM("Amount") AS txn_total_amount,
+                    AVG("Amount") AS txn_mean_amount,
+                    STDDEV("Amount") AS txn_std_amount,
+                    MAX("Amount") AS txn_max_amount,
+                    MIN("Amount") AS txn_min_amount,
+                    MAX("Date") AS last_txn_date,
+                    COUNT(DISTINCT "Merchant Name") AS n_merchants,
+                    COUNT(DISTINCT "Merchant State") AS n_states,
+                    SUM(CASE WHEN "Errors?" IS NOT NULL
+                             AND TRIM("Errors?") != '' THEN 1 ELSE 0 END)::FLOAT
+                        / COUNT(*)::FLOAT AS error_rate
+                FROM txn
+                GROUP BY "User"
+                ORDER BY "User"
+            """).df().set_index("User")
+            txn_agg["txn_std_amount"] = txn_agg["txn_std_amount"].fillna(0)
+            txn_agg["last_txn_date"] = pd.to_datetime(txn_agg["last_txn_date"])
+
+            # --- Build base feature groups (rfm, category, txn_stats, temporal) ---
+            fg_rfm = build_base_rfm(users, txn_agg, ref_date)
+
+            # Category ratios via DuckDB
+            mcc_pivot = con.execute("""
+                SELECT "User", "MCC", SUM("Amount") AS mcc_amount
+                FROM txn GROUP BY "User", "MCC"
+            """).df()
+            user_total = mcc_pivot.groupby("User")["mcc_amount"].sum()
+            top_mccs = (
+                mcc_pivot.groupby("MCC")["mcc_amount"]
+                .sum()
+                .nlargest(N_TOP_MCC)
+                .index.tolist()
+            )
+            fg_cat = pd.DataFrame(index=user_ids)
+            mcc_wide = mcc_pivot.pivot_table(
+                index="User", columns="MCC", values="mcc_amount",
+                aggfunc="sum", fill_value=0,
+            )
+            totals = user_total.reindex(user_ids, fill_value=1.0).clip(lower=1e-8)
+            for i, mcc in enumerate(top_mccs):
+                if mcc in mcc_wide.columns:
+                    fg_cat[f"cat_{i:03d}"] = (
+                        mcc_wide[mcc].reindex(user_ids, fill_value=0) / totals
+                    ).values
+                else:
+                    fg_cat[f"cat_{i:03d}"] = 0.0
+
+            # txn_stats and temporal via existing builders (they accept pandas)
+            # Load a small sample is NOT needed — builders use DuckDB internally
+            fg_txn = build_base_txn_stats(
+                pd.DataFrame(), user_ids
+            ) if False else pd.DataFrame(index=user_ids)  # placeholder cols
+            # Populate from txn_agg
+            for col in txn_agg.columns:
+                if col != "last_txn_date":
+                    fg_txn[f"txn_{col}"] = txn_agg[col].reindex(
+                        user_ids, fill_value=0
+                    ).values
+
+            con.close()
+
+            # --- Merge into single user-level DataFrame ---
+            user_df = fg_rfm.set_index("user_id")
+            for fg in [fg_cat, fg_txn]:
+                fg.index = user_ids
+                user_df = user_df.join(fg, how="left")
+            user_df = user_df.fillna(0).reset_index().rename(
+                columns={"index": "user_id"}
+            )
+
+            # --- Populate metadata ---
+            self._metadata = AdapterMetadata(
+                id_col="user_id",
+                timestamp_col=None,
+                entity_granularity="user",
+                num_entities=len(user_ids),
+                num_raw_rows=total_rows,
+                source_files=[parquet_path],
+                backend_used=backend,
+            )
+
+            logger.info(
+                "EaltmanAdapter: returning main DataFrame %s",
+                user_df.shape,
+            )
+
+            return {
+                "main": user_df,
+                "transactions_raw": pd.DataFrame({
+                    "parquet_path": [parquet_path],
+                    "total_rows": [total_rows],
+                    "ref_date": [str(ref_date)],
+                    "num_users": [len(user_ids)],
+                }),
+            }
 
 
 if __name__ == "__main__":

@@ -13,6 +13,70 @@ Stage 4: Encryption + Integer Indexing (PII → SHA256 salt → INT32)
 
 ---
 
+## DataAdapter ABC 및 AdapterRegistry (Step 12)
+
+Stage 1의 데이터 로딩은 `DataAdapter` 추상 클래스를 통해 표준화된다.
+
+### DataAdapter 계약
+
+```python
+# core/pipeline/adapter.py
+class DataAdapter(ABC):
+    """데이터셋별 원시 데이터 로딩.
+    - load_raw() → Dict[str, pd.DataFrame] 반환
+    - 최소 "main" 키 필수 (entity-level DataFrame)
+    - 피처 엔지니어링 수행 금지 (FeatureGroupPipeline 담당)
+    """
+
+class AdapterMetadata:
+    id_col: str           # "user_id"
+    timestamp_col: str    # optional
+    entity_granularity: str  # "user" | "transaction"
+    num_entities: int
+    num_raw_rows: int
+    source_files: List[str]
+    backend_used: str     # "cudf" | "duckdb" | "pandas"
+```
+
+### AdapterRegistry
+
+```python
+class AdapterRegistry:
+    @classmethod
+    def register(cls, name: str): ...    # 데코레이터
+    @classmethod
+    def build(cls, name: str, config: dict) -> DataAdapter: ...
+    @classmethod
+    def list_registered(cls) -> List[str]: ...
+```
+
+### 백엔드 선택 (cuDF → DuckDB → Pandas)
+
+`DataAdapter._select_backend()`는 config `data.backend` 리스트를 순회하며 사용 가능한 첫 번째 백엔드를 선택한다. 기본 순서: `["cudf", "duckdb", "pandas"]`.
+
+### ealtman2019 Adapter 구현
+
+`adapters/ealtman2019_adapter.py`에 `EaltmanAdapter(DataAdapter)` 클래스가 등록되어 있다:
+
+- DuckDB로 24M 거래를 2,000 사용자 수준으로 집계
+- RFM, 카테고리 비율, 거래 통계 등 기본 집계만 수행
+- TDA, HMM, GMM 등 고급 피처는 생성하지 않음 (FeatureGroupPipeline 담당)
+- `{"main": user_df, "transactions_raw": txn_info}` 반환
+
+### SchemaClassifier 5-Axis
+
+모든 피처를 5개 축으로 자동 분류:
+
+| Axis | 시간 의존성 | 분류 키워드 |
+|------|-----------|------------|
+| **State** | 없음 (정적) | 기본값 (매칭 없을 때) |
+| **Snapshot** | 장기 (월/분기) | tda_long, hmm, snapshot, trend |
+| **Timeseries** | 단기 (일/주) | temporal, sequence, mamba, tda_short |
+| **Hierarchy** | 구조적 | mcc, hierarchy, poincare |
+| **Item** | 관계적 | graph, bipartite, lightgcn |
+
+---
+
 ## Stage 1: Raw Data Load + Schema Validation
 
 ### 스키마 레지스트리

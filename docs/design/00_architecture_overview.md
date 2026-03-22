@@ -265,6 +265,83 @@ serving:
 
 ---
 
+## PipelineRunner 통합 아키텍처 (Step 12-14)
+
+### 8-Stage PipelineRunner
+
+`core/pipeline/runner.py`의 `PipelineRunner`가 전체 파이프라인을 단일 진입점으로 통합한다.
+
+```
+PipelineRunner.run()
+    │
+    ├── Stage 1: DataAdapter.load_raw()
+    │   └── AdapterRegistry.build("ealtman2019", config)
+    │       └── DuckDB 24M txn → 2,000 user-level aggregation
+    │
+    ├── Stage 2: SchemaClassifier (5-axis)
+    │
+    ├── Stage 3: Preprocessing (DuckDB-only, cuDF optional)
+    │
+    ├── Stage 4: EncryptionPipeline (SHA256 → INT32)
+    │
+    ├── Stage 5: FeatureGroupPipeline
+    │   └── TDA, HMM, Mamba, Graph generators (adapter가 아닌 여기서 실행)
+    │
+    ├── Stage 6: Normalization (PowerLawAwareScaler)
+    │
+    ├── Stage 7: Label derivation + transforms
+    │
+    └── Stage 8: Training (PLETrainer)
+        └── containers/training/train.py::main_pipeline()
+```
+
+### DataAdapter 패턴
+
+```python
+# core/pipeline/adapter.py
+class DataAdapter(ABC):
+    """데이터셋별 원시 데이터 로딩 계약.
+
+    각 데이터셋은 load_raw()를 구현하여 entity-level DataFrame을 반환.
+    피처 엔지니어링은 수행하지 않음 — FeatureGroupPipeline 담당.
+    """
+    def load_raw(self) -> Dict[str, pd.DataFrame]: ...
+
+class AdapterRegistry:
+    """이름 기반 어댑터 등록/조회."""
+    @classmethod
+    def register(cls, name: str): ...
+    @classmethod
+    def build(cls, name: str, config: dict) -> DataAdapter: ...
+```
+
+**현재 등록된 어댑터:**
+
+| 이름 | 파일 | 데이터 | 집계 방식 |
+|------|------|--------|----------|
+| `ealtman2019` | `adapters/ealtman2019_adapter.py` | 24M 신용카드 거래 | DuckDB → 2,000 user |
+
+### 백엔드 선택 체인 (cuDF → DuckDB → Pandas)
+
+`DataAdapter._select_backend()`가 config의 `data.backend` 리스트를 순회하며 사용 가능한 최적 백엔드를 선택한다:
+
+```
+cuDF (GPU DataFrame)  →  DuckDB (in-process SQL)  →  Pandas (fallback)
+       │ ImportError           │ ImportError                │
+       └──────────────────────▶└──────────────────────────▶ OK
+```
+
+### Training 이중 진입점
+
+`containers/training/train.py`는 두 가지 경로를 지원한다:
+
+| 경로 | 진입점 | 용도 |
+|------|--------|------|
+| Legacy | `main()` | SageMaker Training Job 직접 호출 (기존 호환) |
+| Pipeline | `main_pipeline(config)` | `--pipeline config.yaml` 플래그로 PipelineRunner 경유 |
+
+---
+
 ## 설계서 구성
 
 | 문서 | 내용 |
