@@ -676,7 +676,7 @@ def validate(
             n_batches += 1
 
         for name in task_names:
-            if name in output.predictions:
+            if name in output.predictions and name in targets:
                 pred = output.predictions[name].cpu().numpy()
                 tgt = targets[name].cpu().numpy()
                 all_preds[name].append(pred)
