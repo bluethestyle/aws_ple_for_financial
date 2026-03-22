@@ -359,9 +359,28 @@ def load_data(
     if feature_spec is None:
         # Auto-discover: all non-label, non-id columns become static features
         from core.data.dataloader import FeatureColumnSpec
-        id_cols = config.get("id_cols", ["user_id"])
+        id_cols = config.get("id_cols", ["user_id", "customer_id"])
         exclude = set(label_cols) | set(id_cols)
-        static_features = [c for c in df.columns if c not in exclude]
+        # Only include numeric scalar columns (exclude strings, dates, list types)
+        static_features = []
+        for c in df.columns:
+            if c in exclude:
+                continue
+            dtype = df[c].dtype
+            # Skip string/object/categorical columns
+            if dtype == object or str(dtype) in ("string", "category"):
+                continue
+            # Skip list/array columns (pyarrow list types show as object or 'list')
+            if hasattr(dtype, "pyarrow_dtype"):
+                continue
+            # Only keep numeric types
+            try:
+                import numpy as _np
+                if not _np.issubdtype(dtype, _np.number):
+                    continue
+            except (TypeError, AttributeError):
+                continue
+            static_features.append(c)
         feature_spec = FeatureColumnSpec(static_features=static_features)
         logger.info(
             "Auto-discovered %d static features (no feature_columns config)",
