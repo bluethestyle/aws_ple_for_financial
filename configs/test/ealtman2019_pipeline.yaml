@@ -18,28 +18,40 @@ tasks:
   - name: is_fraud
     type: binary
     loss: focal
+    loss_params:
+      alpha: 0.95
+      gamma: 2.0
     loss_weight: 2.0
     label_col: label_is_fraud
-    description: "사기 거래 탐지 (Is Fraud? 실제 라벨)"
+    description: "사기 거래 탐지 (Is Fraud? 실제 라벨, ~1% positive)"
 
   - name: will_transact
     type: binary
     loss: focal
+    loss_params:
+      alpha: 0.70
+      gamma: 2.0
     loss_weight: 1.0
     label_col: label_will_transact
-    description: "다음 달 거래 여부 예측"
+    description: "다음 달 거래 여부 예측 (~30% positive)"
 
   # Lifecycle
   - name: churn
     type: binary
     loss: focal
+    loss_params:
+      alpha: 0.85
+      gamma: 2.0
     loss_weight: 1.5
     label_col: label_churn
-    description: "최근 3개월 거래 없음 → 이탈"
+    description: "최근 3개월 거래 없음 → 이탈 (~15% positive)"
 
   - name: retention
     type: binary
     loss: focal
+    loss_params:
+      alpha: 0.70
+      gamma: 2.0
     loss_weight: 1.0
     label_col: label_retention
 

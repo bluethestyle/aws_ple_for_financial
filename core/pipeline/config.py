@@ -61,6 +61,8 @@ class DataSpec:
     train_path: str = ""
     s3_path: str = ""
     parquet_file: str = ""
+    temporal_split: Optional[Dict[str, Any]] = None  # temporal split config
+    preprocessing: Optional[Dict[str, Any]] = None    # preprocessing config
 
 
 @dataclass
@@ -236,7 +238,10 @@ def load_config(path: Union[str, Path]) -> PipelineConfig:
         raw: Dict[str, Any] = yaml.safe_load(f)
 
     tasks = [TaskSpec(**{k: v for k, v in t.items() if k in TaskSpec.__dataclass_fields__}) for t in raw.get("tasks", [])]
-    data = DataSpec(**raw.get("data", {}))
+    data = DataSpec(**{
+        k: v for k, v in raw.get("data", {}).items()
+        if k in DataSpec.__dataclass_fields__
+    })
     features = FeatureSpec(**{
         k: v for k, v in raw.get("features", {}).items()
         if k in FeatureSpec.__dataclass_fields__

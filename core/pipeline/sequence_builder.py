@@ -68,6 +68,7 @@ class SeqSourceConfig:
     seq_len: int = 50
     file_path: str = ""
     dtype: str = "float32"
+    truncate_last: int = 0  # drop last N elements from each sequence (leakage prevention)
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "SeqSourceConfig":
@@ -78,6 +79,7 @@ class SeqSourceConfig:
             seq_len=d.get("seq_len", 50),
             file_path=d.get("file_path", ""),
             dtype=d.get("dtype", "float32"),
+            truncate_last=d.get("truncate_last", 0),
         )
 
 
@@ -147,6 +149,11 @@ class SequenceBuilder:
     ) -> np.ndarray:
         """Convert list-type parquet columns to a padded 3-D array.
 
+        When ``cfg.truncate_last > 0``, the last N elements of each
+        sequence are dropped **before** padding.  This prevents temporal
+        leakage when sequence columns extend into the prediction window
+        (e.g. Santander month-17 data).
+
         Parameters
         ----------
         df : pd.DataFrame
@@ -161,9 +168,17 @@ class SequenceBuilder:
         """
         columns = cfg.columns
         seq_len = cfg.seq_len
+        truncate_last = cfg.truncate_last
         n_entities = len(df)
         feat_dim = len(columns)
         dtype = np.dtype(cfg.dtype)
+
+        if truncate_last > 0:
+            logger.info(
+                "SequenceBuilder: truncating last %d elements from "
+                "sequences (leakage prevention)",
+                truncate_last,
+            )
 
         result = np.zeros((n_entities, seq_len, feat_dim), dtype=dtype)
 
@@ -179,6 +194,9 @@ class SequenceBuilder:
             for row_idx in range(n_entities):
                 seq = df[col].iloc[row_idx]
                 if isinstance(seq, (list, np.ndarray)):
+                    # Truncate last N elements to prevent leakage
+                    if truncate_last > 0 and len(seq) > truncate_last:
+                        seq = seq[:-truncate_last]
                     actual_len = min(len(seq), seq_len)
                     result[row_idx, :actual_len, feat_idx] = np.asarray(
                         seq[:actual_len], dtype=dtype

@@ -43,7 +43,7 @@ class CGCConfig:
     enabled: bool = True
     bias_high: float = 1.0
     bias_low: float = -1.0
-    dim_normalize: bool = False
+    dim_normalize: bool = True
     entropy_lambda: float = 0.01
 
 

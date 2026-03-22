@@ -1137,6 +1137,27 @@ def main() -> None:
             task_override["loss_params"] = t["loss_params"]
         ple_config.task_overrides[t["name"]] = task_override
 
+    # -- Logit transfers from task_relationships config ---
+    logit_transfers_raw = config.get("task_relationships", [])
+    if logit_transfers_raw:
+        from core.model.ple.config import LogitTransferDef
+        ple_config.logit_transfers = [
+            LogitTransferDef(
+                source=lt["source"],
+                target=lt["target"],
+                enabled=lt.get("enabled", True),
+            )
+            for lt in logit_transfers_raw
+        ]
+        ple_config.logit_transfer_strength = float(
+            config.get("logit_transfer_strength", 0.5)
+        )
+        logger.info(
+            "Logit transfers: %d relationships, strength=%.2f",
+            len(ple_config.logit_transfers),
+            ple_config.logit_transfer_strength,
+        )
+
     # Task tower dims
     default_tower_dims = tower_cfg.get("default_dims", [expert_output, expert_output // 2])
     ple_config.task_tower.default_dims = default_tower_dims

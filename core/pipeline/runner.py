@@ -81,6 +81,11 @@ class PipelineRunner:
             len(raw_data),
         )
 
+        # Stage 1.5: Temporal preparation (truncate sequences, recompute snapshots)
+        raw_data["main"] = self._prepare_temporal(raw_data["main"])
+        results["stage1_5_temporal_prep"] = {"applied": True}
+        logger.info("[PIPELINE] Stage 1.5 complete: temporal preparation")
+
         # Stage 2: Schema classification
         schema = self._classify_schema(raw_data["main"])
         results["stage2_schema"] = schema
@@ -120,6 +125,20 @@ class PipelineRunner:
         logger.info(
             "[PIPELINE] Stage 5 complete: %d label columns",
             len(df_labels.columns),
+        )
+
+        # Stage 5.5: Leakage validation
+        leakage_result = self._validate_leakage(
+            df_features, df_labels, raw_data.get("main")
+        )
+        results["stage5_5_leakage"] = {
+            "passed": leakage_result.passed,
+            "warnings": leakage_result.warnings,
+        }
+        logger.info(
+            "[PIPELINE] Stage 5.5 complete: leakage validation %s (%d warnings)",
+            "PASSED" if leakage_result.passed else "FAILED",
+            len(leakage_result.warnings),
         )
 
         # Stage 6: Sequence building
@@ -646,26 +665,39 @@ class PipelineRunner:
         df_combined = pd.concat([df_features.reset_index(drop=True),
                                  df_labels.reset_index(drop=True)], axis=1)
 
-        # Split into train / val
-        train_frac = self.config.data.train_split
-        seed = self.config.training.seed
-        n_total = len(df_combined)
-        n_train = int(n_total * train_frac)
+        # Split into train / val -- use temporal split if configured
+        temporal_cfg = self._get_temporal_split_config()
 
-        # Deterministic shuffle
-        rng = np.random.RandomState(seed)
-        indices = rng.permutation(n_total)
+        if temporal_cfg is not None and temporal_cfg.get("enabled", False):
+            train_df, val_df = self._temporal_split(
+                df_combined, temporal_cfg
+            )
+            logger.info(
+                "[Stage 7] Temporal split: train=%d rows, val=%d rows "
+                "(gap_days=%d)",
+                len(train_df), len(val_df),
+                temporal_cfg.get("gap_days", 7),
+            )
+        else:
+            # Fallback: deterministic random shuffle split
+            train_frac = self.config.data.train_split
+            seed = self.config.training.seed
+            n_total = len(df_combined)
+            n_train = int(n_total * train_frac)
 
-        train_idx = indices[:n_train]
-        val_idx = indices[n_train:]
+            rng = np.random.RandomState(seed)
+            indices = rng.permutation(n_total)
 
-        train_df = df_combined.iloc[train_idx].reset_index(drop=True)
-        val_df = df_combined.iloc[val_idx].reset_index(drop=True)
+            train_idx = indices[:n_train]
+            val_idx = indices[n_train:]
 
-        logger.info(
-            "[Stage 7] Split: train=%d rows, val=%d rows (split=%.2f)",
-            len(train_df), len(val_df), train_frac,
-        )
+            train_df = df_combined.iloc[train_idx].reset_index(drop=True)
+            val_df = df_combined.iloc[val_idx].reset_index(drop=True)
+
+            logger.info(
+                "[Stage 7] Random split: train=%d rows, val=%d rows (split=%.2f)",
+                len(train_df), len(val_df), train_frac,
+            )
 
         # Build FeatureColumnSpec from pipeline metadata
         ple_metadata = feature_pipeline.get_ple_input_metadata()
@@ -985,22 +1017,221 @@ class PipelineRunner:
         return {"status": "success", "model": "lgbm"}
 
     # ------------------------------------------------------------------
+    # Stage 1.5: Temporal preparation (leakage prevention)
+    # ------------------------------------------------------------------
+
+    def _prepare_temporal(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        """Truncate sequences and recompute product columns to prevent leakage.
+
+        For datasets like Santander where seq_* columns include the label
+        month, this truncates sequences to exclude the prediction window
+        and recomputes prod_* from the truncated state.
+
+        Controlled by ``data.temporal_split`` and
+        ``preprocessing.leakage_prevention`` in the pipeline config YAML.
+
+        Args:
+            df: Raw main DataFrame with sequence and product columns.
+
+        Returns:
+            DataFrame with truncated sequences and recomputed products.
+        """
+        stage_start = time.time()
+        logger.info("[Stage 1.5] Preparing temporal features...")
+
+        # Check if leakage prevention is configured
+        raw_cfg = self._config_to_dict()
+        preproc = raw_cfg.get("preprocessing", {})
+        leakage_cfg = preproc.get("leakage_prevention", {})
+
+        if not leakage_cfg.get("recompute_prod_from_seq", False):
+            # Also check sequences config for truncate_last
+            seq_cfg = raw_cfg.get("sequences", {})
+            has_truncation = any(
+                s.get("truncate_last", 0) > 0
+                for s in seq_cfg.values()
+                if isinstance(s, dict)
+            )
+            if not has_truncation:
+                logger.info(
+                    "[Stage 1.5] No leakage prevention configured, "
+                    "passing through"
+                )
+                return df
+
+        try:
+            from .temporal_split import TemporalSplitter
+
+            splitter = TemporalSplitter()
+
+            # Identify sequence columns (seq_* prefix)
+            seq_cols = [c for c in df.columns if c.startswith("seq_")]
+
+            if seq_cols:
+                df = splitter.split_by_sequence_cutoff(
+                    df,
+                    seq_cols=seq_cols,
+                    cutoff_offset=1,  # Drop last 1 month (the label month)
+                    prod_col_prefix="prod_",
+                    seq_col_prefix="seq_",
+                )
+                logger.info(
+                    "[Stage 1.5] Temporal preparation complete in %.2fs: "
+                    "truncated %d seq columns, recomputed prod columns",
+                    time.time() - stage_start, len(seq_cols),
+                )
+            else:
+                logger.info("[Stage 1.5] No seq_* columns found, skipping")
+
+        except ImportError:
+            logger.warning(
+                "[Stage 1.5] TemporalSplitter not available, skipping"
+            )
+
+        return df
+
+    # ------------------------------------------------------------------
+    # Stage 5.5: Leakage validation
+    # ------------------------------------------------------------------
+
+    def _validate_leakage(
+        self,
+        df_features: "pd.DataFrame",
+        df_labels: "pd.DataFrame",
+        raw_df: Optional["pd.DataFrame"] = None,
+    ) -> Any:
+        """Run leakage validation checks between features and labels.
+
+        Args:
+            df_features: Transformed feature DataFrame.
+            df_labels: Label DataFrame.
+            raw_df: Optional raw DataFrame for sequence checks.
+
+        Returns:
+            ValidationResult from LeakageValidator.
+        """
+        stage_start = time.time()
+        logger.info("[Stage 5.5] Validating for data leakage...")
+
+        try:
+            from .leakage_validator import LeakageValidator, ValidationResult
+        except ImportError:
+            logger.warning("[Stage 5.5] LeakageValidator not available, skipping")
+
+            class _DummyResult:
+                passed = True
+                warnings: list = []
+            return _DummyResult()
+
+        validator = LeakageValidator(
+            correlation_threshold=0.95,
+            max_seq_len_expected=16,  # Santander: 17 months - 1 truncated
+        )
+
+        # Check feature-label correlation
+        result = validator.validate(df_features, df_labels)
+
+        # Check sequence leakage if raw data available
+        if raw_df is not None:
+            seq_cols = [c for c in raw_df.columns if c.startswith("seq_")]
+            if seq_cols:
+                validator.check_sequence_leakage(
+                    raw_df, seq_cols, result=result
+                )
+
+            # Check product column leakage
+            prod_cols = [c for c in raw_df.columns if c.startswith("prod_")]
+            if prod_cols and seq_cols:
+                validator.check_product_columns(
+                    raw_df, prod_cols, seq_cols, result=result
+                )
+
+        logger.info(
+            "[Stage 5.5] Leakage validation complete in %.2fs: %s",
+            time.time() - stage_start,
+            "PASSED" if result.passed else f"FAILED ({len(result.warnings)} warnings)",
+        )
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Temporal split helper
+    # ------------------------------------------------------------------
+
+    def _get_temporal_split_config(self) -> Optional[Dict[str, Any]]:
+        """Extract temporal split config from the raw YAML config.
+
+        Returns None if temporal split is not configured.
+        """
+        raw_cfg = self._config_to_dict()
+        data_cfg = raw_cfg.get("data", {})
+        return data_cfg.get("temporal_split")
+
+    def _temporal_split(
+        self,
+        df: "pd.DataFrame",
+        temporal_cfg: Dict[str, Any],
+    ) -> Tuple[Any, Any]:
+        """Apply temporal split to a combined features+labels DataFrame.
+
+        Args:
+            df: Combined DataFrame.
+            temporal_cfg: Temporal split configuration dict.
+
+        Returns:
+            ``(train_df, val_df)``
+        """
+        from .temporal_split import TemporalSplitter
+
+        splitter = TemporalSplitter(
+            train_ratio=temporal_cfg.get("train_ratio", 0.7),
+            val_ratio=temporal_cfg.get("val_ratio", 0.15),
+            gap_days=temporal_cfg.get("gap_days", 7),
+        )
+
+        date_col = temporal_cfg.get("date_col", "snapshot_date")
+
+        train_df, val_df, test_df = splitter.split(df, date_col=date_col)
+
+        # For training pipeline, merge test into val if test is non-empty
+        # (we only need train/val for the training loop)
+        if len(test_df) > 0:
+            import pandas as pd
+            val_df = pd.concat([val_df, test_df], ignore_index=True)
+            logger.info(
+                "[Stage 7] Merged test split (%d rows) into val for "
+                "training (total val=%d)",
+                len(test_df), len(val_df),
+            )
+
+        return train_df, val_df
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
     def _config_to_dict(self) -> dict:
         """Convert PipelineConfig to a plain dict for adapter consumption."""
+        data_dict: Dict[str, Any] = {
+            "source": self.config.data.source,
+            "format": self.config.data.format,
+            "train_split": self.config.data.train_split,
+            "backend": self.config.data.backend,
+            "train_path": self.config.data.train_path,
+            "s3_path": self.config.data.s3_path,
+            "parquet_file": self.config.data.parquet_file,
+        }
+
+        # Pass through temporal_split and preprocessing if configured
+        if getattr(self.config.data, "temporal_split", None):
+            data_dict["temporal_split"] = self.config.data.temporal_split
+        if getattr(self.config.data, "preprocessing", None):
+            data_dict["preprocessing"] = self.config.data.preprocessing
+
         return {
             "task_name": self.config.task_name,
-            "data": {
-                "source": self.config.data.source,
-                "format": self.config.data.format,
-                "train_split": self.config.data.train_split,
-                "backend": self.config.data.backend,
-                "train_path": self.config.data.train_path,
-                "s3_path": self.config.data.s3_path,
-                "parquet_file": self.config.data.parquet_file,
-            },
+            "data": data_dict,
+            "preprocessing": getattr(self.config.data, "preprocessing", None) or {},
             "features": {
                 "numeric": list(self.config.features.numeric),
                 "categorical": list(self.config.features.categorical),

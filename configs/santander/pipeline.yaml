@@ -1,6 +1,6 @@
 # =============================================================================
 # Santander Customer Transactions Pipeline Configuration
-# 941,132 users x 89 columns x 27 tasks x 7 shared experts
+# 941,132 users x 89 columns x 18 tasks x 7 shared experts
 # =============================================================================
 # User-level synthetic dataset with product holdings, transaction sequences,
 # and demographic attributes.  Pre-aggregated -- no transaction-level joins.
@@ -14,11 +14,12 @@ task_name: santander_ple
 adapter: santander
 
 # ---------------------------------------------------------------------------
-# Tasks -- 27 tasks across 4 tiers
+# Tasks -- 18 tasks across 4 tiers
 # ---------------------------------------------------------------------------
 # NOTE: fraud_risk excluded -- synth_fraud_ratio is ALL ZERO (useless label)
 # NOTE: has_nba is only 2.98% positive -- focal loss with high alpha
-# NOTE: Many products have <1% positive rate -- focal loss with gamma=2
+# NOTE: Tier 4 per-product tasks dropped (redundant with Tier 3 groups)
+# NOTE: 3 txn-based NBA tasks added (Tier 5)
 # ---------------------------------------------------------------------------
 tasks:
 
@@ -126,7 +127,7 @@ tasks:
     type: binary
     loss: focal
     loss_params:
-      alpha: 0.85
+      alpha: 0.95
       gamma: 2.0
     loss_weight: 1.5
     label_col: label_acquire_deposits
@@ -140,7 +141,7 @@ tasks:
     type: binary
     loss: focal
     loss_params:
-      alpha: 0.85
+      alpha: 0.90
       gamma: 2.0
     loss_weight: 1.5
     label_col: label_acquire_investments
@@ -154,7 +155,7 @@ tasks:
     type: binary
     loss: focal
     loss_params:
-      alpha: 0.80
+      alpha: 0.85
       gamma: 2.0
     loss_weight: 1.2
     label_col: label_acquire_accounts
@@ -170,7 +171,7 @@ tasks:
     type: binary
     loss: focal
     loss_params:
-      alpha: 0.88
+      alpha: 0.90
       gamma: 2.0
     loss_weight: 1.5
     label_col: label_acquire_lending
@@ -184,7 +185,7 @@ tasks:
     type: binary
     loss: focal
     loss_params:
-      alpha: 0.82
+      alpha: 0.85
       gamma: 2.0
     loss_weight: 1.2
     label_col: label_acquire_payments
@@ -216,154 +217,45 @@ tasks:
       method: categorical_encode
       source_col: income_group
 
-  # ===== Tier 4 — Per-product acquisition (12 tasks) =====
-  # Individual product NBA binary tasks for key products
-  # Skipped ultra-rare products (<0.2%): prod_guarantee, prod_derivados,
-  #   prod_medium_deposit, prod_long_deposit, prod_payroll, prod_taxes
+  # ===== Tier 5 — Transaction-based NBA (3 tasks) =====
+  # Derived from txn_mcc_seq transaction sequences
 
-  - name: acquire_saving
-    type: binary
-    loss: focal
-    loss_params: {alpha: 0.95, gamma: 2.0}
-    loss_weight: 1.5
-    label_col: label_acquire_saving
-    description: "Will customer open savings account? (prod_saving 0.3%)"
-    derive:
-      method: product_not_held
-      product_col: prod_saving
-      sequence_col: seq_saving
-
-  - name: acquire_checking
-    type: binary
-    loss: focal
-    loss_params: {alpha: 0.70, gamma: 1.5}
-    loss_weight: 1.0
-    label_col: label_acquire_checking
-    description: "Will customer open checking account? (prod_checking 60%)"
-    derive:
-      method: product_not_held
-      product_col: prod_checking
-      sequence_col: seq_checking
-
-  - name: acquire_payroll_acct
-    type: binary
-    loss: focal
-    loss_params: {alpha: 0.85, gamma: 2.0}
+  - name: next_mcc
+    type: multiclass
+    loss: ce
     loss_weight: 1.2
-    label_col: label_acquire_payroll_acct
-    description: "Will customer open payroll account? (prod_payroll_acct 8%)"
+    label_col: label_next_mcc
+    num_classes: 50
+    description: "Predict next MCC category from txn sequence (top-50 MCCs)"
     derive:
-      method: product_not_held
-      product_col: prod_payroll_acct
-      sequence_col: seq_payroll_acct
+      method: sequence_next
+      source_seq: txn_mcc_seq
+      top_k: 50
 
-  - name: acquire_particular_plus
+  - name: mcc_diversity_trend
+    type: regression
+    loss: huber
+    loss_weight: 0.8
+    label_col: label_mcc_diversity_trend
+    description: "MCC diversity trend: change in unique MCC count over recent windows"
+    derive:
+      method: sequence_diversity_trend
+      source_seq: txn_mcc_seq
+      window_sizes: [10, 30]
+
+  - name: top_mcc_shift
     type: binary
     loss: focal
-    loss_params: {alpha: 0.82, gamma: 2.0}
+    loss_params:
+      alpha: 0.70
+      gamma: 2.0
     loss_weight: 1.0
-    label_col: label_acquire_particular_plus
-    description: "Will customer acquire particular plus? (prod_particular_plus 11%)"
+    label_col: label_top_mcc_shift
+    description: "Did the customer's top MCC category change recently?"
     derive:
-      method: product_not_held
-      product_col: prod_particular_plus
-      sequence_col: seq_particular_plus
-
-  - name: acquire_short_deposit
-    type: binary
-    loss: focal
-    loss_params: {alpha: 0.88, gamma: 2.0}
-    loss_weight: 1.3
-    label_col: label_acquire_short_deposit
-    description: "Will customer open short-term deposit? (prod_short_deposit 4%)"
-    derive:
-      method: product_not_held
-      product_col: prod_short_deposit
-      sequence_col: seq_short_deposit
-
-  - name: acquire_e_account
-    type: binary
-    loss: focal
-    loss_params: {alpha: 0.88, gamma: 2.0}
-    loss_weight: 1.0
-    label_col: label_acquire_e_account
-    description: "Will customer open e-account? (prod_e_account 3%)"
-    derive:
-      method: product_not_held
-      product_col: prod_e_account
-      sequence_col: seq_e_account
-
-  - name: acquire_funds
-    type: binary
-    loss: focal
-    loss_params: {alpha: 0.85, gamma: 2.0}
-    loss_weight: 1.3
-    label_col: label_acquire_funds
-    description: "Will customer acquire funds? (prod_funds 8%)"
-    derive:
-      method: product_not_held
-      product_col: prod_funds
-      sequence_col: seq_funds
-
-  - name: acquire_credit_card
-    type: binary
-    loss: focal
-    loss_params: {alpha: 0.85, gamma: 2.0}
-    loss_weight: 1.2
-    label_col: label_acquire_credit_card
-    description: "Will customer acquire credit card? (prod_credit_card 5%)"
-    derive:
-      method: product_not_held
-      product_col: prod_credit_card
-      sequence_col: seq_credit_card
-
-  - name: acquire_securities
-    type: binary
-    loss: focal
-    loss_params: {alpha: 0.88, gamma: 2.0}
-    loss_weight: 1.2
-    label_col: label_acquire_securities
-    description: "Will customer acquire securities? (prod_securities 4%)"
-    derive:
-      method: product_not_held
-      product_col: prod_securities
-      sequence_col: seq_securities
-
-  - name: acquire_pension_deposit
-    type: binary
-    loss: focal
-    loss_params: {alpha: 0.85, gamma: 2.0}
-    loss_weight: 1.0
-    label_col: label_acquire_pension_deposit
-    description: "Will customer acquire pension deposit? (prod_pension_deposit 5%)"
-    derive:
-      method: product_not_held
-      product_col: prod_pension_deposit
-      sequence_col: seq_pension_deposit
-
-  - name: acquire_direct_debit
-    type: binary
-    loss: focal
-    loss_params: {alpha: 0.84, gamma: 2.0}
-    loss_weight: 1.0
-    label_col: label_acquire_direct_debit
-    description: "Will customer set up direct debit? (prod_direct_debit 6%)"
-    derive:
-      method: product_not_held
-      product_col: prod_direct_debit
-      sequence_col: seq_direct_debit
-
-  - name: acquire_auto_debit
-    type: binary
-    loss: focal
-    loss_params: {alpha: 0.80, gamma: 2.0}
-    loss_weight: 1.0
-    label_col: label_acquire_auto_debit
-    description: "Will customer set up auto debit? (prod_auto_debit 12%)"
-    derive:
-      method: product_not_held
-      product_col: prod_auto_debit
-      sequence_col: seq_auto_debit
+      method: sequence_mode_shift
+      source_seq: txn_mcc_seq
+      window_sizes: [15, 30]
 
 # ---------------------------------------------------------------------------
 # Labels — derivation rules mapping actual columns to label columns
@@ -437,19 +329,19 @@ labels:
     type: categorical_encode
     values: [low, mid, high, very_high, unknown]
 
-  # Tier 4: per-product acquisition (product_not_held derivation)
-  label_acquire_saving:       {type: product_not_held, product: prod_saving, sequence: seq_saving}
-  label_acquire_checking:     {type: product_not_held, product: prod_checking, sequence: seq_checking}
-  label_acquire_payroll_acct: {type: product_not_held, product: prod_payroll_acct, sequence: seq_payroll_acct}
-  label_acquire_particular_plus: {type: product_not_held, product: prod_particular_plus, sequence: seq_particular_plus}
-  label_acquire_short_deposit: {type: product_not_held, product: prod_short_deposit, sequence: seq_short_deposit}
-  label_acquire_e_account:    {type: product_not_held, product: prod_e_account, sequence: seq_e_account}
-  label_acquire_funds:        {type: product_not_held, product: prod_funds, sequence: seq_funds}
-  label_acquire_credit_card:  {type: product_not_held, product: prod_credit_card, sequence: seq_credit_card}
-  label_acquire_securities:   {type: product_not_held, product: prod_securities, sequence: seq_securities}
-  label_acquire_pension_deposit: {type: product_not_held, product: prod_pension_deposit, sequence: seq_pension_deposit}
-  label_acquire_direct_debit: {type: product_not_held, product: prod_direct_debit, sequence: seq_direct_debit}
-  label_acquire_auto_debit:   {type: product_not_held, product: prod_auto_debit, sequence: seq_auto_debit}
+  # Tier 5: transaction-based NBA labels
+  label_next_mcc:
+    type: sequence_next
+    source_seq: txn_mcc_seq
+    top_k: 50
+  label_mcc_diversity_trend:
+    type: sequence_diversity_trend
+    source_seq: txn_mcc_seq
+    window_sizes: [10, 30]
+  label_top_mcc_shift:
+    type: sequence_mode_shift
+    source_seq: txn_mcc_seq
+    window_sizes: [15, 30]
 
 # ---------------------------------------------------------------------------
 # Sequences — two groups with different temporal resolutions
@@ -472,9 +364,12 @@ sequences:
         dtype: int
         description: "Transaction hour sequence (0-23, len 1-60)"
 
-  # Product holding sequences (Santander 17-month snapshots, max_len=17)
+  # Product holding sequences (Santander 17-month snapshots)
+  # LEAKAGE FIX: truncate_last=1 drops month 17 (the label month) from
+  # all product sequences.  max_len=16 uses months 1-16 only.
   product_sequences:
-    max_len: 17
+    max_len: 16
+    truncate_last: 1
     columns:
       seq_saving:        {feat_dim: 1, dtype: int, description: "Savings account holding (0/1/-1)"}
       seq_guarantee:     {feat_dim: 1, dtype: int, description: "Guarantee holding (0/1/-1)"}
@@ -505,55 +400,123 @@ sequences:
       seq_churns:        {feat_dim: 1, dtype: int, description: "Monthly churns (len 1-16)"}
 
 # ---------------------------------------------------------------------------
-# Task Groups (adaTT transfer units)
+# Task Groups — 4 semantic groups (adaTT transfer units)
 # ---------------------------------------------------------------------------
 task_groups:
-  - name: acquisition
-    tasks:
-      - has_nba
-      - nba_primary
-      - will_acquire_deposits
-      - will_acquire_investments
-      - will_acquire_accounts
-      - will_acquire_lending
-      - will_acquire_payments
-      - acquire_saving
-      - acquire_checking
-      - acquire_payroll_acct
-      - acquire_particular_plus
-      - acquire_short_deposit
-      - acquire_e_account
-      - acquire_funds
-      - acquire_credit_card
-      - acquire_securities
-      - acquire_pension_deposit
-      - acquire_direct_debit
-      - acquire_auto_debit
-    task_experts: [deepfm]
+  - name: engagement
+    description: "고객이 반응하는가"
+    tasks: [has_nba, engagement_score, next_mcc, top_mcc_shift]
     adatt_intra_strength: 0.8
-    adatt_inter_strength: 0.2
-    description: "Product acquisition / cross-sell / NBA prediction"
+    adatt_inter_strength: 0.3
 
-  - name: retention
-    tasks: [churn_signal, product_stability, cross_sell_count]
-    task_experts: [causal, mlp]
+  - name: lifecycle
+    description: "고객이 어디에 있는가"
+    tasks: [churn_signal, product_stability, tenure_stage, segment_prediction]
     adatt_intra_strength: 0.7
     adatt_inter_strength: 0.3
-    description: "Customer retention and product stability"
 
-  - name: segmentation
-    tasks: [segment_prediction, income_tier, tenure_stage]
-    task_experts: [mlp]
+  - name: value
+    description: "언제/어디서 가치를 만드는가"
+    tasks: [spend_level, income_tier, mcc_diversity_trend]
     adatt_intra_strength: 0.6
-    adatt_inter_strength: 0.2
-    description: "Customer segmentation and profiling"
+    adatt_inter_strength: 0.3
 
-  - name: behavior
-    tasks: [spend_level, engagement_score]
-    task_experts: [deepfm, temporal_ensemble]
+  - name: consumption
+    description: "무엇을 소비하는가"
+    tasks: [nba_primary, cross_sell_count, will_acquire_deposits, will_acquire_investments, will_acquire_accounts, will_acquire_lending, will_acquire_payments]
     adatt_intra_strength: 0.7
     adatt_inter_strength: 0.3
-    description: "Transaction behavior and spending patterns"
+
+adatt:
+  inter_group_strength: 0.3
+
+# ---------------------------------------------------------------------------
+# Task Relationships — logit transfer between tasks
+# ---------------------------------------------------------------------------
+task_relationships:
+  - source: has_nba
+    target: nba_primary
+    type: sequential
+    transfer_method: output_concat
+    description: "가입 여부 → 어떤 상품"
+
+  - source: churn_signal
+    target: product_stability
+    type: causal
+    transfer_method: output_concat
+    description: "이탈 → 상품 안정성"
+
+  - source: engagement_score
+    target: has_nba
+    type: sequential
+    transfer_method: output_concat
+    description: "활성도 → 가입 (선행지표)"
+
+  - source: spend_level
+    target: cross_sell_count
+    type: causal
+    transfer_method: output_concat
+    description: "소비수준 → 교차판매"
+
+  - source: next_mcc
+    target: nba_primary
+    type: sequential
+    transfer_method: output_concat
+    description: "다음 업종 → 다음 상품"
+
+logit_transfer_strength: 0.5
+
+# ---------------------------------------------------------------------------
+# Scoring — FD-TVS composite scoring for Santander
+# ---------------------------------------------------------------------------
+scoring:
+  method: fd_tvs
+  weights:
+    has_nba: 0.20
+    nba_primary: 0.30
+    cross_sell_count: 0.15
+    churn_signal: 0.15
+    product_stability: 0.10
+    engagement_score: 0.10
+  dna_modifier:
+    segment_weights:
+      "01-TOP": 1.3
+      "02-PARTICULARES": 1.0
+      "03-UNIVERSITARIO": 0.8
+      "UNKNOWN": 0.7
+  fatigue:
+    decay_rate: 0.85
+    max_messages_7d: 5
+  risk_penalty:
+    max_churn_prob: 0.6
+    min_score: 0.05
+
+# ---------------------------------------------------------------------------
+# Constraints — filtering and eligibility
+# ---------------------------------------------------------------------------
+constraints:
+  filters:
+    - type: fatigue
+      max_messages_7d: 5
+    - type: eligibility
+      min_score: 0.05
+      max_churn_prob: 0.6
+    - type: owned_product
+      check_column_prefix: "prod_"
+
+  product_eligibility:
+    # From item_universe.yaml tiers
+    standard:
+      min_tenure_months: 3
+    growth:
+      min_tenure_months: 6
+    premium:
+      min_tenure_months: 12
+
+  top_k:
+    k: 5
+    diversity_method: mmr
+    diversity_lambda: 0.5
 
 # ---------------------------------------------------------------------------
 # Data
@@ -564,8 +527,19 @@ data:
   backend: [cudf, duckdb, pandas]
   format: parquet
   total_rows: 941132
-  train_split: 0.8
-  val_split: 0.1
+  train_split: 0.7
+  val_split: 0.15
+
+  # ---- Temporal split (leakage prevention) ----
+  # Use time-based split instead of random split to prevent temporal leakage.
+  # For Santander: split by snapshot_date with 30-day gap (1 month).
+  temporal_split:
+    enabled: true
+    date_col: snapshot_date
+    gap_days: 30
+    train_ratio: 0.7
+    val_ratio: 0.15
+
   preprocessing:
     # income: 25.4% missing (value=0 means missing) -- impute with median
     income:
@@ -579,6 +553,12 @@ data:
       clip_min: 0
       clip_max: 256
       flag_col: tenure_unknown
+    # ---- Leakage prevention ----
+    # Recompute prod_* columns from seq_* month 16 state (not month 17).
+    # Validate after split that no temporal information leaks across splits.
+    leakage_prevention:
+      recompute_prod_from_seq: true   # Recompute prod_* from seq month 16
+      validate_after_split: true      # Run LeakageValidator after train/val split
 
 # ---------------------------------------------------------------------------
 # Features
@@ -664,6 +644,9 @@ model:
     mlp:
       hidden_dims: [256, 128]
       dropout: 0.1
+
+  cgc:
+    dim_normalize: true
 
   ple:
     num_layers: 3

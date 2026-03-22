@@ -423,6 +423,7 @@ class PLEModel(nn.Module):
         self._build_extraction_layers()
         self._build_cgc_attention()
         self._build_task_experts()
+        self._build_hmm_projectors()
         self._build_adatt()
         self._build_logit_transfer()
         self._build_task_towers()
@@ -607,6 +608,50 @@ class PLEModel(nn.Module):
                     use_layer_norm=cfg.task_expert.use_layer_norm,
                 )
             self._task_expert_output_dim = cfg.task_expert_output_dim
+
+    # -- HMM triple-mode projectors ----------------------------------------
+    # Maps task_group -> hmm_mode for routing HMM features to tasks.
+    _HMM_GROUP_MODE_MAP: Dict[str, str] = {
+        "engagement": "behavior",
+        "lifecycle": "lifecycle",
+        "value": "journey",
+        "consumption": "journey",
+    }
+
+    _HMM_DIM: int = 16  # Each HMM mode produces 16D state posteriors
+
+    def _build_hmm_projectors(self) -> None:
+        """Build HMM triple-mode projection layers.
+
+        Creates 3 mode-specific Linear projections that map 16D HMM state
+        posteriors to ``_task_expert_output_dim``.  During forward(), the
+        projected HMM vector is additively fused into the task expert
+        output based on the task's group -> hmm_mode mapping.
+
+        This mirrors the original project's ``hmm_projectors`` design
+        where each HMM mode (journey / lifecycle / behavior) is projected
+        to hidden_dim and routed to task experts by task group.
+        """
+        cfg = self.config
+        # Only build if we have task groups that can map to HMM modes
+        if not cfg.task_group_map:
+            self.hmm_projectors = None
+            return
+
+        self.hmm_projectors = nn.ModuleDict({
+            mode: nn.Sequential(
+                nn.Linear(self._HMM_DIM, self._task_expert_output_dim),
+                nn.LayerNorm(self._task_expert_output_dim),
+                nn.SiLU(),
+            )
+            for mode in ("journey", "lifecycle", "behavior")
+        })
+        logger.info(
+            "HMM projectors built: 3 modes x %dD -> %dD, group mapping: %s",
+            self._HMM_DIM, self._task_expert_output_dim,
+            {g: m for g, m in self._HMM_GROUP_MODE_MAP.items()
+             if g in set(cfg.task_group_map.values())},
+        )
 
     def _build_adatt(self) -> None:
         """Build the Adaptive Task Transfer module."""
@@ -1003,6 +1048,20 @@ class PLEModel(nn.Module):
             for i, task_name in enumerate(self.task_names):
                 task_repr = task_representations[i]
                 task_expert_outputs[task_name] = self.task_expert_networks[task_name](task_repr)
+
+        # 2b. HMM triple-mode fusion into task expert outputs
+        if self.hmm_projectors is not None:
+            hmm_tensors = {
+                "journey": inputs.hmm_journey,
+                "lifecycle": inputs.hmm_lifecycle,
+                "behavior": inputs.hmm_behavior,
+            }
+            for task_name, task_out in task_expert_outputs.items():
+                group = self.config.task_group_map.get(task_name)
+                hmm_mode = self._HMM_GROUP_MODE_MAP.get(group) if group else None
+                if hmm_mode and hmm_tensors.get(hmm_mode) is not None:
+                    hmm_proj = self.hmm_projectors[hmm_mode](hmm_tensors[hmm_mode])
+                    task_expert_outputs[task_name] = task_out + hmm_proj
 
         # 3. Task towers with logit transfer (in dependency order)
         execution_order = self._get_task_execution_order()
