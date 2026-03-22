@@ -376,6 +376,77 @@ def _get_model_artifact_uri(job_name: str) -> Optional[str]:
     return desc.get("ModelArtifacts", {}).get("S3ModelArtifacts")
 
 
+def _wait_for_any_job(job_names: List[str]) -> Tuple[str, str]:
+    """Wait for ANY of the given training jobs to complete.
+
+    Returns (job_name, status) of the first job to finish.
+    """
+    import boto3
+    sm = boto3.client("sagemaker", region_name=REGION)
+    logger.info("Waiting for any of %d jobs: %s", len(job_names), job_names)
+    while True:
+        for jn in job_names:
+            desc = sm.describe_training_job(TrainingJobName=jn)
+            status = desc["TrainingJobStatus"]
+            if status in ("Completed", "Failed", "Stopped"):
+                logger.info("Job %s -> %s", jn, status)
+                return jn, status
+        time.sleep(30)
+
+
+def _run_scenarios_parallel(
+    scenarios: List[Dict[str, Any]],
+    make_job_fn,
+    max_parallel: int = 2,
+    args: Optional[argparse.Namespace] = None,
+) -> List[Dict[str, Any]]:
+    """Run training scenarios with up to max_parallel concurrent jobs.
+
+    Alternates between spot and on-demand to utilize both quotas.
+    Submits up to max_parallel jobs, waits for one to finish,
+    then submits the next.
+
+    Args:
+        scenarios: list of scenario dicts
+        make_job_fn: callable(scenario, use_spot) -> result dict
+        max_parallel: max concurrent jobs (default 2: 1 spot + 1 on-demand)
+        args: argparse namespace
+    """
+    results: List[Dict[str, Any]] = []
+    running: Dict[str, Dict[str, Any]] = {}  # job_name -> result
+
+    for i, scenario in enumerate(scenarios):
+        # Alternate spot/on-demand for parallel utilization
+        use_spot = (i % max_parallel == 0)
+
+        result = make_job_fn(scenario, use_spot)
+        results.append(result)
+
+        if args and args.dry_run:
+            continue
+
+        if result.get("status") == "InProgress":
+            running[result["job_name"]] = result
+
+        # When we hit max_parallel, wait for one to finish
+        if len(running) >= max_parallel:
+            finished_name, finished_status = _wait_for_any_job(list(running.keys()))
+            running[finished_name]["status"] = finished_status
+            if finished_status == "Completed":
+                running[finished_name]["model_uri"] = _get_model_artifact_uri(finished_name)
+            del running[finished_name]
+
+    # Wait for remaining running jobs
+    while running:
+        finished_name, finished_status = _wait_for_any_job(list(running.keys()))
+        running[finished_name]["status"] = finished_status
+        if finished_status == "Completed":
+            running[finished_name]["model_uri"] = _get_model_artifact_uri(finished_name)
+        del running[finished_name]
+
+    return results
+
+
 def _submit_training_job(
     job_name: str,
     s3_output: str,
@@ -385,6 +456,7 @@ def _submit_training_job(
     data_uri: str,
     wait: bool = True,
     dry_run: bool = False,
+    use_spot: bool = True,
 ) -> Dict[str, Any]:
     """Submit a SageMaker PyTorch Training Job.
 
@@ -464,9 +536,9 @@ def _submit_training_job(
         output_path=s3_output,
         hyperparameters=hyperparameters,
         environment=env,
-        use_spot_instances=True,
+        use_spot_instances=use_spot,
         max_run=14400,       # 4 hours
-        max_wait=18000,      # 5 hours (spot wait)
+        max_wait=18000 if use_spot else 14400,
         tags=[
             {"Key": "Project", "Value": "santander-ablation"},
             {"Key": "Phase", "Value": hyperparameters.get("ablation_phase", "unknown")},
@@ -751,14 +823,11 @@ def run_phase1(
     )
     logger.info("=" * 70)
 
-    results: List[Dict[str, Any]] = []
-
-    for scenario in FEATURE_SCENARIOS:
+    def make_job(scenario, use_spot):
         name = scenario["name"]
         safe_name = name.replace("_", "-")
         job_name = f"sant-abl-p1-{safe_name}-{ts}"
         s3_output = f"{s3_base}/phase1/{name}/"
-
         hyperparameters = {
             "config": CONFIG_PATH,
             "ablation_phase": "1",
@@ -771,24 +840,19 @@ def run_phase1(
             "seed": "42",
             "_s3_output": f"{s3_base}/phase1/{name}",
         }
-
-        logger.info("--- Scenario: %s (remove=%s) ---", name, scenario["remove"])
-
+        logger.info("--- Scenario: %s (remove=%s, spot=%s) ---", name, scenario["remove"], use_spot)
         result = _submit_training_job(
-            job_name=job_name,
-            s3_output=s3_output,
+            job_name=job_name, s3_output=s3_output,
             instance_type=args.instance_type_gpu,
             hyperparameters=hyperparameters,
-            source_uri=source_uri,
-            data_uri=data_uri,
-            wait=not args.no_wait,
-            dry_run=args.dry_run,
+            source_uri=source_uri, data_uri=data_uri,
+            wait=False, dry_run=args.dry_run, use_spot=use_spot,
         )
         result["scenario"] = name
         result["phase"] = 1
-        results.append(result)
+        return result
 
-    return results
+    return _run_scenarios_parallel(FEATURE_SCENARIOS, make_job, max_parallel=2, args=args)
 
 
 def run_phase2(
@@ -806,14 +870,11 @@ def run_phase2(
     logger.info("Phase 2: Expert Ablation (%d scenarios)", len(EXPERT_SCENARIOS))
     logger.info("=" * 70)
 
-    results: List[Dict[str, Any]] = []
-
-    for scenario in EXPERT_SCENARIOS:
+    def make_job(scenario, use_spot):
         name = scenario["name"]
         safe_name = name.replace("_", "-")
         job_name = f"sant-abl-p2-{safe_name}-{ts}"
         s3_output = f"{s3_base}/phase2/{name}/"
-
         hyperparameters = {
             "config": CONFIG_PATH,
             "ablation_phase": "2",
@@ -826,24 +887,19 @@ def run_phase2(
             "seed": "42",
             "_s3_output": f"{s3_base}/phase2/{name}",
         }
-
-        logger.info("--- Scenario: %s (experts=%s) ---", name, scenario["experts"])
-
+        logger.info("--- Scenario: %s (experts=%s, spot=%s) ---", name, scenario["experts"], use_spot)
         result = _submit_training_job(
-            job_name=job_name,
-            s3_output=s3_output,
+            job_name=job_name, s3_output=s3_output,
             instance_type=args.instance_type_gpu,
             hyperparameters=hyperparameters,
-            source_uri=source_uri,
-            data_uri=data_uri,
-            wait=not args.no_wait,
-            dry_run=args.dry_run,
+            source_uri=source_uri, data_uri=data_uri,
+            wait=False, dry_run=args.dry_run, use_spot=use_spot,
         )
         result["scenario"] = name
         result["phase"] = 2
-        results.append(result)
+        return result
 
-    return results
+    return _run_scenarios_parallel(EXPERT_SCENARIOS, make_job, max_parallel=2, args=args)
 
 
 def run_phase3(
@@ -866,55 +922,57 @@ def run_phase3(
     )
     logger.info("=" * 70)
 
-    results: List[Dict[str, Any]] = []
-
+    # Build flat scenario list for parallel runner
+    cross_scenarios = []
     for tier_name, task_list in TASK_TIERS.items():
         for struct_name, struct_flags in STRUCTURE_VARIANTS.items():
-            scenario_name = f"{tier_name}-{struct_name}"
-            safe_name = scenario_name.replace("_", "-")
-            job_name = f"sant-abl-p3-{safe_name}-{ts}"
-            s3_output = f"{s3_base}/phase3/{scenario_name}/"
+            cross_scenarios.append({
+                "name": f"{tier_name}-{struct_name}",
+                "tier": tier_name,
+                "structure": struct_name,
+                "task_list": task_list,
+                "use_ple": struct_flags["use_ple"],
+                "use_adatt": struct_flags["use_adatt"],
+            })
 
-            hyperparameters = {
-                "config": CONFIG_PATH,
-                "ablation_phase": "3",
-                "ablation_type": "task_structure",
-                "ablation_scenario": scenario_name,
-                "active_tasks": json.dumps(task_list),
-                "use_ple": json.dumps(struct_flags["use_ple"]),
-                "use_adatt": json.dumps(struct_flags["use_adatt"]),
-                "epochs": "30",
-                "batch_size": "128",
-                "learning_rate": "0.001",
-                "seed": "42",
-                "_s3_output": f"{s3_base}/phase3/{scenario_name}",
-            }
+    def make_job(scenario, use_spot):
+        name = scenario["name"]
+        safe_name = name.replace("_", "-")
+        job_name = f"sant-abl-p3-{safe_name}-{ts}"
+        s3_output = f"{s3_base}/phase3/{name}/"
+        hyperparameters = {
+            "config": CONFIG_PATH,
+            "ablation_phase": "3",
+            "ablation_type": "task_structure",
+            "ablation_scenario": name,
+            "active_tasks": json.dumps(scenario["task_list"]),
+            "use_ple": json.dumps(scenario["use_ple"]),
+            "use_adatt": json.dumps(scenario["use_adatt"]),
+            "epochs": "30",
+            "batch_size": "128",
+            "learning_rate": "0.001",
+            "seed": "42",
+            "_s3_output": f"{s3_base}/phase3/{name}",
+        }
+        logger.info(
+            "--- Scenario: %s (%d tasks, PLE=%s, adaTT=%s, spot=%s) ---",
+            name, len(scenario["task_list"]),
+            scenario["use_ple"], scenario["use_adatt"], use_spot,
+        )
+        result = _submit_training_job(
+            job_name=job_name, s3_output=s3_output,
+            instance_type=args.instance_type_gpu,
+            hyperparameters=hyperparameters,
+            source_uri=source_uri, data_uri=data_uri,
+            wait=False, dry_run=args.dry_run, use_spot=use_spot,
+        )
+        result["scenario"] = name
+        result["tier"] = scenario["tier"]
+        result["structure"] = scenario["structure"]
+        result["phase"] = 3
+        return result
 
-            logger.info(
-                "--- Scenario: %s (%d tasks, PLE=%s, adaTT=%s) ---",
-                scenario_name,
-                len(task_list),
-                struct_flags["use_ple"],
-                struct_flags["use_adatt"],
-            )
-
-            result = _submit_training_job(
-                job_name=job_name,
-                s3_output=s3_output,
-                instance_type=args.instance_type_gpu,
-                hyperparameters=hyperparameters,
-                source_uri=source_uri,
-                data_uri=data_uri,
-                wait=not args.no_wait,
-                dry_run=args.dry_run,
-            )
-            result["scenario"] = scenario_name
-            result["tier"] = tier_name
-            result["structure"] = struct_name
-            result["phase"] = 3
-            results.append(result)
-
-    return results
+    return _run_scenarios_parallel(cross_scenarios, make_job, max_parallel=2, args=args)
 
 
 def _select_best_config(
