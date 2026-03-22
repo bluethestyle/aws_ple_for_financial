@@ -654,8 +654,28 @@ model:
     num_shared_experts: 7
     num_task_experts: 1
 
+  evidential:
+    enabled: true
+    kl_lambda: 0.01
+    annealing_epochs: 10
+
+  sae:
+    enabled: true
+    weight: 0.01
+    expansion_factor: 4
+    l1_lambda: 0.001
+
   loss_weighting:
     strategy: uncertainty
+
+  # Multidisciplinary feature routing: 24D -> 4 x 6D per task group
+  # chemical_kinetics -> value, epidemic_diffusion -> lifecycle,
+  # crime_pattern -> engagement, interference -> consumption
+  multidisciplinary_routing:
+    engagement: [0, 1, 2, 3, 4, 5]        # chemical_kinetics
+    lifecycle: [6, 7, 8, 9, 10, 11]        # epidemic_diffusion
+    value: [12, 13, 14, 15, 16, 17]        # crime_pattern
+    consumption: [18, 19, 20, 21, 22, 23]  # interference
 
   task_tower:
     default_dims: [64, 32]

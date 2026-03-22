@@ -47,6 +47,8 @@ from .loss_weighting import (
 )
 from core.task.types import LossType
 from core.task.losses import build_loss
+from core.model.layers.evidential import EvidentialLayer
+from core.model.layers.sae import SparseAutoencoder
 
 logger = logging.getLogger(__name__)
 
@@ -426,7 +428,10 @@ class PLEModel(nn.Module):
         self._build_hmm_projectors()
         self._build_adatt()
         self._build_logit_transfer()
+        self._build_multidisciplinary_routing()
         self._build_task_towers()
+        self._build_evidential_layers()
+        self._build_sae()
         self._build_task_loss_fns()
         self._build_loss_weighting()
 
@@ -688,11 +693,22 @@ class PLEModel(nn.Module):
         )
 
     def _build_logit_transfer(self) -> None:
-        """Build logit transfer projections (source task -> target task)."""
+        """Build logit transfer projections (source task -> target task).
+
+        Supports three transfer methods:
+          - ``residual``: Project source output to tower dim, add as residual.
+          - ``output_concat``: Concatenate source task output to target tower
+            input and re-project to tower dim.
+          - ``hidden_concat``: Concatenate source task's pre-tower hidden
+            representation (task expert output) to target tower input and
+            re-project to tower dim.
+        """
         cfg = self.config
         self.logit_transfer_sources: Dict[str, str] = {}
+        self.logit_transfer_methods: Dict[str, str] = {}
         self.logit_transfer_proj = nn.ModuleDict()
         self.logit_transfer_strength = cfg.logit_transfer_strength
+        tower_dim = self._task_expert_output_dim
 
         for lt in cfg.logit_transfers:
             if not lt.enabled:
@@ -700,16 +716,77 @@ class PLEModel(nn.Module):
             src, tgt = lt.source, lt.target
             if src in self.task_names and tgt in self.task_names:
                 self.logit_transfer_sources[tgt] = src
+                method = lt.transfer_method or "residual"
+                self.logit_transfer_methods[tgt] = method
                 src_output_dim = cfg.get_task_output_dim(src)
-                self.logit_transfer_proj[tgt] = nn.Sequential(
-                    nn.Linear(src_output_dim, self._task_expert_output_dim),
-                    nn.LayerNorm(self._task_expert_output_dim),
-                    nn.SiLU(),
-                )
+
+                if method == "output_concat":
+                    # Concat source output (src_output_dim) to tower input
+                    # (tower_dim) then project back to tower_dim
+                    self.logit_transfer_proj[tgt] = nn.Sequential(
+                        nn.Linear(tower_dim + src_output_dim, tower_dim),
+                        nn.LayerNorm(tower_dim),
+                        nn.SiLU(),
+                    )
+                elif method == "hidden_concat":
+                    # Concat source pre-tower hidden (tower_dim) to target
+                    # tower input then project back to tower_dim
+                    self.logit_transfer_proj[tgt] = nn.Sequential(
+                        nn.Linear(tower_dim + tower_dim, tower_dim),
+                        nn.LayerNorm(tower_dim),
+                        nn.SiLU(),
+                    )
+                else:  # residual (default)
+                    self.logit_transfer_proj[tgt] = nn.Sequential(
+                        nn.Linear(src_output_dim, tower_dim),
+                        nn.LayerNorm(tower_dim),
+                        nn.SiLU(),
+                    )
 
         if self.logit_transfer_sources:
-            logger.info(f"Logit transfer: {self.logit_transfer_sources} "
-                        f"(strength={self.logit_transfer_strength})")
+            logger.info(
+                f"Logit transfer: {self.logit_transfer_sources} "
+                f"methods={self.logit_transfer_methods} "
+                f"(strength={self.logit_transfer_strength})"
+            )
+
+    def _build_multidisciplinary_routing(self) -> None:
+        """Build per-task-group multidisciplinary feature projectors.
+
+        When ``PLEConfig.multidisciplinary_routing`` is configured, each task
+        group receives only its designated subgroup of the 24D
+        multidisciplinary feature vector.  A per-group Linear projects the
+        subgroup to ``_task_expert_output_dim`` so it can be added to the
+        tower input.
+
+        When the routing dict is empty, multidisciplinary features are left
+        in the flat feature vector (backward compatible).
+        """
+        cfg = self.config
+        routing = cfg.multidisciplinary_routing
+        tower_dim = self._task_expert_output_dim
+
+        if not routing:
+            self.md_routing_proj: Optional[nn.ModuleDict] = None
+            self.md_routing_indices: Dict[str, List[int]] = {}
+            return
+
+        self.md_routing_proj = nn.ModuleDict()
+        self.md_routing_indices = {}
+
+        for group_name, indices in routing.items():
+            subgroup_dim = len(indices)
+            self.md_routing_indices[group_name] = indices
+            self.md_routing_proj[group_name] = nn.Sequential(
+                nn.Linear(subgroup_dim, tower_dim),
+                nn.LayerNorm(tower_dim),
+                nn.SiLU(),
+            )
+
+        logger.info(
+            "Multidisciplinary routing: %s",
+            {g: len(idx) for g, idx in self.md_routing_indices.items()},
+        )
 
     def _build_task_towers(self) -> None:
         """Build per-task output towers.
@@ -737,6 +814,73 @@ class PLEModel(nn.Module):
                 dropout=cfg.task_tower.dropout,
                 task_type=cfg.get_task_type(task_name),
             )
+
+    def _build_evidential_layers(self) -> None:
+        """Build EvidentialLayer per regression task when config enables it.
+
+        The evidential layer sits after the task tower output and transforms
+        scalar regression predictions into Normal-Inverse-Gamma parameters
+        (mu, v, alpha, beta) for epistemic uncertainty quantification.
+
+        Only applies to regression tasks.  Binary/multiclass tasks are
+        skipped -- their uncertainty is captured by the existing output
+        distribution.
+        """
+        cfg = self.config
+        if not cfg.evidential_enabled:
+            self.evidential_layers = None
+            return
+
+        self.evidential_layers = nn.ModuleDict()
+        for task_name in self.task_names:
+            task_type = cfg.get_task_type(task_name)
+            if task_type == "regression":
+                # Input dim = task expert output dim (same input as the tower).
+                # The evidential layer projects this into NIG parameters
+                # (mu, v, alpha, beta) for uncertainty quantification.
+                evidential_input_dim = self._task_expert_output_dim
+                self.evidential_layers[task_name] = EvidentialLayer(
+                    input_dim=evidential_input_dim,
+                    task_type="regression",
+                    output_dim=1,
+                    kl_lambda=cfg.evidential_kl_lambda,
+                    annealing_epochs=cfg.evidential_annealing_epochs,
+                )
+                logger.info(
+                    "Evidential layer built for regression task '%s' "
+                    "(input_dim=%d, kl_lambda=%s)",
+                    task_name, evidential_input_dim, cfg.evidential_kl_lambda,
+                )
+
+    def _build_sae(self) -> None:
+        """Build Sparse Autoencoder on shared expert concatenated output.
+
+        The SAE operates as an analysis sidecar on the *detached* shared
+        expert representation.  It does NOT affect the main gradient flow
+        -- only the SAE reconstruction loss contributes to the total loss
+        (weighted by ``config.sae_weight``).
+        """
+        cfg = self.config
+        if not cfg.sae_enabled:
+            self.sae = None
+            return
+
+        # shared_concat dim = num_shared_experts * expert_hidden_dim
+        if self.expert_basket is not None:
+            num_shared = self.expert_basket.num_shared_experts
+        else:
+            num_shared = cfg.num_shared_experts
+        sae_input_dim = num_shared * cfg.shared_expert.output_dim
+
+        self.sae = SparseAutoencoder(
+            input_dim=sae_input_dim,
+            expansion_factor=cfg.sae_expansion_factor,
+            l1_lambda=cfg.sae_l1_lambda,
+        )
+        logger.info(
+            "SAE built: input_dim=%d, latent_dim=%d, weight=%s",
+            sae_input_dim, self.sae.latent_dim, cfg.sae_weight,
+        )
 
     def _build_task_loss_fns(self) -> None:
         """Build per-task loss functions from config.
@@ -1032,6 +1176,11 @@ class PLEModel(nn.Module):
             # the next layer (standard PLE stacking approach).
             shared_input = torch.stack(task_representations, dim=0).mean(dim=0)
 
+        # 1b. SAE on shared expert concatenated output (detached -- no main gradient)
+        sae_loss_value = None
+        if self.sae is not None and shared_concat is not None:
+            _, _, sae_loss_value = self.sae(shared_concat.detach())
+
         # 2. Per-task expert processing (GroupEncoder + ClusterEmbedding + TaskHead)
         task_expert_outputs: Dict[str, torch.Tensor] = {}
         if self.group_task_expert_basket is not None:
@@ -1063,24 +1212,61 @@ class PLEModel(nn.Module):
                     hmm_proj = self.hmm_projectors[hmm_mode](hmm_tensors[hmm_mode])
                     task_expert_outputs[task_name] = task_out + hmm_proj
 
+        # 2c. Multidisciplinary per-task-group routing
+        if self.md_routing_proj is not None and inputs.multidisciplinary_features is not None:
+            md_feats = inputs.multidisciplinary_features  # (batch, 24)
+            for task_name in self.task_names:
+                group = self.config.task_group_map.get(task_name)
+                if group and group in self.md_routing_indices:
+                    indices = self.md_routing_indices[group]
+                    subgroup = md_feats[:, indices]  # (batch, subgroup_dim)
+                    md_proj = self.md_routing_proj[group](subgroup)
+                    task_expert_outputs[task_name] = (
+                        task_expert_outputs[task_name] + md_proj
+                    )
+
         # 3. Task towers with logit transfer (in dependency order)
         execution_order = self._get_task_execution_order()
         predictions: Dict[str, torch.Tensor] = {}
+        evidential_info: Dict[str, Dict[str, torch.Tensor]] = {}
 
         for task_name in execution_order:
             tower_input = task_expert_outputs[task_name]
 
-            # Logit transfer from source task
+            # Logit transfer from source task (method-aware dispatch)
             if task_name in self.logit_transfer_sources:
                 source = self.logit_transfer_sources[task_name]
                 if source in predictions:
+                    method = self.logit_transfer_methods.get(task_name, "residual")
                     src_out = predictions[source]
                     if src_out.dim() == 1:
                         src_out = src_out.unsqueeze(-1)
-                    proj = self.logit_transfer_proj[task_name](src_out)
-                    tower_input = tower_input + self.logit_transfer_strength * proj
+
+                    if method == "output_concat":
+                        # Concatenate source task output to target tower input
+                        tower_input = self.logit_transfer_proj[task_name](
+                            torch.cat([tower_input, src_out], dim=-1)
+                        )
+                    elif method == "hidden_concat":
+                        # Use source task's pre-tower hidden representation
+                        src_hidden = task_expert_outputs.get(source)
+                        if src_hidden is not None:
+                            tower_input = self.logit_transfer_proj[task_name](
+                                torch.cat([tower_input, src_hidden], dim=-1)
+                            )
+                    else:  # residual (default)
+                        proj = self.logit_transfer_proj[task_name](src_out)
+                        tower_input = tower_input + self.logit_transfer_strength * proj
 
             predictions[task_name] = self.task_towers[task_name](tower_input)
+
+            # Evidential layer for regression tasks: replace prediction with
+            # evidential mu and store evidence_info for loss computation
+            if (self.evidential_layers is not None
+                    and task_name in self.evidential_layers):
+                ev_pred, ev_info = self.evidential_layers[task_name](tower_input)
+                evidential_info[task_name] = ev_info
+                predictions[task_name] = ev_pred.unsqueeze(-1)
 
         # 4. Loss computation
         total_loss = None
@@ -1135,6 +1321,23 @@ class PLEModel(nn.Module):
                         dag_reg = expert.get_dag_regularization()
                         total_loss = total_loss + dag_reg
                         aux_losses["dag_regularization"] = dag_reg.item()
+
+            # Evidential NIG loss for regression tasks (auxiliary)
+            if self.training and self.evidential_layers is not None:
+                for task_name, ev_info in evidential_info.items():
+                    if task_name in inputs.targets:
+                        ev_loss = self.evidential_layers[task_name].compute_evidential_loss(
+                            ev_info, inputs.targets[task_name],
+                            epoch=self.current_epoch,
+                        )
+                        total_loss = total_loss + ev_loss
+                        aux_losses[f"evidential_{task_name}"] = ev_loss.item()
+
+            # SAE reconstruction loss (auxiliary, on detached shared representation)
+            if self.training and sae_loss_value is not None:
+                weighted_sae = self.config.sae_weight * sae_loss_value
+                total_loss = total_loss + weighted_sae
+                aux_losses["sae_loss"] = sae_loss_value.item()
 
             # TemporalEnsemble gate entropy monitoring (logging only, no reg)
             # Skip when task representation dim != expert input_dim (post-CGC)
@@ -1431,8 +1634,13 @@ class PLEModel(nn.Module):
             f"  Task expert output dim: {self._task_expert_output_dim}",
             f"  adaTT: {'enabled' if self.adatt is not None else 'disabled'}",
             f"  CGC attention: {'enabled' if self.cgc_attention is not None else 'disabled'}",
-            f"  Logit transfers: {self.logit_transfer_sources or 'none'}",
+            (f"  Logit transfers: {self.logit_transfer_sources}"
+             f" (methods={self.logit_transfer_methods})")
+            if self.logit_transfer_sources else "  Logit transfers: none",
+            f"  Multidisciplinary routing: {list(self.md_routing_indices.keys()) if self.md_routing_indices else 'none'}",
             f"  Loss weighting: {self.config.loss_weighting.strategy}",
+            f"  Evidential: {'enabled (' + ', '.join(self.evidential_layers.keys()) + ')' if self.evidential_layers else 'disabled'}",
+            f"  SAE: {'enabled (weight=' + str(self.config.sae_weight) + ')' if self.sae is not None else 'disabled'}",
         ])
 
         # Feature routing summary

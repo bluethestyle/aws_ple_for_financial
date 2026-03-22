@@ -23,6 +23,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -36,6 +37,44 @@ from .adapter import DataAdapter
 from .config import PipelineConfig
 
 logger = logging.getLogger(__name__)
+
+
+# ======================================================================
+# Pipeline state tracker for stage-level checkpointing / resume
+# ======================================================================
+
+class _PipelineState:
+    """Tracks completed stages for pipeline resume capability."""
+
+    def __init__(self, output_dir: str) -> None:
+        self.path = Path(output_dir) / "pipeline_state.json"
+        self.state = self._load()
+
+    def _load(self) -> dict:
+        if self.path.exists():
+            with open(self.path) as f:
+                return json.load(f)
+        return {"completed_stages": [], "artifacts": {}, "start_time": None}
+
+    def mark_complete(self, stage: str, artifacts: dict = None) -> None:
+        if stage not in self.state["completed_stages"]:
+            self.state["completed_stages"].append(stage)
+        if artifacts:
+            self.state["artifacts"][stage] = artifacts
+        self._save()
+
+    def mark_failed(self, stage: str, error: str) -> None:
+        self.state["failed_stage"] = stage
+        self.state["error"] = error
+        self._save()
+
+    def is_complete(self, stage: str) -> bool:
+        return stage in self.state["completed_stages"]
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path, "w") as f:
+            json.dump(self.state, f, indent=2, default=str)
 
 
 class PipelineRunner:
@@ -57,7 +96,12 @@ class PipelineRunner:
     # ------------------------------------------------------------------
 
     def run(self, output_dir: str = "outputs/") -> dict:
-        """Run the full 8-stage pipeline.
+        """Run the full 9-stage pipeline with checkpointing and resume.
+
+        Each stage is wrapped with :class:`_PipelineState` tracking so that
+        a failed run can be resumed from the last successful stage.
+        Intermediate artifacts (parquet, npy) are saved under
+        ``<output_dir>/checkpoints/`` for stages 4-6.
 
         Args:
             output_dir: Directory for model artifacts.
@@ -65,129 +109,442 @@ class PipelineRunner:
         Returns:
             A result dict with metadata from each stage.
         """
+        import numpy as np
+
         results: Dict[str, Any] = {}
         pipeline_start = time.time()
 
-        logger.info("=" * 60)
-        logger.info("[PIPELINE] Starting 8-stage pipeline: %s", self.config.task_name)
-        logger.info("=" * 60)
-
-        # Stage 1: Load raw data
-        adapter = self._build_adapter()
-        raw_data = adapter.load_raw()
-        results["stage1_metadata"] = adapter.metadata
-        logger.info(
-            "[PIPELINE] Stage 1 complete: loaded %d DataFrames",
-            len(raw_data),
-        )
-
-        # Stage 1.5: Temporal preparation (truncate sequences, recompute snapshots)
-        raw_data["main"] = self._prepare_temporal(raw_data["main"])
-        results["stage1_5_temporal_prep"] = {"applied": True}
-        logger.info("[PIPELINE] Stage 1.5 complete: temporal preparation")
-
-        # Stage 2: Schema classification
-        schema = self._classify_schema(raw_data["main"])
-        results["stage2_schema"] = schema
-        logger.info(
-            "[PIPELINE] Stage 2 complete: %d numeric, %d categorical, %d sequence cols",
-            len(schema.get("numeric", [])),
-            len(schema.get("categorical", [])),
-            len(schema.get("sequence", [])),
-        )
-
-        # Stage 3: Encryption
-        df_main = self._encrypt(raw_data["main"])
-        results["stage3_encryption"] = {
-            "applied": df_main is not raw_data["main"],
-            "rows": len(df_main),
-            "cols": len(df_main.columns),
-        }
-        logger.info(
-            "[PIPELINE] Stage 3 complete: %d rows x %d cols after encryption",
-            len(df_main), len(df_main.columns),
-        )
-
-        # Stage 4: Feature engineering + normalization
-        feature_pipeline, df_features = self._engineer_features(df_main, raw_data)
-        results["feature_metadata"] = feature_pipeline.get_ple_input_metadata()
-        logger.info(
-            "[PIPELINE] Stage 4 complete: %d features across %d groups",
-            feature_pipeline.total_dim, len(feature_pipeline),
-        )
-
-        # Stage 5: Label derivation
-        df_labels = self._derive_labels(raw_data["main"])
-        results["stage5_labels"] = {
-            "label_columns": list(df_labels.columns),
-            "rows": len(df_labels),
-        }
-        logger.info(
-            "[PIPELINE] Stage 5 complete: %d label columns",
-            len(df_labels.columns),
-        )
-
-        # Stage 5.5: Leakage validation
-        leakage_result = self._validate_leakage(
-            df_features, df_labels, raw_data.get("main")
-        )
-        results["stage5_5_leakage"] = {
-            "passed": leakage_result.passed,
-            "warnings": leakage_result.warnings,
-        }
-        logger.info(
-            "[PIPELINE] Stage 5.5 complete: leakage validation %s (%d warnings)",
-            "PASSED" if leakage_result.passed else "FAILED",
-            len(leakage_result.warnings),
-        )
-
-        # Stage 6: Sequence building
-        sequences = self._build_sequences(raw_data)
-        results["stage6_sequences"] = {
-            "has_sequences": sequences is not None,
-        }
-        if sequences is not None:
-            results["stage6_sequences"]["keys"] = list(sequences.keys())
-        logger.info(
-            "[PIPELINE] Stage 6 complete: sequences=%s",
-            "present" if sequences else "none",
-        )
-
-        # Stage 7: Build DataLoaders
-        train_loader, val_loader = self._build_dataloaders(
-            df_features, df_labels, sequences, feature_pipeline,
-        )
-        results["stage7_dataloaders"] = {
-            "train_batches": len(train_loader),
-            "val_batches": len(val_loader),
-        }
-        logger.info(
-            "[PIPELINE] Stage 7 complete: train=%d batches, val=%d batches",
-            len(train_loader), len(val_loader),
-        )
-
-        # Stage 8: Train teacher model
-        results["training"] = self._train(train_loader, val_loader, output_dir)
-
-        # Save feature pipeline alongside the model
+        # Store output_dir for cross-stage artifact saving
         out = Path(output_dir)
+        self._output_dir = out
         out.mkdir(parents=True, exist_ok=True)
-        feature_pipeline.save(str(out / "feature_pipeline"))
+        (out / "audit").mkdir(exist_ok=True)
+        checkpoint_dir = out / "checkpoints"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        # Stage 9: Knowledge distillation (teacher → LGBM students)
-        distill_cfg = self._config_to_dict().get("distillation", {})
-        if distill_cfg.get("enabled", True):
-            results["distillation"] = self._distill(
-                teacher_checkpoint=str(out / "model.pth"),
-                feature_df=df_features,
-                label_df=df_labels,
-                output_dir=output_dir,
-            )
+        state = _PipelineState(output_dir)
+        if state.state["start_time"] is None:
+            state.state["start_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            state._save()
+
+        logger.info("=" * 60)
+        logger.info("[PIPELINE] Starting 9-stage pipeline: %s", self.config.task_name)
+        logger.info("=" * 60)
+
+        # ----------------------------------------------------------
+        # Stage 1: Load raw data
+        # ----------------------------------------------------------
+        if not state.is_complete("stage1"):
+            try:
+                adapter = self._build_adapter()
+                raw_data = adapter.load_raw()
+                results["stage1_metadata"] = adapter.metadata
+                state.mark_complete("stage1", {"num_frames": len(raw_data)})
+                logger.info(
+                    "[PIPELINE] Stage 1 complete: loaded %d DataFrames",
+                    len(raw_data),
+                )
+            except Exception as e:
+                logger.error("[PIPELINE] Stage 1 failed: %s", e)
+                state.mark_failed("stage1", str(e))
+                raise
         else:
-            logger.info("[Stage 9] Distillation disabled in config, skipping.")
+            logger.info("[PIPELINE] Stage 1 already complete, re-loading...")
+            adapter = self._build_adapter()
+            raw_data = adapter.load_raw()
+            results["stage1_metadata"] = adapter.metadata
 
+        # ----------------------------------------------------------
+        # Stage 1.5: Temporal preparation
+        # ----------------------------------------------------------
+        if not state.is_complete("stage1_5"):
+            try:
+                raw_data["main"] = self._prepare_temporal(raw_data["main"])
+                results["stage1_5_temporal_prep"] = {"applied": True}
+                state.mark_complete("stage1_5")
+                logger.info("[PIPELINE] Stage 1.5 complete: temporal preparation")
+            except Exception as e:
+                logger.error("[PIPELINE] Stage 1.5 failed: %s", e)
+                state.mark_failed("stage1_5", str(e))
+                raise
+        else:
+            logger.info("[PIPELINE] Stage 1.5 already complete, re-applying...")
+            raw_data["main"] = self._prepare_temporal(raw_data["main"])
+            results["stage1_5_temporal_prep"] = {"applied": True}
+
+        # ----------------------------------------------------------
+        # Stage 2: Schema classification
+        # ----------------------------------------------------------
+        if not state.is_complete("stage2"):
+            try:
+                schema = self._classify_schema(raw_data["main"])
+                results["stage2_schema"] = schema
+                state.mark_complete("stage2", {
+                    k: len(v) for k, v in schema.items()
+                })
+                logger.info(
+                    "[PIPELINE] Stage 2 complete: %d numeric, %d categorical, "
+                    "%d sequence cols",
+                    len(schema.get("numeric", [])),
+                    len(schema.get("categorical", [])),
+                    len(schema.get("sequence", [])),
+                )
+            except Exception as e:
+                logger.error("[PIPELINE] Stage 2 failed: %s", e)
+                state.mark_failed("stage2", str(e))
+                raise
+        else:
+            logger.info("[PIPELINE] Stage 2 already complete, re-classifying...")
+            schema = self._classify_schema(raw_data["main"])
+            results["stage2_schema"] = schema
+
+        # Save schema classification audit
+        schema_path = out / "audit" / "schema_classification.json"
+        with open(schema_path, "w") as f:
+            json.dump(schema, f, indent=2, default=str)
+        logger.info("[PIPELINE] Schema classification saved to %s", schema_path)
+
+        # ----------------------------------------------------------
+        # Stage 3: Encryption
+        # ----------------------------------------------------------
+        if not state.is_complete("stage3"):
+            try:
+                df_main = self._encrypt(raw_data["main"])
+                results["stage3_encryption"] = {
+                    "applied": df_main is not raw_data["main"],
+                    "rows": len(df_main),
+                    "cols": len(df_main.columns),
+                }
+                state.mark_complete("stage3", {
+                    "rows": len(df_main), "cols": len(df_main.columns),
+                })
+                logger.info(
+                    "[PIPELINE] Stage 3 complete: %d rows x %d cols after encryption",
+                    len(df_main), len(df_main.columns),
+                )
+            except Exception as e:
+                logger.error("[PIPELINE] Stage 3 failed: %s", e)
+                state.mark_failed("stage3", str(e))
+                raise
+        else:
+            logger.info("[PIPELINE] Stage 3 already complete, re-encrypting...")
+            df_main = self._encrypt(raw_data["main"])
+            results["stage3_encryption"] = {
+                "applied": df_main is not raw_data["main"],
+                "rows": len(df_main),
+                "cols": len(df_main.columns),
+            }
+
+        # ----------------------------------------------------------
+        # Stage 4: Feature engineering + normalization
+        # ----------------------------------------------------------
+        features_ckpt = checkpoint_dir / "features.parquet"
+        if not state.is_complete("stage4"):
+            try:
+                feature_pipeline, df_features = self._engineer_features(
+                    df_main, raw_data,
+                )
+                results["feature_metadata"] = (
+                    feature_pipeline.get_ple_input_metadata()
+                )
+
+                # Save intermediate artifacts
+                df_features.to_parquet(features_ckpt)
+                feature_pipeline.save(str(checkpoint_dir / "feature_pipeline"))
+
+                state.mark_complete("stage4", {
+                    "shape": list(df_features.shape),
+                })
+                logger.info(
+                    "[PIPELINE] Stage 4 complete: %d features across %d groups",
+                    feature_pipeline.total_dim, len(feature_pipeline),
+                )
+            except Exception as e:
+                logger.error("[PIPELINE] Stage 4 failed: %s", e)
+                state.mark_failed("stage4", str(e))
+                raise
+        else:
+            import pandas as pd
+            logger.info(
+                "[PIPELINE] Stage 4 already complete, loading checkpoint..."
+            )
+            df_features = pd.read_parquet(features_ckpt)
+            feature_pipeline, _ = self._engineer_features(df_main, raw_data)
+            results["feature_metadata"] = (
+                feature_pipeline.get_ple_input_metadata()
+            )
+
+        # Save scaler/transformer parameters
+        scaler_params: Dict[str, Any] = {}
+        for group_name, chain in feature_pipeline._transformer_chains.items():
+            scaler_params[group_name] = [t.get_params() for t in chain]
+        scaler_path = out / "audit" / "scaler_params.json"
+        with open(scaler_path, "w") as f:
+            json.dump(scaler_params, f, indent=2, default=str)
+        logger.info("[PIPELINE] Scaler parameters saved to %s", scaler_path)
+
+        # ----------------------------------------------------------
+        # Stage 5: Label derivation
+        # ----------------------------------------------------------
+        labels_ckpt = checkpoint_dir / "labels.parquet"
+        if not state.is_complete("stage5"):
+            try:
+                df_labels = self._derive_labels(raw_data["main"])
+                results["stage5_labels"] = {
+                    "label_columns": list(df_labels.columns),
+                    "rows": len(df_labels),
+                }
+
+                # Save intermediate artifact
+                df_labels.to_parquet(labels_ckpt)
+
+                state.mark_complete("stage5", {
+                    "label_columns": list(df_labels.columns),
+                    "rows": len(df_labels),
+                })
+                logger.info(
+                    "[PIPELINE] Stage 5 complete: %d label columns",
+                    len(df_labels.columns),
+                )
+            except Exception as e:
+                logger.error("[PIPELINE] Stage 5 failed: %s", e)
+                state.mark_failed("stage5", str(e))
+                raise
+        else:
+            import pandas as pd
+            logger.info(
+                "[PIPELINE] Stage 5 already complete, loading checkpoint..."
+            )
+            df_labels = pd.read_parquet(labels_ckpt)
+            results["stage5_labels"] = {
+                "label_columns": list(df_labels.columns),
+                "rows": len(df_labels),
+            }
+
+        # Save label distributions
+        label_stats: Dict[str, Any] = {}
+        for col in df_labels.columns:
+            if df_labels[col].dtype in ("int64", "int32"):
+                label_stats[col] = df_labels[col].value_counts().to_dict()
+            else:
+                label_stats[col] = {
+                    "mean": float(df_labels[col].mean()),
+                    "std": float(df_labels[col].std()),
+                    "min": float(df_labels[col].min()),
+                    "max": float(df_labels[col].max()),
+                    "count": int(df_labels[col].count()),
+                }
+        stats_path = out / "audit" / "label_distributions.json"
+        with open(stats_path, "w") as f:
+            json.dump(label_stats, f, indent=2, default=str)
+        logger.info("[PIPELINE] Label distributions saved to %s", stats_path)
+
+        # ----------------------------------------------------------
+        # Stage 5.5: Leakage validation
+        # ----------------------------------------------------------
+        if not state.is_complete("stage5_5"):
+            try:
+                leakage_result = self._validate_leakage(
+                    df_features, df_labels, raw_data.get("main"),
+                )
+                results["stage5_5_leakage"] = {
+                    "passed": leakage_result.passed,
+                    "warnings": leakage_result.warnings,
+                }
+                state.mark_complete("stage5_5", {
+                    "passed": leakage_result.passed,
+                })
+                logger.info(
+                    "[PIPELINE] Stage 5.5 complete: leakage validation %s "
+                    "(%d warnings)",
+                    "PASSED" if leakage_result.passed else "FAILED",
+                    len(leakage_result.warnings),
+                )
+            except Exception as e:
+                logger.error("[PIPELINE] Stage 5.5 failed: %s", e)
+                state.mark_failed("stage5_5", str(e))
+                raise
+        else:
+            logger.info("[PIPELINE] Stage 5.5 already complete, skipping...")
+            results["stage5_5_leakage"] = state.state["artifacts"].get(
+                "stage5_5", {"passed": True},
+            )
+            # Still run validation for the audit report
+            leakage_result = self._validate_leakage(
+                df_features, df_labels, raw_data.get("main"),
+            )
+
+        # Save leakage report
+        leakage_path = out / "audit" / "leakage_report.json"
+        with open(leakage_path, "w") as f:
+            json.dump(
+                {
+                    "passed": leakage_result.passed,
+                    "warnings": leakage_result.warnings,
+                    "details": leakage_result.details,
+                },
+                f, indent=2, default=str,
+            )
+        logger.info("[PIPELINE] Leakage report saved to %s", leakage_path)
+
+        # ----------------------------------------------------------
+        # Stage 6: Sequence building
+        # ----------------------------------------------------------
+        if not state.is_complete("stage6"):
+            try:
+                sequences = self._build_sequences(raw_data)
+                results["stage6_sequences"] = {
+                    "has_sequences": sequences is not None,
+                }
+                if sequences is not None:
+                    results["stage6_sequences"]["keys"] = list(sequences.keys())
+                    # Save intermediate artifacts
+                    for name, arr in sequences.items():
+                        np.save(checkpoint_dir / f"{name}.npy", arr)
+
+                state.mark_complete("stage6", {
+                    "has_sequences": sequences is not None,
+                    "keys": list(sequences.keys()) if sequences else [],
+                })
+                logger.info(
+                    "[PIPELINE] Stage 6 complete: sequences=%s",
+                    "present" if sequences else "none",
+                )
+            except Exception as e:
+                logger.error("[PIPELINE] Stage 6 failed: %s", e)
+                state.mark_failed("stage6", str(e))
+                raise
+        else:
+            logger.info(
+                "[PIPELINE] Stage 6 already complete, loading checkpoint..."
+            )
+            saved_keys = state.state["artifacts"].get(
+                "stage6", {},
+            ).get("keys", [])
+            if saved_keys:
+                sequences = {}
+                for name in saved_keys:
+                    npy_path = checkpoint_dir / f"{name}.npy"
+                    if npy_path.exists():
+                        sequences[name] = np.load(
+                            str(npy_path), allow_pickle=False,
+                        )
+            else:
+                sequences = None
+            results["stage6_sequences"] = {
+                "has_sequences": sequences is not None,
+            }
+            if sequences is not None:
+                results["stage6_sequences"]["keys"] = list(sequences.keys())
+
+        # ----------------------------------------------------------
+        # Stage 7: Build DataLoaders
+        # ----------------------------------------------------------
+        if not state.is_complete("stage7"):
+            try:
+                train_loader, val_loader = self._build_dataloaders(
+                    df_features, df_labels, sequences, feature_pipeline,
+                )
+                results["stage7_dataloaders"] = {
+                    "train_batches": len(train_loader),
+                    "val_batches": len(val_loader),
+                }
+                state.mark_complete("stage7", {
+                    "train_batches": len(train_loader),
+                    "val_batches": len(val_loader),
+                })
+                logger.info(
+                    "[PIPELINE] Stage 7 complete: train=%d batches, "
+                    "val=%d batches",
+                    len(train_loader), len(val_loader),
+                )
+            except Exception as e:
+                logger.error("[PIPELINE] Stage 7 failed: %s", e)
+                state.mark_failed("stage7", str(e))
+                raise
+        else:
+            logger.info(
+                "[PIPELINE] Stage 7 already complete, rebuilding loaders..."
+            )
+            train_loader, val_loader = self._build_dataloaders(
+                df_features, df_labels, sequences, feature_pipeline,
+            )
+            results["stage7_dataloaders"] = {
+                "train_batches": len(train_loader),
+                "val_batches": len(val_loader),
+            }
+
+        # ----------------------------------------------------------
+        # Stage 8: Train teacher model
+        # ----------------------------------------------------------
+        if not state.is_complete("stage8"):
+            try:
+                results["training"] = self._train(
+                    train_loader, val_loader, output_dir,
+                )
+                feature_pipeline.save(str(out / "feature_pipeline"))
+                state.mark_complete("stage8", {
+                    "status": results["training"].get("status", "unknown"),
+                })
+            except Exception as e:
+                logger.error("[PIPELINE] Stage 8 failed: %s", e)
+                state.mark_failed("stage8", str(e))
+                raise
+        else:
+            logger.info(
+                "[PIPELINE] Stage 8 already complete, skipping training..."
+            )
+            results["training"] = state.state["artifacts"].get(
+                "stage8", {"status": "resumed"},
+            )
+            feature_pipeline.save(str(out / "feature_pipeline"))
+
+        # ----------------------------------------------------------
+        # Stage 9: Knowledge distillation
+        # ----------------------------------------------------------
+        if not state.is_complete("stage9"):
+            try:
+                distill_cfg = self._config_to_dict().get("distillation", {})
+                if distill_cfg.get("enabled", True):
+                    results["distillation"] = self._distill(
+                        teacher_checkpoint=str(out / "model.pth"),
+                        feature_df=df_features,
+                        label_df=df_labels,
+                        output_dir=output_dir,
+                    )
+                else:
+                    logger.info(
+                        "[Stage 9] Distillation disabled in config, skipping."
+                    )
+                    results["distillation"] = {"status": "disabled"}
+                state.mark_complete("stage9", {
+                    "status": results.get("distillation", {}).get(
+                        "status", "unknown",
+                    ),
+                })
+            except Exception as e:
+                logger.error("[PIPELINE] Stage 9 failed: %s", e)
+                state.mark_failed("stage9", str(e))
+                raise
+        else:
+            logger.info(
+                "[PIPELINE] Stage 9 already complete, skipping distillation..."
+            )
+            results["distillation"] = state.state["artifacts"].get(
+                "stage9", {"status": "resumed"},
+            )
+
+        # ----------------------------------------------------------
+        # Finalize
+        # ----------------------------------------------------------
         elapsed = time.time() - pipeline_start
         results["total_time_seconds"] = round(elapsed, 2)
+
+        # Save pipeline manifest
+        manifest_path = out / "pipeline_manifest.json"
+        with open(manifest_path, "w") as f:
+            json.dump(results, f, indent=2, default=str)
+        logger.info("[PIPELINE] Manifest saved to %s", manifest_path)
 
         logger.info("=" * 60)
         logger.info(
@@ -339,6 +696,17 @@ class PipelineRunner:
             pipeline = EncryptionPipeline(salt_mgr, indexer, policies)
             source_name = getattr(security_cfg, "source_name", self.config.task_name)
             result = pipeline.process_source(source_name, df)
+
+            # Save encryption audit
+            audit = pipeline.get_audit_report()
+            audit_path = self._output_dir / "audit" / "encryption_audit.json"
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(audit_path, "w") as f:
+                json.dump(audit, f, indent=2, default=str)
+            logger.info("[Stage 3] Encryption audit saved to %s", audit_path)
+
+            # Save index tables
+            pipeline.save_indices()
 
             logger.info("[Stage 3] Encryption complete in %.2fs", time.time() - stage_start)
             return result
@@ -1333,10 +1701,9 @@ class PipelineRunner:
         trainer.train_students(features_np, hard_labels)
         logger.info("[Stage 9] Students trained: %d tasks", len(trainer._students))
 
-        # Step 4: Save students
+        # Step 4: Save students (fidelity_results passed after validation below)
         out = Path(output_dir) / "distillation"
         out.mkdir(parents=True, exist_ok=True)
-        trainer.save_students(str(out))
 
         # Step 5: Fidelity validation (optional)
         fidelity_results = {}
@@ -1373,6 +1740,16 @@ class PipelineRunner:
                         }
         except ImportError:
             logger.info("[Stage 9] Fidelity validator not available, skipping.")
+
+        # Save students with fidelity results
+        trainer.save_students(str(out), fidelity_results=fidelity_results or None)
+
+        # Save fidelity report separately for audit trail
+        if fidelity_results:
+            fidelity_path = out / "fidelity_report.json"
+            with open(fidelity_path, "w") as f:
+                json.dump(fidelity_results, f, indent=2, default=str)
+            logger.info("[Stage 9] Fidelity report saved to %s", fidelity_path)
 
         elapsed = time.time() - stage_start
         logger.info(

@@ -167,10 +167,22 @@ class ExpertInputConfig:
 
 @dataclass
 class LogitTransferDef:
-    """A single source->target logit transfer relationship."""
+    """A single source->target logit transfer relationship.
+
+    Args:
+        source: Source task name.
+        target: Target task name.
+        enabled: Whether this transfer is active.
+        transfer_method: One of ``"residual"`` (default -- add projected
+            source output as residual), ``"output_concat"`` (concatenate
+            source task output to target tower input and re-project), or
+            ``"hidden_concat"`` (concatenate source task's pre-tower hidden
+            representation to target tower input and re-project).
+    """
     source: str = ""
     target: str = ""
     enabled: bool = True
+    transfer_method: str = "residual"
 
 
 @dataclass
@@ -328,6 +340,13 @@ class PLEConfig:
         default_factory=GroupTaskExpertConfig,
     )
 
+    # -- Multidisciplinary feature routing ------------------------------------
+    # Maps task_group_name -> list of feature indices within the 24D
+    # multidisciplinary feature vector.  When non-empty, each task group
+    # receives only its designated subgroup of multidisciplinary features
+    # (projected and concatenated to tower input) instead of the full 24D.
+    multidisciplinary_routing: Dict[str, List[int]] = field(default_factory=dict)
+
     # -- Task group mapping --------------------------------------------------
     # Maps task_name -> group_name.  Populated from pipeline-level
     # TaskGroupConfig list before model construction.  Used by
@@ -421,6 +440,21 @@ class PLEConfig:
         if task_name in self.task_loss_params:
             params.update(self.task_loss_params[task_name])
         return params
+
+    # -- Evidential Deep Learning ---------------------------------------------
+    evidential_enabled: bool = False
+    evidential_kl_lambda: float = 0.01
+    evidential_annealing_epochs: int = 10
+
+    # -- Sparse Autoencoder (SAE) --------------------------------------------
+    sae_enabled: bool = False
+    sae_weight: float = 0.01
+    sae_expansion_factor: int = 4
+    sae_l1_lambda: float = 0.001
+
+    # -----------------------------------------------------------------------
+    # Helpers (continued)
+    # -----------------------------------------------------------------------
 
     def get_tower_dims(self, task_name: str) -> Optional[List[int]]:
         """Return per-task tower hidden_dims override, or ``None`` for default.

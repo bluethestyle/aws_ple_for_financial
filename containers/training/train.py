@@ -1146,6 +1146,7 @@ def main() -> None:
                 source=lt["source"],
                 target=lt["target"],
                 enabled=lt.get("enabled", True),
+                transfer_method=lt.get("transfer_method", "residual"),
             )
             for lt in logit_transfers_raw
         ]
@@ -1156,6 +1157,17 @@ def main() -> None:
             "Logit transfers: %d relationships, strength=%.2f",
             len(ple_config.logit_transfers),
             ple_config.logit_transfer_strength,
+        )
+
+    # -- Multidisciplinary feature routing ---
+    md_routing = model_cfg.get("multidisciplinary_routing", {})
+    if md_routing:
+        ple_config.multidisciplinary_routing = {
+            str(k): list(v) for k, v in md_routing.items()
+        }
+        logger.info(
+            "Multidisciplinary routing: %d groups configured",
+            len(ple_config.multidisciplinary_routing),
         )
 
     # Task tower dims
