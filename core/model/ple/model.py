@@ -1546,22 +1546,30 @@ class PLEModel(nn.Module):
             return {}
 
         gradients: Dict[str, torch.Tensor] = {}
+        total_numel = sum(p.numel() for p in shared_params)
+        device = shared_params[0].device
         for task_name, loss in task_losses.items():
-            grads = torch.autograd.grad(
-                loss,
-                shared_params,
-                retain_graph=True,
-                create_graph=False,
-                allow_unused=True,
-            )
-            # Zero-pad for parameters that received no gradient
-            flat_parts = []
-            for param, g in zip(shared_params, grads):
-                if g is not None:
-                    flat_parts.append(g.flatten())
-                else:
-                    flat_parts.append(torch.zeros(param.numel(), device=param.device))
-            gradients[task_name] = torch.cat(flat_parts)
+            # Skip non-differentiable losses (e.g. detached by uncertainty weighting)
+            if not loss.requires_grad:
+                gradients[task_name] = torch.zeros(total_numel, device=device)
+                continue
+            try:
+                grads = torch.autograd.grad(
+                    loss,
+                    shared_params,
+                    retain_graph=True,
+                    create_graph=False,
+                    allow_unused=True,
+                )
+                flat_parts = []
+                for param, g in zip(shared_params, grads):
+                    if g is not None:
+                        flat_parts.append(g.flatten())
+                    else:
+                        flat_parts.append(torch.zeros(param.numel(), device=device))
+                gradients[task_name] = torch.cat(flat_parts)
+            except RuntimeError:
+                gradients[task_name] = torch.zeros(total_numel, device=device)
 
         return gradients
 
