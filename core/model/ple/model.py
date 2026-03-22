@@ -45,6 +45,8 @@ from .loss_weighting import (
     UncertaintyWeighting,
     create_loss_weighting,
 )
+from core.task.types import LossType
+from core.task.losses import build_loss
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +426,7 @@ class PLEModel(nn.Module):
         self._build_adatt()
         self._build_logit_transfer()
         self._build_task_towers()
+        self._build_task_loss_fns()
         self._build_loss_weighting()
 
         # -- Training state --------------------------------------------------
@@ -688,6 +691,87 @@ class PLEModel(nn.Module):
                 activation=cfg.get_task_activation(task_name),
                 dropout=cfg.task_tower.dropout,
                 task_type=cfg.get_task_type(task_name),
+            )
+
+    def _build_task_loss_fns(self) -> None:
+        """Build per-task loss functions from config.
+
+        Uses ``PLEConfig.get_task_loss_type()`` and ``build_loss()`` factory
+        to create config-driven loss modules.  Falls back to sensible
+        defaults when no explicit loss type is configured.
+        """
+        self.task_loss_fns = nn.ModuleDict()
+
+        for task_name in self.task_names:
+            loss_type_str = self.config.get_task_loss_type(task_name)
+            loss_params = self.config.get_task_loss_params(task_name)
+
+            try:
+                loss_type = LossType(loss_type_str)
+            except ValueError:
+                logger.warning(
+                    "Unknown loss type '%s' for task '%s', falling back to AUTO",
+                    loss_type_str, task_name,
+                )
+                # Resolve AUTO based on task type
+                task_type = self.config.get_task_type(task_name)
+                _auto_map = {
+                    "binary": LossType.BCE,
+                    "multiclass": LossType.CROSS_ENTROPY,
+                    "regression": LossType.HUBER,
+                }
+                loss_type = _auto_map.get(task_type, LossType.MSE)
+
+            # Resolve LossType.AUTO
+            if loss_type == LossType.AUTO:
+                task_type = self.config.get_task_type(task_name)
+                _auto_map = {
+                    "binary": LossType.BCE,
+                    "multiclass": LossType.CROSS_ENTROPY,
+                    "regression": LossType.HUBER,
+                }
+                loss_type = _auto_map.get(task_type, LossType.MSE)
+
+            # Build kwargs for build_loss
+            build_kwargs = {"reduction": "mean"}
+            if loss_type == LossType.FOCAL:
+                build_kwargs["focal_alpha"] = loss_params.get("alpha", 0.25)
+                build_kwargs["focal_gamma"] = loss_params.get("gamma", 2.0)
+            elif loss_type == LossType.HUBER:
+                build_kwargs["huber_delta"] = loss_params.get("delta", 1.0)
+            elif loss_type == LossType.BCE:
+                if "pos_weight" in loss_params:
+                    build_kwargs["pos_weight"] = loss_params["pos_weight"]
+            elif loss_type == LossType.CROSS_ENTROPY:
+                build_kwargs["label_smoothing"] = loss_params.get(
+                    "label_smoothing", 0.0
+                )
+
+            self.task_loss_fns[task_name] = build_loss(loss_type, **build_kwargs)
+            logger.info(
+                "Task '%s': loss=%s, params=%s", task_name, loss_type.value,
+                {k: v for k, v in build_kwargs.items() if k != "reduction"},
+            )
+
+        # Class weights placeholder -- populated by trainer's
+        # _auto_compute_class_weights() and used in _compute_task_losses()
+        self._class_weights: Dict[str, torch.Tensor] = {}
+
+    def set_class_weights(self, class_weights: Dict[str, torch.Tensor]) -> None:
+        """Set class weights for multiclass/binary tasks.
+
+        Called by the trainer after auto-computing class weights from
+        the training data distribution.
+
+        Args:
+            class_weights: ``{task_name: weight_tensor}`` where the tensor
+                has shape ``(n_classes,)`` for multiclass tasks.
+        """
+        self._class_weights = class_weights
+        for task_name, weights in class_weights.items():
+            logger.info(
+                "Class weights set for '%s': %s", task_name,
+                weights.tolist() if weights.numel() <= 20 else f"({weights.numel()} classes)",
             )
 
     def _build_loss_weighting(self) -> None:
@@ -994,14 +1078,22 @@ class PLEModel(nn.Module):
                         aux_losses["dag_regularization"] = dag_reg.item()
 
             # TemporalEnsemble gate entropy monitoring (logging only, no reg)
+            # Skip when task representation dim != expert input_dim (post-CGC)
             if self.training:
                 for expert in self._iter_shared_experts():
                     if hasattr(expert, "compute_gate_entropy"):
-                        ent = expert.compute_gate_entropy(
-                            task_representations[0].unsqueeze(1),
-                        )
-                        if ent is not None:
-                            aux_losses["temporal_gate_entropy"] = ent.item()
+                        repr_dim = task_representations[0].shape[-1]
+                        expert_in = getattr(expert, "_input_dim", repr_dim)
+                        if repr_dim != expert_in:
+                            continue  # dim mismatch after CGC — skip diagnostic
+                        try:
+                            ent = expert.compute_gate_entropy(
+                                task_representations[0].unsqueeze(1),
+                            )
+                            if ent is not None:
+                                aux_losses["temporal_gate_entropy"] = ent.item()
+                        except (RuntimeError, ValueError):
+                            pass  # shape mismatch — skip diagnostic
 
         # CGC attention weights for monitoring (inference only)
         cgc_weights = None
@@ -1071,8 +1163,9 @@ class PLEModel(nn.Module):
             # Handle 3D sequence tensors: if the expert input is 3D
             # (batch, seq_len, feat_dim) but the expert expects 2D,
             # reshape to (batch, seq_len * feat_dim) for compatibility.
-            # The expert's forward() expects (batch, input_dim).
-            if expert_input.dim() == 3 and expert.input_dim != expert_input.shape[1]:
+            # Sequence-aware experts (Mamba, TemporalEnsemble) keep the
+            # 3D tensor as-is so they can model temporal patterns.
+            if expert_input.dim() == 3 and not getattr(expert, "expects_sequence", False):
                 batch_size = expert_input.size(0)
                 expert_input = expert_input.reshape(batch_size, -1)
 
@@ -1109,9 +1202,10 @@ class PLEModel(nn.Module):
         predictions: Dict[str, torch.Tensor],
         targets: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
-        """Compute per-task losses using task-type-appropriate loss functions.
+        """Compute per-task losses using config-driven loss functions.
 
-        Override this method to plug in custom loss functions.
+        Uses ``self.task_loss_fns`` built by ``_build_task_loss_fns()``.
+        Applies class weights to cross-entropy losses when available.
         """
         losses: Dict[str, torch.Tensor] = {}
 
@@ -1123,17 +1217,40 @@ class PLEModel(nn.Module):
             target = targets[task_name]
             task_type = self.config.get_task_type(task_name)
 
-            if task_type == "binary":
-                loss = F.binary_cross_entropy(
-                    pred.squeeze(-1), target.float(),
-                )
-            elif task_type == "multiclass":
-                loss = F.cross_entropy(pred, target.long())
-            elif task_type == "regression":
-                loss = F.huber_loss(pred.squeeze(-1), target.float())
+            loss_fn = self.task_loss_fns.get(task_name)
+            if loss_fn is not None:
+                # Prepare inputs based on task type
+                if task_type in ("binary", "regression"):
+                    pred_input = pred.squeeze(-1)
+                    target_input = target.float()
+                else:
+                    pred_input = pred
+                    target_input = target.long()
+
+                # Apply class weights for CrossEntropyLoss if available
+                if (task_type == "multiclass"
+                        and task_name in self._class_weights
+                        and isinstance(loss_fn, nn.CrossEntropyLoss)):
+                    cw = self._class_weights[task_name].to(pred.device)
+                    loss = F.cross_entropy(
+                        pred_input, target_input,
+                        weight=cw,
+                        label_smoothing=loss_fn.label_smoothing,
+                    )
+                else:
+                    loss = loss_fn(pred_input, target_input)
             else:
-                # Fallback: MSE
-                loss = F.mse_loss(pred.squeeze(-1), target.float())
+                # Fallback (should not happen after _build_task_loss_fns)
+                if task_type == "binary":
+                    loss = F.binary_cross_entropy_with_logits(
+                        pred.squeeze(-1), target.float(),
+                    )
+                elif task_type == "multiclass":
+                    loss = F.cross_entropy(pred, target.long())
+                elif task_type == "regression":
+                    loss = F.huber_loss(pred.squeeze(-1), target.float())
+                else:
+                    loss = F.mse_loss(pred.squeeze(-1), target.float())
 
             losses[task_name] = loss
 

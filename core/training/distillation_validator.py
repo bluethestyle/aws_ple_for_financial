@@ -356,8 +356,14 @@ class DistillationValidator:
             return 0.0
         from sklearn.metrics import roc_auc_score
 
-        t_auc = roc_auc_score(labels, teacher.flatten())
-        s_auc = roc_auc_score(labels, student.flatten())
+        t_flat = teacher.flatten()
+        s_flat = student.flatten()
+        # Guard against NaN/inf in predictions
+        valid = np.isfinite(t_flat) & np.isfinite(s_flat) & np.isfinite(labels)
+        if valid.sum() < 10:
+            return 0.0
+        t_auc = roc_auc_score(labels[valid], t_flat[valid])
+        s_auc = roc_auc_score(labels[valid], s_flat[valid])
         return abs(t_auc - s_auc)
 
     @staticmethod

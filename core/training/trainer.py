@@ -29,14 +29,23 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from collections import Counter
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
 # AMP imports -- PyTorch 2.0+ uses torch.amp, older uses torch.cuda.amp
+_AMP_NEW_API = False
 try:
     from torch.amp import GradScaler, autocast
-except ImportError:
+    # Verify the new API actually accepts device_type kwarg
+    import inspect as _insp
+    if "device_type" in _insp.signature(autocast.__init__).parameters:
+        _AMP_NEW_API = True
+    else:
+        from torch.cuda.amp import GradScaler, autocast  # type: ignore[no-redef]
+except (ImportError, TypeError):
     from torch.cuda.amp import GradScaler, autocast  # type: ignore[no-redef]
 
 from core.model.ple.model import PLEModel, PLEInput, PLEOutput
@@ -352,6 +361,9 @@ class PLETrainer:
         state = self._make_state()
         self.callbacks.on_train_begin(state)
 
+        # Auto-compute class weights for multiclass tasks before training
+        self._auto_compute_class_weights(train_loader)
+
         try:
             if phase == "full":
                 # Phase 1: Shared experts
@@ -408,6 +420,96 @@ class PLETrainer:
             })
 
         return {"best_val_loss": self.best_val_loss, **self.best_val_metrics}
+
+    # ------------------------------------------------------------------
+    # Class weight auto-computation
+    # ------------------------------------------------------------------
+
+    def _auto_compute_class_weights(self, train_loader: DataLoader) -> None:
+        """Auto-compute balanced class weights for multiclass tasks.
+
+        Iterates through the first ``max_batches`` batches of the training
+        DataLoader, collects label counts per multiclass task, and computes
+        inverse-frequency class weights using the sklearn balanced formula:
+
+            w_c = n_samples / (n_classes * count_c)
+
+        The computed weights are stored as ``Dict[str, torch.Tensor]`` and
+        passed to the model via ``model.set_class_weights()``.
+
+        Weights are clamped to [0.1, 10.0] to prevent extreme values from
+        destabilizing training.
+        """
+        # Identify multiclass tasks
+        multiclass_tasks: Dict[str, int] = {}
+        for task_name in self.model.task_names:
+            task_type = self.model.config.get_task_type(task_name)
+            if task_type == "multiclass":
+                n_classes = self.model.config.get_task_output_dim(task_name)
+                if n_classes > 1:
+                    multiclass_tasks[task_name] = n_classes
+
+        if not multiclass_tasks:
+            return
+
+        logger.info(
+            "Auto-computing class weights for: %s", list(multiclass_tasks.keys()),
+        )
+
+        # Collect label counts (sample up to 50 batches)
+        max_batches = 50
+        counters: Dict[str, Counter] = {name: Counter() for name in multiclass_tasks}
+
+        for batch_idx, batch in enumerate(train_loader):
+            if batch_idx >= max_batches:
+                break
+
+            # Support PLEInput, dict, and object with .targets
+            if hasattr(batch, "targets"):
+                targets = batch.targets or {}
+            elif isinstance(batch, dict):
+                targets = batch.get("targets", {})
+            else:
+                continue
+
+            for task_name in multiclass_tasks:
+                if task_name in targets:
+                    labels = targets[task_name].cpu().numpy().flatten().astype(int)
+                    counters[task_name].update(labels.tolist())
+
+        # Compute inverse-frequency weights
+        class_weights: Dict[str, torch.Tensor] = {}
+        cw_min, cw_max = 0.1, 10.0
+
+        for task_name, counter in counters.items():
+            if not counter:
+                logger.warning(
+                    "%s: no label samples found, skipping class weights", task_name,
+                )
+                continue
+
+            n_classes = multiclass_tasks[task_name]
+            n_samples = sum(counter.values())
+
+            weights = []
+            for c in range(n_classes):
+                count_c = counter.get(c, 1)  # avoid division by zero
+                w = n_samples / (n_classes * count_c)
+                w = max(cw_min, min(cw_max, round(w, 4)))
+                weights.append(w)
+
+            weight_tensor = torch.tensor(weights, dtype=torch.float32)
+            class_weights[task_name] = weight_tensor.to(self.device)
+
+            logger.info(
+                "%s: class_weights computed (n_samples=%d, n_classes=%d, "
+                "range=[%.4f, %.4f])",
+                task_name, n_samples, n_classes,
+                min(weights), max(weights),
+            )
+
+        if class_weights:
+            self.model.set_class_weights(class_weights)
 
     # ------------------------------------------------------------------
     # Phase setup / teardown
@@ -564,7 +666,7 @@ class PLETrainer:
             # Forward pass
             try:
                 if self.config.amp.enabled:
-                    with autocast(device_type=device_type):
+                    with (autocast(device_type=device_type) if _AMP_NEW_API else autocast()):
                         outputs: PLEOutput = self.model(inputs, compute_loss=True)
                         loss = outputs.total_loss / accum_steps
                 else:

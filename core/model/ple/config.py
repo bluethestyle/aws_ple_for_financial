@@ -334,6 +334,12 @@ class PLEConfig:
     # _build_task_experts() for group-specific expert selection.
     task_group_map: Dict[str, str] = field(default_factory=dict)
 
+    # -- Per-task loss configuration -----------------------------------------
+    # Maps task_name -> loss type string (e.g. "focal", "ce", "huber", "mse")
+    task_loss_types: Dict[str, str] = field(default_factory=dict)
+    # Maps task_name -> loss params dict (e.g. {"alpha": 0.25, "gamma": 2.0})
+    task_loss_params: Dict[str, Dict] = field(default_factory=dict)
+
     # -- Per-task overrides --------------------------------------------------
     # Maps task_name -> {output_dim, activation, task_type, domain_experts, ...}
     task_overrides: Dict[str, dict] = field(default_factory=dict)
@@ -374,6 +380,47 @@ class PLEConfig:
         """
         override = self.task_overrides.get(task_name, {})
         return override.get("tower_type", "standard")
+
+    def get_task_loss_type(self, task_name: str) -> str:
+        """Return the loss type string for a specific task.
+
+        Priority:
+          1. Explicit entry in ``task_loss_types``.
+          2. ``loss`` key in ``task_overrides``.
+          3. Auto-infer from task_type: binary->bce, multiclass->ce,
+             regression->huber.
+        """
+        # 1. Explicit task_loss_types mapping
+        if task_name in self.task_loss_types:
+            return self.task_loss_types[task_name]
+
+        # 2. task_overrides "loss" key
+        override = self.task_overrides.get(task_name, {})
+        if "loss" in override:
+            return override["loss"]
+
+        # 3. Auto-infer from task_type
+        task_type = self.get_task_type(task_name)
+        _default_loss = {
+            "binary": "bce",
+            "multiclass": "ce",
+            "regression": "huber",
+        }
+        return _default_loss.get(task_type, "mse")
+
+    def get_task_loss_params(self, task_name: str) -> Dict:
+        """Return loss hyperparameters for a specific task.
+
+        Merges ``task_loss_params[task_name]`` with any ``loss_params``
+        key in ``task_overrides[task_name]``.
+        """
+        params: Dict = {}
+        override = self.task_overrides.get(task_name, {})
+        if "loss_params" in override:
+            params.update(override["loss_params"])
+        if task_name in self.task_loss_params:
+            params.update(self.task_loss_params[task_name])
+        return params
 
     def get_tower_dims(self, task_name: str) -> Optional[List[int]]:
         """Return per-task tower hidden_dims override, or ``None`` for default.

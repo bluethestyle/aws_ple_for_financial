@@ -4,7 +4,7 @@ Ablation Test Orchestrator — submit & monitor SageMaker Jobs.
 
 Runs a multi-phase ablation study on the ealtman2019 credit-card dataset:
 
-    Phase 0  Data Preparation   (Processing Job, CPU)
+    Phase 0  Data Preparation   (Processing Job, GPU)
     Phase 1  Feature Group Ablation  (9 Training Jobs, GPU)
     Phase 2  Expert Ablation         (7 Training Jobs, GPU)
     Phase 3  Hyperparameter Sensitivity (12 Training Jobs, GPU)
@@ -163,6 +163,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Submit jobs and return immediately (don't wait for completion)",
     )
+    parser.add_argument(
+        "--skip-fidelity-gate",
+        action="store_true",
+        default=True,
+        help="Skip fidelity gate in Phase 4 distillation (default: True)",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        help="Max retry attempts for processing jobs on failure (default: 3)",
+    )
     return parser.parse_args()
 
 
@@ -217,6 +229,38 @@ def _prepare_source_package(output_dir: str) -> str:
     logger.info("Source package created: %s (%.1f MB)",
                 tar_path, os.path.getsize(tar_path) / 1024 / 1024)
     return tar_path
+
+
+# ===================================================================
+# Utilities
+# ===================================================================
+
+def _is_json_serializable(value: Any) -> bool:
+    """Return True if value is safely JSON-serializable."""
+    try:
+        json.dumps(value, default=str)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _sanitize_job_name(name: str) -> str:
+    """Sanitize a SageMaker job name to meet API constraints.
+
+    SageMaker job names must match: ^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}$
+    Max length 63 characters.
+    """
+    import re
+    # Replace any non-alphanumeric/hyphen characters with hyphens
+    sanitized = re.sub(r"[^a-zA-Z0-9-]", "-", name)
+    # Collapse consecutive hyphens
+    sanitized = re.sub(r"-{2,}", "-", sanitized)
+    # Strip leading/trailing hyphens
+    sanitized = sanitized.strip("-")
+    # Truncate to 63 characters (SageMaker limit)
+    if len(sanitized) > 63:
+        sanitized = sanitized[:63].rstrip("-")
+    return sanitized
 
 
 # ===================================================================
@@ -378,20 +422,16 @@ def _submit_training_job(
         "NCCL_DEBUG": "WARN",
     }
 
-    # Create lightweight source dir for Estimator (excludes data/)
+    # Package source code via _prepare_source_package (single packaging path)
+    tmp_dir = tempfile.mkdtemp()
+    source_tar = _prepare_source_package(tmp_dir)
+
+    # Extract tar.gz to a temp dir for SageMaker Estimator source_dir
     import shutil
-    pkg_dir = Path("_source_pkg")
-    if pkg_dir.exists():
-        shutil.rmtree(pkg_dir)
-    for d in ["core", "configs", "containers", "scripts", "adapters"]:
-        src = PROJECT_ROOT / d
-        if src.exists():
-            shutil.copytree(src, pkg_dir / d, dirs_exist_ok=True,
-                           ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    for f in ["pyproject.toml", "requirements.txt"]:
-        src = PROJECT_ROOT / f
-        if src.exists():
-            shutil.copy2(src, pkg_dir / f)
+    pkg_dir = Path(tempfile.mkdtemp()) / "source"
+    pkg_dir.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(source_tar, "r:gz") as tar:
+        tar.extractall(str(pkg_dir))
 
     estimator = PyTorch(
         entry_point="containers/training/train.py",
@@ -417,11 +457,11 @@ def _submit_training_job(
     inputs = {
         "train": TrainingInput(
             data_uri,
-            content_type="application/x-parquet",
             distribution="FullyReplicated",
         ),
     }
 
+    job_name = _sanitize_job_name(job_name)
     logger.info("Submitting Training Job: %s", job_name)
     estimator.fit(inputs, job_name=job_name, wait=False)
 
@@ -445,8 +485,10 @@ def _submit_processing_job(
     inputs: Optional[List[Any]] = None,
     wait: bool = True,
     dry_run: bool = False,
+    use_gpu: bool = False,
+    max_retries: int = 0,
 ) -> Dict[str, Any]:
-    """Submit a SageMaker SKLearn Processing Job.
+    """Submit a SageMaker Processing Job (SKLearn or PyTorch).
 
     Parameters
     ----------
@@ -466,6 +508,10 @@ def _submit_processing_job(
         Whether to block until job completes.
     dry_run : bool
         Print config without submitting.
+    use_gpu : bool
+        If True, use PyTorchProcessor with GPU deps instead of SKLearnProcessor.
+    max_retries : int
+        Number of retry attempts on failure (0 = no retries).
 
     Returns
     -------
@@ -485,16 +531,16 @@ def _submit_processing_job(
         logger.info("  Instance: %s", instance_type)
         logger.info("  Output: %s", s3_output)
         logger.info("  Arguments: %s", arguments)
+        logger.info("  GPU mode: %s", use_gpu)
         result["status"] = "DRY_RUN"
         return result
 
     import sagemaker
     from sagemaker.processing import ProcessingInput, ProcessingOutput
-    from sagemaker.sklearn import SKLearnProcessor
 
     session = sagemaker.Session()
 
-    # Package source code as tar.gz (SKLearnProcessor.run() lacks source_dir)
+    # Package source code as tar.gz
     tmp_dir = tempfile.mkdtemp()
     source_tar = _prepare_source_package(tmp_dir)
     s3_source_key = f"ablation-test/{job_name}/source/source_pkg.tar.gz"
@@ -503,12 +549,31 @@ def _submit_processing_job(
     _b3.client("s3").upload_file(source_tar, S3_BUCKET, s3_source_key)
     logger.info("Source package uploaded: %s", s3_source)
 
+    # Build pip install list based on whether we need GPU deps
+    if use_gpu:
+        pip_deps = [
+            "pyyaml", "omegaconf", "lightgbm", "pyarrow", "scipy",
+            "scikit-learn", "duckdb",
+            # Feature generators (CPU-based, also needed in GPU jobs)
+            "hmmlearn", "ripser", "giotto-ph", "persim",
+            # GPU acceleration (on top of PyTorch base image)
+            "cupy-cuda12x", "mamba-ssm",
+        ]
+    else:
+        pip_deps = [
+            "pyyaml", "omegaconf", "lightgbm", "pyarrow", "scipy",
+            "scikit-learn", "duckdb", "torch",
+            # Feature generators (CPU)
+            "hmmlearn", "ripser", "giotto-ph", "persim",
+        ]
+    pip_install_str = ", ".join(f'"{d}"' for d in pip_deps)
+
     # Create wrapper script that unpacks source + installs deps + runs target
     wrapper = Path("_ablation_wrapper.py")
     wrapper.write_text(f"""\
 import subprocess, sys, os, tarfile
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
-                       "pyyaml", "omegaconf", "lightgbm", "pyarrow", "scipy", "scikit-learn", "duckdb", "torch"])
+                       {pip_install_str}])
 src_tar = "/opt/ml/processing/input/source/source_pkg.tar.gz"
 src_dir = "/opt/ml/processing/source"
 os.makedirs(src_dir, exist_ok=True)
@@ -528,15 +593,6 @@ sys.argv = ["{script}"] + {arguments!r}
 exec(open("{script}").read())
 """)
 
-    processor = SKLearnProcessor(
-        role=ROLE_ARN,
-        framework_version="1.2-1",
-        instance_type=instance_type,
-        instance_count=1,
-        sagemaker_session=session,
-        env={"PYTHONIOENCODING": "utf-8"},
-    )
-
     all_inputs = [
         ProcessingInput(
             source=s3_source,
@@ -551,22 +607,65 @@ exec(open("{script}").read())
         ),
     ]
 
-    logger.info("Submitting Processing Job: %s", job_name)
-    processor.run(
-        code=str(wrapper),
-        inputs=all_inputs,
-        outputs=outputs,
-        job_name=job_name,
-        wait=False,
-    )
+    # Retry loop — attempt submission up to (1 + max_retries) times
+    attempt = 0
+    last_status = "Unknown"
+    while attempt <= max_retries:
+        attempt_job_name = _sanitize_job_name(
+            job_name if attempt == 0 else f"{job_name}-r{attempt}"
+        )
+        attempt_suffix = f" (attempt {attempt + 1}/{max_retries + 1})" if max_retries > 0 else ""
+
+        if use_gpu:
+            from sagemaker.pytorch import PyTorchProcessor
+            processor = PyTorchProcessor(
+                role=ROLE_ARN,
+                framework_version=PYTORCH_VERSION,
+                py_version=PY_VERSION,
+                instance_type=instance_type,
+                instance_count=1,
+                sagemaker_session=session,
+                env={"PYTHONIOENCODING": "utf-8"},
+            )
+        else:
+            from sagemaker.sklearn import SKLearnProcessor
+            processor = SKLearnProcessor(
+                role=ROLE_ARN,
+                framework_version="1.2-1",
+                instance_type=instance_type,
+                instance_count=1,
+                sagemaker_session=session,
+                env={"PYTHONIOENCODING": "utf-8"},
+            )
+
+        logger.info("Submitting Processing Job: %s%s", attempt_job_name, attempt_suffix)
+        processor.run(
+            code=str(wrapper),
+            inputs=all_inputs,
+            outputs=outputs,
+            job_name=attempt_job_name,
+            wait=False,
+        )
+
+        if wait:
+            last_status = _wait_for_processing_job(attempt_job_name)
+            if last_status == "Completed" or attempt >= max_retries:
+                result["status"] = last_status
+                result["job_name"] = attempt_job_name
+                if attempt > 0:
+                    result["retry_attempts"] = attempt
+                break
+            logger.warning(
+                "Processing Job %s failed — retrying (%d/%d)",
+                attempt_job_name, attempt + 1, max_retries,
+            )
+            attempt += 1
+        else:
+            result["status"] = "InProgress"
+            result["job_name"] = attempt_job_name
+            break
+
     wrapper.unlink(missing_ok=True)
-
-    if wait:
-        status = _wait_for_processing_job(job_name)
-        result["status"] = status
-    else:
-        result["status"] = "InProgress"
-
     return result
 
 
@@ -592,7 +691,7 @@ def run_phase0(s3_base: str, ts: str, args: argparse.Namespace) -> Dict[str, Any
         job_name=job_name,
         script="adapters/ealtman2019_adapter.py",
         s3_output=s3_output,
-        instance_type=args.instance_type_cpu,
+        instance_type=args.instance_type_cpu,  # Processing Job GPU quota=0; CPU + numpy fallbacks
         inputs=[
             ProcessingInput(
                 source=f"s3://{S3_BUCKET}/data/raw/ealtman2019/",
@@ -605,9 +704,13 @@ def run_phase0(s3_base: str, ts: str, args: argparse.Namespace) -> Dict[str, Any
         ],
         wait=not args.no_wait,
         dry_run=args.dry_run,
+        use_gpu=False,
     )
 
-    result["data_uri"] = f"{s3_output}ealtman2019_features.parquet"
+    # Point data_uri at the output directory (not a single file) so that
+    # training jobs receive both the parquet AND the event_sequences .npy files
+    # produced by the adapter.
+    result["data_uri"] = s3_output
     return result
 
 
@@ -645,6 +748,7 @@ def run_phase1(
             "batch_size": "128",
             "learning_rate": "0.001",
             "seed": "42",
+            "_s3_output": f"{s3_base}/phase1/{name}",
         }
 
         logger.info("--- Scenario: %s (remove=%s) ---", name, scenario["remove"])
@@ -700,6 +804,7 @@ def run_phase2(
             "batch_size": "128",
             "learning_rate": "0.001",
             "seed": "42",
+            "_s3_output": f"{s3_base}/phase2/{name}",
         }
 
         logger.info("--- Scenario: %s (experts=%s) ---", name, scenario["shared"])
@@ -756,6 +861,7 @@ def run_phase3(
             "temperature": str(scenario.get("temperature", 5.0)),
             "num_layers": str(scenario.get("num_layers", 3)),
             "seed": "42",
+            "_s3_output": f"{s3_base}/phase3/{name}",
         }
 
         logger.info("--- Scenario: %s ---", name)
@@ -915,6 +1021,7 @@ def run_phase4(
             "learning_rate": str(best_config["learning_rate"]),
             "num_layers": str(best_config["num_layers"]),
             "seed": "42",
+            "_s3_output": f"{s3_base}/phase4/teacher",
         }
 
         teacher_result = _submit_training_job(
@@ -957,23 +1064,27 @@ def run_phase4(
             )
         )
 
+    distill_arguments = [
+        "--teacher-checkpoint", "/opt/ml/processing/input/teacher/model.pth",
+        "--data-path", "/opt/ml/processing/input/data/",
+        "--output-dir", "/opt/ml/processing/output",
+        "--config", CONFIG_PATH,
+        "--soft-label-path", "/opt/ml/processing/output/soft_labels.parquet",
+        "--temperature", str(best_config["temperature"]),
+    ]
+    if args.skip_fidelity_gate:
+        distill_arguments.append("--skip-fidelity-gate")
+
     distill_result = _submit_processing_job(
         job_name=distill_job_name,
         script="scripts/run_distillation.py",
         s3_output=s3_distill_output,
         instance_type=args.instance_type_cpu,
-        arguments=[
-            "--teacher-checkpoint", "/opt/ml/processing/input/teacher/model.pth",
-            "--data-path", "/opt/ml/processing/input/data/",
-            "--output-dir", "/opt/ml/processing/output",
-            "--config", CONFIG_PATH,
-            "--soft-label-path", "/opt/ml/processing/output/soft_labels.parquet",
-            "--temperature", str(best_config["temperature"]),
-            "--skip-fidelity-gate",
-        ],
+        arguments=distill_arguments,
         inputs=distill_inputs if not args.dry_run else None,
         wait=not args.no_wait,
         dry_run=args.dry_run,
+        max_retries=args.max_retries,
     )
 
     return {
@@ -1019,9 +1130,11 @@ def run_phase5(
                 for r in phase_results
             ]
         elif isinstance(phase_results, dict):
+            # Preserve all keys for dict-type phase results (phase0, phase4, phase5)
+            # so downstream report generators can access data_uri, model_uri, best_config, etc.
             manifest["phases"][phase_key] = {
-                "status": phase_results.get("status", "Unknown"),
-                "job_name": phase_results.get("job_name", ""),
+                k: v for k, v in phase_results.items()
+                if _is_json_serializable(v)
             }
 
     if not args.dry_run:
@@ -1099,8 +1212,13 @@ def main() -> None:
         source_uri = f"{s3_base}/source/source.tar.gz"
         logger.info("[DRY RUN] Source package: %s", source_uri)
 
-    # Default data URI (from config)
-    data_uri = f"s3://{S3_BUCKET}/data/adapted/ealtman2019_features.parquet"
+    # Default data URI — point to the directory so training jobs get both
+    # the parquet features and the event_sequences .npy files.
+    # Check env override for reusing a previous Phase 0 output.
+    data_uri = os.environ.get(
+        "ABLATION_DATA_URI",
+        f"s3://{S3_BUCKET}/data/adapted/",
+    )
 
     # Collect results from each phase
     all_results: Dict[str, Any] = {}

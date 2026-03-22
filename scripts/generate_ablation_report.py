@@ -505,8 +505,10 @@ def section_overview(manifest: Optional[dict], s3_base: str) -> str:
 def section_data_quality(s3_base: str) -> str:
     """Section 2: Data Quality."""
     # Try to load quality gate results
-    qg_data = _download_json(f"{s3_base}/phase0/data/output/quality_gate_report.json")
-    feature_stats = _download_json(f"{s3_base}/phase0/data/output/feature_stats.json")
+    qg_data = _download_json(f"{s3_base}/phase0/data/quality_gate_report.json") or \
+              _download_json(f"{s3_base}/phase0/data/output/quality_gate_report.json")
+    feature_stats = _download_json(f"{s3_base}/phase0/data/feature_stats.json") or \
+                    _download_json(f"{s3_base}/phase0/data/output/feature_stats.json")
 
     html = '<h1>2. Data Quality</h1>\n'
 
@@ -555,7 +557,8 @@ def section_data_quality(s3_base: str) -> str:
     html += '</div>\n'
 
     # Label distribution
-    label_dist = _download_json(f"{s3_base}/phase0/data/output/label_distribution.json")
+    label_dist = _download_json(f"{s3_base}/phase0/data/label_stats.json") or \
+                 _download_json(f"{s3_base}/phase0/data/output/label_distribution.json")
     html += '<div class="card"><div class="card-header">Label Distribution</div>\n'
     if label_dist:
         for task_name in TASK_NAMES:

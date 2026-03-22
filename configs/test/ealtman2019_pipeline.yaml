@@ -169,13 +169,20 @@ task_groups:
 # ---------------------------------------------------------------------------
 data:
   backend: pandas
-  source: s3://aiops-ple-financial/data/adapted/ealtman2019_features.parquet
-  train_path: data/adapted/ealtman2019_features.parquet
-  s3_path: s3://aiops-ple-financial/data/adapted/ealtman2019_features.parquet
+  source: s3://aiops-ple-financial/data/adapted/
+  train_path: data/adapted/
+  s3_path: s3://aiops-ple-financial/data/adapted/
+  parquet_file: ealtman2019_features.parquet
 
 features:
   id_cols: [user_id]
   input_dim: 537
+  event_sequences:
+    enabled: true
+    seq_len: 180
+    feat_dim: 16
+    file_pattern: "ealtman2019_event_sequences.npy"
+    lengths_file_pattern: "ealtman2019_seq_lengths.npy"
 
 # ---------------------------------------------------------------------------
 # Model — Full Expert Basket (7 shared, production-equivalent)
@@ -228,6 +235,9 @@ model:
     extraction_dim: 64
     num_shared_experts: 7
     num_task_experts: 1
+
+  loss_weighting:
+    strategy: uncertainty
 
   task_tower:
     default_dims: [64, 32]

@@ -60,6 +60,7 @@ class DataSpec:
     backend: str = "pandas"
     train_path: str = ""
     s3_path: str = ""
+    parquet_file: str = ""
 
 
 @dataclass
