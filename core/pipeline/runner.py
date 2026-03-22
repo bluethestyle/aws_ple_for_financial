@@ -500,6 +500,35 @@ class PipelineRunner:
             feature_pipeline.save(str(out / "feature_pipeline"))
 
         # ----------------------------------------------------------
+        # Stage 8.5: Model analysis (CGC gates + HGCN interpretable)
+        # ----------------------------------------------------------
+        if not state.is_complete("stage8_5"):
+            try:
+                analysis_results = self._analyze_model(
+                    val_loader=val_loader,
+                    output_dir=output_dir,
+                )
+                results["analysis"] = analysis_results
+                state.mark_complete("stage8_5", {
+                    "status": "success",
+                    "artifacts": list(analysis_results.keys()),
+                })
+            except Exception as e:
+                logger.warning(
+                    "[PIPELINE] Stage 8.5 (analysis) failed: %s — continuing",
+                    e,
+                )
+                results["analysis"] = {"status": "failed", "error": str(e)}
+                state.mark_complete("stage8_5", {"status": "failed"})
+        else:
+            logger.info(
+                "[PIPELINE] Stage 8.5 already complete, skipping analysis..."
+            )
+            results["analysis"] = state.state["artifacts"].get(
+                "stage8_5", {"status": "resumed"},
+            )
+
+        # ----------------------------------------------------------
         # Stage 9: Knowledge distillation
         # ----------------------------------------------------------
         if not state.is_complete("stage9"):
@@ -1339,6 +1368,299 @@ class PipelineRunner:
             checkpoint_path,
         )
         return {"status": "success", "model": "ple", **results}
+
+    # ------------------------------------------------------------------
+    # Stage 8.5: Model Analysis (CGC gates + HGCN interpretable scores)
+    # ------------------------------------------------------------------
+
+    def _analyze_model(
+        self,
+        val_loader: Any,
+        output_dir: str,
+    ) -> dict:
+        """Run post-training model analysis.
+
+        Produces:
+          - ``gate_analysis.json`` -- per-task CGC expert attention weights
+          - ``hgcn_interpretable.json`` -- 6D interpretable scores from HGCN
+
+        All artifacts are saved under ``{output_dir}/analysis/``.
+
+        Args:
+            val_loader: Validation DataLoader.
+            output_dir: Root output directory.
+
+        Returns:
+            Analysis results dict.
+        """
+        import torch
+
+        from ..evaluation.gate_analyzer import GateAnalyzer
+
+        out = Path(output_dir)
+        analysis_dir = out / "analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+
+        analysis: Dict[str, Any] = {}
+        stage_start = time.time()
+        logger.info("[Stage 8.5] Starting model analysis...")
+
+        # -- Load trained model ------------------------------------------------
+        checkpoint_path = out / "ple_model.pt"
+        if not checkpoint_path.exists():
+            logger.warning(
+                "[Stage 8.5] No PLE checkpoint found at %s, skipping analysis.",
+                checkpoint_path,
+            )
+            return {"status": "skipped", "reason": "no_checkpoint"}
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        checkpoint = torch.load(str(checkpoint_path), map_location=device)
+        ple_config = checkpoint["ple_config"]
+
+        from ..model.ple.model import PLEModel
+        model = PLEModel(ple_config)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.to(device)
+        model.eval()
+
+        # -- CGC Gate analysis -------------------------------------------------
+        try:
+            gate_analyzer = GateAnalyzer(model)
+            gate_result = gate_analyzer.analyze(val_loader, max_batches=20)
+            analysis["gate_weights"] = gate_result.to_dict()
+
+            gate_path = analysis_dir / "gate_analysis.json"
+            with open(gate_path, "w") as f:
+                json.dump(gate_result.to_dict(), f, indent=2)
+            logger.info(
+                "[Stage 8.5] Gate analysis saved to %s", gate_path,
+            )
+        except Exception as e:
+            logger.warning("[Stage 8.5] CGC gate analysis failed: %s", e)
+            analysis["gate_weights"] = {"error": str(e)}
+
+        # -- HGCN interpretable scores ----------------------------------------
+        try:
+            hgcn_scores = self._extract_hgcn_scores(model, val_loader, device)
+            analysis["hgcn_interpretable"] = hgcn_scores
+
+            hgcn_path = analysis_dir / "hgcn_interpretable.json"
+            with open(hgcn_path, "w") as f:
+                json.dump(hgcn_scores, f, indent=2)
+            logger.info(
+                "[Stage 8.5] HGCN interpretable scores saved to %s", hgcn_path,
+            )
+        except Exception as e:
+            logger.warning("[Stage 8.5] HGCN interpretable extraction failed: %s", e)
+            analysis["hgcn_interpretable"] = {"error": str(e)}
+
+        # -- Integrated Gradients feature attribution -------------------------
+        analysis_cfg = self._config_to_dict().get("analysis", {})
+        ig_cfg = analysis_cfg.get("integrated_gradients", {})
+        try:
+            from ..evaluation.integrated_gradients import IntegratedGradients
+
+            ig = IntegratedGradients(
+                model,
+                baseline=ig_cfg.get("baseline", "zeros"),
+                n_steps=ig_cfg.get("n_steps", 50),
+                device=device,
+            )
+            ig_max_batches = ig_cfg.get("max_batches", 50)
+
+            ig_results: Dict[str, Any] = {}
+            task_names = getattr(model, "task_names", [])
+            for task_name in task_names:
+                try:
+                    importance = ig.feature_importance(
+                        val_loader, task_name, max_batches=ig_max_batches,
+                    )
+                    ig_results[task_name] = importance
+                    logger.info(
+                        "[Stage 8.5] IG attribution for '%s': top-5 = %s",
+                        task_name, list(importance.keys())[:5],
+                    )
+                except Exception as task_e:
+                    logger.warning(
+                        "[Stage 8.5] IG failed for task '%s': %s",
+                        task_name, task_e,
+                    )
+                    ig_results[task_name] = {"error": str(task_e)}
+
+            analysis["ig_attributions"] = ig_results
+
+            ig_path = analysis_dir / "ig_attributions.json"
+            with open(ig_path, "w") as f:
+                json.dump(ig_results, f, indent=2, default=str)
+            logger.info("[Stage 8.5] IG attributions saved to %s", ig_path)
+
+        except Exception as e:
+            logger.warning("[Stage 8.5] Integrated Gradients analysis failed: %s", e)
+            analysis["ig_attributions"] = {"error": str(e)}
+
+        # -- Expert Redundancy CCA --------------------------------------------
+        cca_cfg = analysis_cfg.get("expert_redundancy", {})
+        if cca_cfg.get("enabled", True):
+            try:
+                from ..evaluation.expert_redundancy import ExpertRedundancyAnalyzer
+
+                cca_analyzer = ExpertRedundancyAnalyzer(
+                    model,
+                    n_components=cca_cfg.get("n_components", 10),
+                    min_samples=cca_cfg.get("min_samples", 256),
+                )
+                cca_result = cca_analyzer.analyze(
+                    val_loader, max_batches=cca_cfg.get("max_batches", 20),
+                )
+
+                if cca_result is not None:
+                    analysis["expert_redundancy"] = cca_result.to_dict()
+                    logger.info(
+                        "[Stage 8.5] Expert redundancy CCA:\n%s",
+                        cca_result.summary(),
+                    )
+
+                    cca_path = analysis_dir / "expert_redundancy.json"
+                    with open(cca_path, "w") as f:
+                        json.dump(cca_result.to_dict(), f, indent=2, default=str)
+                    logger.info(
+                        "[Stage 8.5] Expert redundancy saved to %s", cca_path,
+                    )
+                else:
+                    analysis["expert_redundancy"] = {
+                        "status": "skipped",
+                        "reason": "insufficient_data_or_experts",
+                    }
+            except Exception as e:
+                logger.warning("[Stage 8.5] Expert redundancy CCA failed: %s", e)
+                analysis["expert_redundancy"] = {"error": str(e)}
+
+        elapsed = time.time() - stage_start
+        analysis["analysis_time_seconds"] = round(elapsed, 2)
+        logger.info("[Stage 8.5] Analysis complete in %.2fs", elapsed)
+
+        return analysis
+
+    def _extract_hgcn_scores(
+        self,
+        model: Any,
+        val_loader: Any,
+        device: Any,
+    ) -> dict:
+        """Extract 6D interpretable projections from the HGCN expert.
+
+        Runs a forward pass through ``val_loader`` (up to 20 batches),
+        collects ``UnifiedHGCNExpert.interpretable_scores``, and returns
+        mean scores along each interpretive axis.
+
+        Args:
+            model: Trained PLEModel (already on device, eval mode).
+            val_loader: Validation DataLoader.
+            device: Torch device.
+
+        Returns:
+            Dict with mean interpretable scores and per-axis statistics.
+        """
+        import torch
+        from core.model.ple.model import PLEInput
+        from core.model.experts.hgcn import UnifiedHGCNExpert
+
+        # Find HGCN expert(s) in the model
+        hgcn_experts = []
+        for expert in model._iter_shared_experts():
+            if isinstance(expert, UnifiedHGCNExpert):
+                hgcn_experts.append(expert)
+
+        if not hgcn_experts:
+            return {"status": "skipped", "reason": "no_hgcn_expert_found"}
+
+        all_scores: list = []
+        num_samples = 0
+
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(val_loader):
+                if batch_idx >= 20:
+                    break
+
+                # Build PLEInput from batch dict
+                if isinstance(batch, dict):
+                    ple_input = PLEInput(
+                        features=batch["features"].to(device),
+                        targets=None,
+                    )
+                    for fld in [
+                        "hyperbolic_features", "tda_features",
+                        "collaborative_features", "event_sequences",
+                        "session_sequences",
+                    ]:
+                        if fld in batch and batch[fld] is not None:
+                            object.__setattr__(
+                                ple_input, fld, batch[fld].to(device),
+                            )
+                elif hasattr(batch, "features"):
+                    ple_input = batch.to(device) if hasattr(batch, "to") else batch
+                else:
+                    continue
+
+                # Forward pass triggers HGCN interpretable projection
+                _ = model(ple_input)
+
+                # Collect scores from each HGCN expert
+                for expert in hgcn_experts:
+                    scores = expert.interpretable_scores
+                    if scores is not None:
+                        all_scores.append(scores.cpu())
+                        num_samples += scores.size(0)
+
+        if not all_scores:
+            return {"status": "no_scores_collected", "num_hgcn_experts": len(hgcn_experts)}
+
+        # Concatenate and compute statistics
+        combined = torch.cat(all_scores, dim=0)  # (N, 6)
+        mean_scores = combined.mean(dim=0).tolist()
+        std_scores = combined.std(dim=0).tolist()
+
+        # Get labels from the first HGCN expert
+        labels = hgcn_experts[0].interpretable_labels
+
+        # Build per-axis summary
+        axes = {
+            "hierarchy_activation_intensity": {
+                "mean": mean_scores[0:2],
+                "std": std_scores[0:2],
+            },
+            "depth_importance": {
+                "mean": mean_scores[2:4],
+                "std": std_scores[2:4],
+            },
+            "cross_level_interaction": {
+                "mean": mean_scores[4:6],
+                "std": std_scores[4:6],
+            },
+        }
+
+        return {
+            "status": "success",
+            "num_samples": num_samples,
+            "num_hgcn_experts": len(hgcn_experts),
+            "labels": labels,
+            "mean_scores": {
+                label: round(val, 6)
+                for label, val in zip(labels, mean_scores)
+            },
+            "std_scores": {
+                label: round(val, 6)
+                for label, val in zip(labels, std_scores)
+            },
+            "axes": {
+                axis_name: {
+                    "mean": [round(v, 6) for v in axis_data["mean"]],
+                    "std": [round(v, 6) for v in axis_data["std"]],
+                }
+                for axis_name, axis_data in axes.items()
+            },
+        }
 
     def _train_lgbm(
         self,

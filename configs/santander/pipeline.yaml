@@ -777,6 +777,21 @@ evaluation:
     primary: rmse
 
 # ---------------------------------------------------------------------------
+# Model Analysis (Stage 8.5: IG attribution + Expert Redundancy CCA)
+# ---------------------------------------------------------------------------
+analysis:
+  enabled: true
+  integrated_gradients:
+    n_steps: 50
+    baseline: zeros
+    max_batches: 50
+  expert_redundancy:
+    enabled: true
+    max_batches: 20
+    n_components: 10
+    min_samples: 256
+
+# ---------------------------------------------------------------------------
 # AWS / SageMaker configuration
 # ---------------------------------------------------------------------------
 aws:

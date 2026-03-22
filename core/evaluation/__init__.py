@@ -21,6 +21,12 @@ from core.evaluation.model_competition import (
     ModelCandidate,
     CompetitionResult,
 )
+from core.evaluation.integrated_gradients import IntegratedGradients
+from core.evaluation.expert_redundancy import (
+    ExpertRedundancyAnalyzer,
+    RedundancyResult,
+)
+from core.evaluation.gate_analyzer import GateAnalyzer, GateAnalysisResult
 
 __all__ = [
     "PropensityEstimator",
@@ -34,4 +40,9 @@ __all__ = [
     "CompetitionConfig",
     "ModelCandidate",
     "CompetitionResult",
+    "IntegratedGradients",
+    "ExpertRedundancyAnalyzer",
+    "RedundancyResult",
+    "GateAnalyzer",
+    "GateAnalysisResult",
 ]

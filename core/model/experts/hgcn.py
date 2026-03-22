@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -166,6 +166,24 @@ class UnifiedHGCNExpert(AbstractExpert):
             nn.SiLU(),
         )
 
+        # -- Interpretable 6D projection (detached for audit) -------------------
+        # Produces scores along 3 interpretive axes (2D each):
+        #   - hierarchy_activation_intensity (2D)
+        #   - depth_importance (2D)
+        #   - cross_level_interaction (2D)
+        self.interpretable_proj = nn.Linear(cfg.hidden_dim, 6)
+        self._interpretable_scores: Optional[torch.Tensor] = None
+
+        # Interpretable dimension labels for downstream consumers
+        self.interpretable_labels: List[str] = [
+            "hierarchy_activation_intensity_0",
+            "hierarchy_activation_intensity_1",
+            "depth_importance_0",
+            "depth_importance_1",
+            "cross_level_interaction_0",
+            "cross_level_interaction_1",
+        ]
+
         # -- Optional brand prediction heads ------------------------------------
         if self.use_brand_heads:
             self.mcc_level1_head = nn.Linear(cfg.hidden_dim, cfg.mcc_level1_classes)
@@ -197,7 +215,24 @@ class UnifiedHGCNExpert(AbstractExpert):
             ``[batch, output_dim]``
         """
         refined = self.refine_mlp(x)
+
+        # Compute 6D interpretable scores (detached for audit -- no grad)
+        self._interpretable_scores = self.interpretable_proj(refined).detach()
+
         return self.output_proj(refined)
+
+    @property
+    def interpretable_scores(self) -> Optional[torch.Tensor]:
+        """Return the most recent 6D interpretable projection.
+
+        Shape: ``[batch, 6]`` -- 3 axes x 2 dimensions each:
+          - ``[0:2]`` hierarchy_activation_intensity
+          - ``[2:4]`` depth_importance
+          - ``[4:6]`` cross_level_interaction
+
+        Returns ``None`` if :meth:`forward` has not been called yet.
+        """
+        return getattr(self, "_interpretable_scores", None)
 
     def predict_brand_heads(
         self, x: torch.Tensor
