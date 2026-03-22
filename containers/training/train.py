@@ -381,9 +381,23 @@ def load_data(
             logger.warning("Label derivation failed: %s", e)
 
     # Re-check after derivation — skip tasks whose labels still don't exist
+    # Also skip list-type columns (can't be converted to tensors)
     available_labels = set(df.columns)
-    tasks = [t for t in tasks if t["label_col"] in available_labels]
+    valid_tasks = []
+    for t in tasks:
+        lc = t["label_col"]
+        if lc not in available_labels:
+            logger.warning("Skipping task %s: label_col '%s' not in data", t["name"], lc)
+            continue
+        # Check if label is a scalar type (not list/object)
+        dtype = df[lc].dtype
+        if dtype == object or str(dtype).startswith("list"):
+            logger.warning("Skipping task %s: label_col '%s' is non-scalar (dtype=%s)", t["name"], lc, dtype)
+            continue
+        valid_tasks.append(t)
+    tasks = valid_tasks
     label_cols = [t["label_col"] for t in tasks]
+    logger.info("Valid tasks after label check: %d/%d", len(tasks), len(config.get("tasks", [])))
     if not tasks:
         raise ValueError("No tasks have valid label columns in the data.")
 
