@@ -1105,14 +1105,14 @@ def main() -> None:
         train_loader = DataLoader(
             train_subset, batch_size=batch_size, shuffle=True,
             collate_fn=train_loader.collate_fn,
-            num_workers=0 if use_gpu_loading else 4,
+            num_workers=0,
             pin_memory=not use_gpu_loading,
             drop_last=True,
         )
         val_loader = DataLoader(
             val_subset, batch_size=batch_size, shuffle=False,
             collate_fn=train_loader.collate_fn,
-            num_workers=0 if use_gpu_loading else 2,
+            num_workers=0,
             pin_memory=not use_gpu_loading,
         )
 
