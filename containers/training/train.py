@@ -1028,9 +1028,16 @@ def main() -> None:
     hp_num_layers = hp.get("num_layers")
     hp_temperature = hp.get("temperature")
 
+    # Inject max_rows HP into config for load_data()
+    max_rows_hp = hp.get("max_rows", 0)
+    if max_rows_hp:
+        config["max_rows"] = int(max_rows_hp)
+
     logger.info(f"Task: {task_name}")
     logger.info(f"Phase: {phase}")
     logger.info(f"Epochs: {epochs}, Batch size: {batch_size}, LR: {lr}")
+    if max_rows_hp:
+        logger.info(f"Max rows (subsample): {max_rows_hp}")
     if ablation_type:
         logger.info(f"Ablation type: {ablation_type}, scenario: {ablation_scenario}")
     if removed_feature_groups:
