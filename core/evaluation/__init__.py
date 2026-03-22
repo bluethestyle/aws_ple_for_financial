@@ -33,6 +33,10 @@ from core.evaluation.multidisciplinary_interpreter import (
 )
 from core.evaluation.xai_quality_evaluator import XAIQualityEvaluator, XAIReport
 from core.evaluation.model_card import ModelCardGenerator
+from core.evaluation.counterfactual import (
+    CounterfactualEvaluator,
+    PolicyEvaluationResult,
+)
 
 __all__ = [
     "PropensityEstimator",
@@ -56,4 +60,6 @@ __all__ = [
     "XAIQualityEvaluator",
     "XAIReport",
     "ModelCardGenerator",
+    "CounterfactualEvaluator",
+    "PolicyEvaluationResult",
 ]

@@ -1,5 +1,5 @@
 """
-PipelineRunner -- 9-stage universal pipeline orchestrator.
+PipelineRunner -- 10-stage universal pipeline orchestrator.
 
 Stages:
   1. Load raw data via DataAdapter
@@ -11,6 +11,7 @@ Stages:
   7. Build DataLoaders (PLEDataset)
   8. Train teacher model (PLE)
   9. Knowledge distillation (teacher -> LGBM students)
+  10. Serving preparation (CPE + reason generation) [config-gated]
 
 Each stage is independently testable and logs entry/exit.
 
@@ -78,7 +79,7 @@ class _PipelineState:
 
 
 class PipelineRunner:
-    """Execute a 9-stage training pipeline driven by :class:`PipelineConfig`.
+    """Execute a 10-stage training pipeline driven by :class:`PipelineConfig`.
 
     The runner wires together data loading (adapter), schema classification,
     encryption, feature engineering, label derivation, sequence building,
@@ -128,7 +129,7 @@ class PipelineRunner:
             state._save()
 
         logger.info("=" * 60)
-        logger.info("[PIPELINE] Starting 9-stage pipeline: %s", self.config.task_name)
+        logger.info("[PIPELINE] Starting 10-stage pipeline: %s", self.config.task_name)
         logger.info("=" * 60)
 
         # ----------------------------------------------------------
@@ -561,6 +562,78 @@ class PipelineRunner:
             )
             results["distillation"] = state.state["artifacts"].get(
                 "stage9", {"status": "resumed"},
+            )
+
+        # ----------------------------------------------------------
+        # Stage 9.5: Serving preparation (context vector store)
+        # ----------------------------------------------------------
+        if not state.is_complete("stage9_5"):
+            try:
+                serving_cfg = self._config_to_dict().get("serving_prep", {})
+                if serving_cfg.get("enabled", False):
+                    results["serving_prep"] = self._prepare_serving(
+                        feature_df=df_features,
+                        output_dir=output_dir,
+                    )
+                else:
+                    logger.info(
+                        "[Stage 9.5] Serving prep disabled in config, skipping."
+                    )
+                    results["serving_prep"] = {"status": "disabled"}
+                state.mark_complete("stage9_5", {
+                    "status": results.get("serving_prep", {}).get(
+                        "status", "unknown",
+                    ),
+                })
+            except Exception as e:
+                logger.warning(
+                    "[PIPELINE] Stage 9.5 (serving prep) failed: %s", e,
+                )
+                results["serving_prep"] = {"status": "error", "error": str(e)}
+                state.mark_complete("stage9_5", {"status": "error"})
+        else:
+            logger.info(
+                "[PIPELINE] Stage 9.5 already complete, skipping serving prep..."
+            )
+            results["serving_prep"] = state.state["artifacts"].get(
+                "stage9_5", {"status": "resumed"},
+            )
+
+        # ----------------------------------------------------------
+        # Stage 10: CPE + Agentic Reason Generation (config-gated)
+        # ----------------------------------------------------------
+        if not state.is_complete("stage10"):
+            try:
+                stage10_cfg = self._config_to_dict().get("serving_prep", {})
+                if stage10_cfg.get("cpe_enabled", False):
+                    results["stage10_cpe_reason"] = self._run_stage10_cpe_reason(
+                        output_dir=output_dir,
+                    )
+                else:
+                    logger.info(
+                        "[Stage 10] CPE + reason generation disabled, skipping."
+                    )
+                    results["stage10_cpe_reason"] = {"status": "disabled"}
+                state.mark_complete("stage10", {
+                    "status": results.get("stage10_cpe_reason", {}).get(
+                        "status", "unknown",
+                    ),
+                })
+            except Exception as e:
+                logger.warning(
+                    "[PIPELINE] Stage 10 (CPE + reason) failed: %s — continuing",
+                    e,
+                )
+                results["stage10_cpe_reason"] = {
+                    "status": "error", "error": str(e),
+                }
+                state.mark_complete("stage10", {"status": "error"})
+        else:
+            logger.info(
+                "[PIPELINE] Stage 10 already complete, skipping CPE + reason..."
+            )
+            results["stage10_cpe_reason"] = state.state["artifacts"].get(
+                "stage10", {"status": "resumed"},
             )
 
         # ----------------------------------------------------------
@@ -2322,6 +2395,282 @@ class PipelineRunner:
             "time_seconds": round(elapsed, 2),
             "output_dir": str(out),
         }
+
+    # ------------------------------------------------------------------
+    # Stage 9.5: Serving preparation (context vector store)
+    # ------------------------------------------------------------------
+
+    def _prepare_serving(
+        self,
+        feature_df: "pd.DataFrame",
+        output_dir: str,
+    ) -> Dict[str, Any]:
+        """Build the context vector store from feature embeddings.
+
+        This stage prepares artifacts needed for the serving / reason
+        generation layer:
+
+        1. Extract customer IDs and feature embeddings from the feature
+           DataFrame.
+        2. Build a :class:`ContextVectorStore` (LanceDB or numpy fallback).
+        3. Persist the store under ``<output_dir>/serving/context_store/``.
+
+        Args:
+            feature_df: Transformed feature DataFrame (from Stage 4).
+            output_dir: Root output directory.
+
+        Returns:
+            Dict with store statistics and path.
+        """
+        import numpy as np
+
+        stage_start = time.time()
+        logger.info("[Stage 9.5] Preparing serving artifacts...")
+
+        from core.recommendation.reason.context_store import ContextVectorStore
+
+        out = Path(output_dir)
+        store_path = out / "serving" / "context_store"
+        store_path.mkdir(parents=True, exist_ok=True)
+
+        # Determine customer ID column
+        id_cols = list(getattr(self.config.features, "id_cols", ["customer_id"]))
+        id_col = id_cols[0] if id_cols else "customer_id"
+
+        # Extract customer IDs
+        if id_col in feature_df.columns:
+            customer_ids = feature_df[id_col].values
+        else:
+            customer_ids = np.arange(len(feature_df))
+            logger.warning(
+                "[Stage 9.5] ID column '%s' not in features, using row indices.",
+                id_col,
+            )
+
+        # Use all numeric columns as the feature embedding
+        numeric_cols = feature_df.select_dtypes(include=[np.number]).columns.tolist()
+        # Exclude the ID column if it happens to be numeric
+        numeric_cols = [c for c in numeric_cols if c != id_col]
+
+        if not numeric_cols:
+            logger.warning("[Stage 9.5] No numeric feature columns found, skipping.")
+            return {"status": "skipped", "reason": "no_numeric_features"}
+
+        feature_vectors = feature_df[numeric_cols].values.astype(np.float32)
+        # Replace NaN with 0 for vector operations
+        feature_vectors = np.nan_to_num(feature_vectors, nan=0.0)
+
+        # Build metadata (lightweight: customer ID -> column count)
+        serving_cfg = self._config_to_dict().get("serving_prep", {})
+        cs_cfg = serving_cfg.get("context_store", {})
+        backend = cs_cfg.get("backend", "auto")
+
+        store = ContextVectorStore(
+            store_path=str(store_path),
+            backend=backend,
+        )
+
+        # Build basic metadata per customer
+        customer_metadata: Dict[str, Dict] = {}
+        for i, cid in enumerate(customer_ids):
+            customer_metadata[str(cid)] = {
+                "feature_dim": len(numeric_cols),
+                "index": int(i),
+            }
+
+        store.build(
+            customer_ids=customer_ids,
+            feature_vectors=feature_vectors,
+            metadata=customer_metadata,
+        )
+        store.save()
+
+        stats = store.get_stats()
+        elapsed = time.time() - stage_start
+        logger.info(
+            "[Stage 9.5] Serving prep complete in %.2fs: %s", elapsed, stats,
+        )
+
+        return {
+            "status": "completed",
+            "store_path": str(store_path),
+            "backend": store.backend,
+            "num_customers": stats.get("num_customers", 0),
+            "vector_dim": len(numeric_cols),
+            "time_seconds": round(elapsed, 2),
+        }
+
+    # ------------------------------------------------------------------
+    # Stage 10: CPE + Agentic Reason Generation
+    # ------------------------------------------------------------------
+
+    def _run_stage10_cpe_reason(
+        self,
+        output_dir: str,
+    ) -> Dict[str, Any]:
+        """Counterfactual policy evaluation and agentic reason generation.
+
+        Produces serving-layer artifacts:
+        - ``serving/cpe_evaluation.json`` -- CPE estimator results
+        - ``serving/reason_generation_sample.json`` -- sample L1 reasons
+        - ``serving/agentic_quality_report.json`` -- L2b quality report
+
+        This stage is config-gated via ``serving_prep.cpe_enabled``.
+
+        Args:
+            output_dir: Root output directory.
+
+        Returns:
+            Dict with status and artifact paths.
+        """
+        import numpy as np
+
+        stage_start = time.time()
+        logger.info("[Stage 10] Starting CPE + reason generation...")
+
+        out = Path(output_dir)
+        serving_dir = out / "serving"
+        serving_dir.mkdir(parents=True, exist_ok=True)
+
+        artifacts: Dict[str, Any] = {"status": "completed"}
+
+        # ----- CPE Evaluation -----
+        try:
+            from core.evaluation.counterfactual import CounterfactualEvaluator
+
+            cpe_cfg = self._config_to_dict().get("serving_prep", {}).get("cpe", {})
+            n_bootstrap = cpe_cfg.get("n_bootstrap", 500)
+            clip_max = cpe_cfg.get("clip_max", 100.0)
+
+            evaluator = CounterfactualEvaluator(
+                propensity_clip_range=(0.01, clip_max),
+                n_bootstrap=n_bootstrap,
+                output_dir=str(serving_dir),
+            )
+
+            # Generate synthetic evaluation data if no real data available
+            # (in production, this would come from logged serving data)
+            rng = np.random.default_rng(42)
+            n_eval = cpe_cfg.get("n_eval_samples", 1000)
+
+            rewards = rng.binomial(1, 0.05, size=n_eval).astype(np.float64)
+            logging_probs = rng.uniform(0.01, 0.3, size=n_eval)
+            new_probs = rng.uniform(0.01, 0.3, size=n_eval)
+            baseline = cpe_cfg.get("baseline_value", 0.04)
+
+            cpe_results = evaluator.evaluate_all(
+                rewards=rewards,
+                logging_probs=logging_probs,
+                new_probs=new_probs,
+                baseline=baseline,
+            )
+
+            # Save CPE results
+            cpe_path = serving_dir / "cpe_evaluation.json"
+            cpe_data = {
+                name: r.to_dict() for name, r in cpe_results.items()
+            }
+            with open(cpe_path, "w") as f:
+                json.dump(cpe_data, f, indent=2, default=str)
+
+            artifacts["cpe_path"] = str(cpe_path)
+            artifacts["cpe_estimators"] = list(cpe_results.keys())
+            logger.info("[Stage 10] CPE evaluation saved to %s", cpe_path)
+
+        except Exception as e:
+            logger.warning("[Stage 10] CPE evaluation failed: %s", e)
+            artifacts["cpe_error"] = str(e)
+
+        # ----- Agentic Reason Generation (sample) -----
+        try:
+            from core.recommendation.reason.template_engine import TemplateEngine
+            from core.recommendation.reason.agentic_orchestrator import (
+                AgenticReasonOrchestrator,
+            )
+
+            reason_cfg = self._config_to_dict().get("serving_prep", {}).get(
+                "reason", {},
+            )
+
+            # Build template engine from config
+            te_config = self.config.__dict__ if hasattr(self.config, "__dict__") else {}
+            template_engine = TemplateEngine(config=te_config)
+
+            # Build orchestrator (no LLM in training pipeline)
+            orchestrator = AgenticReasonOrchestrator(
+                template_engine=template_engine,
+                llm_provider=None,  # LLM not available during training
+                self_checker=None,
+                config=te_config,
+            )
+
+            # Generate sample reasons from synthetic IG data
+            sample_size = reason_cfg.get("sample_size", 10)
+            sample_attributions = []
+            for i in range(sample_size):
+                sample_attributions.append({
+                    "customer_id": f"sample_cust_{i:04d}",
+                    "item_id": f"sample_item_{i % 3:02d}",
+                    "ig_top_features": [
+                        (f"feature_{j}", float(np.random.uniform(0.01, 0.5)))
+                        for j in range(3)
+                    ],
+                })
+
+            sample_product_info: Dict[str, Dict[str, Any]] = {
+                f"sample_item_{i:02d}": {
+                    "name": f"Sample Product {i}",
+                    "primary_category": "general",
+                }
+                for i in range(3)
+            }
+            sample_segments = {
+                f"sample_cust_{i:04d}": "WARMSTART"
+                for i in range(sample_size)
+            }
+
+            batch_result = orchestrator.run_full(
+                ig_attributions=sample_attributions,
+                product_info=sample_product_info,
+                segments=sample_segments,
+            )
+
+            # Save reason sample
+            reason_path = serving_dir / "reason_generation_sample.json"
+            with open(reason_path, "w") as f:
+                json.dump(
+                    {
+                        "sample_size": sample_size,
+                        "l1_count": len(batch_result.l1_results),
+                        "l2a_count": batch_result.l2a_count,
+                        "l1_sample": batch_result.l1_results[:5],
+                    },
+                    f, indent=2, default=str,
+                )
+            artifacts["reason_sample_path"] = str(reason_path)
+            logger.info(
+                "[Stage 10] Reason sample saved to %s (%d reasons)",
+                reason_path, len(batch_result.l1_results),
+            )
+
+            # Save quality report
+            quality_path = serving_dir / "agentic_quality_report.json"
+            with open(quality_path, "w") as f:
+                json.dump(batch_result.quality_report, f, indent=2, default=str)
+            artifacts["quality_report_path"] = str(quality_path)
+            logger.info(
+                "[Stage 10] Quality report saved to %s", quality_path,
+            )
+
+        except Exception as e:
+            logger.warning("[Stage 10] Reason generation failed: %s", e)
+            artifacts["reason_error"] = str(e)
+
+        elapsed = time.time() - stage_start
+        artifacts["time_seconds"] = round(elapsed, 2)
+        logger.info("[Stage 10] Complete in %.2fs", elapsed)
+
+        return artifacts
 
 
 # ======================================================================

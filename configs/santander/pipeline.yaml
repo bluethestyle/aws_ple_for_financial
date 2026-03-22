@@ -796,6 +796,19 @@ analysis:
     enabled: true
 
 # ---------------------------------------------------------------------------
+# Serving Preparation (Stage 9.5: context vector store + reason generation)
+# ---------------------------------------------------------------------------
+serving_prep:
+  enabled: false  # Disabled for ablation, enabled for production
+  context_store:
+    backend: auto  # lancedb or numpy
+    embedding_source: feature_pipeline  # use feature pipeline output as vectors
+  reason_generation:
+    l1_batch: true
+    l2a_rewrite: false  # requires LLM
+    l2b_validation: true
+
+# ---------------------------------------------------------------------------
 # AWS / SageMaker configuration
 # ---------------------------------------------------------------------------
 aws:

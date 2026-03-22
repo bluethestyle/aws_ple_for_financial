@@ -43,6 +43,8 @@ from .reason.self_checker import SelfChecker, CheckResult
 from .reason.llm_provider import LLMProviderFactory, AbstractLLMProvider
 from .reason.interpretation_registry import InterpretationRegistry
 from .reason.reason_cache import ReasonCache
+from .reason.async_orchestrator import AsyncReasonOrchestrator, ReasonResult
+from .reason.context_store import ContextVectorStore
 
 if TYPE_CHECKING:
     from core.feature.group_config import FeatureGroupConfig
@@ -136,6 +138,7 @@ class RecommendationPipeline:
         audit_archiver: Optional[Any] = None,
         interpretation_registry: Optional[InterpretationRegistry] = None,
         reason_cache: Optional[ReasonCache] = None,
+        context_store: Optional[ContextVectorStore] = None,
     ) -> None:
         self.config = config
         self._audit_store = audit_store
@@ -171,8 +174,8 @@ class RecommendationPipeline:
         # ---- Self-checker ----
         self.enable_self_check: bool = pipe_cfg.get("enable_self_check", True)
         self.self_checker: Optional[SelfChecker] = None
+        llm_provider: Optional[AbstractLLMProvider] = None
         if self.enable_self_check:
-            llm_provider: Optional[AbstractLLMProvider] = None
             sc_cfg = config.get("reason", {}).get("self_checker", {})
             if sc_cfg.get("enable_llm_check", False):
                 try:
@@ -184,13 +187,31 @@ class RecommendationPipeline:
                     )
             self.self_checker = SelfChecker(config, llm_provider=llm_provider)
 
+        # ---- Context vector store (for retrieval-augmented grounding) ----
+        self.context_store: Optional[ContextVectorStore] = context_store
+
+        # ---- Async reason orchestrator (wires LLM + SelfChecker + templates) ----
+        self.async_orchestrator: Optional[AsyncReasonOrchestrator] = None
+        serving_cfg = config.get("serving_prep", {})
+        reason_gen_cfg = serving_cfg.get("reason_generation", {})
+        if reason_gen_cfg.get("l2a_rewrite", False) or reason_gen_cfg.get("l2b_validation", False):
+            self.async_orchestrator = AsyncReasonOrchestrator(
+                config=config,
+                template_engine=self.template_engine,
+                llm_provider=llm_provider,
+                self_checker=self.self_checker,
+                audit_store=audit_store,
+            )
+
         logger.info(
             "RecommendationPipeline initialised: scorer=%s, reasons=%s, "
             "self_check=%s, reverse_map=%s, audit_archiver=%s, "
-            "interpretation_registry=%s, reason_cache=%s",
+            "interpretation_registry=%s, reason_cache=%s, "
+            "context_store=%s, async_orchestrator=%s",
             scorer_name, self.enable_reasons, self.enable_self_check,
             self.enable_reverse_mapping, audit_archiver is not None,
             interpretation_registry is not None, reason_cache is not None,
+            context_store is not None, self.async_orchestrator is not None,
         )
 
     # ------------------------------------------------------------------
