@@ -434,6 +434,35 @@ def load_data(
             len(static_features),
         )
 
+    # -- Normalize features + regression labels to prevent NaN loss --
+    import numpy as _np
+    from sklearn.preprocessing import StandardScaler as _StdScaler
+
+    # 1) Feature normalization (StandardScaler on numeric static features)
+    _feat_cols = [c for c in (feature_spec.static_features if feature_spec else [])
+                  if c in df.columns and _np.issubdtype(df[c].dtype, _np.number)]
+    if _feat_cols:
+        _scaler = _StdScaler()
+        df[_feat_cols] = _scaler.fit_transform(df[_feat_cols].fillna(0).values)
+        logger.info("StandardScaler applied to %d feature columns", len(_feat_cols))
+
+    # 2) Regression label normalization (log1p + clip outliers)
+    for t in tasks:
+        if t.get("type") == "regression":
+            lc = t["label_col"]
+            if lc in df.columns:
+                vals = df[lc].fillna(0).astype(float)
+                # Clip outliers at 99.5th percentile
+                clip_val = vals.quantile(0.995)
+                if clip_val > 0:
+                    vals = vals.clip(upper=clip_val)
+                # log1p for positive-valued targets
+                if vals.min() >= 0:
+                    vals = _np.log1p(vals)
+                df[lc] = vals
+                logger.info("Regression label '%s' normalized: clip=%.2f, log1p=%s",
+                            lc, clip_val, vals.min() >= 0)
+
     from core.data.dataloader import build_ple_dataloader, SequenceConfig
 
     label_map = {t["name"]: t["label_col"] for t in tasks}
