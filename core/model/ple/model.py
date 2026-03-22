@@ -1479,7 +1479,7 @@ class PLEModel(nn.Module):
             target = targets[task_name]
             task_type = self.config.get_task_type(task_name)
 
-            loss_fn = self.task_loss_fns.get(task_name)
+            loss_fn = self.task_loss_fns[task_name] if task_name in self.task_loss_fns else None
             if loss_fn is not None:
                 # Prepare inputs based on task type
                 if task_type in ("binary", "regression"):
