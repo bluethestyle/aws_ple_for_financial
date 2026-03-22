@@ -4,76 +4,87 @@
 
 ### 핵심 원칙
 1. **Config-Driven**: YAML 하나로 데이터/태스크/모델/인프라를 정의 — 코드 변경 없이 새 문제 적용
-2. **Registry Pattern**: Expert, Task, Feature, Model 모두 플러그인 방식 등록 — 확장 시 기존 코드 수정 불필요
+2. **Registry Pattern**: Expert, Task, Feature, Model, Tower 모두 플러그인 방식 등록 — 확장 시 기존 코드 수정 불필요
 3. **Pay-as-you-go**: 상시 서버 없음 — 학습/추론 시에만 리소스 할당, 완료 후 자동 해제
 4. **Schema-First**: 데이터 스키마가 파이프라인 전체를 결정 — 스키마 변경 시 하위 파이프라인 자동 조정
-5. **Audit by Design**: 모든 단계에서 데이터 리니지/실험 이력/결정 근거 기록
+5. **Audit by Design**: 모든 단계에서 데이터 리니지/실험 이력/결정 근거 기록 — pipeline_manifest, pipeline_state 추적
 6. **Scale-Aware**: 트래픽/데이터 규모에 따라 config 한 줄로 인프라 전환 (Lambda↔ECS, Memory↔DynamoDB)
 7. **5-Axis Feature Classification**: 모든 피처를 State/Snapshot/Timeseries/Hierarchy/Item 5축으로 분류 — Expert 라우팅의 기반
 8. **Pool/Basket/Runtime 3계층**: 코드(Pool) → Config(Basket) → 학습(Runtime) 분리 — 도메인 전환 시 코드 수정 0
+9. **Leakage Prevention**: 시퀀스 절단, 제품 재계산, 시간 기반 분할(gap_days), LeakageValidator 4중 검증
 
 ---
 
-## 9-Stage End-to-End 파이프라인
+## 10+ Stage End-to-End 파이프라인
 
 ```
-Stage 1          Stage 2              Stage 3              Stage 4
-Raw Data Load    Feature              Preprocessing        Encryption +
-+ Schema Valid.  Classification       (type, null,         Integer Indexing
-                 (5-axis)             outlier)             (PII→SHA256→INT32)
-┌──────────┐    ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│ S3 Raw   │───▶│ 5-Axis       │────▶│ DuckDB-only  │────▶│ core/        │
-│ Parquet  │    │ Classifier   │     │ Processing   │     │ security/    │
-│ + Schema │    │              │     │ cuDF/cuPY    │     │ pipeline.py  │
-│ Registry │    │ state        │     │ accelerated  │     │              │
-└──────────┘    │ snapshot     │     └──────────────┘     └──────┬───────┘
-     │          │ timeseries   │                                  │
-  검증 실패      │ hierarchy    │                                  │
-  → SNS 알림    │ item         │                                  │
-                └──────────────┘                                  │
-                                                                  ▼
-Stage 5              Stage 6              Stage 7              Stage 8-9
-Feature Eng.         Feature Integration  Label Generation     Training +
-(per axis)           + Normalization      + Transforms         Distillation
-┌──────────────┐    ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│ State→RFM,   │───▶│ Power-law    │────▶│ clip(99.5p)  │────▶│ Product      │
-│   Demographics│    │ auto-detect  │     │ + log1p      │     │ Hierarchy    │
-│ Snapshot→TDA │    │ (skew>2→     │     │ (regression) │     │ Config       │
-│   global,HMM │    │  log1p+raw)  │     │              │     │              │
-│ Timeseries→  │    │ StandardScaler│    │ label_       │     │ Item Universe│
-│   TDA local, │    │              │     │ transforms   │     │ (customer×   │
-│   Mamba,Patch│    └──────────────┘     │ .json        │     │  product     │
-│ Hierarchy→   │                          └──────────────┘     │  bipartite)  │
-│   Poincaré,  │                                               └──────┬───────┘
-│   MCC L1/L2  │                                                      │
-│ Item→Graph,  │                                                      │
-│   LightGCN   │                                                      │
-└──────────────┘                                                      ▼
-                                                               Stage 9
-                                                               Training
-                                                               ┌──────────────┐
-                                                               │ PLE + adaTT  │
-                                                               │ Uncertainty  │
-                                                               │ Weighting    │
-                                                               │ Per-task Loss│
-                                                               │ Dispatch     │
-                                                               │ PLETrainer   │
-                                                               └──────────────┘
+Stage 1           Stage 1.5          Stage 2            Stage 3
+DataAdapter        TemporalPrep       SchemaClassifier   EncryptionPipeline
+Raw Data Load      Leakage Prevention (5-axis)           (PII→SHA256→INT32)
+┌──────────┐      ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ S3 Raw   │─────▶│ Seq truncate │──▶│ 5-Axis       │──▶│ core/        │
+│ Parquet  │      │ (drop last   │   │ Classifier   │   │ security/    │
+│ + Schema │      │  month)      │   │              │   │ pipeline.py  │
+│ Registry │      │ Prod recomp  │   │ state        │   │              │
+└──────────┘      │ from month16 │   │ snapshot     │   └──────┬───────┘
+                  └──────────────┘   │ timeseries   │          │
+                                     │ hierarchy    │          │
+                                     │ item         │          │
+                                     └──────────────┘          │
+                                                               ▼
+Stage 4            Stage 5           Stage 5.5          Stage 6
+FeatureGroup +     LabelDeriver      LeakageValidator   SequenceBuilder
+Normalization      (18 tasks)        (4-check)          (flat→3D)
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│ Per-Axis     │  │ Config-driven│  │ Sequence     │  │ event_seq.npy│
+│ Feature Eng. │  │ label derive │  │ Correlation  │  │ session_seq  │
+│ + PowerLaw   │  │ clip+log1p   │  │ Product      │  │ .npy         │
+│ Scaler       │  │ 18 labels    │  │ Temporal     │  │              │
+└──────────────┘  └──────────────┘  └──────────────┘  └──────┬───────┘
+                                                              │
+                                                              ▼
+Stage 7            Stage 8           Stage 8.5          Stage 9
+DataLoader         PLETrainer        Model Analysis     StudentTrainer
+(temporal split)   (2-phase)         (Interpretability)  (Distillation)
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│ PLEDataset   │  │ PLE + adaTT  │  │ IG, CCA,     │  │ PLE teacher  │
+│ temporal     │  │ Uncertainty  │  │ Gate, HGCN,  │  │ → LGBM       │
+│ split with   │  │ Weighting    │  │ Multi Interp │  │ students     │
+│ gap_days=30  │  │ Per-task Loss│  │ Template Eng │  │ + fidelity   │
+└──────────────┘  │ Evidential   │  │ XAI, Model   │  │ validation   │
+                  │ SAE Reg.     │  │ Card         │  └──────┬───────┘
+                  └──────────────┘  └──────────────┘         │
+                                                              ▼
+Stage 9.5          Stage 10
+Context Vector     CPE + Agentic
+Store (RAG)        Reason Orchestrator
+┌──────────────┐  ┌──────────────┐
+│ Embedding    │  │ L1+L2a+L2b   │
+│ store for    │  │ orchestrator │
+│ reason       │  │ FD-TVS score │
+│ retrieval    │  │ DNA modifier │
+└──────────────┘  │ Constraints  │
+                  └──────────────┘
 ```
 
 ### Stage별 상세
 
 | Stage | 이름 | 설명 | 구현 위치 | GPU 가속 |
 |-------|------|------|-----------|----------|
-| **1** | Raw Data Load + Schema Validation | S3 Parquet 로드, SchemaRegistry 기반 컬럼/타입/PII 검증 | `core/data/schema_registry.py` | - |
-| **2** | Feature Classification (5-axis) | 모든 컬럼을 State/Snapshot/Timeseries/Hierarchy/Item 축으로 분류 | `core/feature/classifier.py` | - |
-| **3** | Preprocessing | DuckDB-only 타입 변환, null 처리, outlier clip. **Pandas fallback 없음** | `core/data/preprocessor.py` | cuDF optional |
-| **4** | Encryption + Integer Indexing | PII 컬럼 → SHA256 domain-specific salt → INT32 global index | `core/security/pipeline.py` | - |
-| **5** | Feature Engineering (per axis) | 5축 각각에 대응하는 Generator 실행 (TDA, HMM, Mamba, Graph 등) | `core/feature/generators/` | cuPY for TDA |
-| **6** | Feature Integration + Normalization | Power-law 자동 감지 (skew>2.0) → log1p+raw 병렬 → StandardScaler | `core/feature/normalizer.py` | cuPY for scaler |
-| **7** | Label Generation + Transforms | 회귀 레이블 clip(99.5p) + log1p, label_transforms.json 저장 | Adapter | - |
-| **8** | Item Universe + Product Hierarchy | 고객×상품 bipartite graph 구성, MCC/상품 계층 config 로드 | `core/feature/item_universe.py` | - |
-| **9** | Training | PLE + adaTT, uncertainty weighting, per-task loss dispatch, PLETrainer 단일 경로 | `core/training/trainer.py` | GPU required |
+| **1** | DataAdapter | S3 Parquet 로드, AdapterRegistry 기반 데이터셋별 원시 로딩 | `core/pipeline/adapter.py` | - |
+| **1.5** | TemporalPrep | 시퀀스 절단 (drop last month), prod_* 재계산 (month 16) | `core/pipeline/temporal_split.py` | - |
+| **2** | SchemaClassifier (5-axis) | 모든 컬럼을 State/Snapshot/Timeseries/Hierarchy/Item 축으로 분류 | `core/pipeline/schema_classifier.py` | - |
+| **3** | EncryptionPipeline | PII 컬럼 → SHA256 domain-specific salt → INT32 global index | `core/security/pipeline.py` | - |
+| **4** | FeatureGroupPipeline + Normalization | 5축 각각에 대응하는 Generator 실행 + PowerLawAwareScaler | `core/feature/` | cuPY for TDA/scaler |
+| **5** | LabelDeriver (18 tasks) | Config-driven 레이블 생성 — direct/bucket/weighted_sum/product_group 등 | `core/pipeline/label_deriver.py` | - |
+| **5.5** | LeakageValidator | 시퀀스/상관관계/제품/시간 4중 누수 검증 | `core/pipeline/leakage_validator.py` | - |
+| **6** | SequenceBuilder | Flat DataFrame → 3D 텐서 (event_sequences.npy, session_sequences.npy) | `core/pipeline/sequence_builder.py` | - |
+| **7** | DataLoader | Temporal split (gap_days=30) → PLEDataset → DataLoader | `core/pipeline/temporal_split.py` | - |
+| **8** | PLETrainer (2-phase) | PLE + adaTT + Evidential + SAE, uncertainty weighting | `core/training/trainer.py` | GPU required |
+| **8.5** | Model Analysis | IG, CCA, Gate Analysis, HGCN Interpretable, Multi Interpreter, Template Engine, XAI Quality, Model Card | `core/analysis/` | GPU partial |
+| **9** | StudentTrainer (Distillation) | PLE teacher → LGBM students (soft label + fidelity validation) | `core/distillation/` | - |
+| **9.5** | Context Vector Store | 추천 사유 임베딩 저장소 (RAG retrieval) | `core/serving/context_store.py` | - |
+| **10** | CPE + Agentic Orchestrator | FD-TVS scoring, DNA modifier, L1+L2a+L2b 추론, constraint engine | `core/serving/` | - |
 
 ---
 
@@ -111,7 +122,7 @@ Great Expectations (로컬)              CloudWatch + SageMaker Monitor
 | **데이터 검증** | Great Expectations (로컬) | SageMaker Processing + GX | 동일 로직, 실행 환경만 변경 |
 | **감사/리니지** | 커스텀 audit_logger + DVC | CloudTrail + S3 버전관리 + SageMaker Lineage | AWS 네이티브 통합 |
 | **모니터링** | 커스텀 drift_monitor | SageMaker Model Monitor + CloudWatch | 관리형 서비스, 알림 자동화 |
-| **암호화** | encryption_config.yaml 별도 | `core/security/` 통합 파이프라인 (SHA256 + INT32) | Stage 4에서 자동 처리 |
+| **암호화** | encryption_config.yaml 별도 | `core/security/` 통합 파이프라인 (SHA256 + INT32) | Stage 3에서 자동 처리 |
 
 ---
 
@@ -133,6 +144,7 @@ Great Expectations (로컬)              CloudWatch + SageMaker Monitor
  Experts    │ DeepFM   │ PersLay  │ Temporal │ HGCN     │ LightGCN  │
             │ MLP      │ (global) │ Ensemble │          │           │
             │ AutoInt  │ Causal   │ Mamba    │          │           │
+            │          │ OT       │ LNN      │          │           │
             ├──────────┼──────────┼──────────┼──────────┼───────────┤
  GPU 가속   │ -        │ cuPY     │ GPU      │ GPU      │ GPU       │
             │          │ (TDA)    │ (Mamba)  │ (HGCN)   │ (GCN)     │
@@ -151,9 +163,32 @@ Great Expectations (로컬)              CloudWatch + SageMaker Monitor
 
 ---
 
-## 암호화 파이프라인 통합 (Stage 4)
+## 18-Task Architecture (4 Semantic Groups)
 
-`core/security/` 모듈이 Stage 4를 담당한다. 스키마의 `pii: true` 마킹에서 자동으로 암호화 정책을 유도한다.
+Santander 데이터셋 기준 18개 태스크가 4개 의미 그룹으로 구성된다:
+
+| Group | 질문 | 태스크 | 개수 |
+|-------|------|--------|------|
+| **engagement** | 고객이 반응하는가 | has_nba, engagement_score, next_mcc, top_mcc_shift | 4 |
+| **lifecycle** | 고객이 어디에 있는가 | churn_signal, product_stability, tenure_stage, segment_prediction | 4 |
+| **value** | 언제/어디서 가치를 만드는가 | spend_level, income_tier, mcc_diversity_trend | 3 |
+| **consumption** | 무엇을 소비하는가 | nba_primary, cross_sell_count, will_acquire_{deposits,investments,accounts,lending,payments} | 7 |
+
+### Logit Transfer 5 Edges
+
+```
+engagement_score → has_nba (활성도→가입)
+has_nba → nba_primary (가입여부→어떤상품)
+churn_signal → product_stability (이탈→안정성)
+spend_level → cross_sell_count (소비수준→교차판매)
+next_mcc → nba_primary (다음업종→다음상품)
+```
+
+---
+
+## 암호화 파이프라인 통합 (Stage 3)
+
+`core/security/` 모듈이 Stage 3을 담당한다. 스키마의 `pii: true` 마킹에서 자동으로 암호화 정책을 유도한다.
 
 ```
 Schema (pii: true)
@@ -180,94 +215,137 @@ EncryptionPipeline.process_source()
 
 ---
 
+## 모델 아키텍처 핵심 구성요소
+
+| 구성요소 | 설명 | 구현 위치 |
+|---------|------|-----------|
+| **Expert Basket** | Pool → Basket → CGC 3계층 선택 | `core/model/ple/experts.py` |
+| **CGC + Attention** | 태스크별 Expert 가중 결합 + dim_normalize | `core/model/ple/experts.py` |
+| **adaTT** | Adaptive Task Transfer (intra/inter group) | `core/model/ple/adatt.py` |
+| **Logit Transfer** | 3-method dispatch (output_concat/hidden_concat/residual) | `core/model/ple/model.py` |
+| **HMM Triple-Mode** | journey/lifecycle/behavior → 태스크 그룹별 라우팅 | `core/model/ple/model.py` |
+| **Multidisciplinary Routing** | 24D → 4 x 6D per task group | `core/model/ple/model.py` |
+| **Evidential Deep Learning** | Beta/Dirichlet/NIG 불확실성 (config-gated) | `core/model/layers/evidential.py` |
+| **SAE Regularization** | Sparse Autoencoder (detached, config-gated) | `core/model/layers/sae.py` |
+| **Per-task focal_alpha** | positive rate 기반 calibrated alpha | config per task |
+| **Uncertainty Weighting** | Kendall et al. learnable log_var | `core/model/ple/loss_weighting.py` |
+| **TowerRegistry** | standard/contrastive tower 플러그인 | `core/model/ple/model.py` |
+
+---
+
+## 해석 가능성 파이프라인 (Stage 8.5 → 10)
+
+### Stage A: 모델 분석
+| 분석 | 목적 | 출력 |
+|------|------|------|
+| **Integrated Gradients (IG)** | 피처 기여도 측정 | attribution scores |
+| **Expert Redundancy CCA** | Expert 간 중복성 검출 | CCA correlation matrix |
+| **CGC Gate Analysis** | 태스크별 Expert 가중치 분석 | attention heatmap |
+| **HGCN Interpretable** | 계층 구조 설명 | hierarchy paths |
+
+### Stage B: 추론 사유 생성
+| 분석 | 목적 | 출력 |
+|------|------|------|
+| **Multi Interpreter** | 다학제 해석 통합 | structured reasons |
+| **Template Reason Engine** | 자연어 추천 사유 | text templates |
+| **XAI Quality Evaluator** | 설명 품질 평가 | quality scores |
+| **Model Card** | 모델 문서 자동 생성 | model_card.json |
+
+### Stage C: 서빙 파이프라인
+| 컴포넌트 | 목적 | 출력 |
+|---------|------|------|
+| **CPE (Context-Personalized Engine)** | 개인화 스코어링 | FD-TVS scores |
+| **Agentic Orchestrator** | L1+L2a+L2b 추론 체인 | final recommendations |
+| **Context Vector Store** | RAG 기반 사유 검색 | context embeddings |
+
+---
+
+## Monitoring & Audit Artifacts
+
+### 파이프라인 추적
+| Artifact | 위치 | 용도 |
+|---------|------|------|
+| `pipeline_manifest.json` | output_dir/ | 전체 파이프라인 config 스냅샷 |
+| `pipeline_state.json` | output_dir/ | Stage별 완료/실패 상태, resume 지원 |
+
+### Per-stage 체크포인트
+| Stage | Artifact | 형식 |
+|-------|---------|------|
+| Feature | `features.parquet` | Parquet |
+| Label | `labels.parquet` | Parquet |
+| Sequence | `event_sequences.npy`, `session_sequences.npy` | NumPy |
+
+### Audit Artifacts
+```
+audit/
+├── schema/          ← 스키마 검증 결과
+├── encryption/      ← PII 처리 감사 로그
+├── scaler/          ← scaler_params.json
+├── labels/          ← label_transforms.json
+├── leakage/         ← LeakageValidator 결과
+└── fidelity/        ← 증류 fidelity 검증
+```
+
+### Analysis Artifacts
+```
+analysis/
+├── ig/              ← Integrated Gradients
+├── cca/             ← Expert Redundancy CCA
+├── gate/            ← CGC Gate weights
+├── hgcn/            ← HGCN interpretable paths
+├── multi/           ← Multi Interpreter
+├── template/        ← Template Reason Engine
+├── xai/             ← XAI Quality scores
+└── model_card/      ← Model Card
+```
+
+### Serving Artifacts
+```
+serving/
+├── cpe/             ← CPE scores
+├── reasons/         ← Generated recommendation reasons
+└── context_store/   ← Vector store embeddings
+```
+
+---
+
 ## cuDF/cuPY GPU 가속 포인트
 
 | Stage | 대상 | CPU 경로 | GPU 경로 | 가속 효과 |
 |-------|------|---------|---------|----------|
 | 3 | Preprocessing (대규모 DataFrame) | DuckDB | cuDF (DuckDB fallback) | 10-50x on sort/groupby |
-| 5 | TDA persistence diagram 계산 | ripser (NumPy) | cuPY + ripser | 5-10x |
-| 6 | StandardScaler (mean/std) | NumPy | cuPY | 3-5x on 100M+ rows |
-| 9 | Model training | PyTorch CPU | PyTorch CUDA | Required |
+| 4 | TDA persistence diagram 계산 | ripser (NumPy) | cuPY + ripser | 5-10x |
+| 4 | StandardScaler (mean/std) | NumPy | cuPY | 3-5x on 100M+ rows |
+| 8 | Model training | PyTorch CPU | PyTorch CUDA | Required |
 
 GPU 가속은 선택적이며, cuDF/cuPY 미설치 시 CPU 경로로 자동 폴백한다.
 
 ---
 
-## 모듈형 설계 — 유연성 포인트
+## Santander 4-Dimension Ablation Framework
 
-### 데이터 유연성 (어떤 데이터든)
-```yaml
-# 금융 데이터 — Santander 트랜잭션
-data:
-  source: s3://bucket/financial/
-  schema: configs/schemas/financial.yaml
+`scripts/run_santander_ablation.py`가 6-Phase 36 SageMaker Job ablation을 오케스트레이션:
 
-# 이커머스 데이터
-data:
-  source: s3://bucket/ecommerce/
-  schema: configs/schemas/ecommerce.yaml
+| Phase | 내용 | Job 수 |
+|-------|------|--------|
+| **0** | Data Preparation | 1 Processing |
+| **1** | Feature Group Ablation (TDA/Temporal/Graph/HMM/Demographics 등) | 10 |
+| **2** | Expert Ablation (개별/커플링 제거) | 7 |
+| **3** | Task x Structure Cross (태스크 수 × PLE/adaTT 변형) | 16 |
+| **4** | Best-Config Teacher + Distillation | 2 |
+| **5** | Analysis + HTML Report | 1 |
 
-# 어떤 도메인이든 스키마만 정의하면 동일 파이프라인 사용
-```
-
-### 태스크 유연성 (어떤 조합이든)
-```yaml
-tasks:
-  - {name: click, type: binary, loss: focal}           # CTR — build_loss("focal")
-  - {name: purchase, type: binary, loss: focal}         # CVR — build_loss("focal")
-  - {name: revenue, type: regression, loss: huber}      # LTV — build_loss("huber")
-  - {name: category, type: multiclass, num_classes: 50} # 카테고리 — build_loss("ce") + auto class_weights
-  # 태스크 추가/제거는 이 목록만 수정
-  # Per-task loss는 build_loss() 팩토리로 디스패치 (focal/huber/mse/ce/infonce)
-  # Uncertainty weighting (Kendall et al.)으로 태스크 간 자동 밸런싱
-```
-
-### Expert 유연성 (5축 매핑)
-```yaml
-experts:
-  shared:
-    - {type: deepfm, enabled: true, axis: state}       # State 축 전담
-    - {type: temporal_ensemble, enabled: true, axis: timeseries}  # Timeseries 축
-    - {type: hgcn, enabled: true, axis: hierarchy}      # Hierarchy 축
-    - {type: lightgcn, enabled: true, axis: item}       # Item 축
-    - {type: perslay, enabled: true, axis: snapshot}     # Snapshot 축
-  # 커스텀 Expert는 @ExpertRegistry.register("my_expert")로 추가
-```
-
-### 서빙/인프라 유연성 (규모에 따라 자동 전환)
-```yaml
-serving:
-  mode: auto              # auto | lambda | ecs
-  feature_store: auto     # auto | memory | dynamodb
-  # 월 1억 건 이하: Lambda + 메모리 → $0-1/월
-  # 월 1억 건 이상: ECS + DynamoDB → $360/월
-  # config 한 줄로 전환, 추론 코드 동일
-```
+4개 Ablation 차원:
+1. **Feature** — 5-Axis별 피처 그룹 제거 → 축 기여도 측정
+2. **Expert** — 개별/그룹 Expert 제거 (피처-전문가 연동)
+3. **Task Scaling** — 태스크 수 4→8→18, 구조 변형 (PLE/adaTT/baseline)
+4. **PLE-adaTT Structure** — Loss weighting, PLE depth, adaTT strength
 
 ---
 
-## 핵심 설계 결정 요약
+## PipelineRunner 통합 아키텍처
 
-| 결정 | 선택 | 근거 |
-|------|------|------|
-| 쿼리 엔진 | DuckDB 단일 (Athena는 옵션) | 단일 머신 최강, 수백 GB까지 충분 |
-| Pandas fallback | **제거** (DuckDB-only) | 이중 경로 유지보수 비용 > 이점 |
-| 피처 분류 | 5-Axis (State/Snapshot/Timeseries/Hierarchy/Item) | Expert 라우팅의 명시적 기반 |
-| 암호화 | SHA256 + INT32 (core/security/) | PII 보호 + 모델 입력 호환 |
-| 정규화 | Power-law 자동감지 → log1p + raw 병렬 → StandardScaler | 단일 경로, 분포 보존 |
-| 오케스트레이션 | Step Functions | Airflow 대비 비용 0, 복잡도 감소 |
-| 학습 | SageMaker Spot | 70% 절감, 체크포인트 자동 재개 |
-| 실시간 추론 | LGBM (매 요청 추론) | ~5ms, 지식 증류로 PLE 품질 유지 |
-| Loss 전략 | Per-task dispatch (build_loss) + Uncertainty weighting | config 선언적, 자동 밸런싱 |
-| 서빙 기본 | Lambda + 메모리 피처 로드 | 서버리스, 유휴 $0, ~5ms |
-| 서빙 확장 | ECS + DynamoDB | 월 1억 건 이상 시 비용 역전 |
-| GPU 가속 | cuDF/cuPY optional | Stage 3/5/6에서 선택적 가속 |
-
----
-
-## PipelineRunner 통합 아키텍처 (Step 12-14)
-
-### 8-Stage PipelineRunner
+### 10-Stage PipelineRunner
 
 `core/pipeline/runner.py`의 `PipelineRunner`가 전체 파이프라인을 단일 진입점으로 통합한다.
 
@@ -275,27 +353,43 @@ serving:
 PipelineRunner.run()
     │
     ├── Stage 1: DataAdapter.load_raw()
-    │   └── AdapterRegistry.build("ealtman2019", config)
-    │       └── DuckDB 24M txn → 2,000 user-level aggregation
+    │   └── AdapterRegistry.build("santander", config)
+    │       └── 941K user-level data 로드
+    │
+    ├── Stage 1.5: TemporalPrep
+    │   ├── 시퀀스 절단 (17개월 → 16개월, drop last month)
+    │   └── prod_* 컬럼 재계산 (month 16 state)
     │
     ├── Stage 2: SchemaClassifier (5-axis)
     │
-    ├── Stage 3: Preprocessing (DuckDB-only, cuDF optional)
+    ├── Stage 3: EncryptionPipeline (SHA256 → INT32)
     │
-    ├── Stage 4: EncryptionPipeline (SHA256 → INT32)
+    ├── Stage 4: FeatureGroupPipeline + Normalization
+    │   └── TDA, HMM, Mamba, Graph generators + PowerLawAwareScaler
     │
-    ├── Stage 5: FeatureGroupPipeline
-    │   └── TDA, HMM, Mamba, Graph generators (adapter가 아닌 여기서 실행)
+    ├── Stage 5: LabelDeriver (18 tasks)
+    │   └── direct/bucket/weighted_sum/product_group/sequence_next 등
     │
-    ├── Stage 6: Normalization (PowerLawAwareScaler)
+    ├── Stage 5.5: LeakageValidator
+    │   └── sequence/correlation/product/temporal 4중 검증
     │
-    ├── Stage 7: Label derivation + transforms
+    ├── Stage 6: SequenceBuilder (flat → 3D tensors)
     │
-    ├── Stage 8: Training (PLETrainer)
-    │   └── containers/training/train.py::main_pipeline()
+    ├── Stage 7: DataLoader (temporal split, gap_days=30)
     │
-    └── Stage 9: Knowledge Distillation (StudentTrainer)
-        └── PLE teacher → LGBM students (soft label + fidelity validation)
+    ├── Stage 8: PLETrainer (2-phase)
+    │   └── PLE + adaTT + Evidential + SAE
+    │
+    ├── Stage 8.5: Model Analysis
+    │   └── IG, CCA, Gate, HGCN, Multi Interpreter, Template, XAI, Model Card
+    │
+    ├── Stage 9: StudentTrainer (distillation)
+    │   └── PLE teacher → LGBM students + fidelity validation
+    │
+    ├── Stage 9.5: Context Vector Store (RAG)
+    │
+    └── Stage 10: CPE + Agentic Reason Orchestrator
+        └── FD-TVS scoring, DNA modifier, constraint engine
 ```
 
 ### DataAdapter 패턴
@@ -304,18 +398,10 @@ PipelineRunner.run()
 # core/pipeline/adapter.py
 class DataAdapter(ABC):
     """데이터셋별 원시 데이터 로딩 계약.
-
     각 데이터셋은 load_raw()를 구현하여 entity-level DataFrame을 반환.
     피처 엔지니어링은 수행하지 않음 — FeatureGroupPipeline 담당.
     """
     def load_raw(self) -> Dict[str, pd.DataFrame]: ...
-
-class AdapterRegistry:
-    """이름 기반 어댑터 등록/조회."""
-    @classmethod
-    def register(cls, name: str): ...
-    @classmethod
-    def build(cls, name: str, config: dict) -> DataAdapter: ...
 ```
 
 **현재 등록된 어댑터:**
@@ -323,16 +409,7 @@ class AdapterRegistry:
 | 이름 | 파일 | 데이터 | 집계 방식 |
 |------|------|--------|----------|
 | `ealtman2019` | `adapters/ealtman2019_adapter.py` | 24M 신용카드 거래 | DuckDB → 2,000 user |
-
-### 백엔드 선택 체인 (cuDF → DuckDB → Pandas)
-
-`DataAdapter._select_backend()`가 config의 `data.backend` 리스트를 순회하며 사용 가능한 최적 백엔드를 선택한다:
-
-```
-cuDF (GPU DataFrame)  →  DuckDB (in-process SQL)  →  Pandas (fallback)
-       │ ImportError           │ ImportError                │
-       └──────────────────────▶└──────────────────────────▶ OK
-```
+| `santander` | `adapters/santander_adapter.py` | 941K 사용자 × 89 컬럼 | User-level (pre-aggregated) |
 
 ### Training 이중 진입점
 
@@ -345,17 +422,36 @@ cuDF (GPU DataFrame)  →  DuckDB (in-process SQL)  →  Pandas (fallback)
 
 ---
 
+## 핵심 설계 결정 요약
+
+| 결정 | 선택 | 근거 |
+|------|------|------|
+| 쿼리 엔진 | DuckDB 단일 (Athena는 옵션) | 단일 머신 최강, 수백 GB까지 충분 |
+| 피처 분류 | 5-Axis (State/Snapshot/Timeseries/Hierarchy/Item) | Expert 라우팅의 명시적 기반 |
+| 태스크 아키텍처 | 18 tasks in 4 semantic groups | adaTT intra/inter transfer 기반 |
+| 데이터 분할 | Temporal split + gap_days=30 | 누수 방지 (random split 제거) |
+| 누수 방지 | 시퀀스절단 + prod재계산 + LeakageValidator | 4중 검증 |
+| 모델 구조 | PLE + adaTT + Evidential + SAE | 불확실성 정량화 + 해석 가능성 |
+| Loss 전략 | Per-task dispatch (focal_alpha calibrated) + Uncertainty weighting | config 선언적, 자동 밸런싱 |
+| CGC | dim_normalize=True | Expert 출력 차원 불균형 보정 |
+| Logit Transfer | 3-method dispatch (output_concat/hidden_concat/residual) | 태스크 관계별 최적 방법 |
+| 서빙 | FD-TVS scoring + DNA modifier + constraint engine | 규제 준수 추천 |
+| 해석 가능성 | 3-stage (A: 분석, B: 사유생성, C: 서빙) | 감사 가능한 추천 |
+| Ablation | 4-Dimension (Feature/Expert/Task/Structure) × 36 jobs | 체계적 실험 |
+
+---
+
 ## 설계서 구성
 
 | 문서 | 내용 |
 |------|------|
-| [01_data_layer](01_data_layer.md) | DuckDB-only, 암호화 파이프라인, 5-axis 분류, cuDF 가속 |
-| [02_feature_engineering](02_feature_engineering.md) | 5축별 피처 매핑, TDA/HMM/Mamba/Graph/LightGCN, 정규화 |
-| [03_model_architecture](03_model_architecture.md) | Per-task loss dispatch, uncertainty weighting, Expert→5축 라우팅 |
-| [04_training_pipeline](04_training_pipeline.md) | PLETrainer 단일 경로, 4-dimension ablation 설계 |
+| [01_data_layer](01_data_layer.md) | DataAdapter, TemporalPrep, 암호화, 5-axis 분류, temporal split, LeakageValidator |
+| [02_feature_engineering](02_feature_engineering.md) | 5축별 피처 매핑, TDA/HMM/Mamba/Graph/LightGCN, 정규화, LabelDeriver |
+| [03_model_architecture](03_model_architecture.md) | PLE, Expert Basket, CGC, adaTT, Logit Transfer, HMM routing, Evidential, SAE, 18 tasks |
+| [04_training_pipeline](04_training_pipeline.md) | PLETrainer, 4-Dimension Ablation, Santander 36-job, Distillation, Interpretability |
 | [05_serving_and_testing](05_serving_and_testing.md) | Lambda↔ECS 자동 전환, 실시간 추론, A/B 테스트 |
 | [06_orchestration_and_audit](06_orchestration_and_audit.md) | Step Functions 5개, 3계층 감사, E2E 리니지 |
 | [07_cost_analysis](07_cost_analysis.md) | 규모별 비용 시뮬레이션, 손익분기점 분석 |
-| [08_recommendation_intelligence](08_recommendation_intelligence.md) | 스코어링, 추천 사유 3계층, 역매핑, 규제 준수 |
-| [09_compliance_governance](09_compliance_governance.md) | 감사 불변성, 36항목 레지스트리, 공정성, 쏠림, 인시던트, 킬스위치 |
+| [08_recommendation_intelligence](08_recommendation_intelligence.md) | FD-TVS 스코어링, 추천 사유 3계층, 규제 준수 |
+| [09_compliance_governance](09_compliance_governance.md) | 감사 불변성, 36항목 레지스트리, 공정성, 쏠림, 킬스위치 |
 | [10_pool_basket_architecture](10_pool_basket_architecture.md) | Pool/Basket/Runtime 3계층, Expert 11종, Feature Generator, Task Group |

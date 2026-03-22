@@ -1,23 +1,25 @@
-# 02. Feature Engineering — 5-Axis 피처 매핑, Generator, 정규화
+# 02. Feature Engineering — 5-Axis 피처 매핑, Generator, 정규화, LabelDeriver
 
-## 9-Stage 파이프라인에서의 위치
+## 10+ Stage 파이프라인에서의 위치
 
-Feature Engineering은 Stage 5~6을 담당한다:
+Feature Engineering은 Stage 4 ~ Stage 6을 담당한다:
 
 ```
-Stage 5: Feature Engineering per axis (TDA, HMM, Mamba, Graph, LightGCN 등)
-Stage 6: Feature Integration + Normalization (power-law auto-detect → log1p+raw → StandardScaler)
+Stage 4:   FeatureGroupPipeline + Normalization (per axis generators + PowerLawAwareScaler)
+Stage 5:   LabelDeriver (18 tasks, config-driven derivation)
+Stage 5.5: LeakageValidator (sequence/correlation/product/temporal)
+Stage 6:   SequenceBuilder (flat → 3D tensors: event_sequences.npy, session_sequences.npy)
 ```
 
 ---
 
-## FeatureGroupPipeline — 피처 엔지니어링 오케스트레이터 (Step 12-13)
+## FeatureGroupPipeline — 피처 엔지니어링 오케스트레이터
 
-`core/pipeline/features.py`의 `FeatureGroupPipeline`이 Stage 5 피처 엔지니어링의 주 진입점이다. 기존 `FeaturePipelineBuilder`는 개별 generator 호출에 사용되지만, 전체 오케스트레이션은 `FeatureGroupPipeline`이 담당한다.
+`core/pipeline/features.py`의 `FeatureGroupPipeline`이 Stage 4 피처 엔지니어링의 주 진입점이다.
 
 ### FeatureGroupPipeline vs Adapter 역할 분리
 
-| 역할 | DataAdapter (Stage 1) | FeatureGroupPipeline (Stage 5) |
+| 역할 | DataAdapter (Stage 1) | FeatureGroupPipeline (Stage 4) |
 |------|----------------------|-------------------------------|
 | DuckDB 집계 | O (24M → 2,000 user) | X |
 | RFM 기본 피처 | O (base aggregation) | X |
@@ -26,6 +28,7 @@ Stage 6: Feature Integration + Normalization (power-law auto-detect → log1p+ra
 | Mamba SSM | X | O — Generator 호출 |
 | Graph 임베딩 | X | O — Generator 호출 |
 | GMM 클러스터링 | X | O — Generator 호출 |
+| Normalization | X | O — PowerLawAwareScaler |
 
 ### TDA Global/Local 구분
 
@@ -33,15 +36,6 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
 
 - **TDA Global** (Snapshot 축, 36D+10D): 12개월 장기 윈도우 Persistence Diagram
 - **TDA Local** (Timeseries 축, 24D): 90일 단기 윈도우 Persistence Diagram
-
-### cuML Fallback
-
-scikit-learn transformer가 대규모 데이터에서 느린 경우, cuML이 설치되어 있으면 자동으로 GPU 가속 경로를 사용한다:
-
-```
-cuML StandardScaler  →  sklearn StandardScaler  (fallback)
-cuML PCA             →  sklearn PCA             (fallback)
-```
 
 ---
 
@@ -72,12 +66,12 @@ cuML PCA             →  sklearn PCA             (fallback)
     │   ├── base_temporal (60D) — 시계열 집계 + 주기 인코딩
     │   ├── mamba_temporal (50D) — Mamba SSM 시퀀스 출력
     │   ├── base_txn_stats (80D) — 최근 기간 거래 통계
-    │   └── PatchTST (미래) — Patch 기반 시계열 트랜스포머
+    │   └── PatchTST — Patch 기반 시계열 트랜스포머
     │
     ├── Hierarchy (구조)
     │   ├── merchant_hierarchy (21D) — MCC L1(4) + L2(4) + 브랜드 임베딩(8) + 통계(4) + radius(1)
     │   ├── graph_embeddings (20D) — Poincare 쌍곡 임베딩 (MCC/상품/지역 계층)
-    │   └── product_hierarchy — 상품 카테고리 트리 (gotothemoon 분석 기반)
+    │   └── product_hierarchy — 상품 카테고리 트리 (24개 금융 상품)
     │
     └── Item (관계)
         ├── customer_product_bipartite — 고객×상품 상호작용 그래프
@@ -101,16 +95,12 @@ cuML PCA             →  sklearn PCA             (fallback)
 
 ### State 축 — 정적 속성
 
-State 축 피처는 기존 테이블에서 추출하는 **transform** 타입이 대부분이다.
-
 ```yaml
-# State 축 feature groups
 - name: base_rfm
   axis: state
   group_type: transform
   output_dim: 34
   target_experts: [deepfm, mlp]
-  description: "인구통계 + RFM 프로필 (가입일, 나이, 거래빈도/금액/최근성)"
 
 - name: economics
   axis: state
@@ -118,68 +108,55 @@ State 축 피처는 기존 테이블에서 추출하는 **transform** 타입이 
   generator: economics
   output_dim: 17
   target_experts: [deepfm]
-  description: "MPC(한계소비성향), 소득 탄력성, 항상소득 가설 기반 피처"
+
+- name: multidisciplinary
+  axis: state
+  group_type: generate
+  generator: multidisciplinary
+  output_dim: 24
+  target_experts: [deepfm]
+  # 4 subgroups (6D each): chemical_kinetics, epidemic, crime, interference
+  # Per-task-group routing: engagement←chemical, lifecycle←epidemic, etc.
 ```
 
 ### Snapshot 축 — 장기 패턴
 
 ```yaml
-# Snapshot 축 — TDA Global (long window)
 - name: tda_global
   axis: snapshot
-  group_type: generate
   generator: tda
   generator_params:
-    window_days: 365          # 12개월 장기 윈도우
-    output_dim: 46            # long(36) + phase_transition(10)
-    method: persistence_diagram
+    window_days: 365
+    output_dim: 46        # long(36) + phase_transition(10)
   target_experts: [perslay]
-  description: "12개월 거래 위상 구조 — Persistence Diagram의 장기 토폴로지"
 
-# Snapshot 축 — HMM 상태 전이
 - name: hmm_states
   axis: snapshot
-  group_type: generate
   generator: hmm
   generator_params:
-    modes: [journey, lifecycle, behavior]
+    modes: [journey, lifecycle, behavior]   # Triple-Mode
     state_dim: 16
-  output_dim: 48
+  output_dim: 48          # 3 modes x 16D
   target_experts: [temporal_ensemble]
-  description: "HMM Triple-Mode 상태 추정 — 고객 여정/생애주기/행동 패턴"
-
-# Snapshot 축 — 상품 트렌드 (gotothemoon 분석 기반)
-- name: product_trend
-  axis: snapshot
-  group_type: generate
-  generator: product_trend
-  generator_params:
-    lookback_months: 12
-    product_count: 24         # Santander 24개 상품
-  output_dim: 48              # 24 상품 × 2 (보유변화 + 보유기간)
-  target_experts: [deepfm]
-  description: "월별 상품 보유 변화 패턴 (gotothemoon ind_actividad_cliente 분석)"
+  # HMM Triple-Mode → task group routing:
+  #   journey  → value, consumption groups
+  #   lifecycle → lifecycle group
+  #   behavior  → engagement group
 ```
 
 ### Timeseries 축 — 단기 시퀀스
 
 ```yaml
-# Timeseries 축 — TDA Local (short window)
 - name: tda_local
   axis: timeseries
-  group_type: generate
   generator: tda
   generator_params:
-    window_days: 90           # 90일 단기 윈도우
+    window_days: 90
     output_dim: 24
-    method: persistence_diagram
   target_experts: [temporal_ensemble]
-  description: "최근 90일 거래 위상 — 단기 행동 변화 감지"
 
-# Timeseries 축 — Mamba SSM
 - name: mamba_temporal
   axis: timeseries
-  group_type: generate
   generator: mamba
   generator_params:
     d_model: 128
@@ -187,106 +164,51 @@ State 축 피처는 기존 테이블에서 추출하는 **transform** 타입이 
     expand: 2
     output_dim: 50
   target_experts: [temporal_ensemble]
-  description: "Mamba Selective State Space Model — O(n) 시퀀스 처리"
-
-# Timeseries 축 — PatchTST (향후)
-- name: patchtst_temporal
-  axis: timeseries
-  group_type: generate
-  generator: patchtst
-  generator_params:
-    patch_length: 16
-    stride: 8
-    d_model: 128
-    num_heads: 8
-    output_dim: 64
-  target_experts: [temporal_ensemble]
-  enabled: false              # 구현 후 활성화
-  description: "Patch 기반 시계열 트랜스포머 — 장거리 의존성 포착"
 ```
 
 ### Hierarchy 축 — 구조적 계층
 
 ```yaml
-# Hierarchy 축 — Poincare 임베딩
 - name: graph_embeddings
   axis: hierarchy
-  group_type: generate
   generator: graph
   generator_params:
     hierarchy_sources: [mcc, product, region]
     curvature: 1.0
-    mcc_dim: 8
-    product_dim: 8
-    region_dim: 4
   output_dim: 20
   target_experts: [hgcn]
-  description: "쌍곡 공간 임베딩 — MCC/상품/지역 계층 구조 보존"
 
-# Hierarchy 축 — MCC L1/L2
-- name: merchant_hierarchy
-  axis: hierarchy
-  group_type: generate
-  generator: merchant_hierarchy
-  generator_params:
-    mcc_level1_dim: 4
-    mcc_level2_dim: 4
-    brand_embed_dim: 8
-    agg_stats_dim: 4
-    hierarchy_radius_dim: 1
-  output_dim: 21
-  target_experts: [hgcn]
-  description: "가맹점 MCC 코드 계층 + 브랜드 임베딩 + 소비 반경"
-
-# Hierarchy 축 — 상품 카테고리 트리 (gotothemoon 분석)
 - name: product_hierarchy
   axis: hierarchy
-  group_type: generate
   generator: product_hierarchy
   generator_params:
-    # gotothemoon의 24개 금융 상품을 계층 트리로 구성
-    # Level 1: 예금/대출/투자/보험/카드/기타
-    # Level 2: 세부 상품 (ahor_fin, cco_fin, ...)
-    hierarchy_depth: 2
-    embedding_dim: 16
+    hierarchy_depth: 2        # Level 1: 예금/대출/투자/보험/카드/기타
+    embedding_dim: 16         # Level 2: 24개 세부 상품
   output_dim: 16
   target_experts: [hgcn]
-  description: "금융 상품 카테고리 계층 임베딩 (Santander 24개 상품)"
 ```
 
 ### Item 축 — 관계적 상호작용
 
 ```yaml
-# Item 축 — 고객×상품 Bipartite Graph
 - name: customer_product_bipartite
   axis: item
-  group_type: generate
   generator: bipartite_graph
   generator_params:
-    # gotothemoon의 ind_* 컬럼 (24개 상품 보유 여부)에서 bipartite 구성
-    # 고객 노드: customer_id
-    # 상품 노드: 24개 금융 상품 (ahor_fin, cco_fin, ...)
-    # 엣지: 보유 여부 (0/1) + 보유 기간 weight
-    customer_col: customer_id_idx     # Stage 4에서 INT32로 변환된 ID
-    product_cols_prefix: "ind_"       # ind_ahor_fin, ind_cco_fin, ...
-    edge_weight: holding_duration     # 보유 기간을 엣지 가중치로
+    customer_col: customer_id_idx
+    product_cols_prefix: "ind_"
+    edge_weight: holding_duration
   output_dim: 64
   target_experts: [lightgcn]
-  description: "고객-상품 bipartite graph → LightGCN 협업 필터링"
 
-# Item 축 — LightGCN 협업 필터링 임베딩
 - name: lightgcn_collab
   axis: item
-  group_type: generate
   generator: lightgcn
   generator_params:
     num_layers: 3
     embedding_dim: 64
-    # 입력: customer_product_bipartite에서 생성된 graph
-    graph_source: customer_product_bipartite
   output_dim: 64
   target_experts: [lightgcn]
-  description: "LightGCN 경량 그래프 합성곱 — 유사 고객의 상품 선호도 전파"
 ```
 
 ---
@@ -309,33 +231,15 @@ State 축 피처는 기존 테이블에서 추출하는 **transform** 타입이 
 | 10 | `model_features` | (등록 예정) | Snapshot | 27D | HMM summary + Bandit + LNN |
 | 11 | `product_trend` | (신규) | Snapshot | 48D | 월별 상품 보유 변화 |
 | 12 | `product_hierarchy` | (신규) | Hierarchy | 16D | 상품 카테고리 트리 |
-| 13 | `bipartite_graph` | (신규) | Item | 64D | 고객×상품 bipartite |
+| 13 | `bipartite_graph` | (신규) | Item | 64D | 고객x상품 bipartite |
 | 14 | `lightgcn` | (신규) | Item | 64D | LightGCN 협업 필터링 |
 | 15 | `patchtst` | (신규, 향후) | Timeseries | 64D | Patch 시계열 트랜스포머 |
 
-### Generator 추가 방법
-
-```python
-# Pool 확장 — 새 Generator 등록
-@FeatureGeneratorRegistry.register("product_trend")
-class ProductTrendGenerator(BaseFeatureGenerator):
-    """월별 상품 보유 변화 패턴 (gotothemoon ind_actividad_cliente 분석)"""
-
-    def generate(self, df: DataFrame, params: dict) -> DataFrame:
-        # 24개 상품의 월별 보유 변화 계산
-        ...
-
-# Basket 변경 — feature_groups.yaml에 추가
-# → 코드 수정 0
-```
-
 ---
 
-## Stage 6: Feature Integration + Normalization
+## Stage 4: Feature Integration + Normalization
 
 ### Power-law 자동 감지 + StandardScaler
-
-Phase 1 리팩토링의 핵심 변경: QuantileTransform + Raw Power-Law 이중 파이프라인 → **StandardScaler 단일 파이프라인**으로 교체.
 
 ```
 Numeric Features (all axes merged)
@@ -358,57 +262,136 @@ Numeric Features (all axes merged)
 class PowerLawAwareScaler:
     """
     Power-law 자동 감지 + StandardScaler.
-
-    동작:
     1. fit 시 각 컬럼의 skewness 계산
     2. skewness > 2.0인 컬럼에 log1p 변환 (원본은 유지)
     3. log1p 변환본 + 원본을 병렬로 결합
     4. 전체에 StandardScaler 적용 (z-score)
     5. get_params() → scaler_params.json 저장
-
     cuPY 가속: cupy 설치 시 skewness/mean/std 계산을 GPU에서 수행.
     """
-
-    def fit(self, df):
-        # Power-law 자동 감지
-        self._log1p_cols = [
-            c for c in self.numeric_cols if df[c].skew() > 2.0
-        ]
-        # log1p 변환 + 원본 병렬
-        df_extended = self._extend_with_log1p(df)
-        # StandardScaler fit
-        self.mean = df_extended.mean()
-        self.std = df_extended.std()
-        return self
-
-    def transform(self, df):
-        df_extended = self._extend_with_log1p(df)
-        return (df_extended - self.mean) / (self.std + 1e-8)
-
-    def _extend_with_log1p(self, df):
-        """log1p 컬럼을 '{col}_log1p'로 추가, 원본은 유지."""
-        result = df.copy()
-        for col in self._log1p_cols:
-            result[f"{col}_log1p"] = np.log1p(result[col])
-        return result
-
-    def get_params(self) -> dict:
-        return {
-            "mean": self.mean.to_dict(),
-            "std": self.std.to_dict(),
-            "log1p_cols": self._log1p_cols,
-        }
 ```
 
-### cuPY 가속
+---
+
+## Santander 데이터 피처 상세 (configs/santander/)
+
+### Categorical Embeddings
+
+| 컬럼 | Cardinality | Embedding Dim | 비고 |
+|------|-------------|---------------|------|
+| `gender` | 2 | 4 | F, M |
+| `segment` | 4 | 4 | 01-TOP, 02-PARTICULARES, 03-UNIVERSITARIO, UNKNOWN |
+| `country` | 118 | 16 | 118개국 (ES 96%) |
+| `channel` | 163 | 16 | 163개 채널 코드 |
+| `age_group` | 5 | 4 | young/adult/middle/senior/elderly |
+| `income_group` | 5 | 4 | low/mid/high/very_high/unknown |
+
+### Numeric Features
+
+| 컬럼 | 범위 | 특이사항 |
+|------|------|---------|
+| `age` | 18-100 | 정상 범위 |
+| `income` | 0-28.8M EUR | 25.4% missing (0=결측) |
+| `tenure_months` | -999999~256 | sentinel 처리 필요 |
+| `is_active` | 0/1 | 42% active |
+| `num_products` | 0-15 | avg 1.3 |
+
+---
+
+## 18-Task Label Architecture
+
+### 4-Tier 태스크 구조
+
+| Tier | 설명 | 태스크 수 | 예시 |
+|------|------|----------|------|
+| **Tier 1** | Core targets (직접 레이블) | 4 | has_nba, churn_signal, product_stability, nba_primary |
+| **Tier 2** | Derived targets (규칙 유도) | 4 | tenure_stage, spend_level, cross_sell_count, engagement_score |
+| **Tier 3** | Product group + segmentation | 7 | will_acquire_{deposits,investments,accounts,lending,payments}, segment_prediction, income_tier |
+| **Tier 5** | Transaction-based NBA | 3 | next_mcc, mcc_diversity_trend, top_mcc_shift |
+
+### Per-task Focal Alpha Calibration
+
+Binary 태스크의 `focal_alpha`는 positive rate에 따라 calibrated:
+
+| 태스크 | Positive Rate | focal_alpha | 근거 |
+|--------|-------------|-------------|------|
+| `has_nba` | 2.98% | 0.90 | 극도로 불균형 |
+| `churn_signal` | 5.1% | 0.85 | 매우 불균형 |
+| `will_acquire_deposits` | ~1% | 0.95 | 극단적 불균형 |
+| `will_acquire_investments` | ~2% | 0.90 | 매우 불균형 |
+| `will_acquire_accounts` | ~5% | 0.85 | 불균형 |
+| `will_acquire_lending` | ~1% | 0.90 | 극단적 |
+| `will_acquire_payments` | ~3% | 0.85 | 매우 불균형 |
+| `top_mcc_shift` | ~10% | 0.70 | 경도 불균형 |
+
+### 4 Semantic Groups (adaTT Transfer Units)
+
+```yaml
+task_groups:
+  engagement:   [has_nba, engagement_score, next_mcc, top_mcc_shift]
+  lifecycle:    [churn_signal, product_stability, tenure_stage, segment_prediction]
+  value:        [spend_level, income_tier, mcc_diversity_trend]
+  consumption:  [nba_primary, cross_sell_count, will_acquire_deposits,
+                 will_acquire_investments, will_acquire_accounts,
+                 will_acquire_lending, will_acquire_payments]
+```
+
+---
+
+## Item Universe + Product Hierarchy
+
+### Item Universe (24 금융 상품)
+
+```
+┌──────────────────────────────────────────────────┐
+│ 예금: saving, guarantee, checking, derivados     │
+│ 계좌: payroll_acct, junior_acct, particular_acct │
+│       particular_plus, e_account, home_acct      │
+│ 예탁: short_deposit, medium_deposit, long_deposit│
+│ 투자: funds, securities, pension_plan,           │
+│       pension_deposit                             │
+│ 대출: mortgage, loans                            │
+│ 결제: credit_card, direct_debit, auto_debit      │
+│ 세금: taxes                                      │
+│ 보수: payroll                                    │
+└──────────────────────────────────────────────────┘
+```
+
+### Product Hierarchy Config
+
+```json
+{
+  "hierarchy": {
+    "level_1": {
+      "deposits": ["saving", "short_deposit", "medium_deposit", "long_deposit"],
+      "accounts": ["checking", "payroll_acct", "junior_acct", "particular_acct", "..."],
+      "investments": ["funds", "securities", "pension_plan", "pension_deposit"],
+      "lending": ["mortgage", "loans"],
+      "payments": ["credit_card", "direct_debit", "auto_debit"]
+    }
+  }
+}
+```
+
+---
+
+## 피처 차원 관리 — 동적 계산
 
 ```python
-# GPU 가속 경로 (cuPY 설치 시)
-if HAS_CUPY:
-    import cupy as cp
-    skewness = cp.asnumpy(cp.array(df.values).mean(axis=0))  # GPU에서 계산
-    mean = cp.asnumpy(cp.array(df.values).mean(axis=0))
-    std = cp.asnumpy(cp.array(df.values).std(axis=0))
+# core/feature/schema.py
+class FeatureSchema:
+    @property
+    def input_dim(self) -> int:
+        return sum(g.output_dim for g in self.groups if g.enabled)
+
+    @property
+    def axis_dims(self) -> dict[str, int]:
+        dims = defaultdict(int)
+        for g in self.groups:
+            if g.enabled:
+                dims[g.axis] += g.output_dim
+        return dict(dims)
+        # → {"state": 314, "snapshot": 139, "timeseries": 214, "hierarchy": 41, "item": 64}
 ```
 
 ---
@@ -419,113 +402,24 @@ if HAS_CUPY:
 Step Functions
     ↓
 SageMaker Processing Job
-    ├── 입력: s3://bucket/data/encrypted/       (Stage 4 출력)
+    ├── 입력: s3://bucket/data/encrypted/
     ├── 코드: core/feature/pipeline_builder.py
-    ├── config: configs/financial/feature_groups.yaml
-    ├── 엔진: DuckDB (인프로세스, 메모리 효율적)
+    ├── config: configs/santander/feature_groups.yaml
+    ├── 엔진: DuckDB (인프로세스)
     ├── GPU: cuPY/cuDF optional (ml.g4dn.xlarge)
     └── 출력: s3://bucket/features/v{version}/
-         ├── train.parquet
-         ├── val.parquet
-         ├── test.parquet
-         ├── schema.json              ← 실제 생성된 피처 메타데이터 (axis별 dim 포함)
-         ├── scaler_params.json       ← StandardScaler mean/std + log1p 컬럼 목록
-         ├── label_transforms.json    ← 회귀 레이블 clip/log1p 파라미터
-         ├── item_universe/           ← Stage 8 출력
+         ├── features.parquet
+         ├── labels.parquet
+         ├── event_sequences.npy
+         ├── session_sequences.npy
+         ├── scaler_params.json
+         ├── label_transforms.json
+         ├── item_universe/
          │   ├── product_hierarchy.json
          │   └── customer_product_graph.parquet
-         └── transformers/            ← fit된 scaler/encoder pickle
-             ├── transformer_00_PowerLawAwareScaler.pkl
-             └── transformer_01_LabelEncoder.pkl
+         └── transformers/
+             └── transformer_00_PowerLawAwareScaler.pkl
 ```
-
----
-
-## 피처 차원 관리 — 동적 계산
-
-```python
-# core/feature/schema.py
-class FeatureSchema:
-    """
-    피처 차원을 하드코딩하지 않고 config + axis 분류에서 동적으로 계산.
-
-    On-Prem에서 644D, 734D 등이 코드 곳곳에 하드코딩된 문제를 해결.
-    """
-
-    @property
-    def input_dim(self) -> int:
-        """전체 모델 입력 차원."""
-        return sum(g.output_dim for g in self.groups if g.enabled)
-
-    @property
-    def axis_dims(self) -> dict[str, int]:
-        """축별 피처 차원."""
-        dims = defaultdict(int)
-        for g in self.groups:
-            if g.enabled:
-                dims[g.axis] += g.output_dim
-        return dict(dims)
-        # → {"state": 314, "snapshot": 139, "timeseries": 214, "hierarchy": 41, "item": 64}
-
-    @property
-    def expert_input_dims(self) -> dict[str, int]:
-        """Expert별 입력 차원 (target_experts 매핑 기반)."""
-        dims = defaultdict(int)
-        for g in self.groups:
-            if g.enabled:
-                for expert in g.target_experts:
-                    dims[expert] += g.output_dim
-        return dict(dims)
-```
-
----
-
-## Item Universe + Product Hierarchy (Stage 8)
-
-### Item Universe 개념
-
-gotothemoon 원본 프로젝트 분석에서 도출된 개념. Santander 데이터의 24개 금융 상품(`ind_*` 컬럼)을 하나의 "Item Universe"로 정의하고, 고객×상품 관계를 bipartite graph로 모델링한다.
-
-```
-Item Universe (24 금융 상품)
-┌──────────────────────────────────────────────────┐
-│ 예금 계열                                         │
-│   ahor_fin, aval_fin, cco_fin, cder_fin           │
-│ 대출 계열                                         │
-│   hip_fin, pres_fin, reca_fin, valo_fin           │
-│ 투자 계열                                         │
-│   fond_fin, plan_fin, viv_fin                     │
-│ 카드 계열                                         │
-│   tjcr_fin, ctma_fin, ctop_fin, ctpp_fin          │
-│ 디지털/기타                                       │
-│   ecue_fin, dela_fin, deme_fin, deco_fin          │
-│   nom_pens, nomina, recibo, direct_debit          │
-└──────────────────────────────────────────────────┘
-```
-
-### Product Hierarchy Config
-
-```json
-{
-  "hierarchy": {
-    "level_1": {
-      "savings": ["ahor_fin", "aval_fin", "cco_fin"],
-      "loans": ["hip_fin", "pres_fin", "reca_fin"],
-      "investments": ["fond_fin", "plan_fin", "viv_fin", "valo_fin"],
-      "cards": ["tjcr_fin", "ctma_fin", "ctop_fin", "ctpp_fin"],
-      "digital": ["ecue_fin", "dela_fin", "deme_fin", "deco_fin"],
-      "recurring": ["nom_pens", "nomina", "recibo", "direct_debit"]
-    },
-    "cross_sell_rules": {
-      "savings → cards": 0.8,
-      "loans → insurance": 0.6,
-      "cards → digital": 0.7
-    }
-  }
-}
-```
-
-이 계층 정보는 Hierarchy 축의 `product_hierarchy` Generator와 Item 축의 `bipartite_graph` Generator 양쪽에서 참조된다.
 
 ---
 
@@ -536,12 +430,12 @@ Item Universe (24 금융 상품)
 | 피처 분류 | 없음 (flat 목록) | **5-Axis** (State/Snapshot/Timeseries/Hierarchy/Item) | Expert 라우팅 명시적 기반 |
 | 피처 정의 | 코드 내 하드코딩 | YAML 선언형 (feature_groups.yaml) | 코드 변경 없이 피처 추가/삭제 |
 | 차원 관리 | 644D, 734D 하드코딩 | `FeatureSchema.input_dim` 동적 계산 + axis_dims | 피처 변경 시 자동 반영 |
-| 정규화 | QuantileTransform + Raw Power-Law | **StandardScaler + power-law 자동 감지** (skew>2.0 → log1p+raw 병렬) | 단일 경로, 분포 보존 |
+| 정규화 | QuantileTransform + Raw Power-Law | **StandardScaler + power-law 자동 감지** (skew>2.0 → log1p+raw) | 단일 경로, 분포 보존 |
 | TDA | 단일 윈도우 | **Global(365일)/Local(90일) 분리** → Snapshot/Timeseries 축 | 장기/단기 위상 분리 |
 | HMM | 코드에 직접 구현 | Generator Registry (hmm_triple_mode) | 선택적 활성화 |
 | Graph | HGCN만 | **Poincare + LightGCN** (Hierarchy + Item 축) | 계층+협업 분리 |
-| Item Universe | 없음 | **고객×상품 bipartite graph** (gotothemoon 분석) | 상품 추천 핵심 |
-| 도메인 피처 | 코드에 직접 구현 | Plugin Registry (선택적) | 도메인 무관하게 on/off |
+| Item Universe | 없음 | **고객x상품 bipartite graph** (24 금융 상품) | 상품 추천 핵심 |
+| 레이블 생성 | 코드 하드코딩 | **LabelDeriver** (config-driven 18 tasks) | 선언적, 재현 가능 |
+| 누수 방지 | 없음 | **LeakageValidator** (4-check) + temporal split | 자동 누수 감지 |
 | 피처 버전 | 없음 | features/v{version}/ | 재현성, 롤백 |
 | GPU 가속 | 없음 | cuPY (TDA, scaler), cuDF (preprocessing) | 5-10x 가속 |
-| 서빙 일관성 | scaler pickle 수동 관리 | transformers/ + scaler_params.json 자동 저장 | 학습-추론 불일치 방지 |
