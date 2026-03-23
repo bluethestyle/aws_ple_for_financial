@@ -520,7 +520,6 @@ def _submit_training_job(
             framework_profile_params=FrameworkProfile(
                 start_step=0,
                 num_steps=10,
-                detailed_profiling=False,
             ),
         )
         profiler_rules = [
