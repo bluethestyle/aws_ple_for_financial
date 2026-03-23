@@ -1797,6 +1797,77 @@ def main() -> None:
         "epochs_trained": epoch + 1,
         "total_time_seconds": time.time() - start_time,
     }
+
+    # Detailed training configuration for full reproducibility
+    eval_report["training_config"] = {
+        "batch_size": batch_size,
+        "learning_rate": lr,
+        "epochs_configured": epochs,
+        "seed": config.get("training", {}).get("seed", 42),
+        "max_rows": config.get("max_rows", 0),
+        "weight_decay": config.get("training", {}).get("weight_decay", 0.01),
+        "gradient_clip_norm": config.get("training", {}).get("gradient_clip_norm", 5.0),
+        "amp_enabled": config.get("training", {}).get("amp", {}).get("enabled", False),
+        "warmup_epochs": config.get("training", {}).get("scheduler", {}).get("warmup_epochs", 3),
+    }
+
+    # Model architecture details
+    eval_report["architecture"] = {
+        "input_dim": model.config.input_dim if hasattr(model, "config") else None,
+        "num_tasks": len(tasks),
+        "active_tasks": [t["name"] for t in tasks],
+        "num_shared_experts": model.config.num_shared_experts if hasattr(model, "config") else None,
+        "shared_expert_names": list(model.config.expert_basket.shared_experts) if hasattr(model, "config") and hasattr(model.config, "expert_basket") and model.config.expert_basket else None,
+        "num_layers": model.config.num_extraction_layers if hasattr(model, "config") else None,
+        "extraction_dim": model.config.extraction_dim if hasattr(model, "config") else None,
+        "loss_weighting": model.config.loss_weighting.strategy if hasattr(model, "config") and hasattr(model.config, "loss_weighting") else None,
+        "adatt_enabled": model.config.adatt.enabled if hasattr(model, "config") and hasattr(model.config, "adatt") else None,
+        "total_params": sum(p.numel() for p in model.parameters()),
+        "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
+    }
+
+    # Normalization details
+    eval_report["normalization"] = {
+        "feature_scaler": "StandardScaler (continuous only, binary skipped)",
+        "regression_label_transform": "clip(99.5%) + log1p",
+        "n_continuous_features": len(_continuous_cols) if '_continuous_cols' in dir() else None,
+        "n_binary_features": len(_binary_cols) if '_binary_cols' in dir() else None,
+    }
+
+    # Label statistics
+    eval_report["label_stats"] = {}
+    for t in tasks:
+        lc = t["label_col"]
+        if lc in df.columns:
+            col = df[lc]
+            if t.get("type") == "binary":
+                n_pos = int((col > 0.5).sum())
+                eval_report["label_stats"][t["name"]] = {
+                    "positive_count": n_pos,
+                    "positive_rate": round(n_pos / len(col), 4),
+                    "total": len(col),
+                }
+            elif t.get("type") == "multiclass":
+                vc = col.value_counts().to_dict()
+                eval_report["label_stats"][t["name"]] = {
+                    "class_distribution": {str(k): int(v) for k, v in vc.items()},
+                    "n_valid": int((col >= 0).sum()),
+                    "n_ignored": int((col < 0).sum()),
+                }
+            elif t.get("type") == "regression":
+                eval_report["label_stats"][t["name"]] = {
+                    "mean": round(float(col.mean()), 4),
+                    "std": round(float(col.std()), 4),
+                    "min": round(float(col.min()), 4),
+                    "max": round(float(col.max()), 4),
+                }
+
+    # Pos weights (if computed)
+    if hasattr(model, '_pos_weights') and model._pos_weights:
+        eval_report["pos_weights"] = {
+            k: round(v.item(), 2) for k, v in model._pos_weights.items()
+        }
+
     if ablation_type:
         eval_report["ablation"] = {
             "ablation_type": ablation_type,
@@ -1805,6 +1876,9 @@ def main() -> None:
             "shared_experts": shared_experts_override,
             "num_layers": num_extraction_layers,
             "temperature": float(hp_temperature) if hp_temperature is not None else None,
+            "active_tasks": hp.get("active_tasks", None),
+            "use_ple": hp.get("use_ple", None),
+            "use_adatt": hp.get("use_adatt", None),
         }
     # Per-task metric breakdown by task type
     # Use "per_task" key (matches what report generator expects)
