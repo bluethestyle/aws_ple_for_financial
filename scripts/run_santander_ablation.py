@@ -522,10 +522,12 @@ def _submit_training_job(
                 num_steps=10,
             ),
         )
-        profiler_rules = [
-            ProfilerRule.sagemaker(rule_configs.LossNotDecreasing()),
-            ProfilerRule.sagemaker(rule_configs.GPUMemoryIncrease()),
-        ]
+        profiler_rules = []
+        # Try adding rules (may not exist in all SDK versions)
+        for rule_name in ["ProfilerReport"]:
+            if hasattr(rule_configs, rule_name):
+                profiler_rules.append(ProfilerRule.sagemaker(getattr(rule_configs, rule_name)()))
+        profiler_rules = profiler_rules or None
         logger.info("SageMaker Profiler config enabled (system_monitor=500ms)")
     except ImportError:
         logger.warning("sagemaker.debugger not available — profiler disabled")
