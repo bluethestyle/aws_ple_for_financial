@@ -363,6 +363,8 @@ class PLETrainer:
 
         # Auto-compute class weights for multiclass tasks before training
         self._auto_compute_class_weights(train_loader)
+        # Auto-compute pos_weights for binary tasks before training
+        self._auto_compute_pos_weights(train_loader)
 
         try:
             if phase == "full":
@@ -510,6 +512,82 @@ class PLETrainer:
 
         if class_weights:
             self.model.set_class_weights(class_weights)
+
+    # ------------------------------------------------------------------
+    # Pos-weight auto-computation for binary tasks
+    # ------------------------------------------------------------------
+
+    def _auto_compute_pos_weights(self, train_loader: DataLoader) -> None:
+        """Auto-compute pos_weight for binary tasks to handle class imbalance.
+
+        For each binary task, computes ``pos_weight = n_negative / n_positive``
+        and clamps to [1.0, 50.0] to prevent extreme values.  The result is
+        passed to the model via ``model.set_pos_weights()``.
+        """
+        binary_tasks: List[str] = []
+        for task_name in self.model.task_names:
+            task_type = self.model.config.get_task_type(task_name)
+            if task_type == "binary":
+                binary_tasks.append(task_name)
+
+        if not binary_tasks:
+            return
+
+        logger.info(
+            "Auto-computing pos_weights for binary tasks: %s", binary_tasks,
+        )
+
+        # Collect positive / negative counts (sample up to 50 batches)
+        max_batches = 50
+        pos_counts: Dict[str, int] = {name: 0 for name in binary_tasks}
+        total_counts: Dict[str, int] = {name: 0 for name in binary_tasks}
+
+        for batch_idx, batch in enumerate(train_loader):
+            if batch_idx >= max_batches:
+                break
+
+            if hasattr(batch, "targets"):
+                targets = batch.targets or {}
+            elif isinstance(batch, dict):
+                targets = batch.get("targets", {})
+            else:
+                continue
+
+            for task_name in binary_tasks:
+                if task_name in targets:
+                    labels = targets[task_name].cpu().float().flatten()
+                    n = labels.numel()
+                    n_pos = (labels > 0.5).sum().item()
+                    pos_counts[task_name] += int(n_pos)
+                    total_counts[task_name] += n
+
+        # Compute pos_weight = n_negative / n_positive, clamped
+        pw_min, pw_max = 1.0, 50.0
+        pos_weights: Dict[str, torch.Tensor] = {}
+
+        for task_name in binary_tasks:
+            n_total = total_counts[task_name]
+            n_pos = pos_counts[task_name]
+            if n_pos == 0 or n_total == 0:
+                logger.warning(
+                    "%s: no positive samples found, using pos_weight=%.1f",
+                    task_name, pw_max,
+                )
+                pw = pw_max
+            else:
+                n_neg = n_total - n_pos
+                pw = n_neg / n_pos
+                pw = max(pw_min, min(pw_max, pw))
+
+            pos_weights[task_name] = torch.tensor(pw, dtype=torch.float32).to(self.device)
+            logger.info(
+                "%s: pos_weight=%.4f (n_pos=%d, n_total=%d, ratio=%.4f%%)",
+                task_name, pw, n_pos, n_total,
+                100.0 * n_pos / max(n_total, 1),
+            )
+
+        if pos_weights:
+            self.model.set_pos_weights(pos_weights)
 
     # ------------------------------------------------------------------
     # Phase setup / teardown

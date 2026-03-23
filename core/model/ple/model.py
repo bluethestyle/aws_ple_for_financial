@@ -946,6 +946,10 @@ class PLEModel(nn.Module):
         # _auto_compute_class_weights() and used in _compute_task_losses()
         self._class_weights: Dict[str, torch.Tensor] = {}
 
+        # Pos-weights for binary tasks -- populated by trainer's
+        # _auto_compute_pos_weights() and used in _compute_task_losses()
+        self._pos_weights: Dict[str, torch.Tensor] = {}
+
     def set_class_weights(self, class_weights: Dict[str, torch.Tensor]) -> None:
         """Set class weights for multiclass/binary tasks.
 
@@ -961,6 +965,22 @@ class PLEModel(nn.Module):
             logger.info(
                 "Class weights set for '%s': %s", task_name,
                 weights.tolist() if weights.numel() <= 20 else f"({weights.numel()} classes)",
+            )
+
+    def set_pos_weights(self, pos_weights: Dict[str, torch.Tensor]) -> None:
+        """Set pos_weights for binary tasks to handle class imbalance.
+
+        Called by the trainer after auto-computing pos_weights from
+        the training data distribution.
+
+        Args:
+            pos_weights: ``{task_name: pos_weight_scalar}`` where the tensor
+                is a scalar for binary tasks.
+        """
+        self._pos_weights = pos_weights
+        for task_name, pw in pos_weights.items():
+            logger.info(
+                "Pos-weight set for '%s': %.4f", task_name, pw.item(),
             )
 
     def _build_loss_weighting(self) -> None:
@@ -1488,6 +1508,12 @@ class PLEModel(nn.Module):
                 if task_type in ("binary", "regression"):
                     pred_input = pred.squeeze(-1)
                     target_input = target.float()
+
+                    # Skip binary batches with all-same labels (no gradient signal)
+                    if task_type == "binary":
+                        n_pos = (target_input > 0.5).sum().item()
+                        if n_pos == 0 or n_pos == len(target_input):
+                            continue
                 else:
                     pred_input = pred
                     target_input = target.long()
@@ -1514,6 +1540,13 @@ class PLEModel(nn.Module):
                         weight=cw,
                         label_smoothing=loss_fn.label_smoothing,
                         ignore_index=-1,
+                    )
+                elif (task_type == "binary"
+                      and task_name in self._pos_weights):
+                    # Use pos_weight-aware BCE for imbalanced binary tasks
+                    pw = self._pos_weights[task_name].to(pred.device)
+                    loss = F.binary_cross_entropy_with_logits(
+                        pred_input, target_input, pos_weight=pw,
                     )
                 else:
                     loss = loss_fn(pred_input, target_input)

@@ -102,7 +102,7 @@ EXPERT_SCENARIOS: List[Dict[str, Any]] = [
     {"name": "no_hgcn", "experts": [e for e in ALL_SHARED_EXPERTS if e != "hgcn"]},
     {"name": "no_perslay", "experts": [e for e in ALL_SHARED_EXPERTS if e != "perslay"]},
     {"name": "no_causal", "experts": [e for e in ALL_SHARED_EXPERTS if e != "causal"]},
-    {"name": "mlp_only", "experts": []},
+    {"name": "mlp_only", "experts": ["mlp"]},  # at least 1 expert to avoid empty stack
 ]
 
 # ---------------------------------------------------------------------------

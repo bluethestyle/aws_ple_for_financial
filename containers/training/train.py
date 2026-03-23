@@ -282,7 +282,7 @@ def _derive_santander_labels(df, tasks):
         if label_col in needed and nba is not None:
             indices = set(PRODUCT_GROUP_INDICES[group_name])
             df[label_col] = nba.apply(
-                lambda x, idx=indices: int(bool(set(x) & idx)) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else 0
+                lambda x, idx=indices: int(bool(set(int(i) for i in x) & idx)) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else 0
             )
             logger.info("Derived %s (indices=%s)", label_col, sorted(indices))
 
@@ -380,7 +380,7 @@ def _derive_santander_labels(df, tasks):
     # --- label_next_mcc ---
     if "label_next_mcc" in needed and "txn_mcc_seq" in df.columns:
         df["label_next_mcc"] = df["txn_mcc_seq"].apply(
-            lambda x: min(int(x[-1]), 49) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else 0
+            lambda x: min(int(x[-1]), 49) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else -1
         )
         logger.info("Derived label_next_mcc (capped at 50)")
 
@@ -497,7 +497,20 @@ def load_data(
     if max_rows and max_rows > 0 and len(df) > max_rows:
         df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
         logger.info(f"Subsampled to {max_rows} rows for fast testing")
-    # fillna(0) only on numeric columns to avoid string issues
+    # -- Handle sentinel/missing values BEFORE fillna --
+    import numpy as _np
+    # tenure_months: -999999 is sentinel for unknown
+    if "tenure_months" in df.columns:
+        df.loc[df["tenure_months"] <= -999, "tenure_months"] = _np.nan
+    # income: 0 means missing (25% of data)
+    if "income" in df.columns:
+        df.loc[df["income"] == 0, "income"] = _np.nan
+        # Impute with median of non-missing values
+        _inc_median = df["income"].median()
+        df["income"] = df["income"].fillna(_inc_median)
+        logger.info("Income: imputed %d missing values with median=%.0f",
+                     df["income"].isna().sum(), _inc_median if _inc_median == _inc_median else 0)
+    # fillna(0) for remaining numeric columns
     numeric_cols = df.select_dtypes(include="number").columns
     df[numeric_cols] = df[numeric_cols].fillna(0)
     logger.info(f"Loaded {len(df)} rows, {len(df.columns)} columns")
