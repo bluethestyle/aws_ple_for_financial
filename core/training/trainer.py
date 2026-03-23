@@ -776,7 +776,11 @@ class PLETrainer:
         logger.info("[%s] Starting epoch loop, loader has %d batches", phase_name, len(train_loader))
         import sys; sys.stdout.flush(); sys.stderr.flush()
 
+        _total_batches = len(train_loader)
         for batch_idx, batch in enumerate(train_loader):
+            # Flag last batch of epoch for adaTT gradient extraction
+            self.model._is_epoch_end_step = (batch_idx == _total_batches - 1)
+
             if batch_idx == 0:
                 logger.info("[%s] First batch received, type=%s", phase_name, type(batch).__name__)
                 sys.stdout.flush(); sys.stderr.flush()
