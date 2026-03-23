@@ -11,6 +11,11 @@ Modules:
     kill_switch     -- Per-request circuit breaker (DynamoDB-backed)
     ab_test         -- Deterministic A/B variant assignment + auto-promote
     model_monitor   -- Prediction logging + CloudWatch metrics + Champion-Challenger
+
+Stage C stubs (production, not needed for ablation):
+    cpe_engine              -- Real-time CPE scoring
+    agentic_orchestrator    -- Serving-layer agentic reason generation
+    vector_store            -- Production ANN vector store
 """
 
 from .config import ServingConfig, LambdaConfig, ECSConfig, ABVariant
@@ -38,6 +43,10 @@ from .cold_start_strategy import (
     ActionCatalogStrategy,
     BrandPopularityStrategy,
 )
+# Stage C stubs (production modules -- NotImplementedError on init)
+from .cpe_engine import CPEEngine, CPEDecision
+from .agentic_orchestrator import ServingAgenticOrchestrator, ReasonResponse
+from .vector_store import ServingVectorStore, SearchResult
 
 __all__ = [
     # config
@@ -81,4 +90,11 @@ __all__ = [
     "ContextualTimingStrategy",
     "ActionCatalogStrategy",
     "BrandPopularityStrategy",
+    # Stage C stubs
+    "CPEEngine",
+    "CPEDecision",
+    "ServingAgenticOrchestrator",
+    "ReasonResponse",
+    "ServingVectorStore",
+    "SearchResult",
 ]

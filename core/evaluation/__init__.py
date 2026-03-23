@@ -33,6 +33,7 @@ from core.evaluation.multidisciplinary_interpreter import (
 )
 from core.evaluation.xai_quality_evaluator import XAIQualityEvaluator, XAIReport
 from core.evaluation.model_card import ModelCardGenerator
+from core.evaluation.template_reason_engine import TemplateReasonEngine
 from core.evaluation.counterfactual import (
     CounterfactualEvaluator,
     PolicyEvaluationResult,
@@ -60,6 +61,7 @@ __all__ = [
     "XAIQualityEvaluator",
     "XAIReport",
     "ModelCardGenerator",
+    "TemplateReasonEngine",
     "CounterfactualEvaluator",
     "PolicyEvaluationResult",
 ]

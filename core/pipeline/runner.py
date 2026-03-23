@@ -1466,6 +1466,7 @@ class PipelineRunner:
         Returns:
             Analysis results dict.
         """
+        import numpy as np
         import torch
 
         from ..evaluation.gate_analyzer import GateAnalyzer
@@ -1671,6 +1672,68 @@ class PipelineRunner:
                     "[Stage 8.5] Multidisciplinary interpretation failed: %s", e,
                 )
                 analysis["multidisciplinary_interpretation"] = {"error": str(e)}
+
+        # -- Template Reason Engine (ablation: IG -> category -> reason) ----------
+        tre_cfg = analysis_cfg.get("template_reason_engine", {})
+        if tre_cfg.get("enabled", True):
+            try:
+                from ..evaluation.template_reason_engine import TemplateReasonEngine
+
+                ig_results = analysis.get("ig_attributions", {})
+                if ig_results and not all(
+                    isinstance(v, dict) and "error" in v
+                    for v in ig_results.values()
+                ):
+                    # Collect feature names from first valid task
+                    feature_names: List[str] = []
+                    for _tn, importance in ig_results.items():
+                        if isinstance(importance, dict) and "error" not in importance:
+                            feature_names = list(importance.keys())
+                            break
+
+                    tre = TemplateReasonEngine(feature_names=feature_names)
+
+                    tre_results: Dict[str, Any] = {}
+                    for task_name, importance in ig_results.items():
+                        if isinstance(importance, dict) and "error" not in importance:
+                            sorted_feats = sorted(
+                                importance.items(),
+                                key=lambda x: abs(x[1]) if isinstance(x[1], (int, float)) else 0,
+                                reverse=True,
+                            )
+                            top_feat_names = [f[0] for f in sorted_feats[:5]]
+                            reason = tre.generate_from_names(top_feat_names, task_name=task_name)
+                            tre_results[task_name] = {
+                                "top_features": top_feat_names[:3],
+                                "reason": reason,
+                                "category_distribution": tre.get_category_distribution(
+                                    np.array([[
+                                        abs(f[1]) if isinstance(f[1], (int, float)) else 0.0
+                                        for f in sorted_feats
+                                    ]]),
+                                ),
+                            }
+
+                    analysis["template_reason_engine"] = tre_results
+
+                    tre_path = analysis_dir / "template_reason_engine.json"
+                    with open(tre_path, "w", encoding="utf-8") as f:
+                        json.dump(tre_results, f, indent=2, ensure_ascii=False, default=str)
+                    logger.info(
+                        "[Stage 8.5] Template reason engine results saved to %s "
+                        "(%d tasks)",
+                        tre_path, len(tre_results),
+                    )
+                else:
+                    analysis["template_reason_engine"] = {
+                        "status": "skipped",
+                        "reason": "no_ig_attributions_available",
+                    }
+            except Exception as e:
+                logger.warning(
+                    "[Stage 8.5] Template reason engine failed: %s", e,
+                )
+                analysis["template_reason_engine"] = {"error": str(e)}
 
         # -- Template Reasons (sample) ------------------------------------------
         template_cfg = analysis_cfg.get("template_reasons", {})
