@@ -289,7 +289,10 @@ def build_loss(
         return FocalLoss(alpha=focal_alpha, gamma=focal_gamma, reduction=reduction)
 
     if loss_type == LossType.CROSS_ENTROPY:
-        return nn.CrossEntropyLoss(label_smoothing=label_smoothing, reduction=reduction)
+        return nn.CrossEntropyLoss(
+            label_smoothing=label_smoothing, reduction=reduction,
+            ignore_index=-1,  # skip samples with no valid label
+        )
 
     if loss_type == LossType.MSE:
         return nn.MSELoss(reduction=reduction)

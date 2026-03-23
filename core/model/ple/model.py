@@ -1491,6 +1491,18 @@ class PLEModel(nn.Module):
                 else:
                     pred_input = pred
                     target_input = target.long()
+                    # Clamp invalid indices (e.g. -1 for missing labels)
+                    # to 0 — they'll be masked by ignore_index=-1 in CE loss
+                    # For FocalLoss, mask them out manually
+                    valid_mask = target_input >= 0
+                    if not valid_mask.all():
+                        n_invalid = (~valid_mask).sum().item()
+                        if n_invalid == len(target_input):
+                            continue  # all invalid, skip this task
+                        # For non-CE losses, filter to valid samples only
+                        if not isinstance(loss_fn, nn.CrossEntropyLoss):
+                            pred_input = pred_input[valid_mask]
+                            target_input = target_input[valid_mask]
 
                 # Apply class weights for CrossEntropyLoss if available
                 if (task_type == "multiclass"
