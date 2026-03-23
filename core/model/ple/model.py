@@ -1513,6 +1513,7 @@ class PLEModel(nn.Module):
                         pred_input, target_input,
                         weight=cw,
                         label_smoothing=loss_fn.label_smoothing,
+                        ignore_index=-1,
                     )
                 else:
                     loss = loss_fn(pred_input, target_input)
