@@ -573,13 +573,18 @@ def load_data(
                          c.startswith("hmm_") or c.startswith("mamba_")
                          for c in df.columns)
     if not _has_generated:
-        logger.info("No generator features found — running inline feature generation")
-        try:
-            from adapters.santander_adapter import _run_santander_generators
-            df = _run_santander_generators(df)
-            logger.info("Inline feature generation complete. Shape: %s", df.shape)
-        except Exception as _gen_err:
-            logger.warning("Inline feature generation failed: %s", _gen_err)
+        # Skip inline generators if data is large (>10K rows) to avoid OOM
+        # Generators should run in Phase 0 for large datasets
+        if len(df) <= 10000:
+            logger.info("Small dataset — running inline feature generation")
+            try:
+                from adapters.santander_adapter import _run_santander_generators
+                df = _run_santander_generators(df)
+                logger.info("Inline feature generation complete. Shape: %s", df.shape)
+            except Exception as _gen_err:
+                logger.warning("Inline feature generation failed: %s", _gen_err)
+        else:
+            logger.info("Large dataset (%d rows) — skipping inline generators (run Phase 0 instead)", len(df))
     else:
         _gen_cols = [c for c in df.columns
                      if any(c.startswith(p) for p in
