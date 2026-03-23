@@ -397,7 +397,7 @@ def _wait_for_any_job(job_names: List[str]) -> Tuple[str, str]:
 def _run_scenarios_parallel(
     scenarios: List[Dict[str, Any]],
     make_job_fn,
-    max_parallel: int = 2,
+    max_parallel: int = 3,
     args: Optional[argparse.Namespace] = None,
 ) -> List[Dict[str, Any]]:
     """Run training scenarios with up to max_parallel concurrent jobs.
@@ -900,7 +900,7 @@ def run_phase1(
         result["phase"] = 1
         return result
 
-    return _run_scenarios_parallel(FEATURE_SCENARIOS, make_job, max_parallel=2, args=args)
+    return _run_scenarios_parallel(FEATURE_SCENARIOS, make_job, max_parallel=3, args=args)
 
 
 def run_phase2(
@@ -947,7 +947,7 @@ def run_phase2(
         result["phase"] = 2
         return result
 
-    return _run_scenarios_parallel(EXPERT_SCENARIOS, make_job, max_parallel=2, args=args)
+    return _run_scenarios_parallel(EXPERT_SCENARIOS, make_job, max_parallel=3, args=args)
 
 
 def run_phase3(
@@ -1020,7 +1020,7 @@ def run_phase3(
         result["phase"] = 3
         return result
 
-    return _run_scenarios_parallel(cross_scenarios, make_job, max_parallel=2, args=args)
+    return _run_scenarios_parallel(cross_scenarios, make_job, max_parallel=3, args=args)
 
 
 def _select_best_config(
