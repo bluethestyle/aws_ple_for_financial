@@ -423,7 +423,7 @@ def _wait_for_any_job(job_names: List[str]) -> Tuple[str, str]:
 def _run_scenarios_parallel(
     scenarios: List[Dict[str, Any]],
     make_job_fn,
-    max_parallel: int = 3,
+    max_parallel: int = 8,
     args: Optional[argparse.Namespace] = None,
 ) -> List[Dict[str, Any]]:
     """Run training scenarios with up to max_parallel concurrent jobs.
@@ -441,9 +441,29 @@ def _run_scenarios_parallel(
     results: List[Dict[str, Any]] = []
     running: Dict[str, Dict[str, Any]] = {}  # job_name -> result
 
+    # Check for already-completed scenarios (resume support)
+    skip_check_s3_base = os.environ.get("SANTANDER_S3_BASE", "")
+
     for i, scenario in enumerate(scenarios):
+        # Skip if result already exists on S3 (from previous run)
+        if skip_check_s3_base and not (args and args.dry_run):
+            scenario_name = scenario.get("name", "")
+            # Infer phase from scenario structure
+            if "remove" in scenario:
+                check_path = f"{skip_check_s3_base}/phase1/{scenario_name}/output/eval_metrics.json"
+            elif "experts" in scenario:
+                check_path = f"{skip_check_s3_base}/phase2/{scenario_name}/output/eval_metrics.json"
+            else:
+                check_path = ""
+            if check_path:
+                existing = _download_json_from_s3(check_path)
+                if existing:
+                    logger.info("SKIP: %s (result already on S3)", scenario_name)
+                    results.append({"scenario": scenario_name, "status": "Reused", "metrics": existing})
+                    continue
+
         # Alternate spot/on-demand for parallel utilization
-        use_spot = (i % max_parallel == 0)
+        use_spot = (i % max_parallel != max_parallel - 1)  # last slot = on-demand fallback
 
         result = make_job_fn(scenario, use_spot)
         results.append(result)
@@ -926,7 +946,7 @@ def run_phase1(
         result["phase"] = 1
         return result
 
-    return _run_scenarios_parallel(FEATURE_SCENARIOS, make_job, max_parallel=3, args=args)
+    return _run_scenarios_parallel(FEATURE_SCENARIOS, make_job, max_parallel=8, args=args)
 
 
 def run_phase2(
@@ -973,7 +993,7 @@ def run_phase2(
         result["phase"] = 2
         return result
 
-    return _run_scenarios_parallel(EXPERT_SCENARIOS, make_job, max_parallel=3, args=args)
+    return _run_scenarios_parallel(EXPERT_SCENARIOS, make_job, max_parallel=8, args=args)
 
 
 def run_phase3(
@@ -1049,7 +1069,7 @@ def run_phase3(
         result["phase"] = 3
         return result
 
-    return _run_scenarios_parallel(cross_scenarios, make_job, max_parallel=3, args=args)
+    return _run_scenarios_parallel(cross_scenarios, make_job, max_parallel=8, args=args)
 
 
 def _select_best_config(
