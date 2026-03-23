@@ -142,6 +142,8 @@ class EarlyStoppingCallback(TrainingCallback):
         self.patience_counter = 0
         self.best_avg_auc = 0.0
         self.auc_decline_counter = 0
+        self.stop_reason: Optional[str] = None
+        self.stop_epoch: int = -1
 
     def on_phase_begin(self, state: Dict[str, Any]) -> None:
         self.reset()
@@ -175,10 +177,12 @@ class EarlyStoppingCallback(TrainingCallback):
 
         if loss_stop or auc_stop:
             reason = "val_loss patience" if loss_stop else "AUC decline"
+            self.stop_reason = reason
+            self.stop_epoch = state.get("epoch", -1)
             logger.info(
                 "EarlyStopping: stopping at epoch %d (%s). "
                 "best_val_loss=%.6f, best_avg_auc=%.4f",
-                state.get("epoch", -1), reason,
+                self.stop_epoch, reason,
                 self.best_val_loss, self.best_avg_auc,
             )
             return True

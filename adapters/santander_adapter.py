@@ -372,6 +372,7 @@ class SantanderAdapter(DataAdapter):
 
 if __name__ == "__main__":
     import argparse
+    import json
     import os
     import sys
     import shutil
@@ -411,6 +412,21 @@ if __name__ == "__main__":
     raw_data = adapter.load_raw()
     df = raw_data["main"]
 
+    # --- HIGH-2: Data quality gate ---
+    quality = {
+        "total_rows": len(df),
+        "total_columns": len(df.columns),
+        "null_rates": {col: float(df[col].isna().mean()) for col in df.columns if df[col].isna().any()},
+        "zero_variance_columns": [col for col in df.select_dtypes("number").columns if df[col].std() == 0],
+        "duplicate_rows": int(df.duplicated().sum()),
+    }
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, "quality_gate_report.json"), "w") as f:
+        json.dump(quality, f, indent=2)
+    logger.info("Quality gate report saved: %d rows, %d cols, %d zero-variance cols",
+                quality["total_rows"], quality["total_columns"],
+                len(quality["zero_variance_columns"]))
+
     # --- Feature generation (TDA, Graph, HMM, Mamba, GMM, Model-derived) ---
     logger.info("Starting feature generation on %d rows ...", len(df))
     t_gen_start = time.time()
@@ -424,8 +440,36 @@ if __name__ == "__main__":
     df.to_parquet(out_path, index=False)
     logger.info("Saved %d rows to %s", len(df), out_path)
 
+    # --- HIGH-1: Feature statistics ---
+    numeric = df.select_dtypes(include="number")
+    stats = {}
+    for col in numeric.columns:
+        stats[col] = {
+            "mean": float(numeric[col].mean()),
+            "std": float(numeric[col].std()),
+            "min": float(numeric[col].min()),
+            "max": float(numeric[col].max()),
+            "null_pct": float(numeric[col].isna().mean()),
+            "nunique": int(numeric[col].nunique()),
+        }
+    with open(os.path.join(output_dir, "feature_stats.json"), "w") as f:
+        json.dump(stats, f, indent=2)
+    logger.info("Feature stats saved: %d numeric columns", len(stats))
+
+    # --- HIGH-1: Label statistics ---
+    label_cols = [c for c in df.columns if c in ["has_nba", "churn_signal", "product_stability", "nba_label"]]
+    label_stats = {}
+    for col in label_cols:
+        if df[col].dtype in [np.int32, np.int64]:
+            label_stats[col] = {str(k): int(v) for k, v in df[col].value_counts().to_dict().items()}
+        elif df[col].dtype == float:
+            label_stats[col] = {"mean": float(df[col].mean()), "std": float(df[col].std())}
+    if label_stats:
+        with open(os.path.join(output_dir, "label_stats.json"), "w") as f:
+            json.dump(label_stats, f, indent=2)
+        logger.info("Label stats saved: %d label columns", len(label_stats))
+
     # Save metadata
-    import json
     meta = adapter.metadata
     with open(os.path.join(output_dir, "adapter_metadata.json"), "w") as f:
         json.dump(meta.__dict__, f, indent=2, default=str)

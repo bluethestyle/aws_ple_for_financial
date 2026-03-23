@@ -113,6 +113,10 @@ def _parse_hp_value(v: str) -> Any:
 # to the column name prefixes they produce in the feature DataFrame.
 # Generated features use "{group_name}_{i}" naming; transform features use
 # their source column prefixes.
+# Module-level state for scaler persistence (populated by load_data, read by main)
+_module_scaler = None
+_module_continuous_cols = []
+
 FEATURE_GROUP_COLUMN_PREFIXES: Dict[str, list] = {
     # Transform groups — covers both inline DuckDB path (cat_, txn_, temp_)
     # and standalone function path (category_, transaction_stats_, temporal_)
@@ -701,11 +705,31 @@ def load_data(
     # Separate binary (0/1 only) from continuous for appropriate normalization
     _binary_cols = [c for c in _feat_cols if set(df[c].dropna().unique()).issubset({0, 0.0, 1, 1.0})]
     _continuous_cols = [c for c in _feat_cols if c not in _binary_cols]
+    global _module_scaler, _module_continuous_cols
+    _scaler = None
     if _continuous_cols:
         _scaler = _StdScaler()
         df[_continuous_cols] = _scaler.fit_transform(df[_continuous_cols].fillna(0).values)
         logger.info("StandardScaler applied to %d continuous features (skipped %d binary)",
                      len(_continuous_cols), len(_binary_cols))
+        # Store in module-level state for eval report
+        _module_scaler = _scaler
+        _module_continuous_cols = _continuous_cols
+
+        # HIGH-3: Persist scaler parameters for reproducibility
+        scaler_params = {
+            "columns": _continuous_cols,
+            "mean": _scaler.mean_.tolist(),
+            "scale": _scaler.scale_.tolist(),
+        }
+        _scaler_path = os.path.join(
+            os.environ.get("SM_OUTPUT_DATA_DIR", "/opt/ml/output/data"),
+            "scaler_params.json",
+        )
+        os.makedirs(os.path.dirname(_scaler_path), exist_ok=True)
+        with open(_scaler_path, "w") as f:
+            json.dump(scaler_params, f)
+        logger.info("Scaler params saved to %s", _scaler_path)
 
     # 2) Regression label normalization (log1p + clip outliers)
     for t in tasks:
@@ -908,6 +932,7 @@ def validate(
         roc_auc_score,
         accuracy_score,
         f1_score,
+        confusion_matrix as _confusion_matrix,
     )
 
     if task_type_map is None:
@@ -967,6 +992,9 @@ def validate(
                 metrics[f"f1_{name}"] = f1_score(
                     tgts_sq, pred_labels, zero_division=0,
                 )
+                # HIGH-5: Confusion matrix for binary tasks
+                cm = _confusion_matrix(tgts_sq, pred_labels, labels=[0, 1]).tolist()
+                metrics[f"confusion_matrix_{name}"] = cm
             except Exception:
                 pass
 
@@ -992,6 +1020,16 @@ def validate(
                 metrics[f"f1_weighted_{name}"] = f1_score(
                     tgts_int, pred_classes, average="weighted", zero_division=0,
                 )
+            except Exception:
+                pass
+            # HIGH-5: Confusion matrix for multiclass tasks
+            try:
+                valid_mask = tgts_int >= 0
+                labels = sorted(set(tgts_int[valid_mask]))
+                cm = _confusion_matrix(
+                    tgts_int[valid_mask], pred_classes[valid_mask], labels=labels,
+                ).tolist()
+                metrics[f"confusion_matrix_{name}"] = cm
             except Exception:
                 pass
 
@@ -1374,8 +1412,9 @@ def main() -> None:
         n = len(train_loader.dataset)
         val_size = max(1, int(n * 0.1))
         train_size = n - val_size
+        gen = torch.Generator().manual_seed(config.get("training", {}).get("seed", 42))
         train_subset, val_subset = torch.utils.data.random_split(
-            train_loader.dataset, [train_size, val_size],
+            train_loader.dataset, [train_size, val_size], generator=gen,
         )
         train_loader = DataLoader(
             train_subset, batch_size=batch_size, shuffle=True,
@@ -1830,8 +1869,29 @@ def main() -> None:
     eval_report["normalization"] = {
         "feature_scaler": "StandardScaler (continuous only, binary skipped)",
         "regression_label_transform": "clip(99.5%) + log1p",
-        "n_continuous_features": len(_continuous_cols) if '_continuous_cols' in dir() else None,
-        "n_binary_features": len(_binary_cols) if '_binary_cols' in dir() else None,
+        "n_continuous_features": len(_module_continuous_cols) if _module_continuous_cols else None,
+        "n_binary_features": None,  # tracked per load_data call
+    }
+    # HIGH-3: Scaler parameter samples in eval report
+    if _module_continuous_cols and _module_scaler is not None:
+        eval_report["normalization"]["scaler_mean_sample"] = dict(
+            zip(_module_continuous_cols[:10], _module_scaler.mean_[:10].tolist())
+        )
+        eval_report["normalization"]["scaler_std_sample"] = dict(
+            zip(_module_continuous_cols[:10], _module_scaler.scale_[:10].tolist())
+        )
+
+    # HIGH-4: Record train/val split details
+    eval_report["data_split"] = {
+        "train_size": train_size if 'train_size' in dir() else len(train_loader.dataset),
+        "val_size": val_size if 'val_size' in dir() else len(val_loader.dataset),
+        "split_ratio": round(
+            (train_size if 'train_size' in dir() else len(train_loader.dataset))
+            / ((train_size if 'train_size' in dir() else len(train_loader.dataset))
+               + (val_size if 'val_size' in dir() else len(val_loader.dataset))),
+            3,
+        ),
+        "seed": config.get("training", {}).get("seed", 42),
     }
 
     # Label statistics
@@ -1871,6 +1931,73 @@ def main() -> None:
     # Epoch-level training history (from PLETrainer)
     if hasattr(trainer, 'epoch_history') and trainer.epoch_history:
         eval_report["epoch_history"] = trainer.epoch_history
+
+    # MEDIUM-9: Early stopping reason (persisted from trainer)
+    if hasattr(trainer, 'early_stop_info') and trainer.early_stop_info:
+        eval_report["early_stopping"] = trainer.early_stop_info
+
+    # MEDIUM-10: Logit transfer edges in architecture
+    if hasattr(model, 'config') and hasattr(model.config, 'logit_transfers') and model.config.logit_transfers:
+        eval_report["architecture"]["logit_transfers"] = [
+            {"source": lt.source, "target": lt.target, "method": lt.transfer_method}
+            for lt in model.config.logit_transfers
+        ]
+    else:
+        eval_report["architecture"]["logit_transfers"] = []
+
+    # MEDIUM-11: Per-task loss function config
+    eval_report["task_configs"] = {
+        t["name"]: {
+            "type": t.get("type", "binary"),
+            "loss": t.get("loss", "default"),
+            "loss_weight": t.get("loss_weight", 1.0),
+            "num_classes": t.get("num_classes", 1),
+        }
+        for t in tasks
+    }
+
+    # MEDIUM-12: Label derivation method registry
+    eval_report["label_derivation"] = {
+        "has_nba": "direct_column",
+        "churn_signal": "direct_column",
+        "product_stability": "direct_column",
+        "label_nba_primary": "nba_label[0] (list_first, default=-1)",
+        "label_tenure_stage": "bin(tenure_months, [unknown->-1, 0-12->0, 13-36->1, 37-72->2, 73-120->3, 121+->4])",
+        "label_segment": "map(segment, {01-TOP->0, 02-PARTICULARES->1, 03-UNIVERSITARIO->2, other->3})",
+        "label_income_tier": "bin(income, [<30k->0, 30-80k->1, 80-200k->2, 200k+->3])",
+        "label_spend_level": "bin(synth_monthly_spend, [<1500->0, 1500-3000->1, 3000-5000->2, 5000+->3])",
+        "label_cross_sell_count": "len(nba_label) or total_acquisitions",
+        "label_engagement_score": "composite(is_active*0.3 + synth_frequency*0.4 + num_products*0.3)",
+        "label_next_mcc": "txn_mcc_seq[-1] (capped at 49, default=-1)",
+        "label_mcc_diversity_trend": "(unique_second_half / unique_first_half) - 1.0",
+        "label_top_mcc_shift": "int(mode(first_half) != mode(second_half))",
+        "label_acquire_deposits": "any(nba_label & deposit_indices)",
+        "label_acquire_investments": "any(nba_label & investment_indices)",
+        "label_acquire_accounts": "any(nba_label & account_indices)",
+        "label_acquire_lending": "any(nba_label & lending_indices)",
+        "label_acquire_payments": "any(nba_label & payment_indices)",
+    }
+
+    # MEDIUM-13: Feature column names saved
+    if '_continuous_cols' in dir() and _continuous_cols:
+        eval_report["normalization"]["continuous_columns"] = _continuous_cols[:50]
+    if '_binary_cols' in dir() and _binary_cols:
+        eval_report["normalization"]["binary_columns"] = _binary_cols[:50]
+
+    # MEDIUM-14: Generator summary persisted
+    _gen_cols_for_report = [c for c in df.columns
+                            if any(c.startswith(p) for p in
+                                   ("tda_", "graph_", "hmm_", "mamba_", "gmm_", "model_derived_"))]
+    if _gen_cols_for_report:
+        _gen_summary: Dict[str, int] = {}
+        for c in _gen_cols_for_report:
+            prefix = c
+            for p in ("tda_global", "tda_local", "graph", "hmm", "mamba", "gmm", "model_derived"):
+                if c.startswith(p):
+                    prefix = p
+                    break
+            _gen_summary[prefix] = _gen_summary.get(prefix, 0) + 1
+        eval_report["generators"] = _gen_summary
 
     # Final adaTT state
     if hasattr(model, 'adatt') and model.adatt is not None:
@@ -1929,6 +2056,48 @@ def main() -> None:
         }
     # Backward compat alias
     eval_report["per_task_metrics"] = eval_report["per_task"]
+
+    # HIGH-6: Stage 8.5 Model Analysis (optional, config-gated)
+    analysis_cfg = config.get("analysis", {})
+    if analysis_cfg.get("enabled", False):
+        analysis_results = {}
+
+        # IG attribution (quick, limited batches)
+        try:
+            from core.evaluation.integrated_gradients import IntegratedGradients
+            ig = IntegratedGradients(model, n_steps=analysis_cfg.get("ig_steps", 20))
+            for t in tasks[:3]:  # Top 3 tasks only for speed
+                importance = ig.feature_importance(val_loader, t["name"], max_batches=5)
+                analysis_results[f"ig_{t['name']}"] = dict(list(importance.items())[:20])
+        except Exception as e:
+            logger.warning("IG analysis failed: %s", e)
+
+        # Expert redundancy CCA
+        try:
+            from core.evaluation.expert_redundancy import ExpertRedundancyAnalyzer
+            cca = ExpertRedundancyAnalyzer(model)
+            redundancy = cca.analyze(val_loader, max_batches=5)
+            analysis_results["expert_redundancy"] = redundancy.to_dict()
+        except Exception as e:
+            logger.warning("CCA analysis failed: %s", e)
+
+        # Gate weights
+        try:
+            from core.evaluation.gate_analyzer import GateAnalyzer
+            gate = GateAnalyzer(model)
+            gate_result = gate.analyze(val_loader, max_batches=5)
+            analysis_results["gate_weights"] = {
+                "task_expert_weights": gate_result.task_expert_weights,
+                "expert_utilization": gate_result.expert_utilization,
+                "dominant_expert_per_task": gate_result.dominant_expert_per_task,
+            }
+        except Exception as e:
+            logger.warning("Gate analysis failed: %s", e)
+
+        if analysis_results:
+            eval_report["analysis"] = analysis_results
+            logger.info("Stage 8.5 analysis complete: %d results", len(analysis_results))
+
     with open(report_path, "w") as f:
         json.dump(eval_report, f, indent=2)
 

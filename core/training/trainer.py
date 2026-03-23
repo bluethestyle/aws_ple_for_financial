@@ -415,6 +415,18 @@ class PLETrainer:
         finally:
             self.callbacks.on_train_end(self._make_state())
 
+        # Persist early stopping reason if triggered
+        self.early_stop_info: Optional[Dict[str, Any]] = None
+        for cb in self.callbacks.callbacks:
+            if hasattr(cb, "stop_reason") and cb.stop_reason:
+                self.early_stop_info = {
+                    "reason": cb.stop_reason,
+                    "epoch": cb.stop_epoch,
+                    "best_val_loss": getattr(cb, "best_val_loss", None),
+                    "best_avg_auc": getattr(cb, "best_avg_auc", None),
+                }
+                break
+
         if hasattr(self, '_audit_store') and self._audit_store:
             self._audit_store.log_event("training", {
                 "pk": phase,
@@ -729,6 +741,15 @@ class PLETrainer:
                 val_metrics=val_metrics,
             )
             should_stop = self.callbacks.on_epoch_end(epoch_end_state)
+
+            # Record per-task metrics for monitoring (val_metrics already has them)
+            if val_metrics:
+                per_task_epoch = {}
+                for key, val in val_metrics.items():
+                    if isinstance(val, (int, float)) and math.isfinite(val):
+                        per_task_epoch[key] = round(val, 4)
+                if per_task_epoch:
+                    epoch_end_state["per_task_metrics"] = per_task_epoch
 
             # Logging
             self._log_epoch(epoch_idx, train_loss, val_loss, phase_name, val_metrics)
@@ -1098,6 +1119,14 @@ class PLETrainer:
                 if key in val_metrics:
                     epoch_record[key] = round(val_metrics[key], 4)
 
+            # Per-task metrics (e.g. "churn_signal_auc", "has_nba_auc", etc.)
+            per_task_epoch = {}
+            for key, val in val_metrics.items():
+                if isinstance(val, (int, float)) and math.isfinite(val):
+                    per_task_epoch[key] = round(val, 4)
+            if per_task_epoch:
+                epoch_record["per_task_metrics"] = per_task_epoch
+
         # Loss weights (uncertainty weighting log_vars)
         weights = self.model.get_loss_weights()
         if weights:
@@ -1124,6 +1153,12 @@ class PLETrainer:
                     epoch_record["adatt_mean_affinity"] = round(affinity.mean().item(), 4)
             except Exception:
                 pass
+
+        # GPU memory tracking
+        if torch.cuda.is_available():
+            epoch_record["gpu_memory_allocated_mb"] = round(torch.cuda.memory_allocated() / 1024**2, 1)
+            epoch_record["gpu_memory_reserved_mb"] = round(torch.cuda.memory_reserved() / 1024**2, 1)
+            epoch_record["gpu_memory_peak_mb"] = round(torch.cuda.max_memory_allocated() / 1024**2, 1)
 
         # Gradient norm (sampled from last batch)
         try:

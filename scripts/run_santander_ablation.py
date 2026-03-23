@@ -507,6 +507,41 @@ def _submit_training_job(
     from sagemaker.inputs import TrainingInput
     from sagemaker.pytorch import PyTorch
 
+    # SageMaker Debugger/Profiler for native monitoring
+    try:
+        from sagemaker.debugger import (
+            ProfilerConfig,
+            FrameworkProfile,
+            ProfilerRule,
+            rule_configs,
+        )
+        profiler_config = ProfilerConfig(
+            system_monitor_interval_millis=500,
+            framework_profile_params=FrameworkProfile(
+                start_step=0,
+                num_steps=10,
+                detailed_profiling=False,
+            ),
+        )
+        profiler_rules = [
+            ProfilerRule.sagemaker(rule_configs.LossNotDecreasing()),
+            ProfilerRule.sagemaker(rule_configs.GPUMemoryIncrease()),
+        ]
+        logger.info("SageMaker Profiler config enabled (system_monitor=500ms)")
+    except ImportError:
+        logger.warning("sagemaker.debugger not available — profiler disabled")
+        profiler_config = None
+        profiler_rules = None
+
+    # SageMaker Training Metrics — regex patterns for CloudWatch capture
+    metric_definitions = [
+        {"Name": "train:loss", "Regex": r"train_loss=([\d.]+)"},
+        {"Name": "val:loss", "Regex": r"val_loss=([\d.]+)"},
+        {"Name": "val:avg_auc", "Regex": r"avg_auc=([\d.]+)"},
+        {"Name": "val:avg_mae", "Regex": r"avg_mae=([\d.]+)"},
+        {"Name": "epoch", "Regex": r"Epoch (\d+):"},
+    ]
+
     session = sagemaker.Session()
 
     env = {
@@ -525,26 +560,38 @@ def _submit_training_job(
     with tarfile.open(source_tar, "r:gz") as tar:
         tar.extractall(str(pkg_dir))
 
-    estimator = PyTorch(
-        entry_point="containers/training/train.py",
-        source_dir=str(pkg_dir),
-        role=ROLE_ARN,
-        instance_type=instance_type,
-        instance_count=1,
-        framework_version=PYTORCH_VERSION,
-        py_version=PY_VERSION,
-        output_path=s3_output,
-        hyperparameters=hyperparameters,
-        environment=env,
-        use_spot_instances=use_spot,
-        max_run=14400,       # 4 hours
+    estimator_kwargs: Dict[str, Any] = {
+        "entry_point": "containers/training/train.py",
+        "source_dir": str(pkg_dir),
+        "role": ROLE_ARN,
+        "instance_type": instance_type,
+        "instance_count": 1,
+        "framework_version": PYTORCH_VERSION,
+        "py_version": PY_VERSION,
+        "output_path": s3_output,
+        "hyperparameters": hyperparameters,
+        "environment": env,
+        "use_spot_instances": use_spot,
+        "max_run": 14400,       # 4 hours
         **({"max_wait": 18000} if use_spot else {}),
-        tags=[
+        "tags": [
             {"Key": "Project", "Value": "santander-ablation"},
             {"Key": "Phase", "Value": hyperparameters.get("ablation_phase", "unknown")},
         ],
-        sagemaker_session=session,
-    )
+        "sagemaker_session": session,
+        "metric_definitions": metric_definitions,
+        # SageMaker checkpoint syncing — trainer saves to /opt/ml/checkpoints/
+        "checkpoint_s3_uri": f"{s3_output.rstrip('/')}/checkpoints",
+        "checkpoint_local_path": "/opt/ml/checkpoints",
+    }
+
+    # Add profiler config if available
+    if profiler_config is not None:
+        estimator_kwargs["profiler_config"] = profiler_config
+    if profiler_rules is not None:
+        estimator_kwargs["rules"] = profiler_rules
+
+    estimator = PyTorch(**estimator_kwargs)
 
     inputs = {
         "train": TrainingInput(
