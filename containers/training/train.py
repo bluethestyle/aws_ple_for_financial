@@ -290,14 +290,14 @@ def _derive_santander_labels(df, tasks):
     if "label_tenure_stage" in needed and "tenure_months" in df.columns:
         def _tenure_bin(v):
             if v == -999999 or (np.isnan(v) if isinstance(v, float) else False):
-                return 0  # unknown_or_new
+                return -1  # unknown → ignore_index
             v = int(v)
-            if v <= 6:
-                return 0
-            elif v <= 24:
-                return 1
-            elif v <= 60:
-                return 2
+            if v <= 12:
+                return 0  # new
+            elif v <= 36:
+                return 1  # growing
+            elif v <= 72:
+                return 2  # mature
             elif v <= 120:
                 return 3
             else:
@@ -402,7 +402,7 @@ def _derive_santander_labels(df, tasks):
     if "label_top_mcc_shift" in needed and "txn_mcc_seq" in df.columns:
         def _mode_shift(x):
             if not isinstance(x, (list, np.ndarray)) or len(x) < 4:
-                return 0
+                return -1  # too short to judge shift → ignore
             mid = len(x) // 2
             mode_first = Counter(x[:mid]).most_common(1)[0][0]
             mode_second = Counter(x[mid:]).most_common(1)[0][0]
@@ -695,13 +695,17 @@ def load_data(
     import numpy as _np
     from sklearn.preprocessing import StandardScaler as _StdScaler
 
-    # 1) Feature normalization (StandardScaler on numeric static features)
+    # 1) Feature normalization (StandardScaler on continuous features, skip binary)
     _feat_cols = [c for c in (feature_spec.static_features if feature_spec else [])
                   if c in df.columns and _np.issubdtype(df[c].dtype, _np.number)]
-    if _feat_cols:
+    # Separate binary (0/1 only) from continuous for appropriate normalization
+    _binary_cols = [c for c in _feat_cols if set(df[c].dropna().unique()).issubset({0, 0.0, 1, 1.0})]
+    _continuous_cols = [c for c in _feat_cols if c not in _binary_cols]
+    if _continuous_cols:
         _scaler = _StdScaler()
-        df[_feat_cols] = _scaler.fit_transform(df[_feat_cols].fillna(0).values)
-        logger.info("StandardScaler applied to %d feature columns", len(_feat_cols))
+        df[_continuous_cols] = _scaler.fit_transform(df[_continuous_cols].fillna(0).values)
+        logger.info("StandardScaler applied to %d continuous features (skipped %d binary)",
+                     len(_continuous_cols), len(_binary_cols))
 
     # 2) Regression label normalization (log1p + clip outliers)
     for t in tasks:

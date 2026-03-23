@@ -597,6 +597,18 @@ class PLETrainer:
         """Prepare for Phase 2: freeze shared, reset optimizer/scheduler."""
         p2 = self.config.phase2
 
+        # Reset best tracking so Phase 2 is evaluated independently
+        self.best_val_loss = float("inf")
+        self.best_val_metrics = {}
+        logger.info("Reset best_val_loss for Phase 2 (independent evaluation).")
+
+        # Reset early stopping state
+        for cb in self.callbacks.callbacks:
+            if hasattr(cb, "counter"):
+                cb.counter = 0
+            if hasattr(cb, "best_score"):
+                cb.best_score = None
+
         # Freeze shared experts
         if p2.freeze_shared_experts:
             self._freeze_module_group("extraction_layers")
