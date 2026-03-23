@@ -96,7 +96,7 @@ ALL_SHARED_EXPERTS = [
 ]
 
 EXPERT_SCENARIOS: List[Dict[str, Any]] = [
-    {"name": "full_basket", "experts": list(ALL_SHARED_EXPERTS)},
+    # full_basket is shared with Phase 1 "full" scenario — no need to re-run
     {"name": "no_deepfm", "experts": [e for e in ALL_SHARED_EXPERTS if e != "deepfm"]},
     {"name": "no_temporal", "experts": [e for e in ALL_SHARED_EXPERTS if e != "temporal_ensemble"]},
     {"name": "no_hgcn", "experts": [e for e in ALL_SHARED_EXPERTS if e != "hgcn"]},
@@ -974,6 +974,9 @@ def run_phase3(
     cross_scenarios = []
     for tier_name, task_list in TASK_TIERS.items():
         for struct_name, struct_flags in STRUCTURE_VARIANTS.items():
+            # Skip tasks_18 × full — same as Phase 1 "full" baseline
+            if tier_name == "tasks_18" and struct_name == "full":
+                continue
             cross_scenarios.append({
                 "name": f"{tier_name}-{struct_name}",
                 "tier": tier_name,
@@ -1317,16 +1320,23 @@ def run_phase5(
         if metrics:
             collected_metrics[f"p1_{scenario['name']}"] = metrics
 
-    # Phase 2 metrics
+    # Phase 2 metrics (full_basket = Phase 1 "full" baseline)
+    p1_full = collected_metrics.get("p1_full")
+    if p1_full:
+        collected_metrics["p2_full_basket"] = p1_full  # reuse as baseline
     for scenario in EXPERT_SCENARIOS:
         s3_path = f"{s3_base}/phase2/{scenario['name']}/output/eval_metrics.json"
         metrics = _download_json_from_s3(s3_path) if not args.dry_run else None
         if metrics:
             collected_metrics[f"p2_{scenario['name']}"] = metrics
 
-    # Phase 3 metrics (task x structure cross)
+    # Phase 3 metrics (task x structure cross; tasks_18-full = Phase 1 "full")
+    if p1_full:
+        collected_metrics["p3_tasks_18-full"] = p1_full  # reuse as baseline
     for tier_name in TASK_TIERS:
         for struct_name in STRUCTURE_VARIANTS:
+            if tier_name == "tasks_18" and struct_name == "full":
+                continue  # already reused from Phase 1
             scenario_name = f"{tier_name}-{struct_name}"
             s3_path = f"{s3_base}/phase3/{scenario_name}/output/eval_metrics.json"
             metrics = _download_json_from_s3(s3_path) if not args.dry_run else None
