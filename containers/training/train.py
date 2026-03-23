@@ -1868,6 +1868,39 @@ def main() -> None:
             k: round(v.item(), 2) for k, v in model._pos_weights.items()
         }
 
+    # Epoch-level training history (from PLETrainer)
+    if hasattr(trainer, 'epoch_history') and trainer.epoch_history:
+        eval_report["epoch_history"] = trainer.epoch_history
+
+    # Final adaTT state
+    if hasattr(model, 'adatt') and model.adatt is not None:
+        try:
+            affinity = model.adatt.get_transfer_matrix()
+            if affinity is not None:
+                task_names_list = list(model.task_names)
+                n = len(task_names_list)
+                eval_report["adatt_final"] = {
+                    "affinity_matrix": [[round(affinity[i, j].item(), 4) for j in range(n)] for i in range(n)],
+                    "task_names": task_names_list,
+                    "config": {
+                        "transfer_lambda": model.config.adatt.transfer_lambda,
+                        "temperature": model.config.adatt.temperature,
+                        "warmup_epochs": model.config.adatt.warmup_epochs,
+                        "grad_interval": model.config.adatt.grad_interval,
+                    },
+                }
+        except Exception:
+            pass
+
+    # Final uncertainty weights (log_vars)
+    if hasattr(model, 'loss_weighting') and model.loss_weighting is not None:
+        try:
+            weights = model.get_loss_weights()
+            if weights:
+                eval_report["final_loss_weights"] = {k: round(v, 4) for k, v in weights.items()}
+        except Exception:
+            pass
+
     if ablation_type:
         eval_report["ablation"] = {
             "ablation_type": ablation_type,

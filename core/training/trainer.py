@@ -127,6 +127,9 @@ class PLETrainer:
         self.best_val_loss = float("inf")
         self.best_val_metrics: Dict[str, float] = {}
 
+        # Epoch-level history for detailed monitoring
+        self.epoch_history: List[Dict[str, Any]] = []
+
         # Experiment tracker
         if tracker is None:
             tracker = auto_tracker(
@@ -1081,12 +1084,63 @@ class PLETrainer:
 
         logger.info("  ".join(parts))
 
+        # Record epoch history for eval_metrics.json
+        epoch_record = {
+            "epoch": self.current_epoch,
+            "phase": phase_name,
+            "train_loss": round(train_loss, 6),
+            "val_loss": round(val_loss, 6) if val_loss is not None else None,
+            "global_step": self.global_step,
+            "learning_rate": self.optimizer.param_groups[0]["lr"],
+        }
+        if val_metrics:
+            for key in ("avg_auc", "avg_accuracy", "avg_f1_macro", "avg_mae"):
+                if key in val_metrics:
+                    epoch_record[key] = round(val_metrics[key], 4)
+
+        # Loss weights (uncertainty weighting log_vars)
+        weights = self.model.get_loss_weights()
+        if weights:
+            epoch_record["loss_weights"] = {k: round(v, 4) for k, v in weights.items()}
+
+        # adaTT affinity matrix (if available)
+        if hasattr(self.model, "adatt") and self.model.adatt is not None:
+            try:
+                affinity = self.model.adatt.get_transfer_matrix()
+                if affinity is not None:
+                    # Store as task-pair summary (top 5 strongest positive transfers)
+                    task_names = self.model.task_names
+                    n = len(task_names)
+                    pairs = []
+                    for i in range(n):
+                        for j in range(n):
+                            if i != j:
+                                pairs.append((task_names[i], task_names[j], affinity[i, j].item()))
+                    pairs.sort(key=lambda x: -x[2])
+                    epoch_record["adatt_top_transfers"] = [
+                        {"from": p[0], "to": p[1], "strength": round(p[2], 4)}
+                        for p in pairs[:5]
+                    ]
+                    epoch_record["adatt_mean_affinity"] = round(affinity.mean().item(), 4)
+            except Exception:
+                pass
+
+        # Gradient norm (sampled from last batch)
+        try:
+            total_norm = 0.0
+            for p in self.model.parameters():
+                if p.grad is not None:
+                    total_norm += p.grad.data.norm(2).item() ** 2
+            epoch_record["gradient_norm"] = round(total_norm ** 0.5, 4)
+        except Exception:
+            pass
+
+        self.epoch_history.append(epoch_record)
+
         # Log loss weights for monitoring
-        if self.config.logging.log_loss_weights:
-            weights = self.model.get_loss_weights()
-            if weights:
-                w_str = ", ".join(f"{k}={v:.4f}" for k, v in weights.items())
-                logger.debug("  loss_weights: %s", w_str)
+        if self.config.logging.log_loss_weights and weights:
+            w_str = ", ".join(f"{k}={v:.4f}" for k, v in weights.items())
+            logger.debug("  loss_weights: %s", w_str)
 
     # ------------------------------------------------------------------
     # Checkpoint load
