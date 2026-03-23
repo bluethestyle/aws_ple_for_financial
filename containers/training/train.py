@@ -230,6 +230,197 @@ def _parse_feature_column_spec(
 
 
 
+def _derive_santander_labels(df, tasks):
+    """Derive missing Santander labels from raw columns.
+
+    Handles all 15 derived labels:
+    - label_nba_primary: first element of nba_label list
+    - label_acquire_*: product group acquisition from nba_label indices
+    - label_tenure_stage, label_segment, label_income_tier: from profile columns
+    - label_spend_level: from synth_monthly_spend
+    - label_cross_sell_count: len(nba_label)
+    - label_engagement_score: composite from synth columns
+    - label_next_mcc, label_mcc_diversity_trend, label_top_mcc_shift: from txn sequences
+    """
+    from collections import Counter
+
+    needed = {t["label_col"] for t in tasks if t["label_col"] not in df.columns}
+    if not needed:
+        return df
+
+    logger.info("_derive_santander_labels: need to derive %d labels: %s",
+                len(needed), sorted(needed))
+
+    # Product index mapping (0-23 -> product names)
+    PRODUCT_GROUP_INDICES = {
+        "deposits": [8, 9, 10],          # short_deposit, medium_deposit, long_deposit
+        "investments": [12, 18],          # funds, securities
+        "accounts": [2, 6, 7, 11, 19, 5],  # checking, particular_acct, particular_plus, e_account, home_acct, junior_acct
+        "lending": [13, 15],              # mortgage, loans
+        "payments": [17, 22, 23, 20, 4],  # credit_card, direct_debit, auto_debit, payroll, payroll_acct
+    }
+
+    # Helper: safely get list column
+    nba = df.get("nba_label") if "nba_label" in df.columns else None
+
+    # --- label_nba_primary ---
+    if "label_nba_primary" in needed and nba is not None:
+        df["label_nba_primary"] = nba.apply(
+            lambda x: int(x[0]) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else -1
+        )
+        logger.info("Derived label_nba_primary")
+
+    # --- label_acquire_* (product group acquisition) ---
+    group_label_map = {
+        "label_acquire_deposits": "deposits",
+        "label_acquire_investments": "investments",
+        "label_acquire_accounts": "accounts",
+        "label_acquire_lending": "lending",
+        "label_acquire_payments": "payments",
+    }
+    for label_col, group_name in group_label_map.items():
+        if label_col in needed and nba is not None:
+            indices = set(PRODUCT_GROUP_INDICES[group_name])
+            df[label_col] = nba.apply(
+                lambda x, idx=indices: int(bool(set(x) & idx)) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else 0
+            )
+            logger.info("Derived %s (indices=%s)", label_col, sorted(indices))
+
+    # --- label_tenure_stage ---
+    if "label_tenure_stage" in needed and "tenure_months" in df.columns:
+        def _tenure_bin(v):
+            if v == -999999 or (np.isnan(v) if isinstance(v, float) else False):
+                return 0  # unknown_or_new
+            v = int(v)
+            if v <= 6:
+                return 0
+            elif v <= 24:
+                return 1
+            elif v <= 60:
+                return 2
+            elif v <= 120:
+                return 3
+            else:
+                return 4
+        df["label_tenure_stage"] = df["tenure_months"].apply(_tenure_bin)
+        logger.info("Derived label_tenure_stage (5 classes)")
+
+    # --- label_segment ---
+    if "label_segment" in needed and "segment" in df.columns:
+        seg_map = {"01-TOP": 0, "02-PARTICULARES": 1, "03-UNIVERSITARIO": 2}
+        # If segment is already numeric (label-encoded), copy directly
+        if np.issubdtype(df["segment"].dtype, np.number):
+            # Already encoded by categorical encoder — use as-is but cap at num_classes
+            df["label_segment"] = df["segment"].clip(upper=3).astype(int)
+        else:
+            df["label_segment"] = df["segment"].apply(
+                lambda x: seg_map.get(str(x), 3)
+            )
+        logger.info("Derived label_segment (4 classes)")
+
+    # --- label_income_tier ---
+    if "label_income_tier" in needed and "income" in df.columns:
+        def _income_bin(v):
+            if v <= 0 or (isinstance(v, float) and np.isnan(v)):
+                return 0  # low / unknown
+            elif v < 30000:
+                return 0
+            elif v < 80000:
+                return 1
+            elif v < 200000:
+                return 2
+            else:
+                return 3
+        df["label_income_tier"] = df["income"].apply(_income_bin)
+        logger.info("Derived label_income_tier (4 classes)")
+
+    # --- label_spend_level ---
+    if "label_spend_level" in needed and "synth_monthly_spend" in df.columns:
+        def _spend_bin(v):
+            if isinstance(v, float) and np.isnan(v):
+                return 0
+            if v < 1500:
+                return 0
+            elif v < 3000:
+                return 1
+            elif v < 5000:
+                return 2
+            else:
+                return 3
+        df["label_spend_level"] = df["synth_monthly_spend"].apply(_spend_bin)
+        logger.info("Derived label_spend_level (4 classes)")
+
+    # --- label_cross_sell_count ---
+    if "label_cross_sell_count" in needed:
+        if nba is not None:
+            df["label_cross_sell_count"] = nba.apply(
+                lambda x: len(x) if isinstance(x, (list, np.ndarray)) else 0
+            )
+        elif "total_acquisitions" in df.columns:
+            df["label_cross_sell_count"] = df["total_acquisitions"]
+        else:
+            df["label_cross_sell_count"] = 0
+        logger.info("Derived label_cross_sell_count")
+
+    # --- label_engagement_score ---
+    if "label_engagement_score" in needed:
+        # Composite: is_active * 0.3 + synth_frequency * 0.4 + num_products * 0.3
+        # Normalize each component to [0, 1] range
+        score = np.zeros(len(df))
+        for col_name, weight in [("is_active", 0.3), ("synth_frequency", 0.4), ("num_products", 0.3)]:
+            if col_name in df.columns:
+                vals = df[col_name].fillna(0).astype(float)
+                max_val = vals.max()
+                if max_val > 0:
+                    vals = vals / max_val
+                score = score + weight * vals.values
+        df["label_engagement_score"] = score
+        logger.info("Derived label_engagement_score")
+
+    # --- label_next_mcc ---
+    if "label_next_mcc" in needed and "txn_mcc_seq" in df.columns:
+        df["label_next_mcc"] = df["txn_mcc_seq"].apply(
+            lambda x: min(int(x[-1]), 49) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else 0
+        )
+        logger.info("Derived label_next_mcc (capped at 50)")
+
+    # --- label_mcc_diversity_trend ---
+    if "label_mcc_diversity_trend" in needed and "txn_mcc_seq" in df.columns:
+        def _diversity_trend(x):
+            if not isinstance(x, (list, np.ndarray)) or len(x) < 4:
+                return 0.0
+            mid = len(x) // 2
+            first_half_unique = len(set(x[:mid]))
+            second_half_unique = len(set(x[mid:]))
+            if first_half_unique == 0:
+                return 0.0
+            return (second_half_unique / first_half_unique) - 1.0
+        df["label_mcc_diversity_trend"] = df["txn_mcc_seq"].apply(_diversity_trend)
+        logger.info("Derived label_mcc_diversity_trend")
+
+    # --- label_top_mcc_shift ---
+    if "label_top_mcc_shift" in needed and "txn_mcc_seq" in df.columns:
+        def _mode_shift(x):
+            if not isinstance(x, (list, np.ndarray)) or len(x) < 4:
+                return 0
+            mid = len(x) // 2
+            mode_first = Counter(x[:mid]).most_common(1)[0][0]
+            mode_second = Counter(x[mid:]).most_common(1)[0][0]
+            return int(mode_first != mode_second)
+        df["label_top_mcc_shift"] = df["txn_mcc_seq"].apply(_mode_shift)
+        logger.info("Derived label_top_mcc_shift")
+
+    # Report final status
+    still_missing = [t["label_col"] for t in tasks if t["label_col"] not in df.columns]
+    if still_missing:
+        logger.warning("_derive_santander_labels: still missing %d labels: %s",
+                        len(still_missing), still_missing)
+    else:
+        logger.info("_derive_santander_labels: all %d labels available", len(needed))
+
+    return df
+
+
 def _inject_sequences_into_ple_dataset(
     dataset: Any,
     event_sequences: torch.Tensor,
@@ -361,6 +552,40 @@ def load_data(
     tasks = config.get("tasks", [])
     label_cols = [t["label_col"] for t in tasks]
 
+    # -- Encode categorical string columns to integers --
+    # This makes gender, segment, country, channel, age_group, income_group
+    # available as numeric features for auto-discovery.
+    from sklearn.preprocessing import LabelEncoder as _LabelEncoder
+    _cat_cols = df.select_dtypes(include=["object", "string", "category"]).columns
+    _id_and_date_cols = {"customer_id", "snapshot_date"}
+    for _col in _cat_cols:
+        if _col not in _id_and_date_cols:
+            # Skip list-type columns stored as object dtype
+            _sample = df[_col].dropna().iloc[0] if len(df[_col].dropna()) > 0 else None
+            if isinstance(_sample, (list, np.ndarray)):
+                continue
+            _le = _LabelEncoder()
+            df[_col] = _le.fit_transform(df[_col].astype(str))
+            logger.info("Encoded categorical '%s': %d classes", _col, len(_le.classes_))
+
+    # -- Run feature generators if Phase 0 didn't produce them --
+    _has_generated = any(c.startswith("tda_") or c.startswith("graph_") or
+                         c.startswith("hmm_") or c.startswith("mamba_")
+                         for c in df.columns)
+    if not _has_generated:
+        logger.info("No generator features found — running inline feature generation")
+        try:
+            from adapters.santander_adapter import _run_santander_generators
+            df = _run_santander_generators(df)
+            logger.info("Inline feature generation complete. Shape: %s", df.shape)
+        except Exception as _gen_err:
+            logger.warning("Inline feature generation failed: %s", _gen_err)
+    else:
+        _gen_cols = [c for c in df.columns
+                     if any(c.startswith(p) for p in
+                            ("tda_", "graph_", "hmm_", "mamba_", "gmm_", "model_derived_"))]
+        logger.info("Found %d pre-generated feature columns from Phase 0", len(_gen_cols))
+
     # -- Derive missing labels if LabelDeriver config is present --
     missing_labels = [lc for lc in label_cols if lc not in df.columns]
     if missing_labels:
@@ -386,6 +611,13 @@ def load_data(
                 logger.warning("No labels config found for derivation")
         except Exception as e:
             logger.warning("Label derivation failed: %s", e)
+
+    # -- Santander-specific label derivation (handles all 15 derived labels) --
+    missing_after_deriver = [lc for lc in label_cols if lc not in df.columns]
+    if missing_after_deriver:
+        logger.info("Attempting Santander-specific derivation for %d labels: %s",
+                     len(missing_after_deriver), missing_after_deriver)
+        df = _derive_santander_labels(df, tasks)
 
     # Re-check after derivation — skip tasks whose labels still don't exist
     # Also skip list-type columns (can't be converted to tensors)
@@ -1016,13 +1248,27 @@ def main() -> None:
 
     # Parse active_tasks HP for task scaling ablation
     active_tasks_raw = hp.get("active_tasks")
+    active_task_names = None
     if active_tasks_raw:
-        active_tasks = json.loads(active_tasks_raw) if isinstance(active_tasks_raw, str) else active_tasks_raw
+        active_task_names = json.loads(active_tasks_raw) if isinstance(active_tasks_raw, str) else active_tasks_raw
         # Filter config tasks to only active ones
         all_tasks = config.get("tasks", [])
-        config["tasks"] = [t for t in all_tasks if t["name"] in active_tasks]
+        config["tasks"] = [t for t in all_tasks if t["name"] in active_task_names]
         logger.info("Task scaling ablation: %d/%d tasks active: %s",
-                    len(config["tasks"]), len(all_tasks), active_tasks)
+                    len(config["tasks"]), len(all_tasks), active_task_names)
+
+        # Filter task_groups to only reference active tasks
+        for tg in config.get("task_groups", []):
+            tg["tasks"] = [t for t in tg["tasks"] if t in active_task_names]
+        config["task_groups"] = [tg for tg in config.get("task_groups", []) if tg.get("tasks")]
+        logger.info("Task groups after filtering: %d", len(config.get("task_groups", [])))
+
+        # Filter task_relationships to only reference active tasks
+        config["task_relationships"] = [
+            tr for tr in config.get("task_relationships", [])
+            if tr["source"] in active_task_names and tr["target"] in active_task_names
+        ]
+        logger.info("Task relationships after filtering: %d", len(config.get("task_relationships", [])))
 
     # Hyperparameter ablation: num_layers and temperature
     hp_num_layers = hp.get("num_layers")

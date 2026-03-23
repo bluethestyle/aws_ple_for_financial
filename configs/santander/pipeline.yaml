@@ -76,7 +76,7 @@ tasks:
     loss_weight: 0.8
     label_col: label_tenure_stage
     num_classes: 5
-    description: "Tenure bucket (new/early/mid/mature/veteran)"
+    description: "Tenure bucket (unknown_or_new/early/mid/mature/veteran) from tenure_months"
     derive:
       method: bucket
       source_col: tenure_months
@@ -103,17 +103,17 @@ tasks:
     loss: huber
     loss_weight: 1.0
     label_col: label_cross_sell_count
-    description: "Total lifetime product acquisitions (0-22, avg 0.6)"
+    description: "Number of products in nba_label list (0-24)"
     derive:
-      method: direct
-      source_col: total_acquisitions
+      method: len_of_list
+      source_col: nba_label
 
   - name: engagement_score
     type: regression
     loss: huber
     loss_weight: 1.0
     label_col: label_engagement_score
-    description: "Composite engagement: weighted sum of is_active, synth_frequency, num_products"
+    description: "Composite engagement: is_active*0.3 + synth_frequency/max*0.4 + num_products/max*0.3"
     derive:
       method: weighted_sum
       columns: [is_active, synth_frequency, num_products]
@@ -131,11 +131,11 @@ tasks:
       gamma: 2.0
     loss_weight: 1.5
     label_col: label_acquire_deposits
-    description: "Will customer acquire any deposit product?"
+    description: "Any of nba_label indices [8,9,10] (short/medium/long deposit)"
     derive:
-      method: product_group_acquisition
-      product_cols: [prod_saving, prod_short_deposit, prod_medium_deposit, prod_long_deposit]
-      sequence_cols: [seq_saving, seq_short_deposit, seq_medium_deposit, seq_long_deposit]
+      method: nba_group_check
+      source_col: nba_label
+      indices: [8, 9, 10]
 
   - name: will_acquire_investments
     type: binary
@@ -145,11 +145,11 @@ tasks:
       gamma: 2.0
     loss_weight: 1.5
     label_col: label_acquire_investments
-    description: "Will customer acquire any investment product?"
+    description: "Any of nba_label indices [12,18] (funds, securities)"
     derive:
-      method: product_group_acquisition
-      product_cols: [prod_funds, prod_securities, prod_pension_plan, prod_pension_deposit]
-      sequence_cols: [seq_funds, seq_securities, seq_pension_plan, seq_pension_deposit]
+      method: nba_group_check
+      source_col: nba_label
+      indices: [12, 18]
 
   - name: will_acquire_accounts
     type: binary
@@ -159,13 +159,11 @@ tasks:
       gamma: 2.0
     loss_weight: 1.2
     label_col: label_acquire_accounts
-    description: "Will customer acquire any account product?"
+    description: "Any of nba_label indices [2,5,6,7,11,19] (checking, junior, particular, e_account, home)"
     derive:
-      method: product_group_acquisition
-      product_cols: [prod_checking, prod_derivados, prod_payroll_acct, prod_junior_acct,
-                     prod_particular_acct, prod_particular_plus, prod_e_account, prod_home_acct]
-      sequence_cols: [seq_checking, seq_derivados, seq_payroll_acct, seq_junior_acct,
-                      seq_particular_acct, seq_particular_plus, seq_e_account, seq_home_acct]
+      method: nba_group_check
+      source_col: nba_label
+      indices: [2, 5, 6, 7, 11, 19]
 
   - name: will_acquire_lending
     type: binary
@@ -175,11 +173,11 @@ tasks:
       gamma: 2.0
     loss_weight: 1.5
     label_col: label_acquire_lending
-    description: "Will customer acquire mortgage or loan?"
+    description: "Any of nba_label indices [13,15] (mortgage, loans)"
     derive:
-      method: product_group_acquisition
-      product_cols: [prod_mortgage, prod_loans]
-      sequence_cols: [seq_mortgage, seq_loans]
+      method: nba_group_check
+      source_col: nba_label
+      indices: [13, 15]
 
   - name: will_acquire_payments
     type: binary
@@ -189,11 +187,11 @@ tasks:
       gamma: 2.0
     loss_weight: 1.2
     label_col: label_acquire_payments
-    description: "Will customer acquire any payment product?"
+    description: "Any of nba_label indices [4,17,20,22,23] (credit_card, direct/auto debit, payroll)"
     derive:
-      method: product_group_acquisition
-      product_cols: [prod_credit_card, prod_direct_debit, prod_auto_debit]
-      sequence_cols: [seq_credit_card, seq_direct_debit, seq_auto_debit]
+      method: nba_group_check
+      source_col: nba_label
+      indices: [4, 17, 20, 22, 23]
 
   - name: segment_prediction
     type: multiclass
@@ -201,21 +199,24 @@ tasks:
     loss_weight: 1.0
     label_col: label_segment
     num_classes: 4
-    description: "Customer segment (01-TOP, 02-PARTICULARES, 03-UNIVERSITARIO, UNKNOWN)"
+    description: "Customer segment: 01-TOP=0, 02-PARTICULARES=1, 03-UNIVERSITARIO=2, UNKNOWN=3"
     derive:
-      method: categorical_encode
+      method: string_map
       source_col: segment
+      mapping: {"01-TOP": 0, "02-PARTICULARES": 1, "03-UNIVERSITARIO": 2, "UNKNOWN": 3}
 
   - name: income_tier
     type: multiclass
     loss: ce
     loss_weight: 0.8
     label_col: label_income_tier
-    num_classes: 5
-    description: "Income group (low, mid, high, very_high, unknown)"
+    num_classes: 4
+    description: "Income tier: low(<30k)=0, mid(30-80k)=1, high(80-200k)=2, very_high(200k+)=3"
     derive:
-      method: categorical_encode
-      source_col: income_group
+      method: bucket
+      source_col: income
+      boundaries: [30000, 80000, 200000]
+      class_names: [low, mid, high, very_high]
 
   # ===== Tier 5 — Transaction-based NBA (3 tasks) =====
   # Derived from txn_mcc_seq transaction sequences
@@ -261,7 +262,7 @@ tasks:
 # Labels — derivation rules mapping actual columns to label columns
 # ---------------------------------------------------------------------------
 labels:
-  # Tier 1: direct from dataset
+  # Tier 1: direct from dataset (3 labels exist as raw columns)
   has_nba:
     source: has_nba
     type: direct
@@ -272,76 +273,91 @@ labels:
     source: product_stability
     type: direct
     nullable: true
-  nba_label:
-    source: nba_label
-    type: list_first
-    filter: has_nba
 
-  # Tier 2: derived
+  # Tier 1 derived: nba_primary
+  label_nba_primary:
+    source: nba_label
+    type: first_from_list
+    default: -1
+    description: "First element of nba_label list, or -1 if empty"
+
+  # Tier 2: derived from profile/synth columns
   label_tenure_stage:
     source: tenure_months
     type: bucket
     boundaries: [6, 24, 60, 120]
     sentinel_value: -999999
     sentinel_class: 0
+    description: "5-class tenure: unknown_or_new/early/mid/mature/veteran"
   label_spend_level:
     source: synth_monthly_spend
     type: bucket
     boundaries: [1500, 3000, 5000]
+    description: "4-class spending: low/moderate/high/very_high"
   label_cross_sell_count:
-    source: total_acquisitions
-    type: direct
+    source: nba_label
+    type: len_of_list
+    description: "Number of products in nba_label list"
   label_engagement_score:
     type: weighted_sum
     sources: [is_active, synth_frequency, num_products]
     weights: [0.3, 0.4, 0.3]
     normalize: true
+    description: "Composite: is_active*0.3 + synth_frequency/max*0.4 + num_products/max*0.3"
 
-  # Tier 3: product group acquisition
+  # Tier 3: product group acquisition (from nba_label indices)
   label_acquire_deposits:
-    type: product_group_acquisition
-    products: [prod_saving, prod_short_deposit, prod_medium_deposit, prod_long_deposit]
-    sequences: [seq_saving, seq_short_deposit, seq_medium_deposit, seq_long_deposit]
+    source: nba_label
+    type: nba_group_check
+    indices: [8, 9, 10]
+    description: "1 if any of short/medium/long deposit index in nba_label"
   label_acquire_investments:
-    type: product_group_acquisition
-    products: [prod_funds, prod_securities, prod_pension_plan, prod_pension_deposit]
-    sequences: [seq_funds, seq_securities, seq_pension_plan, seq_pension_deposit]
+    source: nba_label
+    type: nba_group_check
+    indices: [12, 18]
+    description: "1 if funds or securities index in nba_label"
   label_acquire_accounts:
-    type: product_group_acquisition
-    products: [prod_checking, prod_derivados, prod_payroll_acct, prod_junior_acct,
-               prod_particular_acct, prod_particular_plus, prod_e_account, prod_home_acct]
-    sequences: [seq_checking, seq_derivados, seq_payroll_acct, seq_junior_acct,
-                seq_particular_acct, seq_particular_plus, seq_e_account, seq_home_acct]
+    source: nba_label
+    type: nba_group_check
+    indices: [2, 5, 6, 7, 11, 19]
+    description: "1 if any account-type index in nba_label"
   label_acquire_lending:
-    type: product_group_acquisition
-    products: [prod_mortgage, prod_loans]
-    sequences: [seq_mortgage, seq_loans]
+    source: nba_label
+    type: nba_group_check
+    indices: [13, 15]
+    description: "1 if mortgage or loans index in nba_label"
   label_acquire_payments:
-    type: product_group_acquisition
-    products: [prod_credit_card, prod_direct_debit, prod_auto_debit]
-    sequences: [seq_credit_card, seq_direct_debit, seq_auto_debit]
+    source: nba_label
+    type: nba_group_check
+    indices: [4, 17, 20, 22, 23]
+    description: "1 if any payment-type index in nba_label"
+
+  # Tier 3: segmentation
   label_segment:
     source: segment
-    type: categorical_encode
-    values: ["01-TOP", "02-PARTICULARES", "03-UNIVERSITARIO", "UNKNOWN"]
+    type: string_map
+    mapping: {"01-TOP": 0, "02-PARTICULARES": 1, "03-UNIVERSITARIO": 2, "UNKNOWN": 3}
+    description: "4-class segment encoding"
   label_income_tier:
-    source: income_group
-    type: categorical_encode
-    values: [low, mid, high, very_high, unknown]
+    source: income
+    type: bucket
+    boundaries: [30000, 80000, 200000]
+    description: "4-class income tier: low/mid/high/very_high"
 
   # Tier 5: transaction-based NBA labels
   label_next_mcc:
-    type: sequence_next
-    source_seq: txn_mcc_seq
-    top_k: 50
+    source: txn_mcc_seq
+    type: sequence_last
+    cap: 50
+    description: "Last element of txn_mcc_seq, capped at 49"
   label_mcc_diversity_trend:
+    source: txn_mcc_seq
     type: sequence_diversity_trend
-    source_seq: txn_mcc_seq
-    window_sizes: [10, 30]
+    description: "unique(second half) / unique(first half) - 1.0"
   label_top_mcc_shift:
+    source: txn_mcc_seq
     type: sequence_mode_shift
-    source_seq: txn_mcc_seq
-    window_sizes: [15, 30]
+    description: "1 if mode MCC changed between first and second half"
 
 # ---------------------------------------------------------------------------
 # Sequences — two groups with different temporal resolutions
