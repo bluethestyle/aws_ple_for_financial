@@ -67,24 +67,35 @@ PY_VERSION = "py310"
 # ---------------------------------------------------------------------------
 # Dimension 1: Feature Group Ablation (10 scenarios)
 # ---------------------------------------------------------------------------
+# All advanced feature groups (everything beyond base demographics + products)
+_ADVANCED_GROUPS = [
+    "txn_behavior", "derived_temporal", "tda_global", "tda_local",
+    "graph_collaborative", "product_hierarchy", "hmm_states",
+    "mamba_temporal", "gmm_clustering", "model_derived",
+]
+
 FEATURE_SCENARIOS: List[Dict[str, Any]] = [
+    # --- Full baseline (reused by Phase 2/3) ---
     {"name": "full", "remove": []},
-    {"name": "no_demographics", "remove": ["demographics"]},
-    {"name": "no_products", "remove": ["product_holdings"]},
-    {"name": "no_txn_behavior", "remove": ["txn_behavior"]},
-    {"name": "no_sequences", "remove": ["tda_local", "mamba_temporal", "hmm_states"]},
-    {"name": "no_derived", "remove": ["derived_temporal"]},
-    {"name": "no_tda", "remove": ["tda_global", "tda_local"]},
-    {"name": "no_graph", "remove": ["graph_collaborative"]},
-    {"name": "no_hierarchy", "remove": ["product_hierarchy"]},
-    {
-        "name": "base_only",
-        "remove": [
-            "tda_global", "tda_local", "hmm_states", "mamba_temporal",
-            "graph_collaborative", "product_hierarchy", "gmm_clustering",
-            "model_derived",
-        ],
-    },
+
+    # --- Bottom-up: base + one group (pairwise contribution) ---
+    {"name": "base_only", "remove": list(_ADVANCED_GROUPS)},
+    {"name": "base+txn", "remove": [g for g in _ADVANCED_GROUPS if g != "txn_behavior"]},
+    {"name": "base+tda", "remove": [g for g in _ADVANCED_GROUPS if g not in ("tda_global", "tda_local")]},
+    {"name": "base+graph", "remove": [g for g in _ADVANCED_GROUPS if g != "graph_collaborative"]},
+    {"name": "base+hierarchy", "remove": [g for g in _ADVANCED_GROUPS if g != "product_hierarchy"]},
+    {"name": "base+hmm", "remove": [g for g in _ADVANCED_GROUPS if g != "hmm_states"]},
+    {"name": "base+mamba", "remove": [g for g in _ADVANCED_GROUPS if g != "mamba_temporal"]},
+    {"name": "base+gmm", "remove": [g for g in _ADVANCED_GROUPS if g != "gmm_clustering"]},
+
+    # --- Top-down: full minus one group (irreplaceability) ---
+    {"name": "full-txn", "remove": ["txn_behavior"]},
+    {"name": "full-tda", "remove": ["tda_global", "tda_local"]},
+    {"name": "full-graph", "remove": ["graph_collaborative"]},
+    {"name": "full-hierarchy", "remove": ["product_hierarchy"]},
+    {"name": "full-hmm", "remove": ["hmm_states"]},
+    {"name": "full-mamba", "remove": ["mamba_temporal"]},
+    {"name": "full-gmm", "remove": ["gmm_clustering"]},
 ]
 
 # ---------------------------------------------------------------------------
@@ -96,13 +107,28 @@ ALL_SHARED_EXPERTS = [
 ]
 
 EXPERT_SCENARIOS: List[Dict[str, Any]] = [
-    # full_basket is shared with Phase 1 "full" scenario — no need to re-run
-    {"name": "no_deepfm", "experts": [e for e in ALL_SHARED_EXPERTS if e != "deepfm"]},
-    {"name": "no_temporal", "experts": [e for e in ALL_SHARED_EXPERTS if e != "temporal_ensemble"]},
-    {"name": "no_hgcn", "experts": [e for e in ALL_SHARED_EXPERTS if e != "hgcn"]},
-    {"name": "no_perslay", "experts": [e for e in ALL_SHARED_EXPERTS if e != "perslay"]},
-    {"name": "no_causal", "experts": [e for e in ALL_SHARED_EXPERTS if e != "causal"]},
-    {"name": "mlp_only", "experts": ["mlp"]},  # at least 1 expert to avoid empty stack
+    # full_basket is shared with Phase 1 "full" — reused as baseline
+
+    # --- Bottom-up: DeepFM + one expert (pairwise contribution) ---
+    {"name": "deepfm_only", "experts": ["deepfm"]},
+    {"name": "deepfm+temporal", "experts": ["deepfm", "temporal_ensemble"]},
+    {"name": "deepfm+hgcn", "experts": ["deepfm", "hgcn"]},
+    {"name": "deepfm+perslay", "experts": ["deepfm", "perslay"]},
+    {"name": "deepfm+causal", "experts": ["deepfm", "causal"]},
+    {"name": "deepfm+lightgcn", "experts": ["deepfm", "lightgcn"]},
+    {"name": "deepfm+ot", "experts": ["deepfm", "optimal_transport"]},
+
+    # --- Top-down: full minus one expert (irreplaceability) ---
+    {"name": "full-deepfm", "experts": [e for e in ALL_SHARED_EXPERTS if e != "deepfm"]},
+    {"name": "full-temporal", "experts": [e for e in ALL_SHARED_EXPERTS if e != "temporal_ensemble"]},
+    {"name": "full-hgcn", "experts": [e for e in ALL_SHARED_EXPERTS if e != "hgcn"]},
+    {"name": "full-perslay", "experts": [e for e in ALL_SHARED_EXPERTS if e != "perslay"]},
+    {"name": "full-causal", "experts": [e for e in ALL_SHARED_EXPERTS if e != "causal"]},
+    {"name": "full-lightgcn", "experts": [e for e in ALL_SHARED_EXPERTS if e != "lightgcn"]},
+    {"name": "full-ot", "experts": [e for e in ALL_SHARED_EXPERTS if e != "optimal_transport"]},
+
+    # --- Minimal baseline ---
+    {"name": "mlp_only", "experts": ["mlp"]},
 ]
 
 # ---------------------------------------------------------------------------
