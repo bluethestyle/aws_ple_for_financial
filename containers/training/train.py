@@ -790,7 +790,10 @@ def report_metrics(prefix: str, metrics: Dict[str, float], epoch: int) -> None:
     """
     parts = [f"epoch={epoch}"]
     for name, value in sorted(metrics.items()):
-        parts.append(f"{prefix}_{name}={value:.6f}")
+        if isinstance(value, (int, float)):
+            parts.append(f"{prefix}_{name}={value:.6f}")
+        else:
+            parts.append(f"{prefix}_{name}={value}")
     line = " ".join(parts)
     logger.info(line)
     # Also print to stdout directly for SageMaker metric capture
