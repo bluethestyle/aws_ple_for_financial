@@ -80,13 +80,13 @@ FEATURE_SCENARIOS: List[Dict[str, Any]] = [
 
     # --- Bottom-up: base + one group (pairwise contribution) ---
     {"name": "base_only", "remove": list(_ADVANCED_GROUPS)},
-    {"name": "base+txn", "remove": [g for g in _ADVANCED_GROUPS if g != "txn_behavior"]},
-    {"name": "base+tda", "remove": [g for g in _ADVANCED_GROUPS if g not in ("tda_global", "tda_local")]},
-    {"name": "base+graph", "remove": [g for g in _ADVANCED_GROUPS if g != "graph_collaborative"]},
-    {"name": "base+hierarchy", "remove": [g for g in _ADVANCED_GROUPS if g != "product_hierarchy"]},
-    {"name": "base+hmm", "remove": [g for g in _ADVANCED_GROUPS if g != "hmm_states"]},
-    {"name": "base+mamba", "remove": [g for g in _ADVANCED_GROUPS if g != "mamba_temporal"]},
-    {"name": "base+gmm", "remove": [g for g in _ADVANCED_GROUPS if g != "gmm_clustering"]},
+    {"name": "base-txn", "remove": [g for g in _ADVANCED_GROUPS if g != "txn_behavior"]},
+    {"name": "base-tda", "remove": [g for g in _ADVANCED_GROUPS if g not in ("tda_global", "tda_local")]},
+    {"name": "base-graph", "remove": [g for g in _ADVANCED_GROUPS if g != "graph_collaborative"]},
+    {"name": "base-hierarchy", "remove": [g for g in _ADVANCED_GROUPS if g != "product_hierarchy"]},
+    {"name": "base-hmm", "remove": [g for g in _ADVANCED_GROUPS if g != "hmm_states"]},
+    {"name": "base-mamba", "remove": [g for g in _ADVANCED_GROUPS if g != "mamba_temporal"]},
+    {"name": "base-gmm", "remove": [g for g in _ADVANCED_GROUPS if g != "gmm_clustering"]},
 
     # --- Top-down: full minus one group (irreplaceability) ---
     {"name": "full-txn", "remove": ["txn_behavior"]},
