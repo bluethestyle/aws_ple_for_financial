@@ -1278,6 +1278,8 @@ def main() -> None:
     patience = int(hp.get("early_stopping_patience", 5))
     seed = int(hp.get("seed", 42))
     phase = str(hp.get("phase", "single"))
+    use_amp = str(hp.get("amp", "false")).lower() in ("true", "1", "yes")
+    grad_accum_steps = int(hp.get("gradient_accumulation_steps", 4))
     freeze_towers = hp.get("freeze_towers", False)
     pretrained_uri = hp.get("pretrained_model_uri")
 
@@ -1682,16 +1684,16 @@ def main() -> None:
         },
         "scheduler": {
             "name": "cosine",
-            "warmup_epochs": 5,
+            "warmup_epochs": 3,
             "cosine_t0": max(10, epochs // 3),
             "cosine_t_mult": 2,
             "phase2_warmup_epochs": 2,
             "phase2_cosine_t0": max(6, epochs // 5),
         },
-        "amp": {"enabled": False},  # BCE loss is not autocast-safe; disable AMP
+        "amp": {"enabled": use_amp},
         "gradient": {
             "clip_norm": 5.0,
-            "accumulation_steps": 1,
+            "accumulation_steps": grad_accum_steps,
         },
         "early_stopping": {
             "enabled": True,
