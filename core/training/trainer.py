@@ -902,7 +902,7 @@ class PLETrainer:
             inputs = self._prepare_inputs(batch)
 
             if self.config.amp.enabled:
-                with autocast(device_type=device_type):
+                with (autocast(device_type=device_type) if _AMP_NEW_API else autocast()):
                     outputs = self.model(inputs, compute_loss=True)
             else:
                 outputs = self.model(inputs, compute_loss=True)
