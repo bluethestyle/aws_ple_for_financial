@@ -1990,7 +1990,9 @@ def main() -> None:
         eval_report["normalization"]["binary_columns"] = _binary_cols[:50]
 
     # MEDIUM-14: Generator summary persisted
-    _gen_cols_for_report = [c for c in df.columns
+    # Note: df is out of scope here (it was local to load_data).
+    # Use feature_names from the model config or _label_stats keys instead.
+    _gen_cols_for_report = [c for c in (getattr(model.config, '_feature_names', None) or [])
                             if any(c.startswith(p) for p in
                                    ("tda_", "graph_", "hmm_", "mamba_", "gmm_", "model_derived_"))]
     if _gen_cols_for_report:
