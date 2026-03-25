@@ -771,11 +771,36 @@ def load_data(
             loader.dataset, event_sequences_tensor, seq_lengths_tensor,
         )
 
+    # Pre-compute label statistics before df goes out of scope
+    _label_stats = {}
+    for t in tasks:
+        lc = t["label_col"]
+        if lc in df.columns:
+            col = df[lc]
+            if t.get("type") == "binary":
+                n_pos = int((col > 0.5).sum())
+                _label_stats[t["name"]] = {
+                    "positive_count": n_pos,
+                    "positive_rate": round(n_pos / len(col), 4),
+                    "total": len(col),
+                }
+            elif t.get("type") == "regression":
+                _label_stats[t["name"]] = {
+                    "mean": round(float(col.mean()), 4),
+                    "std": round(float(col.std()), 4),
+                    "total": len(col),
+                }
+            elif t.get("type") == "multiclass":
+                _label_stats[t["name"]] = {
+                    "num_classes": int(col.nunique()),
+                    "total": len(col),
+                }
+
     logger.info(
         "Using PLEDataset dataloader: %d samples, batch_size=%d",
         len(df), batch_size,
     )
-    return loader
+    return loader, tasks, _label_stats
 
 
 # ---------------------------------------------------------------------------
@@ -1372,7 +1397,7 @@ def main() -> None:
 
     # -- Load data --
     use_gpu_loading = hp.get("use_gpu_loading", False) and num_gpus > 0
-    train_data = load_data(
+    train_data, tasks, _label_stats = load_data(
         train_dir, config,
         use_gpu_loading=use_gpu_loading,
         batch_size=batch_size,
@@ -1402,7 +1427,7 @@ def main() -> None:
     val_loader = None
     if os.path.isdir(val_dir):
         try:
-            val_loader = load_data(
+            val_loader, _, _ = load_data(
                 val_dir, config,
                 use_gpu_loading=use_gpu_loading,
                 batch_size=batch_size,
@@ -1899,33 +1924,8 @@ def main() -> None:
         "seed": config.get("training", {}).get("seed", 42),
     }
 
-    # Label statistics
-    eval_report["label_stats"] = {}
-    for t in tasks:
-        lc = t["label_col"]
-        if lc in df.columns:
-            col = df[lc]
-            if t.get("type") == "binary":
-                n_pos = int((col > 0.5).sum())
-                eval_report["label_stats"][t["name"]] = {
-                    "positive_count": n_pos,
-                    "positive_rate": round(n_pos / len(col), 4),
-                    "total": len(col),
-                }
-            elif t.get("type") == "multiclass":
-                vc = col.value_counts().to_dict()
-                eval_report["label_stats"][t["name"]] = {
-                    "class_distribution": {str(k): int(v) for k, v in vc.items()},
-                    "n_valid": int((col >= 0).sum()),
-                    "n_ignored": int((col < 0).sum()),
-                }
-            elif t.get("type") == "regression":
-                eval_report["label_stats"][t["name"]] = {
-                    "mean": round(float(col.mean()), 4),
-                    "std": round(float(col.std()), 4),
-                    "min": round(float(col.min()), 4),
-                    "max": round(float(col.max()), 4),
-                }
+    # Label statistics (pre-computed in load_data before df goes out of scope)
+    eval_report["label_stats"] = _label_stats if _label_stats else {}
 
     # Pos weights (if computed)
     if hasattr(model, '_pos_weights') and model._pos_weights:
