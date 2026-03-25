@@ -1863,7 +1863,7 @@ def main() -> None:
         "num_shared_experts": model.config.num_shared_experts if hasattr(model, "config") else None,
         "shared_expert_names": list(model.config.expert_basket.shared_experts) if hasattr(model, "config") and hasattr(model.config, "expert_basket") and model.config.expert_basket else None,
         "num_layers": model.config.num_extraction_layers if hasattr(model, "config") else None,
-        "extraction_dim": model.config.extraction_dim if hasattr(model, "config") else None,
+        "extraction_dim": getattr(model.config, "extraction_dim", getattr(model.config, "expert_output_dim", None)) if hasattr(model, "config") else None,
         "loss_weighting": model.config.loss_weighting.strategy if hasattr(model, "config") and hasattr(model.config, "loss_weighting") else None,
         "adatt_enabled": model.config.adatt.enabled if hasattr(model, "config") and hasattr(model.config, "adatt") else None,
         "total_params": sum(p.numel() for p in model.parameters()),

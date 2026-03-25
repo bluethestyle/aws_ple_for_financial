@@ -64,8 +64,33 @@ CPU_INSTANCE = "ml.m5.xlarge"
 PYTORCH_VERSION = "2.1"
 PY_VERSION = "py310"
 
+# Feature-Expert dependency map: removing a feature group should also
+# deactivate the corresponding expert to avoid input-less experts.
+FEATURE_EXPERT_DEPS: Dict[str, List[str]] = {
+    "tda_global": ["perslay"],
+    "tda_local": ["perslay"],
+    "graph_collaborative": ["lightgcn"],
+    "product_hierarchy": ["hgcn"],
+    "hmm_states": [],           # HMM features feed shared experts, no dedicated expert
+    "mamba_temporal": ["temporal_ensemble"],
+    "model_derived": [],
+    "gmm_clustering": [],
+    "txn_behavior": [],
+    "derived_temporal": [],
+}
+
+
+def _experts_for_scenario(removed_groups: List[str]) -> List[str]:
+    """Determine which experts to keep given removed feature groups."""
+    experts_to_remove = set()
+    for grp in removed_groups:
+        for exp in FEATURE_EXPERT_DEPS.get(grp, []):
+            experts_to_remove.add(exp)
+    return [e for e in ALL_SHARED_EXPERTS if e not in experts_to_remove]
+
+
 # ---------------------------------------------------------------------------
-# Dimension 1: Feature Group Ablation (10 scenarios)
+# Dimension 1: Feature Group Ablation (16 scenarios)
 # ---------------------------------------------------------------------------
 # All advanced feature groups (everything beyond base demographics + products)
 _ADVANCED_GROUPS = [
@@ -906,6 +931,7 @@ def run_phase1(
             "ablation_type": "feature_group",
             "ablation_scenario": name,
             "removed_feature_groups": json.dumps(scenario["remove"]),
+            "shared_experts": json.dumps(_experts_for_scenario(scenario["remove"])),
             "epochs": "10",
             "batch_size": "4096",
             "learning_rate": "0.008",
@@ -915,7 +941,9 @@ def run_phase1(
             "seed": "42",
             "_s3_output": f"{s3_base}/phase1/{name}",
         }
-        logger.info("--- Scenario: %s (remove=%s, spot=%s) ---", name, scenario["remove"], use_spot)
+        active_experts = _experts_for_scenario(scenario["remove"])
+        logger.info("--- Scenario: %s (remove=%s, experts=%s, spot=%s) ---",
+                     name, scenario["remove"], active_experts, use_spot)
         result = _submit_training_job(
             job_name=job_name, s3_output=s3_output,
             instance_type=args.instance_type_gpu,
