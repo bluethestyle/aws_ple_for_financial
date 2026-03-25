@@ -597,7 +597,7 @@ def _submit_training_job(
         "hyperparameters": hyperparameters,
         "environment": env,
         "use_spot_instances": use_spot,
-        "max_run": 14400,       # 4 hours (batch 4096 + AMP + 10 epochs ~1h)
+        "max_run": 28800,       # 8 hours (safety margin; actual ~1h with batch 4096 + AMP)
         **({"max_wait": 36000} if use_spot else {}),  # 10h max wait for spot
         "tags": [
             {"Key": "Project", "Value": "santander-ablation"},
