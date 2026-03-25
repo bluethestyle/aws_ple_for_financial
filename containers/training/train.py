@@ -1699,7 +1699,7 @@ def main() -> None:
         },
         "checkpoint": {
             "dir": checkpoint_dir,
-            "save_every_n_epochs": 5,
+            "save_every_n_epochs": 1,
             "max_to_keep": 3,
         },
         "phase1": {
