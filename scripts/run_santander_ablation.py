@@ -553,32 +553,10 @@ def _submit_training_job(
     from sagemaker.inputs import TrainingInput
     from sagemaker.pytorch import PyTorch
 
-    # SageMaker Debugger/Profiler for native monitoring
-    try:
-        from sagemaker.debugger import (
-            ProfilerConfig,
-            FrameworkProfile,
-            ProfilerRule,
-            rule_configs,
-        )
-        profiler_config = ProfilerConfig(
-            system_monitor_interval_millis=500,
-            framework_profile_params=FrameworkProfile(
-                start_step=0,
-                num_steps=10,
-            ),
-        )
-        profiler_rules = []
-        # Try adding rules (may not exist in all SDK versions)
-        for rule_name in ["ProfilerReport"]:
-            if hasattr(rule_configs, rule_name):
-                profiler_rules.append(ProfilerRule.sagemaker(getattr(rule_configs, rule_name)()))
-        profiler_rules = profiler_rules or None
-        logger.info("SageMaker Profiler config enabled (system_monitor=500ms)")
-    except ImportError:
-        logger.warning("sagemaker.debugger not available — profiler disabled")
-        profiler_config = None
-        profiler_rules = None
+    # SageMaker Debugger/Profiler — DISABLED to avoid costly ProfilerReport
+    # Processing Jobs (~$1.50/job). Enable only for debugging specific jobs.
+    profiler_config = None
+    profiler_rules = None
 
     # SageMaker Training Metrics — regex patterns for CloudWatch capture
     metric_definitions = [
