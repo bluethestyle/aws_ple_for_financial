@@ -383,10 +383,25 @@ def _derive_santander_labels(df, tasks):
 
     # --- label_next_mcc ---
     if "label_next_mcc" in needed and "txn_mcc_seq" in df.columns:
-        df["label_next_mcc"] = df["txn_mcc_seq"].apply(
-            lambda x: min(int(x[-1]), 49) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else -1
+        # Collect all MCC codes and find the top-50 most frequent
+        all_last_mccs = df["txn_mcc_seq"].apply(
+            lambda x: int(x[-1]) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else None
         )
-        logger.info("Derived label_next_mcc (capped at 50)")
+        mcc_counts = all_last_mccs.dropna().astype(int).value_counts()
+        top50_mccs = list(mcc_counts.index[:50])
+        mcc_to_idx = {mcc: idx for idx, mcc in enumerate(top50_mccs)}
+        logger.info("Top-50 MCC codes for label_next_mcc: %s", top50_mccs[:10])
+
+        def _map_mcc(x):
+            if not isinstance(x, (list, np.ndarray)) or len(x) == 0:
+                return -1
+            last_mcc = int(x[-1])
+            return mcc_to_idx.get(last_mcc, -1)  # -1 for rare MCCs (ignore_index)
+
+        df["label_next_mcc"] = df["txn_mcc_seq"].apply(_map_mcc)
+        n_valid = (df["label_next_mcc"] >= 0).sum()
+        logger.info("Derived label_next_mcc: %d classes, %d valid / %d total",
+                     len(top50_mccs), n_valid, len(df))
 
     # --- label_mcc_diversity_trend ---
     if "label_mcc_diversity_trend" in needed and "txn_mcc_seq" in df.columns:
@@ -406,13 +421,14 @@ def _derive_santander_labels(df, tasks):
     if "label_top_mcc_shift" in needed and "txn_mcc_seq" in df.columns:
         def _mode_shift(x):
             if not isinstance(x, (list, np.ndarray)) or len(x) < 4:
-                return -1  # too short to judge shift → ignore
+                return 0  # too short to judge shift → default to no-shift (binary safe)
             mid = len(x) // 2
             mode_first = Counter(x[:mid]).most_common(1)[0][0]
             mode_second = Counter(x[mid:]).most_common(1)[0][0]
             return int(mode_first != mode_second)
         df["label_top_mcc_shift"] = df["txn_mcc_seq"].apply(_mode_shift)
-        logger.info("Derived label_top_mcc_shift")
+        pos_rate = df["label_top_mcc_shift"].mean()
+        logger.info("Derived label_top_mcc_shift (positive rate: %.1f%%)", pos_rate * 100)
 
     # Report final status
     still_missing = [t["label_col"] for t in tasks if t["label_col"] not in df.columns]
@@ -590,18 +606,13 @@ def load_data(
                          c.startswith("hmm_") or c.startswith("mamba_")
                          for c in df.columns)
     if not _has_generated:
-        # Skip inline generators if data is large (>10K rows) to avoid OOM
-        # Generators should run in Phase 0 for large datasets
-        if len(df) <= 10000:
-            logger.info("Small dataset — running inline feature generation")
-            try:
-                from adapters.santander_adapter import _run_santander_generators
-                df = _run_santander_generators(df)
-                logger.info("Inline feature generation complete. Shape: %s", df.shape)
-            except Exception as _gen_err:
-                logger.warning("Inline feature generation failed: %s", _gen_err)
-        else:
-            logger.info("Large dataset (%d rows) — skipping inline generators (run Phase 0 instead)", len(df))
+        logger.info("Running feature generators for %d rows...", len(df))
+        try:
+            from adapters.santander_adapter import _run_santander_generators
+            df = _run_santander_generators(df)
+            logger.info("Feature generation complete. New shape: %s", df.shape)
+        except Exception as _gen_err:
+            logger.warning("Feature generation failed: %s — continuing without generated features", _gen_err)
     else:
         _gen_cols = [c for c in df.columns
                      if any(c.startswith(p) for p in
@@ -1015,12 +1026,25 @@ def validate(
                 except ValueError:
                     pass
             try:
-                pred_labels = (preds_sq > 0.5).astype(int)
+                # Optimal threshold search for imbalanced binary tasks
+                _thresholds = [0.01, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5]
+                best_f1, best_t = 0.0, 0.5
+                for _t in _thresholds:
+                    _preds_t = (preds_sq > _t).astype(int)
+                    _f1_t = f1_score(tgts_sq, _preds_t, zero_division=0)
+                    if _f1_t > best_f1:
+                        best_f1, best_t = _f1_t, _t
+
+                pred_labels = (preds_sq > best_t).astype(int)
                 metrics[f"accuracy_{name}"] = accuracy_score(tgts_sq, pred_labels)
-                metrics[f"f1_{name}"] = f1_score(
-                    tgts_sq, pred_labels, zero_division=0,
+                metrics[f"f1_{name}"] = best_f1
+                metrics[f"f1_threshold_{name}"] = best_t
+                # Also report F1 at default 0.5 for comparison
+                pred_labels_05 = (preds_sq > 0.5).astype(int)
+                metrics[f"f1_at_0.5_{name}"] = f1_score(
+                    tgts_sq, pred_labels_05, zero_division=0,
                 )
-                # HIGH-5: Confusion matrix for binary tasks
+                # HIGH-5: Confusion matrix for binary tasks (at optimal threshold)
                 cm = _confusion_matrix(tgts_sq, pred_labels, labels=[0, 1]).tolist()
                 metrics[f"confusion_matrix_{name}"] = cm
             except Exception:

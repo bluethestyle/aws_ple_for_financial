@@ -82,6 +82,13 @@ class FocalLoss(nn.Module):
     # ── private helpers ─────────────────────────────────────────
 
     def _binary_focal(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # Mask out ignore_index=-1 samples
+        valid_mask = targets >= 0
+        if not valid_mask.any():
+            return torch.tensor(0.0, device=inputs.device, requires_grad=True)
+        inputs = inputs[valid_mask]
+        targets = targets[valid_mask]
+
         p = torch.sigmoid(inputs)
         ce = F.binary_cross_entropy_with_logits(inputs, targets.float(), reduction="none")
         p_t = p * targets + (1.0 - p) * (1.0 - targets)
@@ -91,6 +98,13 @@ class FocalLoss(nn.Module):
         return self._reduce(loss)
 
     def _multiclass_focal(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # Mask out ignore_index=-1 samples to avoid index errors
+        valid_mask = targets >= 0
+        if not valid_mask.any():
+            return torch.tensor(0.0, device=inputs.device, requires_grad=True)
+        inputs = inputs[valid_mask]
+        targets = targets[valid_mask]
+
         ce = F.cross_entropy(inputs, targets.long(), reduction="none")
         p = F.softmax(inputs, dim=-1)
         p_t = p.gather(1, targets.long().unsqueeze(1)).squeeze(1)

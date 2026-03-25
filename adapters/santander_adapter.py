@@ -61,6 +61,15 @@ def _run_santander_generators(df: pd.DataFrame) -> pd.DataFrame:
     generated_frames: List[pd.DataFrame] = []
     gen_summary: Dict[str, int] = {}
 
+    # For large datasets, fit on subsample to avoid OOM, then generate on full
+    _FIT_SUBSAMPLE_LIMIT = 50000
+    if len(df) > _FIT_SUBSAMPLE_LIMIT:
+        _fit_df = df.sample(_FIT_SUBSAMPLE_LIMIT, random_state=42)
+        logger.info("Large dataset (%d rows): fitting generators on %d-row subsample",
+                     len(df), _FIT_SUBSAMPLE_LIMIT)
+    else:
+        _fit_df = df
+
     # ------------------------------------------------------------------
     # 1. TDA Global (population topology from product holdings)
     # ------------------------------------------------------------------
@@ -73,7 +82,7 @@ def _run_santander_generators(df: pd.DataFrame) -> pd.DataFrame:
             prefix="tda_global",
             max_homology_dim=1,
         )
-        tda_global.fit(df)
+        tda_global.fit(_fit_df)
         tda_global_feat = tda_global.generate(df)
         # Convert to pandas if needed
         if not isinstance(tda_global_feat, pd.DataFrame):
@@ -107,7 +116,7 @@ def _run_santander_generators(df: pd.DataFrame) -> pd.DataFrame:
             max_homology_dim=1,
             n_jobs=1,  # conservative for Processing Job memory
         )
-        tda_local.fit(df)
+        tda_local.fit(_fit_df)
         tda_local_feat = tda_local.generate(df)
         if not isinstance(tda_local_feat, pd.DataFrame):
             tda_local_feat = pd.DataFrame(tda_local_feat)
@@ -142,7 +151,7 @@ def _run_santander_generators(df: pd.DataFrame) -> pd.DataFrame:
             num_epochs=15,  # fewer epochs for Processing Job speed
             k_neighbors=8,
         )
-        graph_gen.fit(df)
+        graph_gen.fit(_fit_df)
         graph_feat = graph_gen.generate(df)
         if not isinstance(graph_feat, pd.DataFrame):
             graph_feat = pd.DataFrame(graph_feat)
@@ -173,7 +182,7 @@ def _run_santander_generators(df: pd.DataFrame) -> pd.DataFrame:
             sequence_columns=synth_cols or base_cols[:20],
             prefix="hmm",
         )
-        hmm_gen.fit(df)
+        hmm_gen.fit(_fit_df)
         hmm_feat = hmm_gen.generate(df)
         if not isinstance(hmm_feat, pd.DataFrame):
             hmm_feat = pd.DataFrame(hmm_feat)
@@ -212,7 +221,7 @@ def _run_santander_generators(df: pd.DataFrame) -> pd.DataFrame:
             prefer_gpu=False,
             num_epochs=10,
         )
-        mamba_gen.fit(df)
+        mamba_gen.fit(_fit_df)
         mamba_feat = mamba_gen.generate(df)
         if not isinstance(mamba_feat, pd.DataFrame):
             mamba_feat = pd.DataFrame(mamba_feat)
@@ -242,7 +251,7 @@ def _run_santander_generators(df: pd.DataFrame) -> pd.DataFrame:
             feature_columns=base_cols,
             prefix="gmm",
         )
-        gmm_gen.fit(df)
+        gmm_gen.fit(_fit_df)
         gmm_feat = gmm_gen.generate(df)
         if not isinstance(gmm_feat, pd.DataFrame):
             gmm_feat = pd.DataFrame(gmm_feat)
@@ -274,7 +283,7 @@ def _run_santander_generators(df: pd.DataFrame) -> pd.DataFrame:
             temporal_columns=synth_cols[:2] if len(synth_cols) >= 2 else base_cols[:2],
             prefix="model_derived",
         )
-        model_gen.fit(df)
+        model_gen.fit(_fit_df)
         model_feat = model_gen.generate(df)
         if not isinstance(model_feat, pd.DataFrame):
             model_feat = pd.DataFrame(model_feat)
