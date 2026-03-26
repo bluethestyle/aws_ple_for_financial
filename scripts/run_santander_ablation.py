@@ -58,7 +58,7 @@ CONFIG_PATH = "configs/santander/pipeline.yaml"
 
 # Instance types
 GPU_INSTANCE = "ml.g4dn.xlarge"
-CPU_INSTANCE = "ml.m5.xlarge"
+CPU_INSTANCE = "ml.m5.4xlarge"  # 64GB RAM — generators need memory for 941K rows
 
 # Framework versions (for PyTorch Estimator)
 PYTORCH_VERSION = "2.1"

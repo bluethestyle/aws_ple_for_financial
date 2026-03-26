@@ -601,23 +601,16 @@ def load_data(
             df[_col] = _le.fit_transform(df[_col].astype(str))
             logger.info("Encoded categorical '%s': %d classes", _col, len(_le.classes_))
 
-    # -- Run feature generators if Phase 0 didn't produce them --
-    _has_generated = any(c.startswith("tda_") or c.startswith("graph_") or
-                         c.startswith("hmm_") or c.startswith("mamba_")
-                         for c in df.columns)
-    if not _has_generated:
-        logger.info("Running feature generators for %d rows...", len(df))
-        try:
-            from adapters.santander_adapter import _run_santander_generators
-            df = _run_santander_generators(df)
-            logger.info("Feature generation complete. New shape: %s", df.shape)
-        except Exception as _gen_err:
-            logger.warning("Feature generation failed: %s — continuing without generated features", _gen_err)
-    else:
-        _gen_cols = [c for c in df.columns
-                     if any(c.startswith(p) for p in
-                            ("tda_", "graph_", "hmm_", "mamba_", "gmm_", "model_derived_"))]
+    # -- Check for pre-generated feature columns from Phase 0 --
+    _gen_prefixes = ("tda_", "graph_", "hmm_", "mamba_", "gmm_", "model_derived_")
+    _gen_cols = [c for c in df.columns if any(c.startswith(p) for p in _gen_prefixes)]
+    if _gen_cols:
         logger.info("Found %d pre-generated feature columns from Phase 0", len(_gen_cols))
+    else:
+        logger.warning(
+            "No generated feature columns found (tda/graph/hmm/mamba/gmm/model_derived). "
+            "Phase 0 should run generators. Training with base features only."
+        )
 
     # -- Derive missing labels if LabelDeriver config is present --
     missing_labels = [lc for lc in label_cols if lc not in df.columns]
