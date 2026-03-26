@@ -723,13 +723,24 @@ def load_data(
     _continuous_cols = [c for c in _feat_cols if c not in _binary_cols]
     global _module_scaler, _module_continuous_cols
     # 1a) Power-law detection: add log1p copies for heavy-tailed features
+    #   Criteria (all must hold):
+    #   - |skewness| > 2.0      (asymmetric distribution)
+    #   - excess kurtosis > 6.0  (heavy tail, not just asymmetric)
+    #   - min >= 0               (log1p requires non-negative)
+    #   - nunique > 20           (skip sparse discrete cols like counts 0-5)
     _SKEW_THRESHOLD = 2.0
+    _KURT_THRESHOLD = 6.0
     _power_law_cols = []
     if _continuous_cols:
         for col in _continuous_cols:
             try:
                 skew = float(df[col].skew())
-                if abs(skew) > _SKEW_THRESHOLD and df[col].min() >= 0:
+                kurt = float(df[col].kurtosis())  # excess kurtosis (normal=0)
+                n_unique = int(df[col].nunique())
+                if (abs(skew) > _SKEW_THRESHOLD
+                        and kurt > _KURT_THRESHOLD
+                        and df[col].min() >= 0
+                        and n_unique > 20):
                     _power_law_cols.append(col)
             except (TypeError, ValueError):
                 pass
