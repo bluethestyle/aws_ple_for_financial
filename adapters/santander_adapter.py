@@ -427,7 +427,7 @@ if __name__ == "__main__":
         "total_columns": len(df.columns),
         "null_rates": {col: float(df[col].isna().mean()) for col in df.columns if df[col].isna().any()},
         "zero_variance_columns": [col for col in df.select_dtypes("number").columns if df[col].std() == 0],
-        "duplicate_rows": int(df.duplicated().sum()),
+        "duplicate_rows": int(df.select_dtypes(include="number").duplicated().sum()),
     }
     os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(output_dir, "quality_gate_report.json"), "w") as f:
