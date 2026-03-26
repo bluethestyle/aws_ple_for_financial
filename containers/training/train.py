@@ -723,38 +723,70 @@ def load_data(
     _continuous_cols = [c for c in _feat_cols if c not in _binary_cols]
     global _module_scaler, _module_continuous_cols
     # 1a) Power-law detection: add log1p copies for heavy-tailed features
-    #   Criteria (all must hold):
-    #   - |skewness| > 2.0      (asymmetric distribution)
-    #   - excess kurtosis > 6.0  (heavy tail, not just asymmetric)
-    #   - min >= 0               (log1p requires non-negative)
-    #   - nunique > 20           (skip sparse discrete cols like counts 0-5)
+    #   Two-stage detection:
+    #   Stage 1 (fast filter): skewness + kurtosis + basic checks
+    #   Stage 2 (confirmation): log-log linearity (rank-frequency R² > 0.9)
     _SKEW_THRESHOLD = 2.0
     _KURT_THRESHOLD = 6.0
+    _LOGLOG_R2_THRESHOLD = 0.9
+
+    def _loglog_r2(series):
+        """Log-log rank-frequency R²: high R² ≈ power-law-like tail."""
+        vals = series.dropna()
+        vals = vals[vals > 0].sort_values(ascending=False).values
+        if len(vals) < 50:
+            return 0.0
+        # Use top 50% to focus on tail behavior
+        n = max(50, len(vals) // 2)
+        vals = vals[:n]
+        log_rank = _np.log(1 + _np.arange(n))
+        log_val = _np.log(vals)
+        # Pearson correlation → R²
+        if log_val.std() < 1e-10:
+            return 0.0
+        corr = _np.corrcoef(log_rank, log_val)[0, 1]
+        return corr ** 2
+
     _power_law_cols = []
+    _power_law_details = {}
     if _continuous_cols:
+        _candidates = []
+        # Stage 1: fast filter
         for col in _continuous_cols:
             try:
                 skew = float(df[col].skew())
-                kurt = float(df[col].kurtosis())  # excess kurtosis (normal=0)
+                kurt = float(df[col].kurtosis())
                 n_unique = int(df[col].nunique())
                 if (abs(skew) > _SKEW_THRESHOLD
                         and kurt > _KURT_THRESHOLD
                         and df[col].min() >= 0
                         and n_unique > 20):
-                    _power_law_cols.append(col)
+                    _candidates.append((col, skew, kurt))
             except (TypeError, ValueError):
                 pass
+
+        # Stage 2: log-log linearity confirmation
+        for col, skew, kurt in _candidates:
+            r2 = _loglog_r2(df[col])
+            if r2 >= _LOGLOG_R2_THRESHOLD:
+                _power_law_cols.append(col)
+                _power_law_details[col] = {"skew": round(skew, 2), "kurt": round(kurt, 2), "loglog_r2": round(r2, 4)}
+            else:
+                logger.debug("Power-law rejected '%s': skew=%.1f, kurt=%.1f, loglog_R2=%.3f < %.1f",
+                             col, skew, kurt, r2, _LOGLOG_R2_THRESHOLD)
         if _power_law_cols:
             for col in _power_law_cols:
                 log_col = f"{col}_log"
                 df[log_col] = _np.log1p(df[col].fillna(0).clip(lower=0))
             logger.info(
-                "Power-law: %d columns detected (skew>%.1f), added _log copies. "
-                "Total features: %d -> %d",
-                len(_power_law_cols), _SKEW_THRESHOLD,
-                len(df.columns) - len(_power_law_cols),
-                len(df.columns),
+                "Power-law: %d/%d candidates confirmed by log-log R2>%.1f. "
+                "Added _log copies. Columns: %s",
+                len(_power_law_cols), len(_candidates), _LOGLOG_R2_THRESHOLD,
+                list(_power_law_details.keys()),
             )
+        elif _candidates:
+            logger.info("Power-law: %d candidates by skew/kurt, but 0 confirmed by log-log R2",
+                         len(_candidates))
 
     # 1b) StandardScaler on continuous features (original + log copies)
     _scaler = None
