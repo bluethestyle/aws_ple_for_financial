@@ -510,7 +510,19 @@ def load_data(
         )
 
     logger.info(f"Loading {len(parquet_files)} Parquet file(s) from {channel_dir}")
-    dfs = [pd.read_parquet(f) for f in parquet_files]
+    # Only load scalar columns (skip list/array types to save memory)
+    import pyarrow.parquet as _pq
+    _sample_schema = _pq.read_schema(str(parquet_files[0]))
+    _scalar_cols = []
+    for i in range(_sample_schema.length if hasattr(_sample_schema, 'length') else len(_sample_schema)):
+        field = _sample_schema.field(i)
+        type_str = str(field.type)
+        # Skip list, large_list, struct types
+        if type_str.startswith(("list", "large_list", "struct")):
+            continue
+        _scalar_cols.append(field.name)
+    logger.info("Selecting %d scalar columns (skipping list/struct types)", len(_scalar_cols))
+    dfs = [pd.read_parquet(f, columns=_scalar_cols) for f in parquet_files]
     df = pd.concat(dfs, ignore_index=True)
     # Subsample if max_rows HP is set (for fast testing)
     max_rows = config.get("max_rows", 0)
