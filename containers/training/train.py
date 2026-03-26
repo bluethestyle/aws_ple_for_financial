@@ -722,15 +722,41 @@ def load_data(
     _binary_cols = [c for c in _feat_cols if set(df[c].dropna().unique()).issubset({0, 0.0, 1, 1.0})]
     _continuous_cols = [c for c in _feat_cols if c not in _binary_cols]
     global _module_scaler, _module_continuous_cols
-    _scaler = None
+    # 1a) Power-law detection: add log1p copies for heavy-tailed features
+    _SKEW_THRESHOLD = 2.0
+    _power_law_cols = []
     if _continuous_cols:
+        for col in _continuous_cols:
+            try:
+                skew = float(df[col].skew())
+                if abs(skew) > _SKEW_THRESHOLD and df[col].min() >= 0:
+                    _power_law_cols.append(col)
+            except (TypeError, ValueError):
+                pass
+        if _power_law_cols:
+            for col in _power_law_cols:
+                log_col = f"{col}_log"
+                df[log_col] = _np.log1p(df[col].fillna(0).clip(lower=0))
+            logger.info(
+                "Power-law: %d columns detected (skew>%.1f), added _log copies. "
+                "Total features: %d -> %d",
+                len(_power_law_cols), _SKEW_THRESHOLD,
+                len(df.columns) - len(_power_law_cols),
+                len(df.columns),
+            )
+
+    # 1b) StandardScaler on continuous features (original + log copies)
+    _scaler = None
+    # Include the new _log columns in scaling
+    _all_continuous = _continuous_cols + [f"{c}_log" for c in _power_law_cols]
+    if _all_continuous:
         _scaler = _StdScaler()
-        df[_continuous_cols] = _scaler.fit_transform(df[_continuous_cols].fillna(0).values)
-        logger.info("StandardScaler applied to %d continuous features (skipped %d binary)",
-                     len(_continuous_cols), len(_binary_cols))
+        df[_all_continuous] = _scaler.fit_transform(df[_all_continuous].fillna(0).values)
+        logger.info("StandardScaler applied to %d features (%d original + %d log copies, skipped %d binary)",
+                     len(_all_continuous), len(_continuous_cols), len(_power_law_cols), len(_binary_cols))
         # Store in module-level state for eval report
         _module_scaler = _scaler
-        _module_continuous_cols = _continuous_cols
+        _module_continuous_cols = _all_continuous
 
         # HIGH-3: Persist scaler parameters for reproducibility
         scaler_params = {
