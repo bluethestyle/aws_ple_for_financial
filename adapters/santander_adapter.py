@@ -2,24 +2,22 @@
 Santander Customer Transactions Adapter
 ========================================
 
-Loads the santander_final.parquet dataset (941K users, 89 columns).
-Already user-level — no aggregation needed.
+Minimal, config-driven adapter.  The adapter's ONLY job is:
+    raw parquet → standardised DataFrame (``{"main": df}``).
 
-Input:
-    data/synthetic/santander_final.parquet  (or overridden by config)
+Feature generation is NOT the adapter's responsibility -- it belongs in
+PipelineRunner Stage 3 via FeatureGroupPipeline.
 
-Output (from load_raw):
-    {"main": DataFrame}  -- 941,132 rows × 89 columns
-
-Phase 0 Processing Job additionally runs feature generators (TDA, Graph,
-HMM, Mamba, GMM, Model-derived) to enrich the parquet before training.
+A transitional helper ``run_generators_from_config()`` is provided so that
+the Phase 0 Processing Job (__main__ block) can still run generators,
+but all column routing is driven by ``feature_groups.yaml``, not hardcoded.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -30,282 +28,161 @@ logger = logging.getLogger(__name__)
 
 
 # ======================================================================
-# Feature generation for Phase 0
+# Config-driven feature generation (transition helper for Phase 0)
 # ======================================================================
 
-def _resolve_santander_columns(df: pd.DataFrame):
-    """Identify column groups in the Santander dataset."""
-    product_cols = sorted([c for c in df.columns if c.startswith("prod_")])
-    synth_cols = sorted([c for c in df.columns if c.startswith("synth_")])
-    numeric_cols = df.select_dtypes(include="number").columns.tolist()
-    # Exclude id-like and label-like columns from numeric features
-    _exclude = {"customer_id"}
-    numeric_cols = [c for c in numeric_cols if c not in _exclude]
-    return product_cols, synth_cols, numeric_cols
+def _resolve_columns_by_filter(
+    df: pd.DataFrame,
+    filter_config: Dict[str, Any],
+) -> List[str]:
+    """Resolve columns matching the filter criteria from config.
 
-
-def _run_santander_generators(df: pd.DataFrame) -> pd.DataFrame:
-    """Run TDA, Graph, HMM, Mamba, GMM, and Model-derived generators.
-
-    Each generator is wrapped in a try/except so a single failure does not
-    block the others.  Fallback zeros are produced when a generator fails.
-
-    Returns the original DataFrame with generated feature columns appended.
+    Supported filter keys
+    ---------------------
+    dtype : str
+        ``"continuous"`` -- numeric, excluding binary;
+        ``"all_numeric"`` -- every numeric column;
+        ``"all"`` -- alias for ``"all_numeric"``.
+    exclude_binary : bool
+        If *True*, drop columns whose unique non-null values ⊆ {0, 1}.
+    min_nunique : int
+        Minimum number of unique values required.
+    include_prefix : list[str]
+        Only keep columns starting with one of these prefixes.
+    exclude_prefix : list[str]
+        Drop columns starting with any of these prefixes.
     """
-    product_cols, synth_cols, numeric_cols = _resolve_santander_columns(df)
-    # Use product + synth columns as the base feature set for most generators
-    base_cols = product_cols + synth_cols
-    if not base_cols:
-        base_cols = numeric_cols[:40]  # fallback to first 40 numeric
+    dtype_filter = filter_config.get("dtype", "all_numeric")
+    exclude_binary = filter_config.get("exclude_binary", False)
+    min_nunique = filter_config.get("min_nunique", 0)
+    include_prefix: List[str] = filter_config.get("include_prefix", [])
+    exclude_prefix: List[str] = filter_config.get("exclude_prefix", [])
+
+    # Start with numeric columns only
+    cols: List[str] = []
+    for col in df.select_dtypes(include="number").columns:
+        if col == "customer_id":
+            continue
+        if exclude_binary and set(df[col].dropna().unique()).issubset({0, 1}):
+            continue
+        if min_nunique > 0 and df[col].nunique() < min_nunique:
+            continue
+        if include_prefix and not any(col.startswith(p) for p in include_prefix):
+            continue
+        if exclude_prefix and any(col.startswith(p) for p in exclude_prefix):
+            continue
+        cols.append(col)
+    return cols
+
+
+def run_generators_from_config(
+    df: pd.DataFrame,
+    feature_groups_config: List[Dict[str, Any]],
+) -> pd.DataFrame:
+    """Run generators based on feature_groups config, NOT hardcoded columns.
+
+    Only groups with ``group_type == "generate"`` and ``enabled != False``
+    are executed.  Each generator is wrapped in try/except so a single
+    failure does not block the rest.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The raw DataFrame (e.g. santander_final.parquet).
+    feature_groups_config : list[dict]
+        The ``feature_groups`` list from feature_groups.yaml.
+
+    Returns
+    -------
+    pd.DataFrame
+        Original *df* with generated feature columns appended.
+    """
+    # Lazy imports -- only needed when generators are actually invoked.
+    from core.feature.generator import FeatureGeneratorRegistry
+    # Trigger side-effect registration of all built-in generators.
+    import core.feature.generators  # noqa: F401
 
     generated_frames: List[pd.DataFrame] = []
     gen_summary: Dict[str, int] = {}
 
-    # For large datasets, fit on subsample to avoid OOM, then generate on full
-    _FIT_SUBSAMPLE_LIMIT = 50000
+    # Subsample for fitting to avoid OOM on large datasets
+    _FIT_SUBSAMPLE_LIMIT = 50_000
     if len(df) > _FIT_SUBSAMPLE_LIMIT:
-        _fit_df = df.sample(_FIT_SUBSAMPLE_LIMIT, random_state=42)
-        logger.info("Large dataset (%d rows): fitting generators on %d-row subsample",
-                     len(df), _FIT_SUBSAMPLE_LIMIT)
+        fit_df = df.sample(_FIT_SUBSAMPLE_LIMIT, random_state=42)
+        logger.info(
+            "Large dataset (%d rows): fitting generators on %d-row subsample",
+            len(df), _FIT_SUBSAMPLE_LIMIT,
+        )
     else:
-        _fit_df = df
+        fit_df = df
 
-    # ------------------------------------------------------------------
-    # 1. TDA Global (population topology from product holdings)
-    # ------------------------------------------------------------------
-    t0 = time.time()
-    try:
-        from core.feature.generators.tda import TDAGlobalGenerator
-        tda_global = TDAGlobalGenerator(
-            entity_column="customer_id",
-            input_columns=product_cols or base_cols[:24],
-            prefix="tda_global",
-            max_homology_dim=1,
-        )
-        tda_global.fit(_fit_df)
-        tda_global_feat = tda_global.generate(df)
-        # Convert to pandas if needed
-        if not isinstance(tda_global_feat, pd.DataFrame):
-            tda_global_feat = pd.DataFrame(tda_global_feat)
-        tda_global_feat.index = df.index
-        generated_frames.append(tda_global_feat)
-        gen_summary["tda_global"] = len(tda_global_feat.columns)
-        logger.info("TDA Global: %d features in %.1fs",
-                     len(tda_global_feat.columns), time.time() - t0)
-    except Exception as e:
-        logger.warning("TDA Global generation failed: %s", e)
-        n_cols = 14  # (max_homology_dim+1) * 7 stats = 14
-        fallback = pd.DataFrame(
-            np.zeros((len(df), n_cols), dtype=np.float32),
-            columns=[f"tda_global_{i:03d}" for i in range(n_cols)],
-            index=df.index,
-        )
-        generated_frames.append(fallback)
-        gen_summary["tda_global"] = n_cols
+    for group in feature_groups_config:
+        if group.get("group_type") != "generate":
+            continue
+        if not group.get("enabled", True):
+            continue
 
-    # ------------------------------------------------------------------
-    # 2. TDA Local (per-entity topology)
-    # ------------------------------------------------------------------
-    t0 = time.time()
-    try:
-        from core.feature.generators.tda import TDALocalGenerator
-        tda_local = TDALocalGenerator(
-            entity_column="customer_id",
-            input_columns=product_cols or base_cols[:24],
-            prefix="tda_local",
-            max_homology_dim=1,
-            n_jobs=1,  # conservative for Processing Job memory
-        )
-        tda_local.fit(_fit_df)
-        tda_local_feat = tda_local.generate(df)
-        if not isinstance(tda_local_feat, pd.DataFrame):
-            tda_local_feat = pd.DataFrame(tda_local_feat)
-        tda_local_feat.index = df.index
-        generated_frames.append(tda_local_feat)
-        gen_summary["tda_local"] = len(tda_local_feat.columns)
-        logger.info("TDA Local: %d features in %.1fs",
-                     len(tda_local_feat.columns), time.time() - t0)
-    except Exception as e:
-        logger.warning("TDA Local generation failed: %s", e)
-        n_cols = 14
-        fallback = pd.DataFrame(
-            np.zeros((len(df), n_cols), dtype=np.float32),
-            columns=[f"tda_local_{i:03d}" for i in range(n_cols)],
-            index=df.index,
-        )
-        generated_frames.append(fallback)
-        gen_summary["tda_local"] = n_cols
+        group_name = group["name"]
+        generator_name = group.get("generator", group_name)
+        gen_params = dict(group.get("generator_params", {}))
 
-    # ------------------------------------------------------------------
-    # 3. Graph Collaborative (customer-product bipartite graph)
-    # ------------------------------------------------------------------
-    t0 = time.time()
-    try:
-        from core.feature.generators.graph import GraphEmbeddingGenerator
-        graph_gen = GraphEmbeddingGenerator(
-            embedding_dim=18,
-            entity_column="customer_id",
-            feature_columns=product_cols or base_cols[:24],
-            prefix="graph_collaborative",
-            prefer_gpu=False,
-            num_epochs=15,  # fewer epochs for Processing Job speed
-            k_neighbors=8,
-        )
-        graph_gen.fit(_fit_df)
-        graph_feat = graph_gen.generate(df)
-        if not isinstance(graph_feat, pd.DataFrame):
-            graph_feat = pd.DataFrame(graph_feat)
-        graph_feat.index = df.index
-        generated_frames.append(graph_feat)
-        gen_summary["graph_collaborative"] = len(graph_feat.columns)
-        logger.info("Graph Collaborative: %d features in %.1fs",
-                     len(graph_feat.columns), time.time() - t0)
-    except Exception as e:
-        logger.warning("Graph generation failed: %s", e)
-        n_cols = 20  # embedding_dim(18) + norm + depth
-        fallback = pd.DataFrame(
-            np.zeros((len(df), n_cols), dtype=np.float32),
-            columns=[f"graph_collaborative_{i:03d}" for i in range(n_cols)],
-            index=df.index,
-        )
-        generated_frames.append(fallback)
-        gen_summary["graph_collaborative"] = n_cols
+        # --- Resolve input columns from config filter ---
+        input_filter = gen_params.pop("input_filter", None)
+        if input_filter is not None:
+            input_cols = _resolve_columns_by_filter(df, input_filter)
+        else:
+            # Fallback: no filter → all numeric columns
+            input_cols = [
+                c for c in df.select_dtypes(include="number").columns
+                if c != "customer_id"
+            ]
 
-    # ------------------------------------------------------------------
-    # 4. HMM States (triple-mode: journey, lifecycle, behavior)
-    # ------------------------------------------------------------------
-    t0 = time.time()
-    try:
-        from core.feature.generators.hmm import HMMFeatureGenerator
-        hmm_gen = HMMFeatureGenerator(
-            modes=["journey", "lifecycle", "behavior"],
-            sequence_columns=synth_cols or base_cols[:20],
-            prefix="hmm",
-        )
-        hmm_gen.fit(_fit_df)
-        hmm_feat = hmm_gen.generate(df)
-        if not isinstance(hmm_feat, pd.DataFrame):
-            hmm_feat = pd.DataFrame(hmm_feat)
-        hmm_feat.index = df.index
-        generated_frames.append(hmm_feat)
-        gen_summary["hmm_states"] = len(hmm_feat.columns)
-        logger.info("HMM States: %d features in %.1fs",
-                     len(hmm_feat.columns), time.time() - t0)
-    except Exception as e:
-        logger.warning("HMM generation failed: %s", e)
-        # 3 modes * (1 state_id + n_states probs + 1 dwell + 1 entropy)
-        # journey(5): 8, lifecycle(5): 8, behavior(6): 9 = 25
-        n_cols = 25
-        fallback = pd.DataFrame(
-            np.zeros((len(df), n_cols), dtype=np.float32),
-            columns=[f"hmm_{i:03d}" for i in range(n_cols)],
-            index=df.index,
-        )
-        generated_frames.append(fallback)
-        gen_summary["hmm_states"] = n_cols
+        if not input_cols:
+            logger.warning(
+                "Generator '%s': no columns matched input_filter, skipping.",
+                group_name,
+            )
+            continue
 
-    # ------------------------------------------------------------------
-    # 5. Mamba Temporal (SSM embeddings from synth features as pseudo-sequences)
-    # ------------------------------------------------------------------
-    t0 = time.time()
-    try:
-        from core.feature.generators.mamba import MambaFeatureGenerator
-        mamba_gen = MambaFeatureGenerator(
-            output_dim=50,
-            d_model=128,  # smaller for speed
-            seq_len=30,
-            entity_column="customer_id",
-            time_column="snapshot_date",
-            feature_columns=synth_cols or base_cols[:20],
-            prefix="mamba",
-            prefer_gpu=False,
-            num_epochs=10,
+        logger.info(
+            "Generator '%s' (%s): %d input columns",
+            group_name, generator_name, len(input_cols),
         )
-        mamba_gen.fit(_fit_df)
-        mamba_feat = mamba_gen.generate(df)
-        if not isinstance(mamba_feat, pd.DataFrame):
-            mamba_feat = pd.DataFrame(mamba_feat)
-        mamba_feat.index = df.index
-        generated_frames.append(mamba_feat)
-        gen_summary["mamba_temporal"] = len(mamba_feat.columns)
-        logger.info("Mamba Temporal: %d features in %.1fs",
-                     len(mamba_feat.columns), time.time() - t0)
-    except Exception as e:
-        logger.warning("Mamba generation failed: %s", e)
-        n_cols = 50
-        fallback = pd.DataFrame(
-            np.zeros((len(df), n_cols), dtype=np.float32),
-            columns=[f"mamba_{i:03d}" for i in range(n_cols)],
-            index=df.index,
-        )
-        generated_frames.append(fallback)
-        gen_summary["mamba_temporal"] = n_cols
 
-    # ------------------------------------------------------------------
-    # 6. GMM Clustering (dynamic k via BIC)
-    # ------------------------------------------------------------------
-    t0 = time.time()
-    try:
-        from core.feature.generators.gmm import GMMClusteringGenerator
-        gmm_gen = GMMClusteringGenerator(
-            feature_columns=base_cols,
-            prefix="gmm",
-        )
-        gmm_gen.fit(_fit_df)
-        gmm_feat = gmm_gen.generate(df)
-        if not isinstance(gmm_feat, pd.DataFrame):
-            gmm_feat = pd.DataFrame(gmm_feat)
-        gmm_feat.index = df.index
-        generated_frames.append(gmm_feat)
-        gen_summary["gmm_clustering"] = len(gmm_feat.columns)
-        logger.info("GMM Clustering: %d features in %.1fs",
-                     len(gmm_feat.columns), time.time() - t0)
-    except Exception as e:
-        logger.warning("GMM generation failed: %s", e)
-        n_cols = 22  # default K=20 -> cluster_id + 20 probs + entropy
-        fallback = pd.DataFrame(
-            np.zeros((len(df), n_cols), dtype=np.float32),
-            columns=[f"gmm_{i:03d}" for i in range(n_cols)],
-            index=df.index,
-        )
-        generated_frames.append(fallback)
-        gen_summary["gmm_clustering"] = n_cols
+        t0 = time.time()
+        try:
+            gen = FeatureGeneratorRegistry.create(
+                generator_name,
+                input_columns=input_cols,
+                prefix=group_name,
+                **gen_params,
+            )
+            gen.fit(fit_df[input_cols])
+            result = gen.generate(df[input_cols])
 
-    # ------------------------------------------------------------------
-    # 7. Model-Derived Features (HMM summary + Bandit + LNN = 27D)
-    # ------------------------------------------------------------------
-    t0 = time.time()
-    try:
-        from core.feature.generators.model_features import ModelFeaturesGenerator
-        model_gen = ModelFeaturesGenerator(
-            feature_columns=base_cols,
-            engagement_columns=product_cols,
-            temporal_columns=synth_cols[:2] if len(synth_cols) >= 2 else base_cols[:2],
-            prefix="model_derived",
-        )
-        model_gen.fit(_fit_df)
-        model_feat = model_gen.generate(df)
-        if not isinstance(model_feat, pd.DataFrame):
-            model_feat = pd.DataFrame(model_feat)
-        model_feat.index = df.index
-        generated_frames.append(model_feat)
-        gen_summary["model_derived"] = len(model_feat.columns)
-        logger.info("Model Derived: %d features in %.1fs",
-                     len(model_feat.columns), time.time() - t0)
-    except Exception as e:
-        logger.warning("Model-derived generation failed: %s", e)
-        n_cols = 27
-        fallback = pd.DataFrame(
-            np.zeros((len(df), n_cols), dtype=np.float32),
-            columns=[f"model_derived_{i:03d}" for i in range(n_cols)],
-            index=df.index,
-        )
-        generated_frames.append(fallback)
-        gen_summary["model_derived"] = n_cols
+            if not isinstance(result, pd.DataFrame):
+                result = pd.DataFrame(result)
+            result.index = df.index
 
-    # ------------------------------------------------------------------
+            generated_frames.append(result)
+            gen_summary[group_name] = len(result.columns)
+            logger.info(
+                "Generator '%s': %d features in %.1fs",
+                group_name, len(result.columns), time.time() - t0,
+            )
+        except Exception as e:
+            logger.warning("Generator '%s' failed: %s", group_name, e)
+            # Produce fallback zeros using output_dim from config
+            n_cols = group.get("output_dim", 10)
+            fallback = pd.DataFrame(
+                np.zeros((len(df), n_cols), dtype=np.float32),
+                columns=[f"{group_name}_{i:03d}" for i in range(n_cols)],
+                index=df.index,
+            )
+            generated_frames.append(fallback)
+            gen_summary[group_name] = n_cols
+
     # Merge all generated features
-    # ------------------------------------------------------------------
     if generated_frames:
         all_gen = pd.concat(generated_frames, axis=1)
         df = pd.concat([df, all_gen], axis=1)
@@ -319,37 +196,32 @@ def _run_santander_generators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# ======================================================================
+# Adapter
+# ======================================================================
+
 @AdapterRegistry.register("santander")
 class SantanderAdapter(DataAdapter):
-    """DataAdapter for the Santander synthetic dataset.
+    """Load santander_final.parquet.  No preprocessing, no generators.
 
-    The dataset is already at user-level granularity with:
-    - Scalar numeric columns (age, income, tenure, etc.)
-    - String categorical columns (gender, segment, country, channel,
-      age_group, income_group)
-    - List-type sequence columns (txn_amount_seq, txn_count_seq,
-      txn_mcc_seq, seq_saving, seq_current, seq_num_products,
-      seq_acquisitions, seq_churns, etc.)
-    - Binary product holding flags (prod_*)
-    - Synthetic derived features (synth_*)
+    The dataset is already at user-level granularity with ~89 columns
+    (demographics, product holdings, synthetic transaction features, etc.).
     """
 
     def load_raw(self) -> Dict[str, pd.DataFrame]:
-        """Load santander_final.parquet. Already user-level, minimal preprocessing."""
+        """Load raw parquet. Already user-level, no preprocessing needed."""
         backend = self._select_backend()
         source = self.config.get("data", {}).get(
-            "source", "data/synthetic/santander_final.parquet"
+            "source", "data/synthetic/santander_final.parquet",
         )
 
         logger.info("SantanderAdapter: loading %s with backend=%s", source, backend)
 
         if backend == "cudf":
             import cudf
-
             df = cudf.read_parquet(source)
         elif backend == "duckdb":
             import duckdb
-
             con = duckdb.connect()
             df = con.execute(f"SELECT * FROM '{source}'").df()
             con.close()
@@ -366,48 +238,52 @@ class SantanderAdapter(DataAdapter):
         )
 
         logger.info(
-            "SantanderAdapter: loaded %d rows × %d cols (backend=%s)",
-            len(df),
-            len(df.columns),
-            backend,
+            "SantanderAdapter: loaded %d rows x %d cols (backend=%s)",
+            len(df), len(df.columns), backend,
         )
 
         return {"main": df}
 
 
 # ======================================================================
-# Standalone entry point for SageMaker Processing Job
+# Standalone entry point for SageMaker Processing Job (Phase 0)
 # ======================================================================
 
 if __name__ == "__main__":
     import argparse
+    import glob
     import json
     import os
     import sys
-    import shutil
+
+    import yaml
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    parser = argparse.ArgumentParser(description="Santander data adapter")
+    parser = argparse.ArgumentParser(description="Santander data adapter (Phase 0)")
     parser.add_argument("--input-dir", default="/opt/ml/processing/input/raw")
     parser.add_argument("--output-dir", default="/opt/ml/processing/output")
-    parser.add_argument("--pipeline", default="", help="Pipeline config path (unused, for compat)")
-    parser.add_argument("--stages", default="1-6", help="Stages to run (unused, for compat)")
+    parser.add_argument(
+        "--feature-groups-config",
+        default="configs/santander/feature_groups.yaml",
+        help="Path to feature_groups.yaml",
+    )
+    parser.add_argument("--pipeline", default="", help="(unused, for compat)")
+    parser.add_argument("--stages", default="1-6", help="(unused, for compat)")
     cli_args = parser.parse_args()
 
     input_dir = cli_args.input_dir
     output_dir = cli_args.output_dir
 
     # Find the parquet file in input dir
-    import glob
     parquet_files = glob.glob(os.path.join(input_dir, "*.parquet"))
     if not parquet_files:
-        # Try subdirectories
-        parquet_files = glob.glob(os.path.join(input_dir, "**", "*.parquet"), recursive=True)
-
+        parquet_files = glob.glob(
+            os.path.join(input_dir, "**", "*.parquet"), recursive=True,
+        )
     if not parquet_files:
         logger.error("No parquet files found in %s", input_dir)
         sys.exit(1)
@@ -421,27 +297,57 @@ if __name__ == "__main__":
     raw_data = adapter.load_raw()
     df = raw_data["main"]
 
-    # --- HIGH-2: Data quality gate ---
+    # --- Data quality gate ---
     quality = {
         "total_rows": len(df),
         "total_columns": len(df.columns),
-        "null_rates": {col: float(df[col].isna().mean()) for col in df.columns if df[col].isna().any()},
-        "zero_variance_columns": [col for col in df.select_dtypes("number").columns if df[col].std() == 0],
+        "null_rates": {
+            col: float(df[col].isna().mean())
+            for col in df.columns if df[col].isna().any()
+        },
+        "zero_variance_columns": [
+            col for col in df.select_dtypes("number").columns
+            if df[col].std() == 0
+        ],
         "duplicate_rows": int(df.select_dtypes(include="number").duplicated().sum()),
     }
     os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(output_dir, "quality_gate_report.json"), "w") as f:
         json.dump(quality, f, indent=2)
-    logger.info("Quality gate report saved: %d rows, %d cols, %d zero-variance cols",
-                quality["total_rows"], quality["total_columns"],
-                len(quality["zero_variance_columns"]))
+    logger.info(
+        "Quality gate report saved: %d rows, %d cols, %d zero-variance cols",
+        quality["total_rows"], quality["total_columns"],
+        len(quality["zero_variance_columns"]),
+    )
 
-    # --- Feature generation (TDA, Graph, HMM, Mamba, GMM, Model-derived) ---
-    logger.info("Starting feature generation on %d rows ...", len(df))
-    t_gen_start = time.time()
-    df = _run_santander_generators(df)
-    logger.info("Feature generation finished in %.1fs. Shape: %s",
-                time.time() - t_gen_start, df.shape)
+    # --- Load feature_groups config ---
+    fg_config_path = cli_args.feature_groups_config
+    # Also check inside /opt/ml/processing/input/ if the default isn't found
+    if not os.path.exists(fg_config_path):
+        alt = os.path.join(input_dir, "feature_groups.yaml")
+        if os.path.exists(alt):
+            fg_config_path = alt
+
+    if os.path.exists(fg_config_path):
+        with open(fg_config_path) as f:
+            fg_raw = yaml.safe_load(f)
+        feature_groups = fg_raw.get("feature_groups", [])
+    else:
+        logger.warning(
+            "feature_groups.yaml not found at %s -- skipping generators",
+            fg_config_path,
+        )
+        feature_groups = []
+
+    # --- Config-driven feature generation ---
+    if feature_groups:
+        logger.info("Starting config-driven feature generation on %d rows ...", len(df))
+        t_gen_start = time.time()
+        df = run_generators_from_config(df, feature_groups)
+        logger.info(
+            "Feature generation finished in %.1fs. Shape: %s",
+            time.time() - t_gen_start, df.shape,
+        )
 
     # Save to output dir
     os.makedirs(output_dir, exist_ok=True)
@@ -449,7 +355,7 @@ if __name__ == "__main__":
     df.to_parquet(out_path, index=False)
     logger.info("Saved %d rows to %s", len(df), out_path)
 
-    # --- HIGH-1: Feature statistics ---
+    # --- Feature statistics ---
     numeric = df.select_dtypes(include="number")
     stats = {}
     for col in numeric.columns:
@@ -465,14 +371,22 @@ if __name__ == "__main__":
         json.dump(stats, f, indent=2)
     logger.info("Feature stats saved: %d numeric columns", len(stats))
 
-    # --- HIGH-1: Label statistics ---
-    label_cols = [c for c in df.columns if c in ["has_nba", "churn_signal", "product_stability", "nba_label"]]
+    # --- Label statistics ---
+    label_cols = [
+        c for c in df.columns
+        if c in {"has_nba", "churn_signal", "product_stability", "nba_label"}
+    ]
     label_stats = {}
     for col in label_cols:
         if df[col].dtype in [np.int32, np.int64]:
-            label_stats[col] = {str(k): int(v) for k, v in df[col].value_counts().to_dict().items()}
+            label_stats[col] = {
+                str(k): int(v) for k, v in df[col].value_counts().to_dict().items()
+            }
         elif df[col].dtype == float:
-            label_stats[col] = {"mean": float(df[col].mean()), "std": float(df[col].std())}
+            label_stats[col] = {
+                "mean": float(df[col].mean()),
+                "std": float(df[col].std()),
+            }
     if label_stats:
         with open(os.path.join(output_dir, "label_stats.json"), "w") as f:
             json.dump(label_stats, f, indent=2)

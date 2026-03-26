@@ -1,24 +1,18 @@
 """
-SageMaker training entry point.
+SageMaker training entry point — MINIMAL training-only script.
 
-This script is executed inside the SageMaker training container.  It:
+Receives "training-ready" artifacts from Phase 0 (PipelineRunner):
+  features.parquet      — normalized numeric features
+  labels.parquet        — derived labels
+  sequences.npy         — padded 3D tensor (optional)
+  seq_lengths.npy       — sequence lengths (optional)
+  scaler_params.json    — for reference only
+  feature_schema.json   — column names, group ranges, expert routing
+  label_schema.json     — task definitions
+  split_indices.json    — train/val/test row indices
 
-1. Parses SageMaker environment variables and hyperparameters.
-2. Loads training / validation data from ``/opt/ml/input/data/``.
-3. Builds the PLE model from the config.
-4. Optionally resumes from checkpoint (Spot auto-resume).
-5. Runs the training loop.
-6. Saves the final model to ``/opt/ml/model/`` for SageMaker packaging.
-7. Prints metrics to stdout for CloudWatch capture.
-
-SageMaker environment variables
--------------------------------
-SM_MODEL_DIR        /opt/ml/model
-SM_CHANNEL_TRAIN    /opt/ml/input/data/train
-SM_CHANNEL_VALIDATION  /opt/ml/input/data/validation
-SM_OUTPUT_DATA_DIR  /opt/ml/output/data
-SM_NUM_GPUS         number of GPUs
-SM_HPS              JSON dict of hyperparameters
+ZERO preprocessing: no fillna, no encoding, no scaler, no label derivation.
+ALL config from schema JSON files (produced by PipelineRunner).
 """
 
 from __future__ import annotations
@@ -29,7 +23,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -38,7 +32,7 @@ os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 
 from core.training.trainer import PLETrainer
 from core.training.config import TrainingConfig
@@ -66,17 +60,14 @@ def get_sm_env() -> Dict[str, str]:
 
 def get_hyperparameters() -> Dict[str, Any]:
     """Parse hyperparameters from SM_HPS or /opt/ml/input/config/."""
-    # Try SM_HPS first (set by SageMaker SDK)
     sm_hps = os.environ.get("SM_HPS")
     if sm_hps:
         return json.loads(sm_hps)
 
-    # Fallback: read hyperparameters.json
     hp_path = Path("/opt/ml/input/config/hyperparameters.json")
     if hp_path.exists():
         with open(hp_path) as f:
             raw = json.load(f)
-        # SageMaker stringifies all values
         return {k: _parse_hp_value(v) for k, v in raw.items()}
 
     return {}
@@ -88,7 +79,6 @@ def _parse_hp_value(v: str) -> Any:
         lower = v.lower()
         if lower in ("true", "false"):
             return lower == "true"
-        # Try JSON first (for lists/dicts passed as strings)
         if lower.startswith("[") or lower.startswith("{"):
             try:
                 return json.loads(v)
@@ -106,798 +96,564 @@ def _parse_hp_value(v: str) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Feature group → column prefix mapping
+# Data loading — training-ready artifacts from Phase 0
 # ---------------------------------------------------------------------------
 
-# Maps feature group names (as used in the ablation config's "remove" lists)
-# to the column name prefixes they produce in the feature DataFrame.
-# Generated features use "{group_name}_{i}" naming; transform features use
-# their source column prefixes.
-# Module-level state for scaler persistence (populated by load_data, read by main)
-_module_scaler = None
-_module_continuous_cols = []
-
-FEATURE_GROUP_COLUMN_PREFIXES: Dict[str, list] = {
-    # Transform groups — covers both inline DuckDB path (cat_, txn_, temp_)
-    # and standalone function path (category_, transaction_stats_, temporal_)
-    "base_rfm": ["rfm_"],
-    "base_category": ["category_", "cat_"],
-    "base_txn_stats": ["transaction_stats_", "txn_"],
-    "base_temporal": ["temporal_", "temp_"],
-    "multi_source": [
-        "deposit_behavior_", "membership_utilization_",
-        "investment_propensity_", "credit_risk_",
-        "digital_engagement_", "product_diversity_",
-    ],
-    "extended_source": [
-        "insurance_holding_", "insurance_claim_",
-        "refund_loan_", "consultation_history_",
-        "stt_analysis_", "product_interest_",
-        "campaign_participation_", "marketing_response_",
-        "overseas_payment_", "open_banking_",
-        "e_finance_", "merchant_preference_",
-    ],
-    # Generated groups — covers both long prefix and short DuckDB prefix
-    "tda_topology": ["tda_topology_", "tda_"],
-    "gmm_clustering": ["gmm_clustering_", "gmm_"],
-    "mamba_temporal": ["mamba_temporal_", "mamba_"],
-    "economics": ["economics_", "econ_"],
-    "multidisciplinary": ["multidisciplinary_", "multi_"],
-    "model_derived": ["model_derived_", "hmm_summary_", "bandit_", "lnn_"],
-    "merchant_hierarchy": ["merchant_hierarchy_", "mcc_", "brand_embed_", "merchant_"],
-    "hmm_states": ["hmm_states_", "hmm_journey_", "hmm_lifecycle_", "hmm_behavior_", "hmm_"],
-    "graph_embeddings": ["graph_embeddings_", "hyperbolic_", "hgcn_", "graph_"],
-    # Santander-specific groups
-    "demographics": ["age", "income", "tenure_months", "is_active", "num_products", "gender_", "segment_", "country_", "channel_", "age_group_", "income_group_"],
-    "product_holdings": ["prod_"],
-    "txn_behavior": ["synth_"],
-    "derived_temporal": ["total_acquisitions", "total_churns", "months_observed", "product_diversity"],
-    "tda_global": ["tda_global_"],
-    "tda_local": ["tda_local_"],
-    "product_hierarchy": ["product_hierarchy_", "ph_"],
-    "graph_collaborative": ["graph_collaborative_", "gc_"],
-}
-
-
-def _columns_to_drop(
-    all_columns: list,
-    removed_groups: list,
-) -> list:
-    """Return column names that belong to the removed feature groups.
-
-    Parameters
-    ----------
-    all_columns : list
-        All columns in the DataFrame.
-    removed_groups : list
-        Feature group names to remove (e.g. ``["tda_topology", "economics"]``).
+def load_ready_data(channel_dir: str) -> dict:
+    """Load training-ready artifacts produced by Phase 0.
 
     Returns
     -------
-    list
-        Column names to drop.
-    """
-    drop_cols = []
-    for group_name in removed_groups:
-        prefixes = FEATURE_GROUP_COLUMN_PREFIXES.get(group_name, [group_name + "_"])
-        for col in all_columns:
-            if any(col.startswith(pfx) for pfx in prefixes):
-                drop_cols.append(col)
-    return drop_cols
-
-
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
-
-def _parse_feature_column_spec(
-    config: Dict[str, Any],
-    available_columns: list,
-) -> Optional["FeatureColumnSpec"]:
-    """Build a :class:`FeatureColumnSpec` from hyperparameter config.
-
-    Returns ``None`` when the config does not contain feature-spec
-    definitions, in which case the caller should raise an error.
-    """
-    feature_cfg = config.get("feature_columns")
-    if not feature_cfg:
-        return None
-
-    from core.data.dataloader import FeatureColumnSpec, SequenceConfig
-
-    return FeatureColumnSpec(
-        static_features=feature_cfg.get("static_features", []),
-        hyperbolic_columns=feature_cfg.get("hyperbolic_columns", []),
-        tda_columns=feature_cfg.get("tda_columns", []),
-        collaborative_columns=feature_cfg.get("collaborative_columns", []),
-        hmm_journey_columns=feature_cfg.get("hmm_journey_columns", []),
-        hmm_lifecycle_columns=feature_cfg.get("hmm_lifecycle_columns", []),
-        hmm_behavior_columns=feature_cfg.get("hmm_behavior_columns", []),
-        multidisciplinary_columns=feature_cfg.get("multidisciplinary_columns", []),
-        coldstart_columns=feature_cfg.get("coldstart_columns", []),
-        anonymous_columns=feature_cfg.get("anonymous_columns", []),
-        event_seq_pattern=feature_cfg.get(
-            "event_seq_pattern", "txn_card_{feature}_{step:03d}"
-        ),
-        session_seq_pattern=feature_cfg.get(
-            "session_seq_pattern", "sess_{feature}_{step:03d}"
-        ),
-        event_seq_features=feature_cfg.get("event_seq_features", []),
-        session_seq_features=feature_cfg.get("session_seq_features", []),
-        event_time_delta_prefix=feature_cfg.get(
-            "event_time_delta_prefix", "txn_card_time_delta"
-        ),
-        session_time_delta_prefix=feature_cfg.get(
-            "session_time_delta_prefix", "sess_time_delta"
-        ),
-    )
-
-
-
-def _derive_santander_labels(df, tasks):
-    """Derive missing Santander labels from raw columns.
-
-    Handles all 15 derived labels:
-    - label_nba_primary: first element of nba_label list
-    - label_acquire_*: product group acquisition from nba_label indices
-    - label_tenure_stage, label_segment, label_income_tier: from profile columns
-    - label_spend_level: from synth_monthly_spend
-    - label_cross_sell_count: len(nba_label)
-    - label_engagement_score: composite from synth columns
-    - label_next_mcc, label_mcc_diversity_trend, label_top_mcc_shift: from txn sequences
-    """
-    from collections import Counter
-
-    needed = {t["label_col"] for t in tasks if t["label_col"] not in df.columns}
-    if not needed:
-        return df
-
-    logger.info("_derive_santander_labels: need to derive %d labels: %s",
-                len(needed), sorted(needed))
-
-    # Product index mapping (0-23 -> product names)
-    PRODUCT_GROUP_INDICES = {
-        "deposits": [8, 9, 10],          # short_deposit, medium_deposit, long_deposit
-        "investments": [12, 18],          # funds, securities
-        "accounts": [2, 6, 7, 11, 19, 5],  # checking, particular_acct, particular_plus, e_account, home_acct, junior_acct
-        "lending": [13, 15],              # mortgage, loans
-        "payments": [17, 22, 23, 20, 4],  # credit_card, direct_debit, auto_debit, payroll, payroll_acct
-    }
-
-    # Helper: safely get list column
-    nba = df.get("nba_label") if "nba_label" in df.columns else None
-
-    # --- label_nba_primary ---
-    if "label_nba_primary" in needed and nba is not None:
-        df["label_nba_primary"] = nba.apply(
-            lambda x: int(x[0]) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else -1
-        )
-        logger.info("Derived label_nba_primary")
-
-    # --- label_acquire_* (product group acquisition) ---
-    group_label_map = {
-        "label_acquire_deposits": "deposits",
-        "label_acquire_investments": "investments",
-        "label_acquire_accounts": "accounts",
-        "label_acquire_lending": "lending",
-        "label_acquire_payments": "payments",
-    }
-    for label_col, group_name in group_label_map.items():
-        if label_col in needed and nba is not None:
-            indices = set(PRODUCT_GROUP_INDICES[group_name])
-            df[label_col] = nba.apply(
-                lambda x, idx=indices: int(bool(set(int(i) for i in x) & idx)) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else 0
-            )
-            logger.info("Derived %s (indices=%s)", label_col, sorted(indices))
-
-    # --- label_tenure_stage ---
-    if "label_tenure_stage" in needed and "tenure_months" in df.columns:
-        def _tenure_bin(v):
-            if v == -999999 or (np.isnan(v) if isinstance(v, float) else False):
-                return -1  # unknown → ignore_index
-            v = int(v)
-            if v <= 12:
-                return 0  # new
-            elif v <= 36:
-                return 1  # growing
-            elif v <= 72:
-                return 2  # mature
-            elif v <= 120:
-                return 3
-            else:
-                return 4
-        df["label_tenure_stage"] = df["tenure_months"].apply(_tenure_bin)
-        logger.info("Derived label_tenure_stage (5 classes)")
-
-    # --- label_segment ---
-    if "label_segment" in needed and "segment" in df.columns:
-        seg_map = {"01-TOP": 0, "02-PARTICULARES": 1, "03-UNIVERSITARIO": 2}
-        # If segment is already numeric (label-encoded), copy directly
-        if np.issubdtype(df["segment"].dtype, np.number):
-            # Already encoded by categorical encoder — use as-is but cap at num_classes
-            df["label_segment"] = df["segment"].clip(upper=3).astype(int)
-        else:
-            df["label_segment"] = df["segment"].apply(
-                lambda x: seg_map.get(str(x), 3)
-            )
-        logger.info("Derived label_segment (4 classes)")
-
-    # --- label_income_tier ---
-    if "label_income_tier" in needed and "income" in df.columns:
-        def _income_bin(v):
-            if v <= 0 or (isinstance(v, float) and np.isnan(v)):
-                return 0  # low / unknown
-            elif v < 30000:
-                return 0
-            elif v < 80000:
-                return 1
-            elif v < 200000:
-                return 2
-            else:
-                return 3
-        df["label_income_tier"] = df["income"].apply(_income_bin)
-        logger.info("Derived label_income_tier (4 classes)")
-
-    # --- label_spend_level ---
-    if "label_spend_level" in needed and "synth_monthly_spend" in df.columns:
-        def _spend_bin(v):
-            if isinstance(v, float) and np.isnan(v):
-                return 0
-            if v < 1500:
-                return 0
-            elif v < 3000:
-                return 1
-            elif v < 5000:
-                return 2
-            else:
-                return 3
-        df["label_spend_level"] = df["synth_monthly_spend"].apply(_spend_bin)
-        logger.info("Derived label_spend_level (4 classes)")
-
-    # --- label_cross_sell_count ---
-    if "label_cross_sell_count" in needed:
-        if nba is not None:
-            df["label_cross_sell_count"] = nba.apply(
-                lambda x: len(x) if isinstance(x, (list, np.ndarray)) else 0
-            )
-        elif "total_acquisitions" in df.columns:
-            df["label_cross_sell_count"] = df["total_acquisitions"]
-        else:
-            df["label_cross_sell_count"] = 0
-        logger.info("Derived label_cross_sell_count")
-
-    # --- label_engagement_score ---
-    if "label_engagement_score" in needed:
-        # Composite: is_active * 0.3 + synth_frequency * 0.4 + num_products * 0.3
-        # Normalize each component to [0, 1] range
-        score = np.zeros(len(df))
-        for col_name, weight in [("is_active", 0.3), ("synth_frequency", 0.4), ("num_products", 0.3)]:
-            if col_name in df.columns:
-                vals = df[col_name].fillna(0).astype(float)
-                max_val = vals.max()
-                if max_val > 0:
-                    vals = vals / max_val
-                score = score + weight * vals.values
-        df["label_engagement_score"] = score
-        logger.info("Derived label_engagement_score")
-
-    # --- label_next_mcc ---
-    if "label_next_mcc" in needed and "txn_mcc_seq" in df.columns:
-        # Collect all MCC codes and find the top-50 most frequent
-        all_last_mccs = df["txn_mcc_seq"].apply(
-            lambda x: int(x[-1]) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else None
-        )
-        mcc_counts = all_last_mccs.dropna().astype(int).value_counts()
-        top50_mccs = list(mcc_counts.index[:50])
-        mcc_to_idx = {mcc: idx for idx, mcc in enumerate(top50_mccs)}
-        logger.info("Top-50 MCC codes for label_next_mcc: %s", top50_mccs[:10])
-
-        def _map_mcc(x):
-            if not isinstance(x, (list, np.ndarray)) or len(x) == 0:
-                return -1
-            last_mcc = int(x[-1])
-            return mcc_to_idx.get(last_mcc, -1)  # -1 for rare MCCs (ignore_index)
-
-        df["label_next_mcc"] = df["txn_mcc_seq"].apply(_map_mcc)
-        n_valid = (df["label_next_mcc"] >= 0).sum()
-        logger.info("Derived label_next_mcc: %d classes, %d valid / %d total",
-                     len(top50_mccs), n_valid, len(df))
-
-    # --- label_mcc_diversity_trend ---
-    if "label_mcc_diversity_trend" in needed and "txn_mcc_seq" in df.columns:
-        def _diversity_trend(x):
-            if not isinstance(x, (list, np.ndarray)) or len(x) < 4:
-                return 0.0
-            mid = len(x) // 2
-            first_half_unique = len(set(x[:mid]))
-            second_half_unique = len(set(x[mid:]))
-            if first_half_unique == 0:
-                return 0.0
-            return (second_half_unique / first_half_unique) - 1.0
-        df["label_mcc_diversity_trend"] = df["txn_mcc_seq"].apply(_diversity_trend)
-        logger.info("Derived label_mcc_diversity_trend")
-
-    # --- label_top_mcc_shift ---
-    if "label_top_mcc_shift" in needed and "txn_mcc_seq" in df.columns:
-        def _mode_shift(x):
-            if not isinstance(x, (list, np.ndarray)) or len(x) < 4:
-                return 0  # too short to judge shift → default to no-shift (binary safe)
-            mid = len(x) // 2
-            mode_first = Counter(x[:mid]).most_common(1)[0][0]
-            mode_second = Counter(x[mid:]).most_common(1)[0][0]
-            return int(mode_first != mode_second)
-        df["label_top_mcc_shift"] = df["txn_mcc_seq"].apply(_mode_shift)
-        pos_rate = df["label_top_mcc_shift"].mean()
-        logger.info("Derived label_top_mcc_shift (positive rate: %.1f%%)", pos_rate * 100)
-
-    # Report final status
-    still_missing = [t["label_col"] for t in tasks if t["label_col"] not in df.columns]
-    if still_missing:
-        logger.warning("_derive_santander_labels: still missing %d labels: %s",
-                        len(still_missing), still_missing)
-    else:
-        logger.info("_derive_santander_labels: all %d labels available", len(needed))
-
-    return df
-
-
-def _inject_sequences_into_ple_dataset(
-    dataset: Any,
-    event_sequences: torch.Tensor,
-    seq_lengths: Optional[torch.Tensor] = None,
-) -> None:
-    """Inject externally-loaded event sequences into an existing PLEDataset.
-
-    This patches the dataset's internal tensor dict so that ``__getitem__``
-    returns ``event_sequences`` (and optionally ``seq_lengths``) alongside
-    the features already extracted from the DataFrame.
-    """
-    if hasattr(dataset, "_tensors"):
-        # CPU path: inject directly into the pre-converted tensor dict
-        dataset._tensors["event_sequences"] = event_sequences
-        if seq_lengths is not None:
-            dataset._tensors["seq_lengths"] = seq_lengths
-        logger.info(
-            "Injected event_sequences %s into PLEDataset tensors",
-            list(event_sequences.shape),
-        )
-    else:
-        logger.warning(
-            "Cannot inject event sequences: PLEDataset does not have _tensors "
-            "(GPU/cuDF path not supported for npy injection yet)"
-        )
-
-
-def load_data(
-    channel_dir: str,
-    config: Dict[str, Any],
-    *,
-    use_gpu_loading: bool = False,
-    batch_size: int = 2048,
-    shuffle: bool = True,
-    removed_feature_groups: Optional[list] = None,
-) -> Any:
-    """Load Parquet files from a SageMaker input channel.
-
-    Returns a PyTorch ``DataLoader`` backed by :class:`PLEDataset` with
-    optional cuDF GPU zero-copy support.
-
-    Parameters
-    ----------
-    channel_dir : str
-        Directory containing Parquet files (e.g. /opt/ml/input/data/train).
-    config : dict
-        Pipeline config dict with task/feature definitions.
-    use_gpu_loading : bool
-        Enable cuDF DLPack zero-copy loading when available.
-    batch_size : int
-        Batch size for the DataLoader.
-    shuffle : bool
-        Whether to shuffle the DataLoader.
-
-    Returns
-    -------
-    DataLoader
-        A DataLoader yielding PLE-compatible dicts.
+    dict with keys:
+        features : pd.DataFrame — normalized numeric features
+        labels : pd.DataFrame — derived labels
+        sequences : np.ndarray or None — padded 3D tensor
+        seq_lengths : np.ndarray or None — sequence lengths
+        feature_schema : dict — column names, group ranges, expert routing
+        label_schema : dict — task definitions
+        split_indices : dict or None — train/val/test row indices
     """
     import pandas as pd
 
     channel_path = Path(channel_dir)
-    parquet_files = sorted(channel_path.glob("**/*.parquet"))
-    if not parquet_files:
-        raise FileNotFoundError(
-            f"No Parquet files found in {channel_dir}"
-        )
 
-    logger.info(f"Loading {len(parquet_files)} Parquet file(s) from {channel_dir}")
-    # Only load scalar columns (skip list/array types to save memory)
-    import pyarrow.parquet as _pq
-    _sample_schema = _pq.read_schema(str(parquet_files[0]))
-    _scalar_cols = []
-    for i in range(_sample_schema.length if hasattr(_sample_schema, 'length') else len(_sample_schema)):
-        field = _sample_schema.field(i)
-        type_str = str(field.type)
-        # Skip list, large_list, struct types
-        if type_str.startswith(("list", "large_list", "struct")):
-            continue
-        _scalar_cols.append(field.name)
-    logger.info("Selecting %d scalar columns (skipping list/struct types)", len(_scalar_cols))
-    dfs = [pd.read_parquet(f, columns=_scalar_cols) for f in parquet_files]
-    df = pd.concat(dfs, ignore_index=True)
-    # Subsample if max_rows HP is set (for fast testing)
-    max_rows = config.get("max_rows", 0)
-    if max_rows and max_rows > 0 and len(df) > max_rows:
-        df = df.sample(n=max_rows, random_state=42).reset_index(drop=True)
-        logger.info(f"Subsampled to {max_rows} rows for fast testing")
-    # -- Handle sentinel/missing values BEFORE fillna --
-    import numpy as _np
-    # tenure_months: -999999 is sentinel for unknown
-    if "tenure_months" in df.columns:
-        df.loc[df["tenure_months"] <= -999, "tenure_months"] = _np.nan
-    # income: 0 means missing (25% of data)
-    if "income" in df.columns:
-        df.loc[df["income"] == 0, "income"] = _np.nan
-        # Impute with median of non-missing values
-        _inc_median = df["income"].median()
-        df["income"] = df["income"].fillna(_inc_median)
-        logger.info("Income: imputed %d missing values with median=%.0f",
-                     df["income"].isna().sum(), _inc_median if _inc_median == _inc_median else 0)
-    # fillna(0) for remaining numeric columns
-    numeric_cols = df.select_dtypes(include="number").columns
-    df[numeric_cols] = df[numeric_cols].fillna(0)
-    logger.info(f"Loaded {len(df)} rows, {len(df.columns)} columns")
-
-    # -- Load event sequence .npy files if present --
-    event_sequences_tensor = None
-    seq_lengths_tensor = None
-    seq_config = config.get("features", {}).get("event_sequences", {})
-    if seq_config.get("enabled", False):
-        seq_pattern = seq_config.get("file_pattern", "*_event_sequences.npy")
-        lengths_pattern = seq_config.get("lengths_file_pattern", "*_seq_lengths.npy")
-        seq_files = sorted(channel_path.glob(f"**/{seq_pattern}"))
-        lengths_files = sorted(channel_path.glob(f"**/{lengths_pattern}"))
-
-        if seq_files:
-            seq_arr = np.load(str(seq_files[0]))
-            logger.info(
-                "Loaded event sequences: %s from %s",
-                seq_arr.shape, seq_files[0].name,
-            )
-            event_sequences_tensor = torch.tensor(seq_arr, dtype=torch.float32)
-        else:
-            logger.warning(
-                "Event sequences enabled but no .npy file matching '%s' found in %s",
-                seq_pattern, channel_dir,
-            )
-
-        if lengths_files:
-            lengths_arr = np.load(str(lengths_files[0]))
-            seq_lengths_tensor = torch.tensor(lengths_arr, dtype=torch.long)
-            logger.info(
-                "Loaded sequence lengths: %s from %s",
-                lengths_arr.shape, lengths_files[0].name,
-            )
-
-    # -- Ablation: drop columns belonging to removed feature groups --
-    if removed_feature_groups:
-        drop_cols = _columns_to_drop(list(df.columns), removed_feature_groups)
-        if drop_cols:
-            df = df.drop(columns=drop_cols, errors="ignore")
-            logger.info(
-                "Ablation: removed %d columns from groups %s. "
-                "Remaining: %d columns",
-                len(drop_cols), removed_feature_groups, len(df.columns),
-            )
-        else:
-            logger.warning(
-                "Ablation: no columns matched for groups %s",
-                removed_feature_groups,
-            )
-
-    tasks = config.get("tasks", [])
-    label_cols = [t["label_col"] for t in tasks]
-
-    # -- Encode categorical string columns to integers --
-    # This makes gender, segment, country, channel, age_group, income_group
-    # available as numeric features for auto-discovery.
-    from sklearn.preprocessing import LabelEncoder as _LabelEncoder
-    _cat_cols = df.select_dtypes(include=["object", "string", "category"]).columns
-    _id_and_date_cols = {"customer_id", "snapshot_date"}
-    for _col in _cat_cols:
-        if _col not in _id_and_date_cols:
-            # Skip list-type columns stored as object dtype
-            _sample = df[_col].dropna().iloc[0] if len(df[_col].dropna()) > 0 else None
-            if isinstance(_sample, (list, np.ndarray)):
-                continue
-            _le = _LabelEncoder()
-            df[_col] = _le.fit_transform(df[_col].astype(str))
-            logger.info("Encoded categorical '%s': %d classes", _col, len(_le.classes_))
-
-    # -- Check for pre-generated feature columns from Phase 0 --
-    _gen_prefixes = ("tda_", "graph_", "hmm_", "mamba_", "gmm_", "model_derived_")
-    _gen_cols = [c for c in df.columns if any(c.startswith(p) for p in _gen_prefixes)]
-    if _gen_cols:
-        logger.info("Found %d pre-generated feature columns from Phase 0", len(_gen_cols))
+    # -- Features --
+    features_path = channel_path / "features.parquet"
+    if features_path.exists():
+        features = pd.read_parquet(features_path)
+        logger.info("Loaded features: %d rows, %d columns", len(features), len(features.columns))
     else:
-        logger.warning(
-            "No generated feature columns found (tda/graph/hmm/mamba/gmm/model_derived). "
-            "Phase 0 should run generators. Training with base features only."
-        )
+        # Fallback: load from generic parquet files (backward compat)
+        parquet_files = sorted(channel_path.glob("**/*.parquet"))
+        if not parquet_files:
+            raise FileNotFoundError(f"No features.parquet or .parquet files in {channel_dir}")
+        features = pd.concat([pd.read_parquet(f) for f in parquet_files], ignore_index=True)
+        logger.info("Loaded %d parquet files (fallback): %d rows, %d columns",
+                     len(parquet_files), len(features), len(features.columns))
 
-    # -- Derive missing labels if LabelDeriver config is present --
-    missing_labels = [lc for lc in label_cols if lc not in df.columns]
-    if missing_labels:
-        logger.info("Missing %d label columns, attempting derivation: %s",
-                     len(missing_labels), missing_labels)
+    # -- Labels --
+    labels_path = channel_path / "labels.parquet"
+    labels = pd.read_parquet(labels_path) if labels_path.exists() else None
+    if labels is not None:
+        logger.info("Loaded labels: %d rows, %d columns", len(labels), len(labels.columns))
+
+    # -- Sequences (optional) --
+    sequences = None
+    seq_path = channel_path / "sequences.npy"
+    if seq_path.exists():
+        sequences = np.load(str(seq_path))
+        logger.info("Loaded sequences: %s", sequences.shape)
+
+    seq_lengths = None
+    lengths_path = channel_path / "seq_lengths.npy"
+    if lengths_path.exists():
+        seq_lengths = np.load(str(lengths_path))
+        logger.info("Loaded seq_lengths: %s", seq_lengths.shape)
+
+    # -- Feature schema --
+    feature_schema_path = channel_path / "feature_schema.json"
+    if feature_schema_path.exists():
+        with open(feature_schema_path) as f:
+            feature_schema = json.load(f)
+        logger.info("Loaded feature_schema: %d keys", len(feature_schema))
+    else:
+        # Auto-generate minimal schema from DataFrame columns
+        feature_schema = {
+            "columns": list(features.columns),
+            "group_ranges": {},
+            "expert_routing": {},
+        }
+        logger.warning("No feature_schema.json found — auto-generated from DataFrame columns")
+
+    # -- Label schema --
+    label_schema_path = channel_path / "label_schema.json"
+    if label_schema_path.exists():
+        with open(label_schema_path) as f:
+            label_schema = json.load(f)
+        logger.info("Loaded label_schema: %d tasks", len(label_schema.get("tasks", [])))
+    else:
+        label_schema = {}
+        logger.warning("No label_schema.json found")
+
+    # -- Split indices --
+    split_path = channel_path / "split_indices.json"
+    split_indices = None
+    if split_path.exists():
+        with open(split_path) as f:
+            split_indices = json.load(f)
+        logger.info("Loaded split_indices: %s",
+                     {k: len(v) for k, v in split_indices.items()})
+
+    return {
+        "features": features,
+        "labels": labels,
+        "sequences": sequences,
+        "seq_lengths": seq_lengths,
+        "feature_schema": feature_schema,
+        "label_schema": label_schema,
+        "split_indices": split_indices,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Ablation filters
+# ---------------------------------------------------------------------------
+
+def apply_ablation(features, labels, feature_schema, label_schema, hp):
+    """Apply ablation filters using schema-driven column/task selection.
+
+    Modifies features and schemas in-place based on hyperparameters:
+      - removed_feature_groups: drop columns by group using schema["group_ranges"]
+      - active_tasks: filter tasks to only active ones
+      - use_ple / use_adatt: stored as config overrides (handled at model build)
+
+    Returns
+    -------
+    features, labels, feature_schema, label_schema (filtered)
+    """
+    # -- Feature ablation: drop columns by group using schema["group_ranges"] --
+    removed_raw = hp.get("removed_feature_groups", "[]")
+    if isinstance(removed_raw, str):
         try:
-            from core.pipeline.label_deriver import LabelDeriver, LabelConfig
-            labels_cfg = config.get("labels", {})
-            if labels_cfg:
-                deriver = LabelDeriver()
-                label_configs = []
-                for name, cfg in labels_cfg.items():
-                    if isinstance(cfg, dict):
-                        label_configs.append(LabelConfig(name=name, **{
-                            k: v for k, v in cfg.items()
-                            if k in LabelConfig.__dataclass_fields__
-                        }))
-                derived = deriver.derive(df, label_configs)
-                for col in derived.columns:
-                    df[col] = derived[col]
-                logger.info("Derived %d label columns", len(derived.columns))
+            removed = json.loads(removed_raw)
+        except (json.JSONDecodeError, ValueError):
+            removed = []
+    elif isinstance(removed_raw, list):
+        removed = removed_raw
+    else:
+        removed = []
+
+    group_ranges = feature_schema.get("group_ranges", {})
+    columns = feature_schema.get("columns", list(features.columns))
+
+    if removed:
+        cols_to_drop = []
+        for group_name in removed:
+            if group_name in group_ranges:
+                start, end = group_ranges[group_name]
+                cols_to_drop.extend(columns[start:end])
             else:
-                logger.warning("No labels config found for derivation")
-        except Exception as e:
-            logger.warning("Label derivation failed: %s", e)
+                logger.warning("Ablation: group '%s' not in schema group_ranges", group_name)
+        if cols_to_drop:
+            features = features.drop(columns=cols_to_drop, errors="ignore")
+            logger.info("Ablation: removed %d columns from groups %s. Remaining: %d",
+                         len(cols_to_drop), removed, len(features.columns))
+        else:
+            logger.warning("Ablation: no columns matched for groups %s", removed)
 
-    # -- Santander-specific label derivation (handles all 15 derived labels) --
-    missing_after_deriver = [lc for lc in label_cols if lc not in df.columns]
-    if missing_after_deriver:
-        logger.info("Attempting Santander-specific derivation for %d labels: %s",
-                     len(missing_after_deriver), missing_after_deriver)
-        df = _derive_santander_labels(df, tasks)
+    # -- Task ablation: filter active tasks --
+    active_raw = hp.get("active_tasks")
+    tasks = label_schema.get("tasks", [])
+    if active_raw:
+        active = json.loads(active_raw) if isinstance(active_raw, str) else active_raw
+        original_count = len(tasks)
+        tasks = [t for t in tasks if t["name"] in active]
+        label_schema["tasks"] = tasks
+        logger.info("Task ablation: %d/%d tasks active: %s",
+                     len(tasks), original_count, [t["name"] for t in tasks])
 
-    # Re-check after derivation — skip tasks whose labels still don't exist
-    # Also skip list-type columns (can't be converted to tensors)
-    available_labels = set(df.columns)
-    valid_tasks = []
-    for t in tasks:
-        lc = t["label_col"]
-        if lc not in available_labels:
-            logger.warning("Skipping task %s: label_col '%s' not in data", t["name"], lc)
-            continue
-        # Check if label is a scalar type (not list/object)
-        dtype = df[lc].dtype
-        if dtype == object or str(dtype).startswith("list"):
-            logger.warning("Skipping task %s: label_col '%s' is non-scalar (dtype=%s)", t["name"], lc, dtype)
-            continue
-        valid_tasks.append(t)
-    tasks = valid_tasks
-    label_cols = [t["label_col"] for t in tasks]
-    logger.info("Valid tasks after label check: %d/%d", len(tasks), len(config.get("tasks", [])))
+        # Filter task_groups to only reference active tasks
+        active_set = set(t["name"] for t in tasks)
+        for tg in label_schema.get("task_groups", []):
+            tg["tasks"] = [t for t in tg["tasks"] if t in active_set]
+        label_schema["task_groups"] = [
+            tg for tg in label_schema.get("task_groups", []) if tg.get("tasks")
+        ]
+
+        # Filter task_relationships
+        label_schema["task_relationships"] = [
+            tr for tr in label_schema.get("task_relationships", [])
+            if tr["source"] in active_set and tr["target"] in active_set
+        ]
+
+    # -- Filter labels DataFrame to only active task label columns --
+    if labels is not None and tasks:
+        label_cols = [t["label_col"] for t in tasks if t["label_col"] in labels.columns]
+        labels = labels[label_cols]
+
+    return features, labels, feature_schema, label_schema
+
+
+# ---------------------------------------------------------------------------
+# DataLoader construction
+# ---------------------------------------------------------------------------
+
+def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
+                      label_schema, split_indices, hp):
+    """Build train/val DataLoaders from training-ready data.
+
+    Returns
+    -------
+    train_loader, val_loader, tasks, task_type_map, label_stats
+    """
+    import pandas as pd
+    from core.data.dataloader import build_ple_dataloader, FeatureColumnSpec
+
+    tasks = label_schema.get("tasks", [])
+    batch_size = int(hp.get("batch_size", 2048))
+
+    # Subsample if max_rows HP is set (for fast testing)
+    max_rows = int(hp.get("max_rows", 0))
+    if max_rows and max_rows > 0 and len(features) > max_rows:
+        idx = features.sample(n=max_rows, random_state=42).index
+        features = features.loc[idx].reset_index(drop=True)
+        if labels is not None:
+            labels = labels.loc[idx].reset_index(drop=True)
+        if sequences is not None:
+            sequences = sequences[idx.values]
+        if seq_lengths is not None:
+            seq_lengths = seq_lengths[idx.values]
+        logger.info("Subsampled to %d rows for fast testing", max_rows)
+
+    # Validate tasks against available label columns
+    if labels is not None:
+        available_labels = set(labels.columns)
+        valid_tasks = []
+        for t in tasks:
+            lc = t["label_col"]
+            if lc not in available_labels:
+                logger.warning("Skipping task %s: label_col '%s' not in labels", t["name"], lc)
+                continue
+            valid_tasks.append(t)
+        tasks = valid_tasks
+        label_schema["tasks"] = tasks
     if not tasks:
         raise ValueError("No tasks have valid label columns in the data.")
 
-    # ---- PLEDataset path ----
-    feature_spec = _parse_feature_column_spec(config, list(df.columns))
-    if feature_spec is None:
-        # Auto-discover: all non-label, non-id columns become static features
-        from core.data.dataloader import FeatureColumnSpec
-        id_cols = config.get("id_cols", ["user_id", "customer_id"])
-        exclude = set(label_cols) | set(id_cols)
-        # Only include numeric scalar columns (exclude strings, dates, list types)
-        static_features = []
-        for c in df.columns:
-            if c in exclude:
-                continue
-            dtype = df[c].dtype
-            # Skip string/object/categorical columns
-            if dtype == object or str(dtype) in ("string", "category"):
-                continue
-            # Skip list/array columns (pyarrow list types show as object or 'list')
-            if hasattr(dtype, "pyarrow_dtype"):
-                continue
-            # Only keep numeric types
-            try:
-                import numpy as _np
-                if not _np.issubdtype(dtype, _np.number):
-                    continue
-            except (TypeError, AttributeError):
-                continue
-            static_features.append(c)
-        feature_spec = FeatureColumnSpec(static_features=static_features)
-        logger.info(
-            "Auto-discovered %d static features (no feature_columns config)",
-            len(static_features),
-        )
-
-    # -- Normalize features + regression labels to prevent NaN loss --
-    import numpy as _np
-    from sklearn.preprocessing import StandardScaler as _StdScaler
-
-    # 1) Feature normalization (StandardScaler on continuous features, skip binary)
-    _feat_cols = [c for c in (feature_spec.static_features if feature_spec else [])
-                  if c in df.columns and _np.issubdtype(df[c].dtype, _np.number)]
-    # Separate binary (0/1 only) from continuous for appropriate normalization
-    _binary_cols = [c for c in _feat_cols if set(df[c].dropna().unique()).issubset({0, 0.0, 1, 1.0})]
-    _continuous_cols = [c for c in _feat_cols if c not in _binary_cols]
-    global _module_scaler, _module_continuous_cols
-    # 1a) Power-law detection: add log1p copies for heavy-tailed features
-    #   Two-stage detection:
-    #   Stage 1 (fast filter): skewness + kurtosis + basic checks
-    #   Stage 2 (confirmation): log-log linearity (rank-frequency R² > 0.9)
-    _SKEW_THRESHOLD = 2.0
-    _KURT_THRESHOLD = 6.0
-    _LOGLOG_R2_THRESHOLD = 0.9
-
-    def _loglog_r2(series):
-        """Log-log rank-frequency R²: high R² ≈ power-law-like tail."""
-        vals = series.dropna()
-        vals = vals[vals > 0].sort_values(ascending=False).values
-        if len(vals) < 50:
-            return 0.0
-        # Use top 50% to focus on tail behavior
-        n = max(50, len(vals) // 2)
-        vals = vals[:n]
-        log_rank = _np.log(1 + _np.arange(n))
-        log_val = _np.log(vals)
-        # Pearson correlation → R²
-        if log_val.std() < 1e-10:
-            return 0.0
-        corr = _np.corrcoef(log_rank, log_val)[0, 1]
-        return corr ** 2
-
-    _power_law_cols = []
-    _power_law_details = {}
-    if _continuous_cols:
-        _candidates = []
-        # Stage 1: fast filter
-        for col in _continuous_cols:
-            try:
-                skew = float(df[col].skew())
-                kurt = float(df[col].kurtosis())
-                n_unique = int(df[col].nunique())
-                if (abs(skew) > _SKEW_THRESHOLD
-                        and kurt > _KURT_THRESHOLD
-                        and df[col].min() >= 0
-                        and n_unique > 20):
-                    _candidates.append((col, skew, kurt))
-            except (TypeError, ValueError):
-                pass
-
-        # Stage 2: log-log linearity confirmation
-        for col, skew, kurt in _candidates:
-            r2 = _loglog_r2(df[col])
-            if r2 >= _LOGLOG_R2_THRESHOLD:
-                _power_law_cols.append(col)
-                _power_law_details[col] = {"skew": round(skew, 2), "kurt": round(kurt, 2), "loglog_r2": round(r2, 4)}
-            else:
-                logger.debug("Power-law rejected '%s': skew=%.1f, kurt=%.1f, loglog_R2=%.3f < %.1f",
-                             col, skew, kurt, r2, _LOGLOG_R2_THRESHOLD)
-        if _power_law_cols:
-            for col in _power_law_cols:
-                log_col = f"{col}_log"
-                df[log_col] = _np.log1p(df[col].fillna(0).clip(lower=0))
-            logger.info(
-                "Power-law: %d/%d candidates confirmed by log-log R2>%.1f. "
-                "Added _log copies. Columns: %s",
-                len(_power_law_cols), len(_candidates), _LOGLOG_R2_THRESHOLD,
-                list(_power_law_details.keys()),
-            )
-        elif _candidates:
-            logger.info("Power-law: %d candidates by skew/kurt, but 0 confirmed by log-log R2",
-                         len(_candidates))
-
-    # 1b) StandardScaler on continuous features (original + log copies)
-    _scaler = None
-    # Include the new _log columns in scaling
-    _all_continuous = _continuous_cols + [f"{c}_log" for c in _power_law_cols]
-    if _all_continuous:
-        _scaler = _StdScaler()
-        df[_all_continuous] = _scaler.fit_transform(df[_all_continuous].fillna(0).values)
-        logger.info("StandardScaler applied to %d features (%d original + %d log copies, skipped %d binary)",
-                     len(_all_continuous), len(_continuous_cols), len(_power_law_cols), len(_binary_cols))
-        # Store in module-level state for eval report
-        _module_scaler = _scaler
-        _module_continuous_cols = _all_continuous
-
-        # HIGH-3: Persist scaler parameters for reproducibility
-        scaler_params = {
-            "columns": _continuous_cols,
-            "mean": _scaler.mean_.tolist(),
-            "scale": _scaler.scale_.tolist(),
-        }
-        _scaler_path = os.path.join(
-            os.environ.get("SM_OUTPUT_DATA_DIR", "/opt/ml/output/data"),
-            "scaler_params.json",
-        )
-        os.makedirs(os.path.dirname(_scaler_path), exist_ok=True)
-        with open(_scaler_path, "w") as f:
-            json.dump(scaler_params, f)
-        logger.info("Scaler params saved to %s", _scaler_path)
-
-    # 2) Regression label normalization (log1p + clip outliers)
-    for t in tasks:
-        if t.get("type") == "regression":
-            lc = t["label_col"]
-            if lc in df.columns:
-                vals = df[lc].fillna(0).astype(float)
-                # Clip outliers at 99.5th percentile
-                clip_val = vals.quantile(0.995)
-                if clip_val > 0:
-                    vals = vals.clip(upper=clip_val)
-                # log1p for positive-valued targets
-                if vals.min() >= 0:
-                    vals = _np.log1p(vals)
-                df[lc] = vals
-                logger.info("Regression label '%s' normalized: clip=%.2f, log1p=%s",
-                            lc, clip_val, vals.min() >= 0)
-
-    from core.data.dataloader import build_ple_dataloader, SequenceConfig
-
+    task_names = [t["name"] for t in tasks]
+    task_type_map = {t["name"]: t.get("type", "binary") for t in tasks}
     label_map = {t["name"]: t["label_col"] for t in tasks}
 
-    seq_cfg_raw = config.get("sequence_config", {})
-    seq_cfg = SequenceConfig(**seq_cfg_raw) if seq_cfg_raw else None
+    # -- Merge features + labels into a single DataFrame for PLEDataset --
+    df = features.copy()
+    if labels is not None:
+        for col in labels.columns:
+            df[col] = labels[col].values
 
-    loader = build_ple_dataloader(
-        df=df,
-        feature_spec=feature_spec,
-        label_columns=label_map,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        use_gpu_loading=use_gpu_loading,
-        sequence_config=seq_cfg,
-    )
+    # -- Build FeatureColumnSpec from schema --
+    feature_columns = feature_schema.get("columns", list(features.columns))
+    # Only include columns actually present in the DataFrame (post-ablation)
+    static_features = [c for c in feature_columns if c in df.columns]
 
-    # Inject externally-loaded event sequences into the PLEDataset
-    if event_sequences_tensor is not None:
-        _inject_sequences_into_ple_dataset(
-            loader.dataset, event_sequences_tensor, seq_lengths_tensor,
-        )
+    feature_spec = FeatureColumnSpec(static_features=static_features)
+    logger.info("FeatureColumnSpec: %d static features", len(static_features))
 
-    # Pre-compute label statistics before df goes out of scope
-    _label_stats = {}
+    # -- Pre-compute label statistics --
+    label_stats = {}
     for t in tasks:
         lc = t["label_col"]
         if lc in df.columns:
             col = df[lc]
             if t.get("type") == "binary":
                 n_pos = int((col > 0.5).sum())
-                _label_stats[t["name"]] = {
+                label_stats[t["name"]] = {
                     "positive_count": n_pos,
                     "positive_rate": round(n_pos / len(col), 4),
                     "total": len(col),
                 }
             elif t.get("type") == "regression":
-                _label_stats[t["name"]] = {
+                label_stats[t["name"]] = {
                     "mean": round(float(col.mean()), 4),
                     "std": round(float(col.std()), 4),
                     "total": len(col),
                 }
             elif t.get("type") == "multiclass":
-                _label_stats[t["name"]] = {
+                label_stats[t["name"]] = {
                     "num_classes": int(col.nunique()),
                     "total": len(col),
                 }
 
-    logger.info(
-        "Using PLEDataset dataloader: %d samples, batch_size=%d",
-        len(df), batch_size,
-    )
-    return loader, tasks, _label_stats
+    # -- Split into train/val --
+    use_gpu_loading = hp.get("use_gpu_loading", False) and int(os.environ.get("SM_NUM_GPUS", "0")) > 0
+
+    if split_indices:
+        train_idx = split_indices.get("train", [])
+        val_idx = split_indices.get("val", split_indices.get("validation", []))
+
+        df_train = df.iloc[train_idx].reset_index(drop=True)
+        df_val = df.iloc[val_idx].reset_index(drop=True) if val_idx else None
+
+        train_loader = build_ple_dataloader(
+            df=df_train, feature_spec=feature_spec, label_columns=label_map,
+            batch_size=batch_size, shuffle=True, use_gpu_loading=use_gpu_loading,
+        )
+
+        val_loader = None
+        if df_val is not None and len(df_val) > 0:
+            val_loader = build_ple_dataloader(
+                df=df_val, feature_spec=feature_spec, label_columns=label_map,
+                batch_size=batch_size, shuffle=False, use_gpu_loading=use_gpu_loading,
+            )
+
+        # Inject sequences if present
+        if sequences is not None:
+            train_seqs = torch.tensor(sequences[train_idx], dtype=torch.float32)
+            train_lens = torch.tensor(seq_lengths[train_idx], dtype=torch.long) if seq_lengths is not None else None
+            _inject_sequences_into_ple_dataset(train_loader.dataset, train_seqs, train_lens)
+            if val_loader is not None and val_idx:
+                val_seqs = torch.tensor(sequences[val_idx], dtype=torch.float32)
+                val_lens = torch.tensor(seq_lengths[val_idx], dtype=torch.long) if seq_lengths is not None else None
+                _inject_sequences_into_ple_dataset(val_loader.dataset, val_seqs, val_lens)
+
+        logger.info("Train: %d samples, Val: %d samples (from split_indices)",
+                     len(df_train), len(df_val) if df_val is not None else 0)
+    else:
+        # No split indices — build single loader then split
+        full_loader = build_ple_dataloader(
+            df=df, feature_spec=feature_spec, label_columns=label_map,
+            batch_size=batch_size, shuffle=True, use_gpu_loading=use_gpu_loading,
+        )
+
+        # Inject sequences if present
+        if sequences is not None:
+            event_seqs_tensor = torch.tensor(sequences, dtype=torch.float32)
+            lens_tensor = torch.tensor(seq_lengths, dtype=torch.long) if seq_lengths is not None else None
+            _inject_sequences_into_ple_dataset(full_loader.dataset, event_seqs_tensor, lens_tensor)
+
+        # Split dataset
+        n = len(full_loader.dataset)
+        val_size = max(1, int(n * 0.1))
+        train_size = n - val_size
+        seed = int(hp.get("seed", 42))
+        gen = torch.Generator().manual_seed(seed)
+        train_subset, val_subset = torch.utils.data.random_split(
+            full_loader.dataset, [train_size, val_size], generator=gen,
+        )
+        train_loader = DataLoader(
+            train_subset, batch_size=batch_size, shuffle=True,
+            collate_fn=full_loader.collate_fn, num_workers=0,
+            pin_memory=not use_gpu_loading, drop_last=True,
+        )
+        val_loader = DataLoader(
+            val_subset, batch_size=batch_size, shuffle=False,
+            collate_fn=full_loader.collate_fn, num_workers=0,
+            pin_memory=not use_gpu_loading,
+        )
+        logger.info("Train: %d samples, Val: %d samples (random split)",
+                     train_size, val_size)
+
+    return train_loader, val_loader, tasks, task_type_map, label_stats
+
+
+def _inject_sequences_into_ple_dataset(dataset, event_sequences, seq_lengths=None):
+    """Inject externally-loaded event sequences into a PLEDataset."""
+    if hasattr(dataset, "_tensors"):
+        dataset._tensors["event_sequences"] = event_sequences
+        if seq_lengths is not None:
+            dataset._tensors["seq_lengths"] = seq_lengths
+        logger.info("Injected event_sequences %s into PLEDataset", list(event_sequences.shape))
+    else:
+        logger.warning("Cannot inject event sequences: PLEDataset has no _tensors attribute")
 
 
 # ---------------------------------------------------------------------------
-# Metric printing (captured by SageMaker → CloudWatch)
+# Model building
+# ---------------------------------------------------------------------------
+
+def build_model(feature_schema, label_schema, hp, input_dim, device):
+    """Build PLEModel from schema + hyperparameters.
+
+    ALL config comes from schema (produced by PipelineRunner).
+    No hardcoded column names or domain logic.
+
+    Returns
+    -------
+    model, ple_config
+    """
+    from core.model.ple.model import PLEModel
+    from core.model.ple.config import (
+        PLEConfig, ExpertConfig, ExpertBasketConfig,
+        LossWeightingConfig, LogitTransferDef,
+    )
+
+    tasks = label_schema.get("tasks", [])
+    task_names = [t["name"] for t in tasks]
+
+    # -- Expert config from schema or defaults --
+    model_config = label_schema.get("model", {})
+    ple_cfg = model_config.get("ple", {})
+    expert_cfg = model_config.get("expert_config", {})
+    tower_cfg = model_config.get("task_tower", {})
+
+    mlp_cfg = expert_cfg.get("mlp", {})
+    expert_hidden = mlp_cfg.get("hidden_dims", [input_dim * 2, input_dim])
+    expert_output = ple_cfg.get("extraction_dim", 32)
+
+    shared_expert = ExpertConfig(
+        hidden_dims=expert_hidden, output_dim=expert_output,
+        dropout=model_config.get("dropout", 0.1),
+    )
+    task_expert = ExpertConfig(
+        hidden_dims=expert_hidden, output_dim=expert_output,
+        dropout=model_config.get("dropout", 0.1),
+    )
+
+    # -- Ablation overrides: num_layers --
+    num_extraction_layers = ple_cfg.get("num_layers", 2)
+    hp_num_layers = hp.get("num_layers")
+    if hp_num_layers is not None:
+        num_extraction_layers = int(hp_num_layers)
+        logger.info("Ablation: num_extraction_layers -> %d", num_extraction_layers)
+
+    # -- Ablation overrides: shared experts --
+    num_shared_experts = ple_cfg.get("num_shared_experts", 2)
+    expert_basket = None
+
+    shared_experts_raw = hp.get("shared_experts", "")
+    if isinstance(shared_experts_raw, str) and shared_experts_raw:
+        try:
+            shared_experts_override = json.loads(shared_experts_raw)
+        except (json.JSONDecodeError, ValueError):
+            shared_experts_override = None
+    elif isinstance(shared_experts_raw, list):
+        shared_experts_override = shared_experts_raw
+    else:
+        shared_experts_override = None
+
+    if shared_experts_override is not None:
+        num_shared_experts = len(shared_experts_override)
+        expert_basket_cfg = model_config.get("expert_basket", {})
+        expert_basket = ExpertBasketConfig(
+            shared_experts=shared_experts_override,
+            task_experts=expert_basket_cfg.get("task", ["mlp"]),
+            expert_configs={
+                name: expert_cfg.get(name, {})
+                for name in shared_experts_override if name in expert_cfg
+            },
+        )
+        logger.info("Ablation: shared experts -> %s (%d)", shared_experts_override, num_shared_experts)
+    else:
+        eb_cfg = model_config.get("expert_basket", {})
+        if eb_cfg.get("shared"):
+            expert_basket = ExpertBasketConfig(
+                shared_experts=eb_cfg["shared"],
+                task_experts=eb_cfg.get("task", ["mlp"]),
+                expert_configs={
+                    name: expert_cfg.get(name, {}) for name in eb_cfg["shared"] if name in expert_cfg
+                },
+            )
+
+    # -- Structure ablation: PLE toggle --
+    use_ple_raw = hp.get("use_ple")
+    if use_ple_raw is not None:
+        use_ple = json.loads(use_ple_raw) if isinstance(use_ple_raw, str) else use_ple_raw
+        if not use_ple:
+            num_extraction_layers = 1
+            num_shared_experts = 1
+            expert_basket = None
+            logger.info("Structure ablation: PLE disabled (shared-bottom mode)")
+
+    # -- Structure ablation: adaTT toggle --
+    use_adatt_raw = hp.get("use_adatt")
+    if use_adatt_raw is not None:
+        use_adatt = json.loads(use_adatt_raw) if isinstance(use_adatt_raw, str) else use_adatt_raw
+        if not use_adatt:
+            model_config["adatt"] = {"enabled": False}
+            logger.info("Structure ablation: adaTT disabled")
+
+    # -- Loss weighting --
+    lw_cfg = model_config.get("loss_weighting", {})
+    loss_weighting = LossWeightingConfig(
+        strategy=lw_cfg.get("strategy", "fixed"),
+        gradnorm_alpha=lw_cfg.get("gradnorm_alpha", 1.5),
+        gradnorm_interval=lw_cfg.get("gradnorm_interval", 1),
+        dwa_temperature=lw_cfg.get("dwa_temperature", 2.0),
+        dwa_window_size=lw_cfg.get("dwa_window_size", 5),
+    )
+    logger.info("Loss weighting strategy: %s", loss_weighting.strategy)
+
+    # -- Build PLEConfig --
+    ple_config = PLEConfig(
+        input_dim=input_dim,
+        task_names=task_names,
+        num_shared_experts=num_shared_experts,
+        num_extraction_layers=num_extraction_layers,
+        num_task_experts_per_task=ple_cfg.get("num_task_experts", 1),
+        shared_expert=shared_expert,
+        task_expert=task_expert,
+        dropout=model_config.get("dropout", 0.1),
+        expert_basket=expert_basket,
+        loss_weighting=loss_weighting,
+    )
+
+    # -- Task overrides (type + output_dim + loss) --
+    for t in tasks:
+        task_override = {
+            "task_type": t.get("type", "binary"),
+            "output_dim": t.get("num_classes", 1),
+        }
+        if "loss" in t:
+            task_override["loss"] = t["loss"]
+        if "loss_params" in t:
+            task_override["loss_params"] = t["loss_params"]
+        ple_config.task_overrides[t["name"]] = task_override
+
+    # -- Logit transfers from schema --
+    logit_transfers_raw = label_schema.get("task_relationships", [])
+    if logit_transfers_raw:
+        ple_config.logit_transfers = [
+            LogitTransferDef(
+                source=lt["source"], target=lt["target"],
+                enabled=lt.get("enabled", True),
+                transfer_method=lt.get("transfer_method", "residual"),
+            )
+            for lt in logit_transfers_raw
+        ]
+        ple_config.logit_transfer_strength = float(
+            label_schema.get("logit_transfer_strength", 0.5)
+        )
+        logger.info("Logit transfers: %d relationships", len(ple_config.logit_transfers))
+
+    # -- Feature group ranges from schema --
+    group_ranges = feature_schema.get("group_ranges", {})
+    if group_ranges:
+        ple_config.feature_group_ranges = {k: tuple(v) for k, v in group_ranges.items()}
+
+    # -- Expert routing from schema --
+    expert_routing = feature_schema.get("expert_routing", {})
+    if expert_routing:
+        from core.model.ple.config import ExpertInputConfig
+        ple_config.expert_input_routing = [
+            ExpertInputConfig(**r) if isinstance(r, dict) else r
+            for r in expert_routing
+        ]
+
+    # -- Task group map from schema --
+    task_group_map = label_schema.get("task_group_map", {})
+    if task_group_map:
+        ple_config.task_group_map = task_group_map
+
+    # -- Multidisciplinary routing from schema --
+    md_routing = model_config.get("multidisciplinary_routing", {})
+    if md_routing:
+        ple_config.multidisciplinary_routing = {str(k): list(v) for k, v in md_routing.items()}
+
+    # -- Task tower dims --
+    default_tower_dims = tower_cfg.get("default_dims", [expert_output, expert_output // 2])
+    ple_config.task_tower.default_dims = default_tower_dims
+
+    logger.info(
+        "PLEConfig: input_dim=%d, expert_hidden=%s, expert_output=%d, "
+        "shared=%d, task_experts=%d, layers=%d, tower=%s",
+        input_dim, expert_hidden, expert_output,
+        ple_config.num_shared_experts,
+        ple_config.num_task_experts_per_task,
+        ple_config.num_extraction_layers,
+        default_tower_dims,
+    )
+
+    model = PLEModel(ple_config).to(device)
+    logger.info(model.summary())
+
+    return model, ple_config
+
+
+# ---------------------------------------------------------------------------
+# Metric printing (captured by SageMaker -> CloudWatch)
 # ---------------------------------------------------------------------------
 
 def report_metrics(prefix: str, metrics: Dict[str, float], epoch: int) -> None:
-    """Print metrics in the format SageMaker expects for CloudWatch.
-
-    Each metric is printed as ``<name>=<value>`` on the same line.
-    The METRIC_DEFINITIONS regex in the trainer picks these up.
-    """
+    """Print metrics in SageMaker CloudWatch format."""
     parts = [f"epoch={epoch}"]
     for name, value in sorted(metrics.items()):
         if isinstance(value, (int, float)):
@@ -906,42 +662,27 @@ def report_metrics(prefix: str, metrics: Dict[str, float], epoch: int) -> None:
             parts.append(f"{prefix}_{name}={value}")
     line = " ".join(parts)
     logger.info(line)
-    # Also print to stdout directly for SageMaker metric capture
     print(line, flush=True)
 
 
 # ---------------------------------------------------------------------------
-# Training loop
+# Batch conversion
 # ---------------------------------------------------------------------------
 
-def _batch_to_ple_input(
-    batch: Any,
-    task_names: list,
-    device: torch.device,
-) -> "PLEInput":
-    """Convert a batch (dict or PLEInput) into a device-resident PLEInput.
-
-    Supports two batch formats:
-      - ``dict`` from :class:`PLEDataset` / :func:`build_ple_dataloader`
-      - ``PLEInput`` directly (e.g. when ``return_ple_input=True``)
-    """
+def _batch_to_ple_input(batch, task_names, device):
+    """Convert a batch dict into a device-resident PLEInput."""
     from core.model.ple.model import PLEInput
 
     if isinstance(batch, PLEInput):
         return batch.to(device)
 
     if not isinstance(batch, dict):
-        raise TypeError(
-            f"Expected batch to be a dict or PLEInput, got {type(batch).__name__}"
-        )
+        raise TypeError(f"Expected dict or PLEInput, got {type(batch).__name__}")
 
-    kwargs: Dict[str, Any] = {
-        "features": batch["features"],
-    }
+    kwargs: Dict[str, Any] = {"features": batch["features"]}
     if "targets" in batch:
         kwargs["targets"] = batch["targets"]
 
-    # Map short collate keys to PLEInput field names
     _KEY_MAP = {
         "hyperbolic": "hyperbolic_features",
         "tda": "tda_features",
@@ -965,86 +706,19 @@ def _batch_to_ple_input(
     return PLEInput(**kwargs).to(device)
 
 
-def train_epoch(
-    model: nn.Module,
-    dataloader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
-    task_names: list[str],
-    epoch: int,
-) -> Dict[str, float]:
-    """Run one training epoch.
-
-    Returns
-    -------
-    dict[str, float]
-        Training metrics (loss, per-task losses).
-    """
-    from core.model.ple.model import PLEInput
-
-    model.train()
-    total_loss = 0.0
-    task_losses_sum: Dict[str, float] = {name: 0.0 for name in task_names}
-    n_batches = 0
-
-    for batch in dataloader:
-        inputs = _batch_to_ple_input(batch, task_names, device)
-        output = model(inputs, compute_loss=True)
-
-        if output.total_loss is None:
-            continue
-
-        optimizer.zero_grad()
-        output.total_loss.backward()
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-
-        total_loss += output.total_loss.item()
-        if output.task_losses:
-            for name, loss_val in output.task_losses.items():
-                task_losses_sum[name] += loss_val.item()
-        n_batches += 1
-
-        # Update global step
-        model.set_global_step(model.global_step + 1)
-
-    if n_batches == 0:
-        return {"loss": 0.0}
-
-    metrics = {"loss": total_loss / n_batches}
-    for name in task_names:
-        metrics[f"loss_{name}"] = task_losses_sum[name] / n_batches
-    return metrics
-
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def validate(
-    model: nn.Module,
-    dataloader: DataLoader,
-    device: torch.device,
-    task_names: list[str],
-    task_type_map: Optional[Dict[str, str]] = None,
-) -> Dict[str, float]:
-    """Run validation and compute metrics.
+def validate(model, dataloader, device, task_names, task_type_map=None):
+    """Run validation and compute per-task metrics.
 
-    Parameters
-    ----------
-    task_type_map : dict, optional
-        Maps task name to task type (``"binary"``, ``"multiclass"``,
-        ``"regression"``).  When provided, uses the declared type instead
-        of heuristic label counting.
-
-    Returns
-    -------
-    dict[str, float]
-        Validation metrics: loss, per-task AUC/accuracy/f1/MAE.
+    Returns dict of metrics: loss, per-task AUC/accuracy/F1/MAE.
     """
     from core.model.ple.model import PLEInput
     from sklearn.metrics import (
-        roc_auc_score,
-        accuracy_score,
-        f1_score,
+        roc_auc_score, accuracy_score, f1_score,
         confusion_matrix as _confusion_matrix,
     )
 
@@ -1079,15 +753,12 @@ def validate(
 
     metrics: Dict[str, float] = {"loss": total_loss / n_batches}
 
-    # Per-task metrics
     for name in task_names:
         if not all_preds[name]:
             continue
 
         preds = np.concatenate(all_preds[name])
         tgts = np.concatenate(all_targets[name])
-
-        # Determine task type: use declared type if available, else heuristic
         task_type = task_type_map.get(name)
 
         if task_type == "binary":
@@ -1100,7 +771,6 @@ def validate(
                 except ValueError:
                     pass
             try:
-                # Optimal threshold search for imbalanced binary tasks
                 _thresholds = [0.01, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5]
                 best_f1, best_t = 0.0, 0.5
                 for _t in _thresholds:
@@ -1108,53 +778,39 @@ def validate(
                     _f1_t = f1_score(tgts_sq, _preds_t, zero_division=0)
                     if _f1_t > best_f1:
                         best_f1, best_t = _f1_t, _t
-
                 pred_labels = (preds_sq > best_t).astype(int)
                 metrics[f"accuracy_{name}"] = accuracy_score(tgts_sq, pred_labels)
                 metrics[f"f1_{name}"] = best_f1
                 metrics[f"f1_threshold_{name}"] = best_t
-                # Also report F1 at default 0.5 for comparison
                 pred_labels_05 = (preds_sq > 0.5).astype(int)
-                metrics[f"f1_at_0.5_{name}"] = f1_score(
-                    tgts_sq, pred_labels_05, zero_division=0,
-                )
-                # HIGH-5: Confusion matrix for binary tasks (at optimal threshold)
+                metrics[f"f1_at_0.5_{name}"] = f1_score(tgts_sq, pred_labels_05, zero_division=0)
                 cm = _confusion_matrix(tgts_sq, pred_labels, labels=[0, 1]).tolist()
                 metrics[f"confusion_matrix_{name}"] = cm
             except Exception:
                 pass
 
         elif task_type == "multiclass":
-            # preds shape: (N, num_classes) -- take argmax for class prediction
             if preds.ndim == 2:
                 pred_classes = np.argmax(preds, axis=1)
             else:
                 pred_classes = np.round(preds).astype(int)
             tgts_int = tgts.astype(int).squeeze()
-
             try:
                 metrics[f"accuracy_{name}"] = accuracy_score(tgts_int, pred_classes)
             except Exception:
                 pass
             try:
-                metrics[f"f1_macro_{name}"] = f1_score(
-                    tgts_int, pred_classes, average="macro", zero_division=0,
-                )
+                metrics[f"f1_macro_{name}"] = f1_score(tgts_int, pred_classes, average="macro", zero_division=0)
             except Exception:
                 pass
             try:
-                metrics[f"f1_weighted_{name}"] = f1_score(
-                    tgts_int, pred_classes, average="weighted", zero_division=0,
-                )
+                metrics[f"f1_weighted_{name}"] = f1_score(tgts_int, pred_classes, average="weighted", zero_division=0)
             except Exception:
                 pass
-            # HIGH-5: Confusion matrix for multiclass tasks
             try:
                 valid_mask = tgts_int >= 0
                 labels = sorted(set(tgts_int[valid_mask]))
-                cm = _confusion_matrix(
-                    tgts_int[valid_mask], pred_classes[valid_mask], labels=labels,
-                ).tolist()
+                cm = _confusion_matrix(tgts_int[valid_mask], pred_classes[valid_mask], labels=labels).tolist()
                 metrics[f"confusion_matrix_{name}"] = cm
             except Exception:
                 pass
@@ -1167,14 +823,12 @@ def validate(
             except Exception:
                 pass
             try:
-                metrics[f"rmse_{name}"] = float(
-                    np.sqrt(np.mean((preds_sq - tgts_sq) ** 2))
-                )
+                metrics[f"rmse_{name}"] = float(np.sqrt(np.mean((preds_sq - tgts_sq) ** 2)))
             except Exception:
                 pass
 
         else:
-            # Fallback: heuristic-based metric selection (legacy path)
+            # Fallback heuristic
             preds_sq = preds.squeeze()
             tgts_sq = tgts.squeeze()
             unique_labels = np.unique(tgts_sq)
@@ -1188,12 +842,11 @@ def validate(
             except Exception:
                 pass
 
-    # Aggregate AUC (across binary tasks)
+    # Aggregate AUC
     auc_values = [v for k, v in metrics.items() if k.startswith("auc_")]
     if auc_values:
         metrics["auc"] = float(np.mean(auc_values))
 
-    # Aggregate multiclass metrics
     f1_macro_values = [v for k, v in metrics.items() if k.startswith("f1_macro_")]
     if f1_macro_values:
         metrics["f1_macro_avg"] = float(np.mean(f1_macro_values))
@@ -1205,48 +858,28 @@ def validate(
 # Phase control
 # ---------------------------------------------------------------------------
 
-def apply_phase_config(
-    model: nn.Module,
-    phase: str,
-    pretrained_uri: Optional[str] = None,
-) -> None:
-    """Configure model for the specified training phase.
-
-    Parameters
-    ----------
-    model : nn.Module
-        PLE model.
-    phase : str
-        ``"1"`` to freeze towers, ``"2"`` to unfreeze all.
-    pretrained_uri : str, optional
-        S3 URI or local path for pre-trained weights (phase 2).
-    """
+def apply_phase_config(model, phase, pretrained_uri=None):
+    """Configure model for the specified training phase."""
     if phase == "1":
-        # Phase 1: freeze task towers, train shared experts + gating
         logger.info("Phase 1: Freezing task towers")
         for name, param in model.named_parameters():
             if "task_towers" in name:
                 param.requires_grad = False
-
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total = sum(p.numel() for p in model.parameters())
-        logger.info(f"  Trainable: {trainable:,} / {total:,} parameters")
+        logger.info("  Trainable: %d / %d parameters", trainable, total)
 
     elif phase == "2":
-        # Phase 2: unfreeze everything
         logger.info("Phase 2: Unfreezing all parameters")
         for param in model.parameters():
             param.requires_grad = True
-
-        # Load phase 1 weights if available
         if pretrained_uri:
-            logger.info(f"Loading pre-trained weights from {pretrained_uri}")
+            logger.info("Loading pre-trained weights from %s", pretrained_uri)
             if pretrained_uri.startswith("s3://"):
                 _download_pretrained_from_s3(pretrained_uri)
                 local_path = "/tmp/pretrained/model.pth"
             else:
                 local_path = pretrained_uri
-
             if os.path.exists(local_path):
                 state = torch.load(local_path, map_location="cpu", weights_only=False)
                 if "model_state_dict" in state:
@@ -1255,62 +888,211 @@ def apply_phase_config(
                     model.load_state_dict(state, strict=False)
                 logger.info("Pre-trained weights loaded successfully")
     else:
-        logger.info(f"Single-phase training (phase='{phase}')")
+        logger.info("Single-phase training (phase='%s')", phase)
 
 
-def _download_pretrained_from_s3(s3_uri: str) -> None:
+def _download_pretrained_from_s3(s3_uri):
     """Download pre-trained model from S3."""
     import boto3
     import tarfile
 
     parts = s3_uri.replace("s3://", "").split("/", 1)
     bucket, key = parts[0], parts[1]
-
     local_tar = "/tmp/pretrained_model.tar.gz"
     local_dir = "/tmp/pretrained/"
-
     os.makedirs(local_dir, exist_ok=True)
     s3 = boto3.client("s3")
     s3.download_file(bucket, key, local_tar)
-
     with tarfile.open(local_tar, "r:gz") as tar:
         try:
             tar.extractall(local_dir, filter="data")
         except TypeError:
             tar.extractall(local_dir)
-
-    logger.info(f"Extracted pre-trained model to {local_dir}")
+    logger.info("Extracted pre-trained model to %s", local_dir)
 
 
 # ---------------------------------------------------------------------------
-# PipelineRunner entry point (Stage 8 integration)
+# Eval report saving
+# ---------------------------------------------------------------------------
+
+def save_eval_report(
+    output_dir, model, trainer, tasks, task_type_map,
+    final_metrics, label_stats, hp, label_schema, feature_schema,
+    start_time, epochs, ple_config,
+):
+    """Save eval_metrics.json with full reproducibility info."""
+    report_path = os.path.join(output_dir, "eval_metrics.json")
+    os.makedirs(output_dir, exist_ok=True)
+
+    task_names = [t["name"] for t in tasks]
+    task_name = hp.get("task_name", "default")
+
+    # Aggregate score
+    auc_keys = [k for k in final_metrics if k.startswith("auc_")]
+    aggregate_score = (
+        sum(final_metrics[k] for k in auc_keys) / len(auc_keys)
+        if auc_keys else final_metrics.get("auc", 0.0)
+    )
+
+    eval_report: Dict[str, Any] = {
+        "task_name": task_name,
+        "phase": hp.get("phase", "single"),
+        "final_metrics": final_metrics,
+        "aggregate_score": aggregate_score,
+        "epochs_trained": trainer.current_epoch,
+        "total_time_seconds": time.time() - start_time,
+    }
+
+    # Training config
+    eval_report["training_config"] = {
+        "batch_size": int(hp.get("batch_size", 2048)),
+        "learning_rate": float(hp.get("learning_rate", 1e-3)),
+        "epochs_configured": epochs,
+        "seed": int(hp.get("seed", 42)),
+        "max_rows": int(hp.get("max_rows", 0)),
+    }
+
+    # Architecture
+    eval_report["architecture"] = {
+        "input_dim": ple_config.input_dim,
+        "num_tasks": len(tasks),
+        "active_tasks": task_names,
+        "num_shared_experts": ple_config.num_shared_experts,
+        "shared_expert_names": (
+            list(ple_config.expert_basket.shared_experts)
+            if ple_config.expert_basket else None
+        ),
+        "num_layers": ple_config.num_extraction_layers,
+        "extraction_dim": getattr(ple_config, "extraction_dim",
+                                  getattr(ple_config, "task_expert_output_dim", None)),
+        "loss_weighting": ple_config.loss_weighting.strategy,
+        "adatt_enabled": ple_config.adatt.enabled if hasattr(ple_config, "adatt") else None,
+        "total_params": sum(p.numel() for p in model.parameters()),
+        "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
+    }
+
+    # Logit transfers
+    if ple_config.logit_transfers:
+        eval_report["architecture"]["logit_transfers"] = [
+            {"source": lt.source, "target": lt.target, "method": lt.transfer_method}
+            for lt in ple_config.logit_transfers
+        ]
+    else:
+        eval_report["architecture"]["logit_transfers"] = []
+
+    # Data split
+    eval_report["data_split"] = {
+        "seed": int(hp.get("seed", 42)),
+    }
+
+    # Label stats
+    eval_report["label_stats"] = label_stats
+
+    # Epoch history
+    if hasattr(trainer, "epoch_history") and trainer.epoch_history:
+        eval_report["epoch_history"] = trainer.epoch_history
+
+    # Early stopping
+    if hasattr(trainer, "early_stop_info") and trainer.early_stop_info:
+        eval_report["early_stopping"] = trainer.early_stop_info
+
+    # Task configs
+    eval_report["task_configs"] = {
+        t["name"]: {
+            "type": t.get("type", "binary"),
+            "loss": t.get("loss", "default"),
+            "loss_weight": t.get("loss_weight", 1.0),
+            "num_classes": t.get("num_classes", 1),
+        }
+        for t in tasks
+    }
+
+    # Per-task metrics
+    eval_report["per_task"] = {}
+    for t in tasks:
+        tname = t["name"]
+        task_metrics = {k: v for k, v in final_metrics.items() if k.endswith(f"_{tname}")}
+        eval_report["per_task"][tname] = {"type": t.get("type", "binary"), "metrics": task_metrics}
+    eval_report["per_task_metrics"] = eval_report["per_task"]
+
+    # Ablation metadata
+    ablation_type = hp.get("ablation_type", "")
+    if ablation_type:
+        eval_report["ablation"] = {
+            "ablation_type": ablation_type,
+            "ablation_scenario": hp.get("ablation_scenario", ""),
+            "removed_feature_groups": json.loads(hp.get("removed_feature_groups", "[]"))
+                if isinstance(hp.get("removed_feature_groups", "[]"), str) else hp.get("removed_feature_groups", []),
+            "shared_experts": hp.get("shared_experts"),
+            "num_layers": ple_config.num_extraction_layers,
+            "temperature": float(hp["temperature"]) if hp.get("temperature") is not None else None,
+            "active_tasks": hp.get("active_tasks"),
+            "use_ple": hp.get("use_ple"),
+            "use_adatt": hp.get("use_adatt"),
+        }
+
+    # Final adaTT state
+    if hasattr(model, "adatt") and model.adatt is not None:
+        try:
+            affinity = model.adatt.get_transfer_matrix()
+            if affinity is not None:
+                n = len(task_names)
+                eval_report["adatt_final"] = {
+                    "affinity_matrix": [[round(affinity[i, j].item(), 4) for j in range(n)] for i in range(n)],
+                    "task_names": task_names,
+                }
+        except Exception:
+            pass
+
+    # Final loss weights
+    if hasattr(model, "loss_weighting") and model.loss_weighting is not None:
+        try:
+            weights = model.get_loss_weights()
+            if weights:
+                eval_report["final_loss_weights"] = {k: round(v, 4) for k, v in weights.items()}
+        except Exception:
+            pass
+
+    # Pos weights
+    if hasattr(model, "_pos_weights") and model._pos_weights:
+        eval_report["pos_weights"] = {k: round(v.item(), 2) for k, v in model._pos_weights.items()}
+
+    with open(report_path, "w") as f:
+        json.dump(eval_report, f, indent=2)
+    logger.info("Eval report saved to %s", report_path)
+
+    # Upload to S3 if configured
+    _s3_output = hp.get("_s3_output", "")
+    if _s3_output:
+        try:
+            import boto3
+            s3_client = boto3.client("s3")
+            parts = _s3_output.replace("s3://", "").split("/", 1)
+            bucket = parts[0]
+            s3_key = (parts[1] if len(parts) > 1 else "").rstrip("/") + "/output/eval_metrics.json"
+            s3_client.put_object(
+                Bucket=bucket, Key=s3_key,
+                Body=json.dumps(eval_report, indent=2),
+                ContentType="application/json",
+            )
+            logger.info("Uploaded eval_metrics.json to s3://%s/%s", bucket, s3_key)
+        except Exception as e:
+            logger.warning("Failed to upload eval_metrics.json to S3: %s", e)
+
+    return eval_report
+
+
+# ---------------------------------------------------------------------------
+# PipelineRunner entry point
 # ---------------------------------------------------------------------------
 
 def main_pipeline(config_path: str, **overrides) -> dict:
-    """Entry point when called via PipelineRunner.
-
-    Runs the full 9-stage pipeline (data loading through training) using
-    :class:`PipelineRunner`.  This path is activated by passing
-    ``--pipeline <config.yaml>`` on the command line.
-
-    Parameters
-    ----------
-    config_path : str
-        Path to pipeline YAML config.
-    **overrides
-        Hyperparameter overrides from SageMaker (merged into config).
-
-    Returns
-    -------
-    dict
-        Training results from PipelineRunner.run().
-    """
+    """Entry point when called via PipelineRunner."""
     from core.pipeline.config import load_config
     from core.pipeline.runner import PipelineRunner
 
     config = load_config(config_path)
 
-    # Apply HP overrides from SageMaker environment as attributes
     sm_hps = get_hyperparameters()
     if sm_hps:
         for k, v in sm_hps.items():
@@ -1322,79 +1104,35 @@ def main_pipeline(config_path: str, **overrides) -> dict:
                 setattr(config.training, k, type(getattr(config.training, k))(v))
 
     output_dir = os.environ.get("SM_MODEL_DIR", "outputs/")
-
     runner = PipelineRunner(config)
     results = runner.run(output_dir=output_dir)
-
     logger.info("PipelineRunner completed. Results: %s", list(results.keys()))
     return results
 
 
 # ---------------------------------------------------------------------------
-# Main (legacy SageMaker Training Job entry point)
+# Main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    """SageMaker training entry point."""
+    """SageMaker training entry point.
+
+    Receives training-ready data from Phase 0. No preprocessing.
+    """
     start_time = time.time()
 
-    # -- Environment --
-    sm_env = get_sm_env()
+    # ---- 1. Parse hyperparameters ----
     hp = get_hyperparameters()
 
     model_dir = os.environ.get("SM_MODEL_DIR", "/opt/ml/model")
-    # SageMaker channel name can be "train" or "training"
     train_dir = os.environ.get(
         "SM_CHANNEL_TRAIN",
         os.environ.get("SM_CHANNEL_TRAINING", "/opt/ml/input/data/training"),
     )
-    val_dir = os.environ.get(
-        "SM_CHANNEL_VALIDATION", "/opt/ml/input/data/validation",
-    )
     output_dir = os.environ.get("SM_OUTPUT_DATA_DIR", "/opt/ml/output/data")
-    checkpoint_dir = os.environ.get(
-        "SM_CHECKPOINT_DIR", "/opt/ml/checkpoints",
-    )
+    checkpoint_dir = os.environ.get("SM_CHECKPOINT_DIR", "/opt/ml/checkpoints")
     num_gpus = int(os.environ.get("SM_NUM_GPUS", "0"))
 
-    logger.info("=" * 60)
-    logger.info("SageMaker PLE Training Entry Point")
-    logger.info("=" * 60)
-    logger.info(f"GPUs available: {num_gpus}")
-    logger.info(f"Model dir: {model_dir}")
-    logger.info(f"Train dir: {train_dir}")
-    logger.info(f"Checkpoint dir: {checkpoint_dir}")
-
-    # -- Parse config from hyperparameters --
-    # Supports three formats:
-    #   1. JSON string (inline config via hyperparameters)
-    #   2. YAML file path (relative to source_dir, e.g. "configs/test/xxx.yaml")
-    #   3. Dict (already parsed)
-    config_str = hp.get("config", "{}")
-    if isinstance(config_str, dict):
-        config = config_str
-    elif isinstance(config_str, str) and (
-        config_str.endswith(".yaml") or config_str.endswith(".yml")
-    ):
-        import yaml
-        config_path = Path(config_str)
-        if not config_path.exists():
-            # SageMaker copies source_dir to /opt/ml/code/
-            config_path = Path("/opt/ml/code") / config_str
-        if not config_path.exists():
-            code_dir = os.environ.get("SM_MODULE_DIR", "/opt/ml/code")
-            config_path = Path(code_dir).parent / config_str
-        if config_path.exists():
-            with open(config_path) as f:
-                config = yaml.safe_load(f)
-            logger.info("Config loaded from YAML: %s", config_path)
-        else:
-            logger.error("Config YAML not found: %s", config_str)
-            config = {}
-    else:
-        config = json.loads(config_str) if config_str else {}
-
-    task_name = hp.get("task_name", config.get("task_name", "default"))
     batch_size = int(hp.get("batch_size", 2048))
     epochs = int(hp.get("epochs", 20))
     lr = float(hp.get("learning_rate", 1e-3))
@@ -1403,109 +1141,92 @@ def main() -> None:
     phase = str(hp.get("phase", "single"))
     use_amp = str(hp.get("amp", "false")).lower() in ("true", "1", "yes")
     grad_accum_steps = int(hp.get("gradient_accumulation_steps", 4))
-    freeze_towers = hp.get("freeze_towers", False)
+    task_name = hp.get("task_name", "default")
     pretrained_uri = hp.get("pretrained_model_uri")
 
-    # -- Ablation hyperparameters --
-    ablation_type = hp.get("ablation_type", "")
-    ablation_scenario = hp.get("ablation_scenario", "")
+    logger.info("=" * 60)
+    logger.info("SageMaker PLE Training (minimal, schema-driven)")
+    logger.info("=" * 60)
+    logger.info("GPUs: %d, Device: %s", num_gpus,
+                "cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("Train dir: %s", train_dir)
+    logger.info("Epochs: %d, Batch: %d, LR: %s, Phase: %s",
+                epochs, batch_size, lr, phase)
 
-    # Feature group ablation: JSON list of group names to remove
-    removed_feature_groups_raw = hp.get("removed_feature_groups", "[]")
-    if isinstance(removed_feature_groups_raw, str):
-        try:
-            removed_feature_groups = json.loads(removed_feature_groups_raw)
-        except (json.JSONDecodeError, ValueError):
-            removed_feature_groups = []
-    elif isinstance(removed_feature_groups_raw, list):
-        removed_feature_groups = removed_feature_groups_raw
-    else:
-        removed_feature_groups = []
-
-    # Expert ablation: JSON list of shared expert names
-    shared_experts_raw = hp.get("shared_experts", "")
-    if isinstance(shared_experts_raw, str) and shared_experts_raw:
-        try:
-            shared_experts_override = json.loads(shared_experts_raw)
-        except (json.JSONDecodeError, ValueError):
-            shared_experts_override = None
-    elif isinstance(shared_experts_raw, list):
-        shared_experts_override = shared_experts_raw
-    else:
-        shared_experts_override = None
-
-    # Parse active_tasks HP for task scaling ablation
-    active_tasks_raw = hp.get("active_tasks")
-    active_task_names = None
-    if active_tasks_raw:
-        active_task_names = json.loads(active_tasks_raw) if isinstance(active_tasks_raw, str) else active_tasks_raw
-        # Filter config tasks to only active ones
-        all_tasks = config.get("tasks", [])
-        config["tasks"] = [t for t in all_tasks if t["name"] in active_task_names]
-        logger.info("Task scaling ablation: %d/%d tasks active: %s",
-                    len(config["tasks"]), len(all_tasks), active_task_names)
-
-        # Filter task_groups to only reference active tasks
-        for tg in config.get("task_groups", []):
-            tg["tasks"] = [t for t in tg["tasks"] if t in active_task_names]
-        config["task_groups"] = [tg for tg in config.get("task_groups", []) if tg.get("tasks")]
-        logger.info("Task groups after filtering: %d", len(config.get("task_groups", [])))
-
-        # Filter task_relationships to only reference active tasks
-        config["task_relationships"] = [
-            tr for tr in config.get("task_relationships", [])
-            if tr["source"] in active_task_names and tr["target"] in active_task_names
-        ]
-        logger.info("Task relationships after filtering: %d", len(config.get("task_relationships", [])))
-
-    # Hyperparameter ablation: num_layers and temperature
-    hp_num_layers = hp.get("num_layers")
-    hp_temperature = hp.get("temperature")
-
-    # Inject max_rows HP into config for load_data()
-    max_rows_hp = hp.get("max_rows", 0)
-    if max_rows_hp:
-        config["max_rows"] = int(max_rows_hp)
-
-    logger.info(f"Task: {task_name}")
-    logger.info(f"Phase: {phase}")
-    logger.info(f"Epochs: {epochs}, Batch size: {batch_size}, LR: {lr}")
-    if max_rows_hp:
-        logger.info(f"Max rows (subsample): {max_rows_hp}")
-    if ablation_type:
-        logger.info(f"Ablation type: {ablation_type}, scenario: {ablation_scenario}")
-    if removed_feature_groups:
-        logger.info(f"Removed feature groups: {removed_feature_groups}")
-    if shared_experts_override is not None:
-        logger.info(f"Shared experts override: {shared_experts_override}")
-    if hp_num_layers is not None:
-        logger.info(f"PLE num_layers override: {hp_num_layers}")
-    if hp_temperature is not None:
-        logger.info(f"Distillation temperature override: {hp_temperature}")
-
-    # -- Seed --
+    # ---- Seed ----
     torch.manual_seed(seed)
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
-    # -- Device --
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Device: {device}")
 
-    # -- Load data --
-    use_gpu_loading = hp.get("use_gpu_loading", False) and num_gpus > 0
-    train_data, tasks, _label_stats = load_data(
-        train_dir, config,
-        use_gpu_loading=use_gpu_loading,
-        batch_size=batch_size,
-        shuffle=True,
-        removed_feature_groups=removed_feature_groups or None,
+    # ---- 2. Load training-ready data ----
+    data = load_ready_data(train_dir)
+    features = data["features"]
+    labels = data["labels"]
+    sequences = data["sequences"]
+    seq_lengths = data["seq_lengths"]
+    feature_schema = data["feature_schema"]
+    label_schema = data["label_schema"]
+    split_indices = data["split_indices"]
+
+    # Merge YAML config into label_schema if present (backward compat)
+    config_str = hp.get("config", "{}")
+    if isinstance(config_str, dict):
+        config = config_str
+    elif isinstance(config_str, str) and (config_str.endswith(".yaml") or config_str.endswith(".yml")):
+        import yaml
+        config_path = Path(config_str)
+        if not config_path.exists():
+            config_path = Path("/opt/ml/code") / config_str
+        if config_path.exists():
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+            logger.info("Config loaded from YAML: %s", config_path)
+        else:
+            config = {}
+    else:
+        config = json.loads(config_str) if config_str else {}
+
+    # If label_schema has no tasks, fall back to YAML config tasks
+    if not label_schema.get("tasks") and config.get("tasks"):
+        label_schema["tasks"] = config["tasks"]
+        label_schema["task_relationships"] = config.get("task_relationships", [])
+        label_schema["task_groups"] = config.get("task_groups", [])
+        label_schema["task_group_map"] = config.get("task_group_map", {})
+        label_schema["model"] = config.get("model", {})
+        label_schema["logit_transfer_strength"] = config.get("logit_transfer_strength", 0.5)
+        logger.info("Using tasks from YAML config: %d tasks", len(label_schema["tasks"]))
+
+    # If label_schema has no model config, merge from YAML
+    if not label_schema.get("model") and config.get("model"):
+        label_schema["model"] = config["model"]
+
+    # ---- 3. Apply ablation filters ----
+    features, labels, feature_schema, label_schema = apply_ablation(
+        features, labels, feature_schema, label_schema, hp,
     )
 
-    # --- Label sanity check ---
+    # If labels is None, try to extract label columns from features DataFrame
+    if labels is None:
+        import pandas as pd
+        tasks = label_schema.get("tasks", [])
+        label_cols_present = [t["label_col"] for t in tasks if t["label_col"] in features.columns]
+        if label_cols_present:
+            labels = features[label_cols_present].copy()
+            features = features.drop(columns=label_cols_present, errors="ignore")
+            logger.info("Extracted %d label columns from features DataFrame", len(label_cols_present))
+
+    # ---- 4. Build DataLoaders ----
+    train_loader, val_loader, tasks, task_type_map, label_stats = build_dataloaders(
+        features, labels, sequences, seq_lengths,
+        feature_schema, label_schema, split_indices, hp,
+    )
+    task_names = [t["name"] for t in tasks]
+
+    # ---- Label sanity check ----
     try:
-        _peek = next(iter(train_data))
+        _peek = next(iter(train_loader))
         if _peek is not None:
             _targets = _peek.get("targets", {}) if isinstance(_peek, dict) else {}
             for _tn, _tv in _targets.items():
@@ -1518,88 +1239,11 @@ def main() -> None:
     except Exception as _e:
         logger.warning("Label check skipped: %s", _e)
 
-    # load_data always returns a DataLoader (PLEDataset path)
-    train_loader = train_data
-    logger.info(f"Train dataloader: {len(train_loader.dataset)} samples")
-
-    val_loader = None
-    if os.path.isdir(val_dir):
-        try:
-            val_loader, _, _ = load_data(
-                val_dir, config,
-                use_gpu_loading=use_gpu_loading,
-                batch_size=batch_size,
-                shuffle=False,
-                removed_feature_groups=removed_feature_groups or None,
-            )
-        except FileNotFoundError:
-            logger.warning("No validation data found, using train data split")
-
-    if val_loader is None:
-        # Fall back to splitting the training dataset
-        n = len(train_loader.dataset)
-        val_size = max(1, int(n * 0.1))
-        train_size = n - val_size
-        gen = torch.Generator().manual_seed(config.get("training", {}).get("seed", 42))
-        train_subset, val_subset = torch.utils.data.random_split(
-            train_loader.dataset, [train_size, val_size], generator=gen,
-        )
-        train_loader = DataLoader(
-            train_subset, batch_size=batch_size, shuffle=True,
-            collate_fn=train_loader.collate_fn,
-            num_workers=0,
-            pin_memory=not use_gpu_loading,
-            drop_last=True,
-        )
-        val_loader = DataLoader(
-            val_subset, batch_size=batch_size, shuffle=False,
-            collate_fn=train_loader.collate_fn,
-            num_workers=0,
-            pin_memory=not use_gpu_loading,
-        )
-
-    # -- Build model --
-    from core.model.ple.model import PLEModel
-    from core.model.ple.config import PLEConfig
-
-    model_config = config.get("model", {})
-
-    # Structure ablation: PLE toggle
-    use_ple_raw = hp.get("use_ple")
-    if use_ple_raw is not None:
-        use_ple = json.loads(use_ple_raw) if isinstance(use_ple_raw, str) else use_ple_raw
-        if not use_ple:
-            # Disable CGC gating — use single shared expert (shared-bottom baseline)
-            model_config["ple"] = model_config.get("ple", {})
-            model_config["ple"]["num_layers"] = 1
-            model_config["ple"]["num_shared_experts"] = 1
-            model_config.pop("expert_basket", None)  # Remove expert basket → MLP only
-            logger.info("Structure ablation: PLE disabled (shared-bottom mode)")
-
-    # Structure ablation: adaTT toggle
-    use_adatt_raw = hp.get("use_adatt")
-    if use_adatt_raw is not None:
-        use_adatt = json.loads(use_adatt_raw) if isinstance(use_adatt_raw, str) else use_adatt_raw
-        if not use_adatt:
-            model_config["adatt"] = {"enabled": False}
-            logger.info("Structure ablation: adaTT disabled")
-
-    tasks = config.get("tasks", [])
-    task_names = [t["name"] for t in tasks]
-
-    # Build task_type_map for proper metric computation
-    task_type_map: Dict[str, str] = {t["name"]: t.get("type", "binary") for t in tasks}
-
-    # Determine input dimension dynamically from actual data (after ablation
-    # column removal), falling back to config only when data introspection
-    # is unavailable.  This ensures that when feature groups are removed,
-    # the model input_dim matches the actual feature count.
-    features_config = config.get("features", {})
-
-    # Try to infer input_dim from the actual training data (DataLoader peek)
+    # ---- 5. Build model ----
+    # Auto-detect input_dim from actual data
     _auto_input_dim = None
     try:
-        _sample_batch = next(iter(train_data))
+        _sample_batch = next(iter(train_loader))
         if isinstance(_sample_batch, dict) and "features" in _sample_batch:
             _auto_input_dim = _sample_batch["features"].shape[-1]
     except StopIteration:
@@ -1607,204 +1251,29 @@ def main() -> None:
 
     if _auto_input_dim is not None:
         input_dim = _auto_input_dim
-        logger.info("Model input_dim (auto-detected from data): %d", input_dim)
-    elif features_config.get("input_dim") and not removed_feature_groups:
-        # Only trust the YAML input_dim if no feature groups were removed
-        input_dim = int(features_config["input_dim"])
-        logger.info("Model input_dim (from config): %d", input_dim)
+        logger.info("Model input_dim (auto-detected): %d", input_dim)
     else:
-        input_dim = int(features_config.get("input_dim", model_config.get("expert_hidden_dim", 128)))
-        logger.warning(
-            "Model input_dim (fallback): %d — may be inaccurate if feature "
-            "groups were removed", input_dim,
-        )
+        input_dim = len(feature_schema.get("columns", []))
+        logger.info("Model input_dim (from schema): %d", input_dim)
 
-    # Build PLEConfig with proper expert dimensions
-    ple_cfg = model_config.get("ple", {})
-    expert_cfg = model_config.get("expert_config", {})
-    tower_cfg = model_config.get("task_tower", {})
+    model, ple_config = build_model(feature_schema, label_schema, hp, input_dim, device)
 
-    # Expert hidden dims — must be compatible with input_dim
-    mlp_cfg = expert_cfg.get("mlp", {})
-    expert_hidden = mlp_cfg.get("hidden_dims", [input_dim * 2, input_dim])
-    expert_output = ple_cfg.get("extraction_dim", 32)
-
-    from core.model.ple.config import ExpertConfig, ExpertBasketConfig, LossWeightingConfig
-
-    shared_expert = ExpertConfig(
-        hidden_dims=expert_hidden,
-        output_dim=expert_output,
-        dropout=model_config.get("dropout", 0.1),
-    )
-    task_expert = ExpertConfig(
-        hidden_dims=expert_hidden,
-        output_dim=expert_output,
-        dropout=model_config.get("dropout", 0.1),
-    )
-
-    # Apply ablation overrides for num_layers
-    num_extraction_layers = ple_cfg.get("num_layers", 2)
-    if hp_num_layers is not None:
-        num_extraction_layers = int(hp_num_layers)
-        logger.info(
-            "Ablation: overriding num_extraction_layers %d -> %d",
-            ple_cfg.get("num_layers", 2), num_extraction_layers,
-        )
-
-    # Apply ablation overrides for shared experts
-    num_shared_experts = ple_cfg.get("num_shared_experts", 2)
-    expert_basket = None
-    if shared_experts_override is not None:
-        num_shared_experts = len(shared_experts_override)
-        expert_basket_cfg = model_config.get("expert_basket", {})
-        expert_basket = ExpertBasketConfig(
-            shared_experts=shared_experts_override,
-            task_experts=expert_basket_cfg.get("task", ["mlp"]),
-            expert_configs={
-                name: expert_cfg.get(name, {})
-                for name in shared_experts_override
-                if name in expert_cfg
-            },
-        )
-        logger.info(
-            "Ablation: overriding shared experts -> %s (%d experts)",
-            shared_experts_override, num_shared_experts,
-        )
-    else:
-        # Build expert basket from config if present
-        eb_cfg = model_config.get("expert_basket", {})
-        if eb_cfg.get("shared"):
-            expert_basket = ExpertBasketConfig(
-                shared_experts=eb_cfg["shared"],
-                task_experts=eb_cfg.get("task", ["mlp"]),
-                expert_configs={
-                    name: expert_cfg.get(name, {})
-                    for name in eb_cfg["shared"]
-                    if name in expert_cfg
-                },
-            )
-
-    # -- Loss weighting from YAML config ---
-    lw_cfg = model_config.get("loss_weighting", {})
-    loss_weighting = LossWeightingConfig(
-        strategy=lw_cfg.get("strategy", "fixed"),
-        gradnorm_alpha=lw_cfg.get("gradnorm_alpha", 1.5),
-        gradnorm_interval=lw_cfg.get("gradnorm_interval", 1),
-        dwa_temperature=lw_cfg.get("dwa_temperature", 2.0),
-        dwa_window_size=lw_cfg.get("dwa_window_size", 5),
-    )
-    logger.info("Loss weighting strategy: %s", loss_weighting.strategy)
-
-    ple_config = PLEConfig(
-        input_dim=input_dim,
-        task_names=task_names,
-        num_shared_experts=num_shared_experts,
-        num_extraction_layers=num_extraction_layers,
-        num_task_experts_per_task=ple_cfg.get("num_task_experts", 1),
-        shared_expert=shared_expert,
-        task_expert=task_expert,
-        dropout=model_config.get("dropout", 0.1),
-        expert_basket=expert_basket,
-        loss_weighting=loss_weighting,
-    )
-
-    # Set task overrides (type + output_dim + loss)
-    for t in tasks:
-        task_override = {
-            "task_type": t.get("type", "binary"),
-            "output_dim": t.get("num_classes", 1),
-        }
-        # Pass per-task loss type from YAML tasks config
-        if "loss" in t:
-            task_override["loss"] = t["loss"]
-        if "loss_params" in t:
-            task_override["loss_params"] = t["loss_params"]
-        ple_config.task_overrides[t["name"]] = task_override
-
-    # -- Logit transfers from task_relationships config ---
-    logit_transfers_raw = config.get("task_relationships", [])
-    if logit_transfers_raw:
-        from core.model.ple.config import LogitTransferDef
-        ple_config.logit_transfers = [
-            LogitTransferDef(
-                source=lt["source"],
-                target=lt["target"],
-                enabled=lt.get("enabled", True),
-                transfer_method=lt.get("transfer_method", "residual"),
-            )
-            for lt in logit_transfers_raw
-        ]
-        ple_config.logit_transfer_strength = float(
-            config.get("logit_transfer_strength", 0.5)
-        )
-        logger.info(
-            "Logit transfers: %d relationships, strength=%.2f",
-            len(ple_config.logit_transfers),
-            ple_config.logit_transfer_strength,
-        )
-
-    # -- Multidisciplinary feature routing ---
-    md_routing = model_config.get("multidisciplinary_routing", {})
-    if md_routing:
-        ple_config.multidisciplinary_routing = {
-            str(k): list(v) for k, v in md_routing.items()
-        }
-        logger.info(
-            "Multidisciplinary routing: %d groups configured",
-            len(ple_config.multidisciplinary_routing),
-        )
-
-    # Task tower dims
-    default_tower_dims = tower_cfg.get("default_dims", [expert_output, expert_output // 2])
-    ple_config.task_tower.default_dims = default_tower_dims
-
-    logger.info(
-        "PLEConfig: input_dim=%d, expert_hidden=%s, expert_output=%d, "
-        "shared=%d, task_experts=%d, layers=%d, tower=%s",
-        input_dim, expert_hidden, expert_output,
-        ple_config.num_shared_experts,
-        ple_config.num_task_experts_per_task,
-        ple_config.num_extraction_layers,
-        default_tower_dims,
-    )
-
-    model = PLEModel(ple_config).to(device)
-    logger.info(model.summary())
-
-    # -- Apply phase configuration --
-    # Load pretrained weights for phase 2. Freeze/unfreeze is handled by
-    # PLETrainer internally, but apply_phase_config loads pretrained weights.
+    # ---- Apply phase config (load pretrained for phase 2) ----
     if phase == "2" and pretrained_uri:
         apply_phase_config(model, phase, pretrained_uri)
 
-    # -- Checkpoint manager --
+    # ---- 6. Train with PLETrainer ----
     from core.training.checkpoint import CheckpointManager
 
-    ckpt_mgr = CheckpointManager(
-        local_dir=checkpoint_dir,
-        max_keep=3,
-    )
+    ckpt_mgr = CheckpointManager(local_dir=checkpoint_dir, max_keep=3)
 
-    # ================================================================
-    # PLETrainer — production-quality training loop with AMP,
-    # GradNorm, warmup scheduler, gradient accumulation, adaTT, etc.
-    # ================================================================
-    logger.info("Using PLETrainer (production training loop)")
-
-    # -- Map SageMaker HP "phase" to PLETrainer phase values --
-    # HP values: "single" | "1" | "2" | "full"
-    # PLETrainer expects: "full" | "phase1" | "phase2"
     _phase_map = {"single": "full", "1": "phase1", "2": "phase2", "full": "full"}
     trainer_phase = _phase_map.get(phase, "full")
 
-    # -- Build TrainingConfig from SageMaker hyperparameters --
+    # Build TrainingConfig
     training_cfg_dict: Dict[str, Any] = {
         "batch_size": batch_size,
-        "optimizer": {
-            "name": "adamw",
-            "learning_rate": lr,
-            "weight_decay": 0.01,
-        },
+        "optimizer": {"name": "adamw", "learning_rate": lr, "weight_decay": 0.01},
         "scheduler": {
             "name": "cosine",
             "warmup_epochs": 3,
@@ -1814,35 +1283,19 @@ def main() -> None:
             "phase2_cosine_t0": max(6, epochs // 5),
         },
         "amp": {"enabled": use_amp},
-        "gradient": {
-            "clip_norm": 5.0,
-            "accumulation_steps": grad_accum_steps,
-        },
-        "early_stopping": {
-            "enabled": True,
-            "patience": patience,
-        },
-        "checkpoint": {
-            "dir": checkpoint_dir,
-            "save_every_n_epochs": 1,
-            "max_to_keep": 3,
-        },
-        "phase1": {
-            "epochs": epochs if trainer_phase in ("phase1", "full") else 0,
-        },
-        "phase2": {
-            "epochs": epochs if trainer_phase in ("phase2", "full") else 0,
-        },
+        "gradient": {"clip_norm": 5.0, "accumulation_steps": grad_accum_steps},
+        "early_stopping": {"enabled": True, "patience": patience},
+        "checkpoint": {"dir": checkpoint_dir, "save_every_n_epochs": 1, "max_to_keep": 3},
+        "phase1": {"epochs": epochs if trainer_phase in ("phase1", "full") else 0},
+        "phase2": {"epochs": epochs if trainer_phase in ("phase2", "full") else 0},
         "experiment_name": task_name,
     }
 
-    # If YAML config has a "training" block, merge it (YAML wins for
-    # keys not overridden by SageMaker HPs)
+    # Merge YAML training block if present
     yaml_training = config.get("training", {})
     if yaml_training:
         import copy
         merged = copy.deepcopy(yaml_training)
-        # SageMaker HPs override YAML for these critical keys
         merged.setdefault("optimizer", {}).update(training_cfg_dict["optimizer"])
         merged.setdefault("gradient", {}).update(training_cfg_dict["gradient"])
         merged.setdefault("amp", {}).update(training_cfg_dict["amp"])
@@ -1850,7 +1303,6 @@ def main() -> None:
         merged.setdefault("checkpoint", {}).update(training_cfg_dict["checkpoint"])
         merged["batch_size"] = batch_size
         merged["experiment_name"] = task_name
-        # Phase epoch counts from SageMaker HP override
         merged.setdefault("phase1", {})["epochs"] = training_cfg_dict["phase1"]["epochs"]
         merged.setdefault("phase2", {})["epochs"] = training_cfg_dict["phase2"]["epochs"]
         training_config = TrainingConfig.from_dict(merged)
@@ -1858,63 +1310,40 @@ def main() -> None:
         training_config = TrainingConfig.from_dict(training_cfg_dict)
 
     logger.info(
-        "TrainingConfig: lr=%.5f, weight_decay=%.4f, clip_norm=%.1f, "
-        "AMP=%s, warmup=%d, phase1_epochs=%d, phase2_epochs=%d",
+        "TrainingConfig: lr=%.5f, AMP=%s, phase1_epochs=%d, phase2_epochs=%d",
         training_config.optimizer.learning_rate,
-        training_config.optimizer.weight_decay,
-        training_config.gradient.clip_norm,
         training_config.amp.enabled,
-        training_config.scheduler.warmup_epochs,
         training_config.phase1.epochs,
         training_config.phase2.epochs,
     )
 
-    # -- Create PLETrainer --
-    # PLETrainer handles optimizer, scheduler, AMP, freeze/unfreeze internally.
-    # Ensure all params are unfrozen so PLETrainer manages freeze/unfreeze.
+    # Ensure all params unfrozen so PLETrainer manages freeze/unfreeze
     for param in model.parameters():
         param.requires_grad = True
 
-    trainer = PLETrainer(
-        model=model,
-        config=training_config,
-        device=device,
-    )
+    trainer = PLETrainer(model=model, config=training_config, device=device)
 
-    # Resume from checkpoint if available (Spot restart)
+    # Resume from checkpoint (Spot restart)
     resume_state = ckpt_mgr.load_latest(
         model, trainer.optimizer, trainer.scheduler, map_location=device,
     )
     if resume_state:
         trainer.current_epoch = resume_state.get("epoch", 0)
         trainer.global_step = resume_state.get("global_step", 0)
-        logger.info(f"Resuming from epoch {trainer.current_epoch}")
+        logger.info("Resuming from epoch %d", trainer.current_epoch)
 
-    # -- Run training --
-    trainer_results = trainer.train(
-        train_loader, val_loader, phase=trainer_phase,
-    )
-
+    trainer_results = trainer.train(train_loader, val_loader, phase=trainer_phase)
     logger.info("PLETrainer finished: %s", trainer_results)
 
-    # -- Extract final metrics --
-    # PLETrainer returns {"best_val_loss": ..., "avg_auc": ..., ...}
-    # We need to run a final validation pass to get the full metric dict
-    # compatible with the eval report format.
+    # ---- 7. Final validation + save ----
     final_metrics = validate(model, val_loader, device, task_names, task_type_map)
     report_metrics("final_val", final_metrics, epochs)
 
-    # Track last epoch for the eval report
-    epoch = trainer.current_epoch - 1
-
-    # -- Save model for SageMaker packaging --
+    # Save model
     os.makedirs(model_dir, exist_ok=True)
-
-    # Save as both state_dict and full checkpoint
     model_path = os.path.join(model_dir, "model.pth")
     save_dict = {
         "model_state_dict": model.state_dict(),
-        "config": config,
         "ple_config": {
             "input_dim": ple_config.input_dim,
             "task_names": ple_config.task_names,
@@ -1925,312 +1354,36 @@ def main() -> None:
         "task_name": task_name,
         "phase": phase,
     }
-    # Persist ablation metadata so downstream stages (e.g. Phase 4
-    # distillation) can retrieve the settings that produced this model.
+    ablation_type = hp.get("ablation_type", "")
     if ablation_type:
         save_dict["ablation"] = {
             "ablation_type": ablation_type,
-            "ablation_scenario": ablation_scenario,
-            "removed_feature_groups": removed_feature_groups,
-            "shared_experts": shared_experts_override,
-            "num_layers": num_extraction_layers,
-            "temperature": float(hp_temperature) if hp_temperature is not None else None,
+            "ablation_scenario": hp.get("ablation_scenario", ""),
+            "removed_feature_groups": json.loads(hp.get("removed_feature_groups", "[]"))
+                if isinstance(hp.get("removed_feature_groups", "[]"), str) else hp.get("removed_feature_groups", []),
+            "shared_experts": hp.get("shared_experts"),
+            "num_layers": ple_config.num_extraction_layers,
+            "temperature": float(hp["temperature"]) if hp.get("temperature") is not None else None,
         }
     torch.save(save_dict, model_path)
-    logger.info(f"Model saved to {model_path}")
+    logger.info("Model saved to %s", model_path)
 
-    # Save config separately for easy inspection
-    config_path = os.path.join(model_dir, "config.json")
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
+    # Save config
+    config_path_out = os.path.join(model_dir, "config.json")
+    with open(config_path_out, "w") as f:
+        json.dump({"feature_schema": feature_schema, "label_schema": label_schema}, f, indent=2)
 
-    # Save evaluation report — filename must match what orchestrator/report
-    # generator expect: "eval_metrics.json" (NOT "evaluation_report.json")
-    report_path = os.path.join(output_dir, "eval_metrics.json")
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Compute aggregate_score (avg AUC across binary tasks) for best-config selection
-    auc_keys = [k for k in final_metrics if k.startswith("auc_")]
-    aggregate_score = (
-        sum(final_metrics[k] for k in auc_keys) / len(auc_keys)
-        if auc_keys else final_metrics.get("auc", 0.0)
+    # Save eval report
+    save_eval_report(
+        output_dir, model, trainer, tasks, task_type_map,
+        final_metrics, label_stats, hp, label_schema, feature_schema,
+        start_time, epochs, ple_config,
     )
-
-    eval_report: Dict[str, Any] = {
-        "task_name": task_name,
-        "phase": phase,
-        "final_metrics": final_metrics,
-        "aggregate_score": aggregate_score,
-        "epochs_trained": epoch + 1,
-        "total_time_seconds": time.time() - start_time,
-    }
-
-    # Detailed training configuration for full reproducibility
-    eval_report["training_config"] = {
-        "batch_size": batch_size,
-        "learning_rate": lr,
-        "epochs_configured": epochs,
-        "seed": config.get("training", {}).get("seed", 42),
-        "max_rows": config.get("max_rows", 0),
-        "weight_decay": config.get("training", {}).get("weight_decay", 0.01),
-        "gradient_clip_norm": config.get("training", {}).get("gradient_clip_norm", 5.0),
-        "amp_enabled": config.get("training", {}).get("amp", {}).get("enabled", False),
-        "warmup_epochs": config.get("training", {}).get("scheduler", {}).get("warmup_epochs", 3),
-    }
-
-    # Model architecture details
-    eval_report["architecture"] = {
-        "input_dim": model.config.input_dim if hasattr(model, "config") else None,
-        "num_tasks": len(tasks),
-        "active_tasks": [t["name"] for t in tasks],
-        "num_shared_experts": model.config.num_shared_experts if hasattr(model, "config") else None,
-        "shared_expert_names": list(model.config.expert_basket.shared_experts) if hasattr(model, "config") and hasattr(model.config, "expert_basket") and model.config.expert_basket else None,
-        "num_layers": model.config.num_extraction_layers if hasattr(model, "config") else None,
-        "extraction_dim": getattr(model.config, "extraction_dim", getattr(model.config, "expert_output_dim", None)) if hasattr(model, "config") else None,
-        "loss_weighting": model.config.loss_weighting.strategy if hasattr(model, "config") and hasattr(model.config, "loss_weighting") else None,
-        "adatt_enabled": model.config.adatt.enabled if hasattr(model, "config") and hasattr(model.config, "adatt") else None,
-        "total_params": sum(p.numel() for p in model.parameters()),
-        "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
-    }
-
-    # Normalization details
-    eval_report["normalization"] = {
-        "feature_scaler": "StandardScaler (continuous only, binary skipped)",
-        "regression_label_transform": "clip(99.5%) + log1p",
-        "n_continuous_features": len(_module_continuous_cols) if _module_continuous_cols else None,
-        "n_binary_features": None,  # tracked per load_data call
-    }
-    # HIGH-3: Scaler parameter samples in eval report
-    if _module_continuous_cols and _module_scaler is not None:
-        eval_report["normalization"]["scaler_mean_sample"] = dict(
-            zip(_module_continuous_cols[:10], _module_scaler.mean_[:10].tolist())
-        )
-        eval_report["normalization"]["scaler_std_sample"] = dict(
-            zip(_module_continuous_cols[:10], _module_scaler.scale_[:10].tolist())
-        )
-
-    # HIGH-4: Record train/val split details
-    eval_report["data_split"] = {
-        "train_size": train_size if 'train_size' in dir() else len(train_loader.dataset),
-        "val_size": val_size if 'val_size' in dir() else len(val_loader.dataset),
-        "split_ratio": round(
-            (train_size if 'train_size' in dir() else len(train_loader.dataset))
-            / ((train_size if 'train_size' in dir() else len(train_loader.dataset))
-               + (val_size if 'val_size' in dir() else len(val_loader.dataset))),
-            3,
-        ),
-        "seed": config.get("training", {}).get("seed", 42),
-    }
-
-    # Label statistics (pre-computed in load_data before df goes out of scope)
-    eval_report["label_stats"] = _label_stats if _label_stats else {}
-
-    # Pos weights (if computed)
-    if hasattr(model, '_pos_weights') and model._pos_weights:
-        eval_report["pos_weights"] = {
-            k: round(v.item(), 2) for k, v in model._pos_weights.items()
-        }
-
-    # Epoch-level training history (from PLETrainer)
-    if hasattr(trainer, 'epoch_history') and trainer.epoch_history:
-        eval_report["epoch_history"] = trainer.epoch_history
-
-    # MEDIUM-9: Early stopping reason (persisted from trainer)
-    if hasattr(trainer, 'early_stop_info') and trainer.early_stop_info:
-        eval_report["early_stopping"] = trainer.early_stop_info
-
-    # MEDIUM-10: Logit transfer edges in architecture
-    if hasattr(model, 'config') and hasattr(model.config, 'logit_transfers') and model.config.logit_transfers:
-        eval_report["architecture"]["logit_transfers"] = [
-            {"source": lt.source, "target": lt.target, "method": lt.transfer_method}
-            for lt in model.config.logit_transfers
-        ]
-    else:
-        eval_report["architecture"]["logit_transfers"] = []
-
-    # MEDIUM-11: Per-task loss function config
-    eval_report["task_configs"] = {
-        t["name"]: {
-            "type": t.get("type", "binary"),
-            "loss": t.get("loss", "default"),
-            "loss_weight": t.get("loss_weight", 1.0),
-            "num_classes": t.get("num_classes", 1),
-        }
-        for t in tasks
-    }
-
-    # MEDIUM-12: Label derivation method registry
-    eval_report["label_derivation"] = {
-        "has_nba": "direct_column",
-        "churn_signal": "direct_column",
-        "product_stability": "direct_column",
-        "label_nba_primary": "nba_label[0] (list_first, default=-1)",
-        "label_tenure_stage": "bin(tenure_months, [unknown->-1, 0-12->0, 13-36->1, 37-72->2, 73-120->3, 121+->4])",
-        "label_segment": "map(segment, {01-TOP->0, 02-PARTICULARES->1, 03-UNIVERSITARIO->2, other->3})",
-        "label_income_tier": "bin(income, [<30k->0, 30-80k->1, 80-200k->2, 200k+->3])",
-        "label_spend_level": "bin(synth_monthly_spend, [<1500->0, 1500-3000->1, 3000-5000->2, 5000+->3])",
-        "label_cross_sell_count": "len(nba_label) or total_acquisitions",
-        "label_engagement_score": "composite(is_active*0.3 + synth_frequency*0.4 + num_products*0.3)",
-        "label_next_mcc": "txn_mcc_seq[-1] (capped at 49, default=-1)",
-        "label_mcc_diversity_trend": "(unique_second_half / unique_first_half) - 1.0",
-        "label_top_mcc_shift": "int(mode(first_half) != mode(second_half))",
-        "label_acquire_deposits": "any(nba_label & deposit_indices)",
-        "label_acquire_investments": "any(nba_label & investment_indices)",
-        "label_acquire_accounts": "any(nba_label & account_indices)",
-        "label_acquire_lending": "any(nba_label & lending_indices)",
-        "label_acquire_payments": "any(nba_label & payment_indices)",
-    }
-
-    # MEDIUM-13: Feature column names saved
-    if '_continuous_cols' in dir() and _continuous_cols:
-        eval_report["normalization"]["continuous_columns"] = _continuous_cols[:50]
-    if '_binary_cols' in dir() and _binary_cols:
-        eval_report["normalization"]["binary_columns"] = _binary_cols[:50]
-
-    # MEDIUM-14: Generator summary persisted
-    # Note: df is out of scope here (it was local to load_data).
-    # Use feature_names from the model config or _label_stats keys instead.
-    _gen_cols_for_report = [c for c in (getattr(model.config, '_feature_names', None) or [])
-                            if any(c.startswith(p) for p in
-                                   ("tda_", "graph_", "hmm_", "mamba_", "gmm_", "model_derived_"))]
-    if _gen_cols_for_report:
-        _gen_summary: Dict[str, int] = {}
-        for c in _gen_cols_for_report:
-            prefix = c
-            for p in ("tda_global", "tda_local", "graph", "hmm", "mamba", "gmm", "model_derived"):
-                if c.startswith(p):
-                    prefix = p
-                    break
-            _gen_summary[prefix] = _gen_summary.get(prefix, 0) + 1
-        eval_report["generators"] = _gen_summary
-
-    # Final adaTT state
-    if hasattr(model, 'adatt') and model.adatt is not None:
-        try:
-            affinity = model.adatt.get_transfer_matrix()
-            if affinity is not None:
-                task_names_list = list(model.task_names)
-                n = len(task_names_list)
-                eval_report["adatt_final"] = {
-                    "affinity_matrix": [[round(affinity[i, j].item(), 4) for j in range(n)] for i in range(n)],
-                    "task_names": task_names_list,
-                    "config": {
-                        "transfer_lambda": model.config.adatt.transfer_lambda,
-                        "temperature": model.config.adatt.temperature,
-                        "warmup_epochs": model.config.adatt.warmup_epochs,
-                        "grad_interval": model.config.adatt.grad_interval,
-                    },
-                }
-        except Exception:
-            pass
-
-    # Final uncertainty weights (log_vars)
-    if hasattr(model, 'loss_weighting') and model.loss_weighting is not None:
-        try:
-            weights = model.get_loss_weights()
-            if weights:
-                eval_report["final_loss_weights"] = {k: round(v, 4) for k, v in weights.items()}
-        except Exception:
-            pass
-
-    if ablation_type:
-        eval_report["ablation"] = {
-            "ablation_type": ablation_type,
-            "ablation_scenario": ablation_scenario,
-            "removed_feature_groups": removed_feature_groups,
-            "shared_experts": shared_experts_override,
-            "num_layers": num_extraction_layers,
-            "temperature": float(hp_temperature) if hp_temperature is not None else None,
-            "active_tasks": hp.get("active_tasks", None),
-            "use_ple": hp.get("use_ple", None),
-            "use_adatt": hp.get("use_adatt", None),
-        }
-    # Per-task metric breakdown by task type
-    # Use "per_task" key (matches what report generator expects)
-    eval_report["per_task"] = {}
-    for t in tasks:
-        tname = t["name"]
-        ttype = t.get("type", "binary")
-        task_metrics = {
-            k: v for k, v in final_metrics.items()
-            if k.endswith(f"_{tname}")
-        }
-        eval_report["per_task"][tname] = {
-            "type": ttype,
-            "metrics": task_metrics,
-        }
-    # Backward compat alias
-    eval_report["per_task_metrics"] = eval_report["per_task"]
-
-    # HIGH-6: Stage 8.5 Model Analysis (optional, config-gated)
-    analysis_cfg = config.get("analysis", {})
-    if analysis_cfg.get("enabled", False):
-        analysis_results = {}
-
-        # IG attribution (quick, limited batches)
-        try:
-            from core.evaluation.integrated_gradients import IntegratedGradients
-            ig = IntegratedGradients(model, n_steps=analysis_cfg.get("ig_steps", 20))
-            for t in tasks[:3]:  # Top 3 tasks only for speed
-                importance = ig.feature_importance(val_loader, t["name"], max_batches=5)
-                analysis_results[f"ig_{t['name']}"] = dict(list(importance.items())[:20])
-        except Exception as e:
-            logger.warning("IG analysis failed: %s", e)
-
-        # Expert redundancy CCA
-        try:
-            from core.evaluation.expert_redundancy import ExpertRedundancyAnalyzer
-            cca = ExpertRedundancyAnalyzer(model)
-            redundancy = cca.analyze(val_loader, max_batches=5)
-            analysis_results["expert_redundancy"] = redundancy.to_dict()
-        except Exception as e:
-            logger.warning("CCA analysis failed: %s", e)
-
-        # Gate weights
-        try:
-            from core.evaluation.gate_analyzer import GateAnalyzer
-            gate = GateAnalyzer(model)
-            gate_result = gate.analyze(val_loader, max_batches=5)
-            analysis_results["gate_weights"] = {
-                "task_expert_weights": gate_result.task_expert_weights,
-                "expert_utilization": gate_result.expert_utilization,
-                "dominant_expert_per_task": gate_result.dominant_expert_per_task,
-            }
-        except Exception as e:
-            logger.warning("Gate analysis failed: %s", e)
-
-        if analysis_results:
-            eval_report["analysis"] = analysis_results
-            logger.info("Stage 8.5 analysis complete: %d results", len(analysis_results))
-
-    with open(report_path, "w") as f:
-        json.dump(eval_report, f, indent=2)
-
-    # Also upload eval_metrics.json directly to S3 output path so orchestrator
-    # and report generator can access it as a bare file (SageMaker packs
-    # SM_OUTPUT_DATA_DIR into output.tar.gz which is NOT directly readable).
-    _s3_output = hp.get("_s3_output", "")
-    if _s3_output:
-        try:
-            import boto3
-            s3_client = boto3.client("s3")
-            parts = _s3_output.replace("s3://", "").split("/", 1)
-            bucket = parts[0]
-            s3_key = (parts[1] if len(parts) > 1 else "").rstrip("/") + "/output/eval_metrics.json"
-            s3_client.put_object(
-                Bucket=bucket,
-                Key=s3_key,
-                Body=json.dumps(eval_report, indent=2),
-                ContentType="application/json",
-            )
-            logger.info(f"Uploaded eval_metrics.json to s3://{bucket}/{s3_key}")
-        except Exception as e:
-            logger.warning(f"Failed to upload eval_metrics.json to S3: {e}")
 
     total_time = time.time() - start_time
     logger.info("=" * 60)
-    logger.info(f"Training complete in {total_time:.1f}s")
-    logger.info(f"Final metrics: {final_metrics}")
+    logger.info("Training complete in %.1fs", total_time)
+    logger.info("Final metrics: %s", final_metrics)
     logger.info("=" * 60)
 
 
@@ -2239,15 +1392,11 @@ if __name__ == "__main__":
 
     _parser = _argparse.ArgumentParser(add_help=False)
     _parser.add_argument("--pipeline", type=str, default=None,
-                         help="Path to pipeline YAML config. "
-                              "When set, runs via PipelineRunner "
-                              "instead of legacy SageMaker path.")
+                         help="Path to pipeline YAML config.")
     _known, _remaining = _parser.parse_known_args()
 
     if _known.pipeline:
-        # Route to PipelineRunner-based entry point
         logger.info("Running via PipelineRunner (config=%s)", _known.pipeline)
         main_pipeline(_known.pipeline)
     else:
-        # Legacy SageMaker Training Job path
         main()

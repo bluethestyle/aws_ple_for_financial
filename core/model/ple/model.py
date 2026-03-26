@@ -46,7 +46,7 @@ from .loss_weighting import (
     create_loss_weighting,
 )
 from core.task.types import LossType
-from core.task.losses import build_loss
+from core.task.losses import build_loss, FocalLoss
 from core.model.layers.evidential import EvidentialLayer
 from core.model.layers.sae import SparseAutoencoder
 
@@ -307,6 +307,10 @@ class TaskTower(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.network(x)
+        # Store pre-activation logits so loss functions that expect raw
+        # logits (e.g. FocalLoss, BCEWithLogitsLoss) can access them
+        # without double-sigmoid.
+        self._last_logits = out
         if self.activation == "sigmoid":
             return torch.sigmoid(out)
         elif self.activation == "softmax":
@@ -403,6 +407,11 @@ class PLEModel(nn.Module):
 
         if not self.task_names:
             raise ValueError("PLEConfig.task_names must not be empty")
+
+        # -- Populate task_group_map from adaTT task_groups (Gaps 4 & 5) -----
+        # Must happen before _build_task_experts() and _build_hmm_projectors()
+        # so that GroupEncoder and HMM triple-mode routing are enabled.
+        config.build_task_group_map_from_groups()
 
         # -- Expert Basket (optional) ----------------------------------------
         # When expert_basket is configured, build an ExpertBasket that
@@ -1505,6 +1514,16 @@ class PLEModel(nn.Module):
 
             loss_fn = self.task_loss_fns[task_name] if task_name in self.task_loss_fns else None
             if loss_fn is not None:
+                # For loss functions that expect raw logits (FocalLoss,
+                # BCEWithLogitsLoss), retrieve pre-activation logits from
+                # the tower to avoid double-sigmoid.  (Gap 3 fix)
+                _needs_logits = isinstance(loss_fn, (FocalLoss, nn.BCEWithLogitsLoss))
+                tower = self.task_towers.get(task_name)
+                if (_needs_logits
+                        and tower is not None
+                        and hasattr(tower, "_last_logits")):
+                    pred = tower._last_logits
+
                 # Prepare inputs based on task type
                 if task_type in ("binary", "regression"):
                     pred_input = pred.squeeze(-1)
@@ -1553,9 +1572,16 @@ class PLEModel(nn.Module):
                     loss = loss_fn(pred_input, target_input)
             else:
                 # Fallback (should not happen after _build_task_loss_fns)
+                # Use logits from the tower to avoid double-sigmoid
+                tower = self.task_towers.get(task_name)
+                fallback_pred = (
+                    tower._last_logits
+                    if tower is not None and hasattr(tower, "_last_logits")
+                    else pred
+                )
                 if task_type == "binary":
                     loss = F.binary_cross_entropy_with_logits(
-                        pred.squeeze(-1), target.float(),
+                        fallback_pred.squeeze(-1), target.float(),
                     )
                 elif task_type == "multiclass":
                     loss = F.cross_entropy(pred, target.long())
@@ -1563,6 +1589,11 @@ class PLEModel(nn.Module):
                     loss = F.huber_loss(pred.squeeze(-1), target.float())
                 else:
                     loss = F.mse_loss(pred.squeeze(-1), target.float())
+
+            # Apply per-task loss weight from config (Gap 1 fix)
+            weight = self.config.task_loss_weights.get(task_name, 1.0)
+            if weight != 1.0:
+                loss = loss * weight
 
             losses[task_name] = loss
 

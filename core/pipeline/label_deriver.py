@@ -1,36 +1,50 @@
 """
-Config-driven Label Deriver
-============================
+Config-driven Label Derivation Engine
+======================================
 
-Derives label columns from raw data based on declarative configuration
-objects.  Supports:
+Generic, YAML-driven label deriver.  Reads the ``labels`` section from
+pipeline.yaml and applies derivation rules declaratively — no dataset-
+specific hardcoding required.
 
-* **column** -- use an existing column directly as a label.
-* **derive** -- compute a label from another column using one of several
-  derivation methods (``first_from_list``, ``contains_in_list``,
-  ``len_of_list``, ``threshold``, ``binned``).
-* **transforms** -- optional post-processing for regression labels
-  (percentile clipping, log1p).
+Supported derivation types
+--------------------------
+* **direct**               — copy an existing column as-is
+* **bucket**               — bin a numeric column using explicit boundaries
+* **string_map**           — map string values to integers via a dict
+* **list_first**           — first element of a list column
+* **list_length**          — length of a list column
+* **list_intersect**       — 1 if any of ``indices`` appear in a list column
+  (alias: ``nba_group_check``)
+* **weighted_sum**         — weighted combination of multiple columns
+* **sequence_last**        — last element of a sequence, with optional top-k
+  remapping
+* **sequence_diversity_trend** — unique-count ratio between halves of a
+  sequence
+* **sequence_mode_shift**  — 1 if the mode changed between halves
+
+Legacy aliases (for backward compatibility):
+  ``first_from_list`` → ``list_first``,
+  ``len_of_list``     → ``list_length``,
+  ``nba_group_check`` → ``list_intersect``
 
 Usage::
 
-    from core.pipeline.label_deriver import LabelDeriver, LabelConfig
+    from core.pipeline.label_deriver import LabelDeriver
 
-    configs = [
-        LabelConfig(name="next_item", source="derive",
-                    method="first_from_list", input_col="future_items"),
-        LabelConfig(name="churn", source="column", col="is_churned",
-                    type="classification"),
-    ]
+    # --- Option A: pass YAML labels dict directly ---
     deriver = LabelDeriver()
-    labels_df = deriver.derive(raw_df, configs)
+    labels_df = deriver.derive(df, label_configs=cfg["labels"])
+
+    # --- Option B: pass full pipeline config (runner style) ---
+    deriver = LabelDeriver(config)
+    labels_df = deriver.derive(df)
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from collections import Counter
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -40,82 +54,336 @@ logger = logging.getLogger(__name__)
 __all__ = ["LabelDeriver", "LabelConfig"]
 
 
-@dataclass
-class LabelConfig:
-    """Declarative configuration for a single derived label.
+# ============================================================================
+# Pure derivation functions — each takes (df, cfg_dict) → pd.Series
+# ============================================================================
 
-    Parameters
-    ----------
-    name : str
-        Output column name for this label.
-    source : str
-        ``"column"`` to copy an existing column, ``"derive"`` to compute
-        from another column using *method*.
-    type : str
-        ``"classification"`` or ``"regression"``.  Controls whether
-        post-processing transforms are applied.
-    col : str
-        Source column name (when ``source="column"``).
-    method : str
-        Derivation method (when ``source="derive"``).  One of:
-        ``first_from_list``, ``contains_in_list``, ``len_of_list``,
-        ``threshold``, ``binned``.
-    input_col : str
-        Input column for derivation methods.
-    item_index : int
-        Item index for ``contains_in_list`` method.
-    threshold : float
-        Threshold value for ``threshold`` method.
-    num_classes : int
-        Number of bins for ``binned`` method.
-    transform : dict
-        Post-processing transform config for regression labels.
-        Supported keys: ``clip_percentile`` (float), ``log1p`` (bool).
+def _derive_direct(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
+    """Copy an existing column directly."""
+    col = cfg["source"]
+    if col not in df.columns:
+        logger.warning("direct: source column '%s' not found, filling NaN", col)
+        return pd.Series(np.nan, index=df.index)
+    return df[col].copy()
+
+
+def _derive_bucket(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
+    """Bin a numeric column using explicit boundaries.
+
+    Config keys:
+        source (str): column name
+        boundaries (list[float]): cut-points
+        sentinel (optional): value to treat as NaN
+        sentinel_class (optional int): class to assign to sentinel rows
+    """
+    col = df[cfg["source"]].copy().astype(float)
+
+    # Handle sentinel values (e.g. -999999 for unknown)
+    sentinel = cfg.get("sentinel") or cfg.get("sentinel_value")
+    if sentinel is not None:
+        col = col.replace(float(sentinel), np.nan)
+
+    boundaries = cfg["boundaries"]
+    result = pd.cut(
+        col,
+        bins=[-np.inf] + list(boundaries) + [np.inf],
+        labels=False,
+    )
+
+    sentinel_class = cfg.get("sentinel_class")
+    if sentinel_class is not None:
+        result = result.fillna(int(sentinel_class))
+    else:
+        result = result.fillna(0)
+
+    return result.astype(int)
+
+
+def _derive_string_map(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
+    """Map string column values to integers via an explicit mapping dict.
+
+    Config keys:
+        source (str): column name
+        mapping (dict): {string_value: int_class}
+    """
+    mapping = cfg["mapping"]
+    col = cfg["source"]
+    if col not in df.columns:
+        logger.warning("string_map: source '%s' not found, filling 0", col)
+        return pd.Series(0, index=df.index)
+
+    # If already numeric (pre-encoded), clip to max class
+    try:
+        is_numeric = np.issubdtype(df[col].dtype, np.number)
+    except TypeError:
+        is_numeric = False
+    if is_numeric:
+        max_class = max(mapping.values())
+        return df[col].clip(upper=max_class).astype(int)
+
+    default_class = max(mapping.values())  # unknown → highest class
+    return df[col].apply(lambda x: mapping.get(str(x), default_class))
+
+
+def _derive_list_first(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
+    """First element of a list column, or *default* if empty/missing.
+
+    Config keys:
+        source (str): column containing lists
+        default (int): fallback value (default -1)
+    """
+    col = cfg["source"]
+    default = cfg.get("default", -1)
+    if col not in df.columns:
+        return pd.Series(default, index=df.index)
+
+    def _extract(x):
+        if isinstance(x, (list, np.ndarray)) and len(x) > 0:
+            return int(x[0])
+        return default
+
+    return df[col].apply(_extract)
+
+
+def _derive_list_length(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
+    """Length of a list column.
+
+    Config keys:
+        source (str): column containing lists
+    """
+    col = cfg["source"]
+    if col not in df.columns:
+        return pd.Series(0, index=df.index)
+
+    return df[col].apply(
+        lambda x: len(x) if isinstance(x, (list, np.ndarray)) else 0
+    )
+
+
+def _derive_list_intersect(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
+    """1 if *any* of ``indices`` appear in the list column, else 0.
+
+    Config keys:
+        source (str): column containing lists
+        indices (list[int]): target indices to check
+    """
+    col = cfg["source"]
+    indices = set(cfg["indices"])
+    if col not in df.columns:
+        return pd.Series(0, index=df.index)
+
+    def _check(x):
+        if isinstance(x, (list, np.ndarray)) and len(x) > 0:
+            return 1 if indices.intersection(int(i) for i in x) else 0
+        return 0
+
+    return df[col].apply(_check)
+
+
+def _derive_weighted_sum(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
+    """Weighted sum of multiple columns, with optional normalisation.
+
+    Config keys:
+        source (list[str]) or sources (list[str]): column names
+        weights (list[float]): per-column weights
+        normalize (bool): if True, normalise each column to [0,1] first
+    """
+    columns = cfg.get("source") or cfg.get("sources") or cfg.get("columns", [])
+    weights = cfg["weights"]
+    normalize = cfg.get("normalize", False)
+
+    score = np.zeros(len(df))
+    for col_name, weight in zip(columns, weights):
+        if col_name not in df.columns:
+            logger.warning("weighted_sum: column '%s' not found, skipping", col_name)
+            continue
+        vals = df[col_name].fillna(0).astype(float)
+        if normalize:
+            max_val = vals.max()
+            if max_val > 0:
+                vals = vals / max_val
+        score = score + weight * vals.values
+
+    return pd.Series(score, index=df.index)
+
+
+def _derive_sequence_last(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
+    """Last element of a sequence column, with optional top-k remapping.
+
+    If ``top_k`` (or ``cap``) is set, the most-frequent *top_k* values are
+    mapped to indices 0..top_k-1 and everything else maps to ``default``.
+
+    Config keys:
+        source (str): column containing sequences (lists)
+        top_k / cap (int, optional): remap to top-K vocabulary
+        default (int): fallback value (default -1)
+    """
+    col = cfg["source"]
+    default = cfg.get("default", -1)
+    top_k = cfg.get("top_k") or cfg.get("cap")
+
+    if col not in df.columns:
+        return pd.Series(default, index=df.index)
+
+    # Extract last element
+    raw_last = df[col].apply(
+        lambda x: int(x[-1]) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else None
+    )
+
+    if top_k is not None:
+        # Build top-K vocabulary from last elements
+        counts = raw_last.dropna().astype(int).value_counts()
+        top_values = list(counts.index[:int(top_k)])
+        val_to_idx = {v: idx for idx, v in enumerate(top_values)}
+        logger.info(
+            "sequence_last(%s): built top-%d vocabulary from %d unique values",
+            col, top_k, len(counts),
+        )
+        return raw_last.apply(
+            lambda x: val_to_idx.get(int(x), default) if x is not None else default
+        )
+
+    return raw_last.fillna(default).astype(int)
+
+
+def _derive_sequence_diversity_trend(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
+    """Diversity trend: unique(second_half) / unique(first_half) - 1.0.
+
+    Config keys:
+        source (str): column containing sequences
+    """
+    col = cfg["source"]
+    if col not in df.columns:
+        return pd.Series(0.0, index=df.index)
+
+    def _trend(x):
+        if not isinstance(x, (list, np.ndarray)) or len(x) < 4:
+            return 0.0
+        mid = len(x) // 2
+        first_unique = len(set(x[:mid]))
+        second_unique = len(set(x[mid:]))
+        if first_unique == 0:
+            return 0.0
+        return (second_unique / first_unique) - 1.0
+
+    return df[col].apply(_trend)
+
+
+def _derive_sequence_mode_shift(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
+    """1 if the mode of the sequence changed between first and second half.
+
+    Config keys:
+        source (str): column containing sequences
+    """
+    col = cfg["source"]
+    if col not in df.columns:
+        return pd.Series(0, index=df.index)
+
+    def _shift(x):
+        if not isinstance(x, (list, np.ndarray)) or len(x) < 4:
+            return 0
+        mid = len(x) // 2
+        mode_first = Counter(x[:mid]).most_common(1)[0][0]
+        mode_second = Counter(x[mid:]).most_common(1)[0][0]
+        return int(mode_first != mode_second)
+
+    return df[col].apply(_shift)
+
+
+# ============================================================================
+# Dispatch table — maps type strings to derivation functions
+# ============================================================================
+
+_DERIVE_METHODS = {
+    # Canonical names
+    "direct": _derive_direct,
+    "bucket": _derive_bucket,
+    "string_map": _derive_string_map,
+    "list_first": _derive_list_first,
+    "list_length": _derive_list_length,
+    "list_intersect": _derive_list_intersect,
+    "weighted_sum": _derive_weighted_sum,
+    "sequence_last": _derive_sequence_last,
+    "sequence_diversity_trend": _derive_sequence_diversity_trend,
+    "sequence_mode_shift": _derive_sequence_mode_shift,
+
+    # Legacy aliases (backward compatibility)
+    "first_from_list": _derive_list_first,
+    "len_of_list": _derive_list_length,
+    "nba_group_check": _derive_list_intersect,
+}
+
+
+# ============================================================================
+# LabelConfig — kept for backward compatibility with train.py callers
+# ============================================================================
+
+class LabelConfig:
+    """Thin wrapper so callers that build LabelConfig objects still work.
+
+    Internally the engine only uses plain dicts, but this class lets old
+    code like ``LabelConfig(name=..., source=..., type=...)`` keep working.
     """
 
-    name: str = ""
-    source: str = "column"  # "column" | "derive"
-    type: str = "classification"  # "classification" | "regression"
-    col: str = ""
-    method: str = ""
-    input_col: str = ""
-    item_index: int = 0
-    threshold: float = 0.0
-    num_classes: int = 5
-    transform: Dict[str, Any] = field(default_factory=dict)
-    formula: str = ""
-    boundaries: Optional[List[float]] = None
-    product_prefix: str = "prod_"
-    sequence_cols: List[str] = field(default_factory=list)
+    def __init__(self, *, name: str = "", **kwargs):
+        self.name = name
+        self._cfg = dict(kwargs)
+        # Ensure 'type' key exists (old callers may pass it as the derive type)
+        if "type" not in self._cfg:
+            self._cfg["type"] = "direct"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dict(self._cfg)
+
+    # Allow attribute access for backward compat
+    def __getattr__(self, key):
+        if key.startswith("_") or key == "name":
+            raise AttributeError(key)
+        return self._cfg.get(key)
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "LabelConfig":
-        """Create a LabelConfig from a plain dict."""
-        return cls(
-            name=d.get("name", ""),
-            source=d.get("source", "column"),
-            type=d.get("type", "classification"),
-            col=d.get("col", ""),
-            method=d.get("method", ""),
-            input_col=d.get("input_col", ""),
-            item_index=d.get("item_index", 0),
-            threshold=d.get("threshold", 0.0),
-            num_classes=d.get("num_classes", 5),
-            transform=d.get("transform", {}),
-            formula=d.get("formula", ""),
-            boundaries=d.get("boundaries"),
-            product_prefix=d.get("product_prefix", "prod_"),
-            sequence_cols=d.get("sequence_cols", []),
-        )
+        name = d.pop("name", "")
+        return cls(name=name, **d)
 
+
+# ============================================================================
+# LabelDeriver — the main engine
+# ============================================================================
 
 class LabelDeriver:
-    """Derive labels from raw data based on config."""
+    """Generic label derivation engine driven by YAML config.
+
+    Supports two calling conventions:
+
+    1. **Explicit** (train.py style)::
+
+           deriver = LabelDeriver()
+           labels_df = deriver.derive(df, label_configs=cfg["labels"])
+
+    2. **Config-object** (runner.py style)::
+
+           deriver = LabelDeriver(pipeline_config)
+           labels_df = deriver.derive(df)
+
+    ``label_configs`` may be:
+      - a ``dict[str, dict]`` (the ``labels:`` section from pipeline.yaml)
+      - a ``list[LabelConfig]`` (legacy)
+    """
+
+    DERIVE_METHODS = _DERIVE_METHODS
+
+    def __init__(self, config=None):
+        self._config = config
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def derive(
         self,
         df: pd.DataFrame,
-        label_configs: List[LabelConfig],
+        label_configs: Optional[Union[Dict[str, dict], List[LabelConfig]]] = None,
     ) -> pd.DataFrame:
         """Derive all configured label columns.
 
@@ -123,230 +391,98 @@ class LabelDeriver:
         ----------
         df : pd.DataFrame
             Raw input data.
-        label_configs : list[LabelConfig]
-            Declarative label definitions.
+        label_configs : dict | list[LabelConfig] | None
+            Label definitions.  If *None*, falls back to ``self._config``.
 
         Returns
         -------
         pd.DataFrame
-            DataFrame with one column per label config, indexed like *df*.
+            One column per successfully derived label, indexed like *df*.
         """
-        labels = pd.DataFrame(index=df.index)
+        cfgs = self._resolve_configs(label_configs)
+        results: Dict[str, pd.Series] = {}
 
-        for lc in label_configs:
-            name = lc.name
-            if lc.source == "column":
-                if lc.col not in df.columns:
-                    logger.warning(
-                        "LabelDeriver: column '%s' not found for label '%s', "
-                        "filling with NaN",
-                        lc.col,
-                        name,
-                    )
-                    labels[name] = np.nan
-                else:
-                    labels[name] = df[lc.col]
-            elif lc.source == "derive":
-                labels[name] = self._derive_label(df, lc)
-            else:
-                raise ValueError(
-                    f"Unknown label source '{lc.source}' for label '{name}'"
+        for label_name, cfg in cfgs.items():
+            derive_type = cfg.get("type", "direct")
+            method = self.DERIVE_METHODS.get(derive_type)
+
+            if method is None:
+                logger.warning(
+                    "LabelDeriver: unknown type '%s' for label '%s', skipping",
+                    derive_type, label_name,
+                )
+                continue
+
+            try:
+                series = method(df, cfg)
+                results[label_name] = series
+                logger.debug(
+                    "LabelDeriver: derived '%s' (type=%s, non-null=%d/%d)",
+                    label_name, derive_type,
+                    series.notna().sum(), len(series),
+                )
+            except Exception:
+                logger.exception(
+                    "LabelDeriver: failed to derive '%s' (type=%s)",
+                    label_name, derive_type,
                 )
 
-            # Apply transforms (clip + log1p for regression)
-            if lc.type == "regression" and lc.transform:
-                labels[name] = self._apply_transform(labels[name], lc.transform)
-
-            logger.debug(
-                "LabelDeriver: derived '%s' (source=%s, type=%s)",
-                name,
-                lc.source,
-                lc.type,
-            )
-
+        out = pd.DataFrame(results, index=df.index)
         logger.info(
-            "LabelDeriver: derived %d labels: %s",
-            len(label_configs),
-            [lc.name for lc in label_configs],
+            "LabelDeriver: derived %d/%d labels: %s",
+            len(results), len(cfgs), sorted(results.keys()),
         )
-        return labels
+        return out
 
-    def _derive_label(self, df: pd.DataFrame, config: LabelConfig) -> pd.Series:
-        """Apply a derivation method to produce a label series.
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
 
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Source data.
-        config : LabelConfig
-            Label configuration with method and parameters.
+    def _resolve_configs(
+        self,
+        label_configs: Optional[Union[Dict[str, dict], List[LabelConfig]]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Normalise whatever the caller passed into ``{name: cfg_dict}``."""
 
-        Returns
-        -------
-        pd.Series
-        """
-        method = config.method
-        input_col = config.input_col
+        # 1. Explicit dict (preferred path)
+        if isinstance(label_configs, dict):
+            return {
+                name: (cfg if isinstance(cfg, dict) else {"type": "direct", "source": name})
+                for name, cfg in label_configs.items()
+            }
 
-        if input_col not in df.columns:
-            raise KeyError(
-                f"LabelDeriver: input_col '{input_col}' not found "
-                f"for label '{config.name}' (method={method})"
-            )
+        # 2. List of LabelConfig objects (legacy train.py path)
+        if isinstance(label_configs, (list, tuple)):
+            out = {}
+            for lc in label_configs:
+                if isinstance(lc, LabelConfig):
+                    out[lc.name] = lc.to_dict()
+                elif isinstance(lc, dict):
+                    name = lc.pop("name", lc.get("label_col", "unknown"))
+                    out[name] = lc
+                else:
+                    logger.warning("LabelDeriver: skipping unrecognised config: %s", lc)
+            return out
 
-        if method == "first_from_list":
-            return df[input_col].apply(
-                lambda x: x[0] if isinstance(x, list) and len(x) > 0 else -1
-            )
-        elif method == "contains_in_list":
-            item_idx = config.item_index
-            return df[input_col].apply(
-                lambda x: int(item_idx in x) if isinstance(x, list) else 0
-            )
-        elif method == "len_of_list":
-            return df[input_col].apply(
-                lambda x: len(x) if isinstance(x, list) else 0
-            )
-        elif method == "threshold":
-            return (df[input_col] > config.threshold).astype(int)
-        elif method == "binned":
-            return pd.qcut(
-                df[input_col],
-                q=config.num_classes,
-                labels=False,
-                duplicates="drop",
-            )
-        elif method == "product_not_held":
-            # Check if product column == 0 (customer does not hold product)
-            return (df[input_col] == 0).astype(int)
-        elif method == "sequence_decline":
-            # Check if last N elements of sequence are declining
-            def _is_declining(x):
-                if isinstance(x, (list, np.ndarray)) and len(x) >= 2:
-                    arr = np.array(x[-3:]) if len(x) >= 3 else np.array(x)
-                    return int(all(arr[i] >= arr[i + 1] for i in range(len(arr) - 1)) and arr[-1] < arr[0])
-                return 0
-            return df[input_col].apply(_is_declining)
-        elif method == "sequence_last":
-            # Take last element of a list
-            return df[input_col].apply(
-                lambda x: x[-1] if isinstance(x, (list, np.ndarray)) and len(x) > 0 else 0
-            )
-        elif method == "sequence_stable":
-            # Check stability (std < threshold)
-            def _is_stable(x, threshold=0.1):
-                if isinstance(x, (list, np.ndarray)) and len(x) >= 2:
-                    return int(np.std(x) < threshold)
-                return 1
-            return df[input_col].apply(_is_stable)
-        elif method == "computed":
-            # Generic expression evaluation using DataFrame columns
-            formula = getattr(config, "formula", "") or ""
-            if not formula:
-                raise ValueError(
-                    f"LabelDeriver: 'computed' method requires a formula for label '{config.name}'"
-                )
-            return df.eval(formula)
-        elif method == "age_group_map":
-            # Bin age into groups via label encoding of existing groups
-            from sklearn.preprocessing import LabelEncoder
-            le = LabelEncoder()
-            return pd.Series(le.fit_transform(df[input_col].astype(str).fillna("unknown")), index=df.index)
-        elif method == "bucket":
-            # Bin continuous into N buckets using boundaries
-            boundaries = getattr(config, "boundaries", None)
-            if boundaries:
-                return pd.cut(
-                    df[input_col],
-                    bins=[-np.inf] + list(boundaries) + [np.inf],
-                    labels=False,
-                ).astype(int)
-            return pd.qcut(
-                df[input_col],
-                q=config.num_classes,
-                labels=False,
-                duplicates="drop",
-            )
-        elif method == "categorical_encode":
-            # Label encode a string column
-            from sklearn.preprocessing import LabelEncoder
-            le = LabelEncoder()
-            return pd.Series(le.fit_transform(df[input_col].astype(str).fillna("unknown")), index=df.index)
-        elif method == "count_active":
-            # Count non-zero values across specified columns (by prefix)
-            product_prefix = getattr(config, "product_prefix", "prod_")
-            prod_cols = [c for c in df.columns if c.startswith(product_prefix)]
-            if prod_cols:
-                return (df[prod_cols] != 0).sum(axis=1)
-            return pd.Series(0, index=df.index)
-        elif method == "nba_from_sequences":
-            # Derive NBA from sequence changes (argmax of positive deltas)
-            sequence_cols = getattr(config, "sequence_cols", [])
-            def _nba(row):
-                best_idx, best_delta = 0, -np.inf
-                for i, col in enumerate(sequence_cols):
-                    seq = row.get(col, [])
-                    if isinstance(seq, (list, np.ndarray)) and len(seq) >= 2:
-                        delta = float(seq[-1]) - float(seq[-2])
-                        if delta > best_delta:
-                            best_delta = delta
-                            best_idx = i
-                return best_idx
-            return df.apply(_nba, axis=1)
-        elif method == "sequence_trend":
-            # Compute linear trend slope and classify as up(0)/flat(1)/down(2)
-            def _trend(x):
-                if isinstance(x, (list, np.ndarray)) and len(x) >= 2:
-                    arr = np.array(x, dtype=float)
-                    slope = np.polyfit(range(len(arr)), arr, 1)[0]
-                    if slope > 0.01:
-                        return 0  # up
-                    elif slope < -0.01:
-                        return 2  # down
-                    return 1  # flat
-                return 1
-            return df[input_col].apply(_trend)
-        elif method == "sequence_mean":
-            # Compute mean of sequence
-            return df[input_col].apply(
-                lambda x: float(np.mean(x)) if isinstance(x, (list, np.ndarray)) and len(x) > 0 else 0.0
-            )
-        elif method == "sequence_entropy":
-            # Compute entropy of sequence
-            from scipy.stats import entropy as sp_entropy
-            def _entropy(x):
-                if isinstance(x, (list, np.ndarray)) and len(x) > 0:
-                    arr = np.array(x, dtype=float)
-                    counts = np.bincount(arr.astype(int).clip(min=0))
-                    probs = counts / counts.sum()
-                    return float(sp_entropy(probs + 1e-10))
-                return 0.0
-            return df[input_col].apply(_entropy)
-        else:
-            raise ValueError(f"Unknown label derivation method: {method}")
+        # 3. Fall back to self._config (runner.py path)
+        if self._config is not None:
+            # Try config.labels (dict attribute)
+            if hasattr(self._config, "labels") and isinstance(self._config.labels, dict):
+                return self._config.labels
+            # Try config["labels"]
+            if hasattr(self._config, "__getitem__"):
+                try:
+                    labels = self._config["labels"]
+                    if isinstance(labels, dict):
+                        return labels
+                except (KeyError, TypeError):
+                    pass
+            # Try extracting from config.raw (raw YAML dict)
+            raw = getattr(self._config, "raw", None) or getattr(self._config, "_raw", None)
+            if isinstance(raw, dict) and "labels" in raw:
+                return raw["labels"]
 
-    @staticmethod
-    def _apply_transform(
-        series: pd.Series,
-        transform_config: Dict[str, Any],
-    ) -> pd.Series:
-        """Apply post-processing transforms to a label series.
-
-        Parameters
-        ----------
-        series : pd.Series
-            Raw label values.
-        transform_config : dict
-            Keys: ``clip_percentile`` (float, 0-100), ``log1p`` (bool).
-
-        Returns
-        -------
-        pd.Series
-            Transformed label values.
-        """
-        if transform_config.get("clip_percentile"):
-            clip_val = series.quantile(transform_config["clip_percentile"] / 100)
-            series = series.clip(upper=clip_val)
-        if transform_config.get("log1p"):
-            series = np.log1p(series.clip(lower=0))
-        return series
+        raise ValueError(
+            "LabelDeriver: no label configs provided and none found in "
+            "pipeline config.  Pass label_configs= or init with config."
+        )

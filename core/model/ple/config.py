@@ -358,6 +358,9 @@ class PLEConfig:
     task_loss_types: Dict[str, str] = field(default_factory=dict)
     # Maps task_name -> loss params dict (e.g. {"alpha": 0.25, "gamma": 2.0})
     task_loss_params: Dict[str, Dict] = field(default_factory=dict)
+    # Maps task_name -> scalar loss weight (e.g. {"has_nba": 2.5, "churn": 2.0})
+    # Applied as a multiplier to each task's loss before aggregation.
+    task_loss_weights: Dict[str, float] = field(default_factory=dict)
 
     # -- Per-task overrides --------------------------------------------------
     # Maps task_name -> {output_dim, activation, task_type, domain_experts, ...}
@@ -464,3 +467,33 @@ class PLEConfig:
         """
         override = self.task_overrides.get(task_name, {})
         return override.get("tower_dims")
+
+    def build_task_group_map_from_groups(self) -> None:
+        """Populate ``task_group_map`` from ``adatt.task_groups``.
+
+        Iterates over the task groups defined in the AdaTTConfig and
+        constructs a ``{task_name: group_name}`` mapping.  This enables
+        GroupEncoder, HMM triple-mode routing, and multidisciplinary
+        feature routing -- all of which require a non-empty
+        ``task_group_map``.
+
+        Safe to call multiple times; only overwrites if task_group_map
+        is currently empty.
+        """
+        if self.task_group_map:
+            return  # already populated, don't overwrite
+
+        if not self.adatt.task_groups:
+            return  # no groups defined
+
+        new_map: Dict[str, str] = {}
+        for group_name, group_def in self.adatt.task_groups.items():
+            members = (
+                group_def.members
+                if hasattr(group_def, "members")
+                else group_def.get("members", [])
+            )
+            for task_name in members:
+                new_map[task_name] = group_name
+
+        self.task_group_map = new_map

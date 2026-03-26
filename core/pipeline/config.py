@@ -234,7 +234,7 @@ class PipelineConfig:
 
 def load_config(path: Union[str, Path]) -> PipelineConfig:
     """Parse a YAML file into a :class:`PipelineConfig` instance."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         raw: Dict[str, Any] = yaml.safe_load(f)
 
     tasks = [TaskSpec(**{k: v for k, v in t.items() if k in TaskSpec.__dataclass_fields__}) for t in raw.get("tasks", [])]
@@ -299,6 +299,28 @@ def load_config(path: Union[str, Path]) -> PipelineConfig:
         if k in ItemUniverseSpec.__dataclass_fields__
     }) if raw_item_universe else None
     feature_groups_raw = raw.get("feature_groups", [])
+
+    # If no inline feature_groups, look for feature_groups_path or
+    # auto-discover configs/<adapter>/feature_groups.yaml next to the
+    # pipeline YAML.
+    if not feature_groups_raw:
+        fg_path_str = raw.get("feature_groups_path", "")
+        if fg_path_str:
+            fg_path = Path(fg_path_str)
+            if not fg_path.is_absolute():
+                fg_path = Path(path).parent / fg_path
+        else:
+            # Auto-discover sibling feature_groups.yaml
+            fg_path = Path(path).parent / "feature_groups.yaml"
+
+        if fg_path.exists():
+            import logging as _logging
+            _lg = _logging.getLogger(__name__)
+            _lg.info("Loading feature groups from %s", fg_path)
+            with open(fg_path, "r", encoding="utf-8") as _fh:
+                _fg_raw = yaml.safe_load(_fh)
+            feature_groups_raw = _fg_raw.get("feature_groups", [])
+
     adapter_name = raw.get("adapter", "")
 
     return PipelineConfig(

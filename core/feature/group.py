@@ -282,11 +282,10 @@ class FeatureGroupConfig:
                 f"FeatureGroupConfig '{self.name}' has group_type='generate' "
                 f"but no generator specified"
             )
-        if self.group_type == "transform" and not self.transformers:
-            raise ValueError(
-                f"FeatureGroupConfig '{self.name}' has group_type='transform' "
-                f"but no transformers specified"
-            )
+        # Allow empty transformers list for passthrough groups (e.g.
+        # product_holdings where columns are used as-is without any
+        # transformation).  An empty list means "identity transform".
+        pass
         if self.runtime not in ("local", "container"):
             raise ValueError(
                 f"runtime must be 'local' or 'container', "

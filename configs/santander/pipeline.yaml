@@ -272,92 +272,76 @@ labels:
   product_stability:
     source: product_stability
     type: direct
-    nullable: true
-
   # Tier 1 derived: nba_primary
   label_nba_primary:
     source: nba_label
-    type: first_from_list
+    type: list_first
     default: -1
-    description: "First element of nba_label list, or -1 if empty"
 
   # Tier 2: derived from profile/synth columns
   label_tenure_stage:
     source: tenure_months
     type: bucket
     boundaries: [6, 24, 60, 120]
-    sentinel_value: -999999
+    sentinel: -999999
     sentinel_class: 0
-    description: "5-class tenure: unknown_or_new/early/mid/mature/veteran"
   label_spend_level:
     source: synth_monthly_spend
     type: bucket
     boundaries: [1500, 3000, 5000]
-    description: "4-class spending: low/moderate/high/very_high"
   label_cross_sell_count:
     source: nba_label
-    type: len_of_list
-    description: "Number of products in nba_label list"
+    type: list_length
   label_engagement_score:
+    source: [is_active, synth_frequency, num_products]
     type: weighted_sum
-    sources: [is_active, synth_frequency, num_products]
     weights: [0.3, 0.4, 0.3]
     normalize: true
-    description: "Composite: is_active*0.3 + synth_frequency/max*0.4 + num_products/max*0.3"
 
   # Tier 3: product group acquisition (from nba_label indices)
   label_acquire_deposits:
     source: nba_label
-    type: nba_group_check
+    type: list_intersect
     indices: [8, 9, 10]
-    description: "1 if any of short/medium/long deposit index in nba_label"
   label_acquire_investments:
     source: nba_label
-    type: nba_group_check
+    type: list_intersect
     indices: [12, 18]
-    description: "1 if funds or securities index in nba_label"
   label_acquire_accounts:
     source: nba_label
-    type: nba_group_check
+    type: list_intersect
     indices: [2, 5, 6, 7, 11, 19]
-    description: "1 if any account-type index in nba_label"
   label_acquire_lending:
     source: nba_label
-    type: nba_group_check
+    type: list_intersect
     indices: [13, 15]
-    description: "1 if mortgage or loans index in nba_label"
   label_acquire_payments:
     source: nba_label
-    type: nba_group_check
+    type: list_intersect
     indices: [4, 17, 20, 22, 23]
-    description: "1 if any payment-type index in nba_label"
 
   # Tier 3: segmentation
   label_segment:
     source: segment
     type: string_map
     mapping: {"01-TOP": 0, "02-PARTICULARES": 1, "03-UNIVERSITARIO": 2, "UNKNOWN": 3}
-    description: "4-class segment encoding"
   label_income_tier:
     source: income
     type: bucket
     boundaries: [30000, 80000, 200000]
-    description: "4-class income tier: low/mid/high/very_high"
 
   # Tier 5: transaction-based NBA labels
   label_next_mcc:
     source: txn_mcc_seq
     type: sequence_last
-    cap: 50
-    description: "Last element of txn_mcc_seq, capped at 49"
+    top_k: 50
+    default: -1
   label_mcc_diversity_trend:
     source: txn_mcc_seq
     type: sequence_diversity_trend
-    description: "unique(second half) / unique(first half) - 1.0"
   label_top_mcc_shift:
     source: txn_mcc_seq
     type: sequence_mode_shift
-    description: "1 if mode MCC changed between first and second half"
 
 # ---------------------------------------------------------------------------
 # Sequences — two groups with different temporal resolutions
@@ -739,38 +723,82 @@ distillation:
 # Ablation Scenarios
 # ---------------------------------------------------------------------------
 ablation:
-  feature_groups:
-    - name: full
-      remove: []
-    - name: no_tda
-      remove: [tda_global, tda_local]
-    - name: no_temporal
-      remove: [mamba_temporal]
-    - name: no_graph
-      remove: [graph_collaborative, product_hierarchy]
-    - name: no_hmm
-      remove: [hmm_states]
-    - name: no_demographics
-      remove: [demographics]
-    - name: base_only
-      remove: [tda_global, tda_local, mamba_temporal, hmm_states,
-               graph_collaborative, product_hierarchy, gmm_clustering, model_derived]
+  # Feature and expert scenarios: "auto" = dynamically generated from
+  # feature_groups.yaml and model.expert_basket respectively.
+  # Set to a list of dicts to override with explicit scenarios.
+  feature_scenarios: auto
+  expert_scenarios: auto
 
-  experts:
-    - name: full_basket
-      shared: [deepfm, temporal_ensemble, hgcn, perslay, causal, lightgcn, optimal_transport]
-    - name: no_deepfm
-      shared: [temporal_ensemble, hgcn, perslay, causal, lightgcn, optimal_transport]
-    - name: no_temporal
-      shared: [deepfm, hgcn, perslay, causal, lightgcn, optimal_transport]
-    - name: no_hgcn
-      shared: [deepfm, temporal_ensemble, perslay, causal, lightgcn, optimal_transport]
-    - name: no_perslay
-      shared: [deepfm, temporal_ensemble, hgcn, causal, lightgcn, optimal_transport]
-    - name: no_causal
-      shared: [deepfm, temporal_ensemble, hgcn, perslay, lightgcn, optimal_transport]
-    - name: mlp_only
-      shared: [mlp]
+  # Base feature groups: groups that are NOT removed in the "base_only" scenario.
+  # All other groups (from feature_groups.yaml) are considered "advanced/generated".
+  base_groups: [demographics, product_holdings]
+
+  # Task tiers for Phase 3: task-scale ablation
+  task_tiers:
+    tasks_4:
+      - has_nba
+      - churn_signal
+      - product_stability
+      - nba_primary
+    tasks_8:
+      - has_nba
+      - churn_signal
+      - product_stability
+      - nba_primary
+      - tenure_stage
+      - spend_level
+      - cross_sell_count
+      - engagement_score
+    tasks_15:
+      - has_nba
+      - churn_signal
+      - product_stability
+      - nba_primary
+      - tenure_stage
+      - spend_level
+      - cross_sell_count
+      - engagement_score
+      - will_acquire_deposits
+      - will_acquire_investments
+      - will_acquire_accounts
+      - will_acquire_lending
+      - will_acquire_payments
+      - segment_prediction
+      - income_tier
+    tasks_18:
+      - has_nba
+      - churn_signal
+      - product_stability
+      - nba_primary
+      - tenure_stage
+      - spend_level
+      - cross_sell_count
+      - engagement_score
+      - will_acquire_deposits
+      - will_acquire_investments
+      - will_acquire_accounts
+      - will_acquire_lending
+      - will_acquire_payments
+      - segment_prediction
+      - income_tier
+      - next_mcc
+      - mcc_diversity_trend
+      - top_mcc_shift
+
+  # Structure variants for Phase 3: architecture ablation
+  structure_variants:
+    shared_bottom:
+      use_ple: false
+      use_adatt: false
+    ple_only:
+      use_ple: true
+      use_adatt: false
+    adatt_only:
+      use_ple: false
+      use_adatt: true
+    full:
+      use_ple: true
+      use_adatt: true
 
   hyperparams:
     learning_rate: [0.0001, 0.0005, 0.001, 0.005]

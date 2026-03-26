@@ -174,12 +174,14 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: tda_global
     group_type: generate
-    generator: tda
+    generator: tda_global
     generator_params:
-      mode: global
-      window_days: 365
-      persistence_dim: 36
-      input_columns: [age, income, tenure_months, num_products, txn_amount_seq]
+      input_filter:
+        dtype: continuous
+        exclude_binary: true
+        min_nunique: 20
+        exclude_columns: [customer_id]
+      max_homology_dim: 1
     output_dim: 36
     target_experts: [perslay]
     interpretation:
@@ -197,12 +199,15 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: tda_local
     group_type: generate
-    generator: tda
+    generator: tda_local
     generator_params:
-      mode: local
-      window_days: 90
-      persistence_dim: 24
-      input_columns: [txn_amount_seq, txn_mcc_seq, txn_hour_seq]
+      input_filter:
+        dtype: continuous
+        exclude_binary: true
+        include_prefix: ["synth_"]
+        exclude_columns: [customer_id]
+      max_homology_dim: 1
+      n_jobs: 1
     output_dim: 24
     target_experts: [perslay]
     interpretation:
@@ -222,14 +227,9 @@ feature_groups:
     group_type: generate
     generator: hmm
     generator_params:
+      input_filter:
+        include_prefix: ["synth_"]
       modes: [journey, lifecycle, behavior]
-      state_dim: 16
-      input_sequences:
-        - seq_saving
-        - seq_checking
-        - seq_num_products
-        - seq_acquisitions
-        - seq_churns
     output_dim: 48
     target_experts: [temporal_ensemble]
     interpretation:
@@ -251,13 +251,10 @@ feature_groups:
     group_type: generate
     generator: mamba
     generator_params:
-      d_model: 128
-      d_state: 16
-      expand: 2
+      input_filter:
+        include_prefix: ["synth_"]
       output_dim: 50
-      input_sequences:
-        - txn_amount_seq       # DOUBLE[], len 1-60
-        - txn_hour_seq         # INTEGER[], len 1-60
+      d_model: 128
     output_dim: 50
     target_experts: [temporal_ensemble]
     interpretation:
@@ -278,13 +275,15 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: product_hierarchy
     group_type: generate
-    generator: hyperbolic_embedding
+    generator: graph
     generator_params:
-      hierarchy_source: item_universe
-      hierarchy_config: configs/santander/item_universe.yaml
+      input_filter:
+        include_prefix: ["prod_"]   # binary product holdings for hierarchy
+      use_poincare: true
       curvature: 1.0
-      product_dim: 24
-      group_dim: 8
+      embedding_dim: 32
+      prefix: product_hierarchy
+      entity_column: customer_id
     output_dim: 32
     target_experts: [hgcn]
     interpretation:
@@ -305,35 +304,15 @@ feature_groups:
   # -------------------------------------------------------------------------
   - name: graph_collaborative
     group_type: generate
-    generator: lightgcn
+    generator: graph
     generator_params:
+      input_filter:
+        dtype: all_numeric        # binary OK for bipartite graph
+        exclude_columns: [customer_id]
       embedding_dim: 64
-      n_layers: 3
-      product_columns:
-        - prod_saving
-        - prod_guarantee
-        - prod_checking
-        - prod_derivados
-        - prod_payroll_acct
-        - prod_junior_acct
-        - prod_particular_acct
-        - prod_particular_plus
-        - prod_short_deposit
-        - prod_medium_deposit
-        - prod_long_deposit
-        - prod_e_account
-        - prod_funds
-        - prod_mortgage
-        - prod_pension_plan
-        - prod_loans
-        - prod_taxes
-        - prod_credit_card
-        - prod_securities
-        - prod_home_acct
-        - prod_payroll
-        - prod_pension_deposit
-        - prod_direct_debit
-        - prod_auto_debit
+      use_poincare: false
+      prefix: graph_collab
+      entity_column: customer_id
     output_dim: 64
     target_experts: [lightgcn]
     interpretation:
@@ -356,10 +335,14 @@ feature_groups:
     group_type: generate
     generator: gmm
     generator_params:
+      input_filter:
+        dtype: continuous
+        exclude_binary: true      # CRITICAL: no binary features for GMM
+        min_nunique: 10
+        exclude_columns: [customer_id]
       n_clusters: 20
       covariance_type: full
       max_iter: 200
-      input_groups: [demographics, txn_behavior]
     output_dim: 22
     target_experts: [deepfm, mlp]
     interpretation:
@@ -378,10 +361,13 @@ feature_groups:
     group_type: generate
     generator: model_features
     generator_params:
+      input_filter:
+        dtype: continuous
+        exclude_binary: true
+        exclude_columns: [customer_id]
       kmeans_dim: 5
       bandit_dim: 4
       lnn_dim: 18
-      input_groups: [demographics, txn_behavior, product_holdings]
     output_dim: 27
     target_experts: [temporal_ensemble, deepfm]
     interpretation:

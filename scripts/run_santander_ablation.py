@@ -37,7 +37,9 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import yaml
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,38 +48,190 @@ logging.basicConfig(
 logger = logging.getLogger("run_santander_ablation")
 
 # ---------------------------------------------------------------------------
-# Constants
+# Project paths
 # ---------------------------------------------------------------------------
-
-REGION = "ap-northeast-2"
-S3_BUCKET = "aiops-ple-financial"
-ROLE_ARN = "arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = "configs/santander/pipeline.yaml"
-
-# Instance types
-GPU_INSTANCE = "ml.g4dn.xlarge"
-CPU_INSTANCE = "ml.m5.4xlarge"  # 64GB RAM — generators need memory for 941K rows
+FEATURE_GROUPS_PATH = "configs/santander/feature_groups.yaml"
 
 # Framework versions (for PyTorch Estimator)
 PYTORCH_VERSION = "2.1"
 PY_VERSION = "py310"
 
-# Feature-Expert dependency map: removing a feature group should also
-# deactivate the corresponding expert to avoid input-less experts.
-FEATURE_EXPERT_DEPS: Dict[str, List[str]] = {
-    "tda_global": ["perslay"],
-    "tda_local": ["perslay"],
-    "graph_collaborative": ["lightgcn"],
-    "product_hierarchy": ["hgcn"],
-    "hmm_states": [],           # HMM features feed shared experts, no dedicated expert
-    "mamba_temporal": ["temporal_ensemble"],
-    "model_derived": [],
-    "gmm_clustering": [],
-    "txn_behavior": [],
-    "derived_temporal": [],
-}
+
+# ---------------------------------------------------------------------------
+# Config loading — ALL constants derived from YAML
+# ---------------------------------------------------------------------------
+
+def _load_pipeline_config() -> Dict[str, Any]:
+    """Load the pipeline YAML config as a raw dict."""
+    cfg_path = PROJECT_ROOT / CONFIG_PATH
+    with open(cfg_path) as f:
+        return yaml.safe_load(f)
+
+
+def _load_feature_groups_config() -> Dict[str, Any]:
+    """Load the feature_groups YAML config as a raw dict."""
+    fg_path = PROJECT_ROOT / FEATURE_GROUPS_PATH
+    with open(fg_path) as f:
+        return yaml.safe_load(f)
+
+
+def _extract_aws_constants(config: Dict[str, Any]) -> Dict[str, str]:
+    """Extract AWS/SageMaker constants from pipeline config."""
+    aws = config.get("aws", {})
+    return {
+        "region": aws.get("region", "ap-northeast-2"),
+        "s3_bucket": aws.get("s3_bucket", "aiops-ple-financial"),
+        "role_arn": aws.get("role_arn", ""),
+        "gpu_instance": aws.get("instance_type", "ml.g4dn.xlarge"),
+        "cpu_instance": aws.get("cpu_instance_type", "ml.m5.4xlarge"),
+    }
+
+
+def _extract_shared_experts(config: Dict[str, Any]) -> List[str]:
+    """Extract the shared expert list from model.expert_basket.shared."""
+    return config.get("model", {}).get("expert_basket", {}).get("shared", [])
+
+
+def _build_feature_expert_deps(fg_config: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Build feature-group -> expert dependency map from feature_groups.yaml.
+
+    Each feature group may declare ``target_experts`` — when that group is
+    removed, any expert that ONLY receives input from that group should be
+    deactivated to avoid input-less experts.
+    """
+    deps: Dict[str, List[str]] = {}
+    for g in fg_config.get("feature_groups", []):
+        name = g["name"]
+        target_experts = g.get("target_experts", [])
+        deps[name] = target_experts
+    return deps
+
+
+def _build_feature_scenarios(
+    fg_config: Dict[str, Any],
+    base_group_names: List[str],
+    feature_expert_deps: Dict[str, List[str]],
+) -> List[Dict[str, Any]]:
+    """Build bottom-up + top-down feature ablation scenarios from config.
+
+    Parameters
+    ----------
+    fg_config : dict
+        Raw feature_groups.yaml content.
+    base_group_names : list
+        Names of groups considered "base" (not removed in base_only).
+    feature_expert_deps : dict
+        Feature group -> target expert mapping.
+
+    Returns
+    -------
+    list of scenario dicts with keys ``name`` and ``remove``.
+    """
+    all_groups = [
+        g["name"]
+        for g in fg_config.get("feature_groups", [])
+        if g.get("enabled", True)
+    ]
+    advanced_groups = [g for g in all_groups if g not in base_group_names]
+
+    scenarios: List[Dict[str, Any]] = []
+
+    # Full baseline (reused by Phase 2/3)
+    scenarios.append({"name": "full", "remove": []})
+
+    # Bottom-up: base_only, then base + one advanced group
+    scenarios.append({"name": "base_only", "remove": list(advanced_groups)})
+    for group in advanced_groups:
+        scenarios.append({
+            "name": f"base+{group}",
+            "remove": [g for g in advanced_groups if g != group],
+        })
+
+    # Top-down: full minus one group (irreplaceability)
+    for group in advanced_groups:
+        scenarios.append({
+            "name": f"full-{group}",
+            "remove": [group],
+        })
+
+    return scenarios
+
+
+def _build_expert_scenarios(all_experts: List[str]) -> List[Dict[str, Any]]:
+    """Build bottom-up + top-down expert ablation scenarios from config.
+
+    Uses ``deepfm`` as the base expert (always present in bottom-up).
+
+    Returns
+    -------
+    list of scenario dicts with keys ``name`` and ``experts``.
+    """
+    scenarios: List[Dict[str, Any]] = []
+
+    # Bottom-up: deepfm alone, then deepfm + one other expert
+    scenarios.append({"name": "deepfm_only", "experts": ["deepfm"]})
+    for expert in all_experts:
+        if expert == "deepfm":
+            continue
+        # Short name for the scenario
+        short = expert.replace("optimal_transport", "ot").replace("temporal_ensemble", "temporal")
+        scenarios.append({
+            "name": f"deepfm+{short}",
+            "experts": ["deepfm", expert],
+        })
+
+    # Top-down: full minus one expert
+    for expert in all_experts:
+        short = expert.replace("optimal_transport", "ot").replace("temporal_ensemble", "temporal")
+        scenarios.append({
+            "name": f"full-{short}",
+            "experts": [e for e in all_experts if e != expert],
+        })
+
+    # Minimal baseline: MLP only
+    scenarios.append({"name": "mlp_only", "experts": ["mlp"]})
+
+    return scenarios
+
+
+def _extract_task_tiers(config: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Extract task tiers from ablation.task_tiers in pipeline config."""
+    return config.get("ablation", {}).get("task_tiers", {})
+
+
+def _extract_structure_variants(config: Dict[str, Any]) -> Dict[str, Dict[str, bool]]:
+    """Extract structure variants from ablation.structure_variants in pipeline config."""
+    return config.get("ablation", {}).get("structure_variants", {})
+
+
+# ---------------------------------------------------------------------------
+# Load all config at module level
+# ---------------------------------------------------------------------------
+
+_PIPELINE_CONFIG = _load_pipeline_config()
+_FG_CONFIG = _load_feature_groups_config()
+
+# AWS constants
+_AWS = _extract_aws_constants(_PIPELINE_CONFIG)
+REGION = _AWS["region"]
+S3_BUCKET = _AWS["s3_bucket"]
+ROLE_ARN = _AWS["role_arn"]
+GPU_INSTANCE = _AWS["gpu_instance"]
+CPU_INSTANCE = _AWS["cpu_instance"]
+
+# Expert list from model config
+ALL_SHARED_EXPERTS: List[str] = _extract_shared_experts(_PIPELINE_CONFIG)
+
+# Feature-expert dependency map from feature_groups.yaml
+FEATURE_EXPERT_DEPS: Dict[str, List[str]] = _build_feature_expert_deps(_FG_CONFIG)
+
+# Base groups (not removed in base_only scenario)
+_BASE_GROUP_NAMES: List[str] = _PIPELINE_CONFIG.get("ablation", {}).get(
+    "base_groups", ["demographics", "product_holdings"]
+)
 
 
 def _experts_for_scenario(removed_groups: List[str]) -> List[str]:
@@ -90,106 +244,30 @@ def _experts_for_scenario(removed_groups: List[str]) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Dimension 1: Feature Group Ablation (16 scenarios)
+# Dimension 1: Feature Group Ablation (dynamic from feature_groups.yaml)
 # ---------------------------------------------------------------------------
-# All advanced feature groups (everything beyond base demographics + products)
-_ADVANCED_GROUPS = [
-    "txn_behavior", "derived_temporal", "tda_global", "tda_local",
-    "graph_collaborative", "product_hierarchy", "hmm_states",
-    "mamba_temporal", "gmm_clustering", "model_derived",
-]
+_ablation_cfg = _PIPELINE_CONFIG.get("ablation", {})
 
-FEATURE_SCENARIOS: List[Dict[str, Any]] = [
-    # --- Full baseline (reused by Phase 2/3) ---
-    {"name": "full", "remove": []},
-
-    # --- Bottom-up: base + one group (pairwise contribution) ---
-    {"name": "base_only", "remove": list(_ADVANCED_GROUPS)},
-    {"name": "base-txn", "remove": [g for g in _ADVANCED_GROUPS if g != "txn_behavior"]},
-    {"name": "base-tda", "remove": [g for g in _ADVANCED_GROUPS if g not in ("tda_global", "tda_local")]},
-    {"name": "base-graph", "remove": [g for g in _ADVANCED_GROUPS if g != "graph_collaborative"]},
-    {"name": "base-hierarchy", "remove": [g for g in _ADVANCED_GROUPS if g != "product_hierarchy"]},
-    {"name": "base-hmm", "remove": [g for g in _ADVANCED_GROUPS if g != "hmm_states"]},
-    {"name": "base-mamba", "remove": [g for g in _ADVANCED_GROUPS if g != "mamba_temporal"]},
-    {"name": "base-gmm", "remove": [g for g in _ADVANCED_GROUPS if g != "gmm_clustering"]},
-
-    # --- Top-down: full minus one group (irreplaceability) ---
-    {"name": "full-txn", "remove": ["txn_behavior"]},
-    {"name": "full-tda", "remove": ["tda_global", "tda_local"]},
-    {"name": "full-graph", "remove": ["graph_collaborative"]},
-    {"name": "full-hierarchy", "remove": ["product_hierarchy"]},
-    {"name": "full-hmm", "remove": ["hmm_states"]},
-    {"name": "full-mamba", "remove": ["mamba_temporal"]},
-    {"name": "full-gmm", "remove": ["gmm_clustering"]},
-]
+if _ablation_cfg.get("feature_scenarios") == "auto":
+    FEATURE_SCENARIOS: List[Dict[str, Any]] = _build_feature_scenarios(
+        _FG_CONFIG, _BASE_GROUP_NAMES, FEATURE_EXPERT_DEPS,
+    )
+else:
+    FEATURE_SCENARIOS = _ablation_cfg.get("feature_scenarios", [])
 
 # ---------------------------------------------------------------------------
-# Dimension 2: Expert Ablation (7 scenarios)
+# Dimension 2: Expert Ablation (dynamic from model.expert_basket)
 # ---------------------------------------------------------------------------
-ALL_SHARED_EXPERTS = [
-    "deepfm", "temporal_ensemble", "hgcn",
-    "perslay", "causal", "lightgcn", "optimal_transport",
-]
-
-EXPERT_SCENARIOS: List[Dict[str, Any]] = [
-    # full_basket is shared with Phase 1 "full" — reused as baseline
-
-    # --- Bottom-up: DeepFM + one expert (pairwise contribution) ---
-    {"name": "deepfm_only", "experts": ["deepfm"]},
-    {"name": "deepfm+temporal", "experts": ["deepfm", "temporal_ensemble"]},
-    {"name": "deepfm+hgcn", "experts": ["deepfm", "hgcn"]},
-    {"name": "deepfm+perslay", "experts": ["deepfm", "perslay"]},
-    {"name": "deepfm+causal", "experts": ["deepfm", "causal"]},
-    {"name": "deepfm+lightgcn", "experts": ["deepfm", "lightgcn"]},
-    {"name": "deepfm+ot", "experts": ["deepfm", "optimal_transport"]},
-
-    # --- Top-down: full minus one expert (irreplaceability) ---
-    {"name": "full-deepfm", "experts": [e for e in ALL_SHARED_EXPERTS if e != "deepfm"]},
-    {"name": "full-temporal", "experts": [e for e in ALL_SHARED_EXPERTS if e != "temporal_ensemble"]},
-    {"name": "full-hgcn", "experts": [e for e in ALL_SHARED_EXPERTS if e != "hgcn"]},
-    {"name": "full-perslay", "experts": [e for e in ALL_SHARED_EXPERTS if e != "perslay"]},
-    {"name": "full-causal", "experts": [e for e in ALL_SHARED_EXPERTS if e != "causal"]},
-    {"name": "full-lightgcn", "experts": [e for e in ALL_SHARED_EXPERTS if e != "lightgcn"]},
-    {"name": "full-ot", "experts": [e for e in ALL_SHARED_EXPERTS if e != "optimal_transport"]},
-
-    # --- Minimal baseline ---
-    {"name": "mlp_only", "experts": ["mlp"]},
-]
+if _ablation_cfg.get("expert_scenarios") == "auto":
+    EXPERT_SCENARIOS: List[Dict[str, Any]] = _build_expert_scenarios(ALL_SHARED_EXPERTS)
+else:
+    EXPERT_SCENARIOS = _ablation_cfg.get("expert_scenarios", [])
 
 # ---------------------------------------------------------------------------
-# Dimension 3: Task x Structure Cross Ablation (4 x 4 = 16 scenarios)
+# Dimension 3: Task x Structure Cross Ablation (from pipeline.yaml)
 # ---------------------------------------------------------------------------
-TASK_TIERS: Dict[str, List[str]] = {
-    "tasks_4": [
-        "has_nba", "churn_signal", "product_stability", "nba_primary",
-    ],
-    "tasks_8": [
-        "has_nba", "churn_signal", "product_stability", "nba_primary",
-        "tenure_stage", "spend_level", "cross_sell_count", "engagement_score",
-    ],
-    "tasks_15": [
-        "has_nba", "churn_signal", "product_stability", "nba_primary",
-        "tenure_stage", "spend_level", "cross_sell_count", "engagement_score",
-        "will_acquire_deposits", "will_acquire_investments",
-        "will_acquire_accounts", "will_acquire_lending",
-        "will_acquire_payments", "segment_prediction", "income_tier",
-    ],
-    "tasks_18": [
-        "has_nba", "churn_signal", "product_stability", "nba_primary",
-        "tenure_stage", "spend_level", "cross_sell_count", "engagement_score",
-        "will_acquire_deposits", "will_acquire_investments",
-        "will_acquire_accounts", "will_acquire_lending",
-        "will_acquire_payments", "segment_prediction", "income_tier",
-        "next_mcc", "mcc_diversity_trend", "top_mcc_shift",
-    ],
-}
-
-STRUCTURE_VARIANTS: Dict[str, Dict[str, bool]] = {
-    "shared_bottom": {"use_ple": False, "use_adatt": False},
-    "ple_only": {"use_ple": True, "use_adatt": False},
-    "adatt_only": {"use_ple": False, "use_adatt": True},
-    "full": {"use_ple": True, "use_adatt": True},
-}
+TASK_TIERS: Dict[str, List[str]] = _extract_task_tiers(_PIPELINE_CONFIG)
+STRUCTURE_VARIANTS: Dict[str, Dict[str, bool]] = _extract_structure_variants(_PIPELINE_CONFIG)
 
 
 # ===================================================================

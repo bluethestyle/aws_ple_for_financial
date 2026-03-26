@@ -103,6 +103,9 @@ class FeatureGroupPipeline:
         self._generators: Dict[str, AbstractFeatureGenerator] = {}
         self._transformer_chains: Dict[str, List[AbstractFeatureTransformer]] = {}
 
+        # Resolved input columns per generator group (populated during fit)
+        self._resolved_inputs: Dict[str, List[str]] = {}
+
         # Dimension tracking (populated during fit/transform)
         self._group_ranges: Dict[str, Tuple[int, int]] = {}
         self._total_dim: int = 0
@@ -112,14 +115,137 @@ class FeatureGroupPipeline:
         # configuration errors surface immediately.
         self._instantiate_components()
 
+    @classmethod
+    def from_yaml(cls, yaml_path: str, name: str = "feature_group_pipeline") -> "FeatureGroupPipeline":
+        """Create a pipeline from a ``feature_groups.yaml`` file.
+
+        Parameters
+        ----------
+        yaml_path : str
+            Path to a YAML file with a top-level ``feature_groups`` key.
+        name : str
+            Pipeline name for logging / MLflow.
+
+        Returns
+        -------
+        FeatureGroupPipeline
+            Ready for ``fit()`` / ``fit_transform()``.
+        """
+        from .group import load_feature_groups
+
+        groups = load_feature_groups(yaml_path)
+        return cls(groups=groups, name=name)
+
+    # -- Input column resolution ----------------------------------------
+
+    def _resolve_input_columns(self, df: Any, group_config: FeatureGroupConfig) -> List[str]:
+        """Resolve input columns for a generator from config.
+
+        Priority:
+        1. Explicit ``input_columns`` in generator_params.
+        2. Filter-based resolution via ``input_filter`` in generator_params.
+        3. Default: all numeric columns (excluding id columns).
+
+        Parameters
+        ----------
+        df : DataFrame
+            The input DataFrame (pandas).
+        group_config : FeatureGroupConfig
+            The group whose input columns to resolve.
+
+        Returns
+        -------
+        list[str]
+            Resolved column names.
+        """
+        gen_params = group_config.generator_params
+
+        # Explicit columns take priority
+        if "input_columns" in gen_params:
+            return gen_params["input_columns"]
+
+        # Filter-based resolution
+        input_filter = gen_params.get("input_filter", {})
+        if input_filter:
+            return self._apply_column_filter(df, input_filter)
+
+        # Default: all numeric columns
+        return df.select_dtypes(include="number").columns.tolist()
+
+    @staticmethod
+    def _apply_column_filter(df: Any, filter_config: Dict[str, Any]) -> List[str]:
+        """Apply column filter from config.
+
+        Supports the following filter keys:
+
+        - ``dtype``: ``"continuous"`` | ``"all_numeric"`` | ``"all"``
+          (default ``"all_numeric"``).
+        - ``exclude_binary``: bool -- drop columns whose unique non-null
+          values are a subset of ``{0, 1}`` (default ``False``).
+        - ``min_nunique``: int -- minimum number of unique values required
+          (default ``0``).
+        - ``include_prefix``: list[str] -- only keep columns whose name
+          starts with one of these prefixes (default ``[]`` = no filter).
+        - ``exclude_prefix``: list[str] -- drop columns whose name starts
+          with any of these prefixes (default ``[]``).
+        - ``exclude_columns``: list[str] -- explicit column names to
+          exclude (default ``[]``).
+
+        Parameters
+        ----------
+        df : DataFrame
+            The input DataFrame.
+        filter_config : dict
+            Filter specification from ``generator_params.input_filter``.
+
+        Returns
+        -------
+        list[str]
+            Filtered column names.
+        """
+        exclude_binary = filter_config.get("exclude_binary", False)
+        min_nunique = filter_config.get("min_nunique", 0)
+        include_prefix = filter_config.get("include_prefix", [])
+        exclude_prefix = filter_config.get("exclude_prefix", [])
+        exclude_cols = set(filter_config.get("exclude_columns", []))
+
+        # Start with numeric columns
+        numeric = df.select_dtypes(include="number")
+        cols: List[str] = []
+
+        for col in numeric.columns:
+            if col in exclude_cols:
+                continue
+            if exclude_binary:
+                uniq = set(df[col].dropna().unique())
+                if uniq.issubset({0, 0.0, 1, 1.0}):
+                    continue
+            if min_nunique > 0 and df[col].nunique() < min_nunique:
+                continue
+            if include_prefix and not any(col.startswith(p) for p in include_prefix):
+                continue
+            if exclude_prefix and any(col.startswith(p) for p in exclude_prefix):
+                continue
+            cols.append(col)
+
+        return cols
+
     # -- Component instantiation ---------------------------------------
 
     def _instantiate_components(self) -> None:
         """Create generator and transformer instances from configs."""
+        # Keys consumed by the pipeline, not forwarded to generators
+        _pipeline_only_keys = {"input_filter", "input_groups"}
+
         for group in self._registry.enabled_groups:
             if group.group_type == "generate":
+                # Strip pipeline-only keys before forwarding to generator
+                gen_params = {
+                    k: v for k, v in group.generator_params.items()
+                    if k not in _pipeline_only_keys
+                }
                 gen = FeatureGeneratorRegistry.build(
-                    group.generator, **group.generator_params
+                    group.generator, **gen_params
                 )
                 self._generators[group.name] = gen
                 logger.debug(
@@ -193,7 +319,28 @@ class FeatureGroupPipeline:
 
             if group.group_type == "generate":
                 gen = self._generators[group.name]
-                gen.fit(df_backend.to_pandas(df))
+                pdf = df_backend.to_pandas(df)
+                # Resolve input columns via input_filter / input_columns
+                resolved_cols = self._resolve_input_columns(pdf, group)
+                if resolved_cols:
+                    self._resolved_inputs[group.name] = resolved_cols
+                    # Inject resolved columns into the generator so it
+                    # knows which columns to operate on.  Generators use
+                    # different attribute names: feature_columns (graph,
+                    # gmm, mamba), sequence_columns (hmm), input_columns.
+                    for attr in ("feature_columns", "sequence_columns", "input_columns"):
+                        if hasattr(gen, attr):
+                            current_val = getattr(gen, attr, None)
+                            # Only override if the generator does not
+                            # already have explicit columns set.
+                            if not current_val:
+                                setattr(gen, attr, resolved_cols)
+                    logger.debug(
+                        "  Resolved %d input columns for '%s': %s...",
+                        len(resolved_cols), group.name,
+                        resolved_cols[:5],
+                    )
+                gen.fit(pdf)
                 # Update output_dim and output_columns from generator
                 if group.output_dim == 0:
                     group.output_dim = gen.output_dim
@@ -434,8 +581,10 @@ class FeatureGroupPipeline:
         return {
             "feature_group_ranges": dict(self._group_ranges),
             "expert_routing": self.expert_routing_by_groups,
+            "expert_routing_indices": self.expert_routing,
             "total_dim": self._total_dim,
             "output_columns": list(self._output_columns),
+            "resolved_inputs": dict(self._resolved_inputs),
         }
 
     @property
@@ -754,6 +903,7 @@ class FeatureGroupPipeline:
         pipeline.name = meta.get("name", "feature_group_pipeline")
         pipeline._registry = FeatureGroupRegistry(groups)
         pipeline._fitted = meta.get("fitted", True)
+        pipeline._resolved_inputs = {}
         pipeline._fit_metadata = {
             k: v for k, v in meta.items()
             if k not in ("name", "fitted", "total_dim", "group_ranges", "output_columns")
@@ -845,10 +995,13 @@ class FeatureGroupPipeline:
         if routing:
             lines.append("  Expert routing:")
             for expert, indices in routing.items():
-                lines.append(
-                    f"    {expert}: {len(indices)} features "
-                    f"[{indices[0]}..{indices[-1]}]"
-                )
+                if indices:
+                    lines.append(
+                        f"    {expert}: {len(indices)} features "
+                        f"[{indices[0]}..{indices[-1]}]"
+                    )
+                else:
+                    lines.append(f"    {expert}: 0 features (pending fit)")
 
         # Distillation summary
         distill_groups = self._registry.get_distillation_groups()

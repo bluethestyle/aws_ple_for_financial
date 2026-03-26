@@ -1,25 +1,33 @@
 """
-PipelineRunner -- 10-stage universal pipeline orchestrator.
+PipelineRunner -- universal pipeline orchestrator.
 
-Stages:
-  1. Load raw data via DataAdapter
-  2. Schema classification
-  3. PII encryption (optional)
-  4. Feature engineering + normalization via FeatureGroupPipeline
-  5. Label derivation
-  6. Sequence building (flat -> 3D tensors)
-  7. Build DataLoaders (PLEDataset)
-  8. Train teacher model (PLE)
-  9. Knowledge distillation (teacher -> LGBM students)
-  10. Serving preparation (CPE + reason generation) [config-gated]
+Two modes of operation:
 
-Each stage is independently testable and logs entry/exit.
+1. **Phase 0** (``run()``) -- produces training-ready artifacts on disk.
+   No model code is imported.  Output::
+
+       features.parquet      -- all numeric features (base + generated), normalized
+       labels.parquet        -- all derived labels
+       sequences.npy         -- padded 3-D tensor (if applicable)
+       seq_lengths.npy       -- per-entity sequence lengths
+       scaler_params.json    -- fitted scaler parameters (from TRAIN split only)
+       feature_schema.json   -- column names, types, group ranges, expert routing
+       label_schema.json     -- task definitions with types and class counts
+       split_indices.json    -- train/val/test row indices
+
+2. **Full pipeline** (``run_full()``) -- Phase 0 + training + distillation +
+   serving prep (stages 7-10 of the original 10-stage design).
 
 Usage::
 
     config = load_config("configs/examples/multitask.yaml")
     runner = PipelineRunner(config)
-    results = runner.run(output_dir="outputs/")
+
+    # Phase 0 only (training-ready artifacts)
+    artifacts = runner.run(output_dir="outputs/phase0/")
+
+    # Full pipeline (Phase 0 + training + analysis + distillation)
+    results = runner.run_full(output_dir="outputs/")
 """
 
 from __future__ import annotations
@@ -78,12 +86,56 @@ class _PipelineState:
             json.dump(self.state, f, indent=2, default=str)
 
 
-class PipelineRunner:
-    """Execute a 10-stage training pipeline driven by :class:`PipelineConfig`.
+# ======================================================================
+# Helper utilities (module-level, stateless)
+# ======================================================================
 
-    The runner wires together data loading (adapter), schema classification,
-    encryption, feature engineering, label derivation, sequence building,
-    DataLoader construction, and model training.
+def _is_binary(series: "pd.Series", max_sample: int = 5000) -> bool:
+    """Return True if *series* looks like a binary 0/1 column."""
+    import numpy as np
+
+    sample = series.dropna()
+    if len(sample) > max_sample:
+        sample = sample.sample(max_sample, random_state=0)
+    unique = set(sample.unique())
+    return unique.issubset({0, 1, 0.0, 1.0, True, False})
+
+
+def _detect_power_law(
+    df: "pd.DataFrame",
+    skew_threshold: float = 2.0,
+) -> List[str]:
+    """Identify continuous columns with power-law-like distributions.
+
+    Heuristic: columns whose absolute skewness exceeds *skew_threshold*
+    are candidates for ``log1p`` transformation.
+
+    Returns a list of column names.
+    """
+    import numpy as np
+
+    power_law_cols: List[str] = []
+    for col in df.columns:
+        try:
+            s = df[col].dropna()
+            if len(s) < 20:
+                continue
+            skew = float(s.skew())
+            if abs(skew) > skew_threshold and (s >= 0).all():
+                power_law_cols.append(col)
+        except Exception:
+            continue
+    return power_law_cols
+
+
+class PipelineRunner:
+    """Execute the pipeline driven by :class:`PipelineConfig`.
+
+    The primary entry point is :meth:`run` (Phase 0), which produces
+    training-ready artifacts on disk without importing any model code.
+
+    For the full end-to-end pipeline (including training, analysis,
+    distillation, and serving), use :meth:`run_full`.
 
     Args:
         config: A fully populated :class:`PipelineConfig`.
@@ -92,36 +144,41 @@ class PipelineRunner:
     def __init__(self, config: PipelineConfig) -> None:
         self.config = config
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Phase 0: produce training-ready artifacts
+    # ==================================================================
 
     def run(self, output_dir: str = "outputs/") -> dict:
-        """Run the full 9-stage pipeline with checkpointing and resume.
+        """Run the 9-stage Phase-0 pipeline and save training-ready artifacts.
 
-        Each stage is wrapped with :class:`_PipelineState` tracking so that
-        a failed run can be resumed from the last successful stage.
-        Intermediate artifacts (parquet, npy) are saved under
-        ``<output_dir>/checkpoints/`` for stages 4-6.
+        Stages:
+          1. Load raw data via adapter
+          2. Preprocessing (sentinels, categorical encoding, imputation)
+          3. Feature engineering via FeatureGroupPipeline
+          4. Label derivation via LabelDeriver
+          5. Temporal split (train / val / test indices)
+          6. Normalization (3-stage, train-only fit)
+          7. Leakage validation
+          8. Sequence building (flat -> 3-D tensors)
+          9. Save artifacts
 
         Args:
-            output_dir: Directory for model artifacts.
+            output_dir: Directory for all output artifacts.
 
         Returns:
-            A result dict with metadata from each stage.
+            A result dict with metadata from each stage plus artifact paths.
         """
         import numpy as np
+        import pandas as pd
+        from sklearn.preprocessing import StandardScaler, LabelEncoder
 
         results: Dict[str, Any] = {}
         pipeline_start = time.time()
 
-        # Store output_dir for cross-stage artifact saving
         out = Path(output_dir)
         self._output_dir = out
         out.mkdir(parents=True, exist_ok=True)
         (out / "audit").mkdir(exist_ok=True)
-        checkpoint_dir = out / "checkpoints"
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         state = _PipelineState(output_dir)
         if state.state["start_time"] is None:
@@ -129,251 +186,312 @@ class PipelineRunner:
             state._save()
 
         logger.info("=" * 60)
-        logger.info("[PIPELINE] Starting 10-stage pipeline: %s", self.config.task_name)
+        logger.info("[PIPELINE] Phase 0: producing training-ready artifacts")
+        logger.info("[PIPELINE] Task: %s  Output: %s", self.config.task_name, output_dir)
         logger.info("=" * 60)
 
-        # ----------------------------------------------------------
-        # Stage 1: Load raw data
-        # ----------------------------------------------------------
-        if not state.is_complete("stage1"):
-            try:
-                adapter = self._build_adapter()
-                raw_data = adapter.load_raw()
-                results["stage1_metadata"] = adapter.metadata
-                state.mark_complete("stage1", {"num_frames": len(raw_data)})
-                logger.info(
-                    "[PIPELINE] Stage 1 complete: loaded %d DataFrames",
-                    len(raw_data),
+        # ==============================================================
+        # Stage 1: Load raw data via adapter
+        # ==============================================================
+        stage_start = time.time()
+        logger.info("[Stage 1] Loading raw data...")
+
+        adapter = self._build_adapter()
+        raw_data = adapter.load_raw()
+        df = raw_data["main"]
+
+        results["stage1_load"] = {
+            "rows": len(df),
+            "cols": len(df.columns),
+            "adapter_metadata": adapter.metadata.__dict__
+            if hasattr(adapter.metadata, "__dict__")
+            else str(adapter.metadata),
+            "time_seconds": round(time.time() - stage_start, 2),
+        }
+        state.mark_complete("stage1_load", {"rows": len(df), "cols": len(df.columns)})
+        logger.info(
+            "[Stage 1] Loaded %d rows x %d cols in %.2fs",
+            len(df), len(df.columns), time.time() - stage_start,
+        )
+
+        # ==============================================================
+        # Stage 1.5: Temporal preparation (sequence truncation)
+        # ==============================================================
+        stage_start = time.time()
+        df = self._prepare_temporal(df)
+        results["stage1_5_temporal_prep"] = {
+            "time_seconds": round(time.time() - stage_start, 2),
+        }
+
+        # ==============================================================
+        # Stage 2: Preprocessing
+        # ==============================================================
+        stage_start = time.time()
+        logger.info("[Stage 2] Preprocessing...")
+
+        raw_cfg = self._config_to_dict()
+        preproc_cfg = raw_cfg.get("preprocessing", {})
+
+        # 2a) Sentinel normalization (config-driven)
+        sentinel_rules = preproc_cfg.get("sentinels", {})
+        sentinel_applied = 0
+        for col, sentinel_val in sentinel_rules.items():
+            if col in df.columns:
+                mask = df[col] == sentinel_val
+                cnt = int(mask.sum())
+                if cnt > 0:
+                    df.loc[mask, col] = np.nan
+                    sentinel_applied += cnt
+        if sentinel_applied:
+            logger.info("[Stage 2] Sentinel normalization: replaced %d values", sentinel_applied)
+
+        # 2b) Categorical encoding
+        id_cols = set(self.config.features.id_cols or ["customer_id", "user_id"])
+        date_cols_cfg = preproc_cfg.get("date_cols", [])
+        if isinstance(date_cols_cfg, str):
+            date_cols_cfg = [date_cols_cfg]
+        date_cols = set(date_cols_cfg) | {"snapshot_date", "fecha_dato"}
+        exclude_encode = id_cols | date_cols
+
+        cat_cols = df.select_dtypes(include=["object", "string", "category"]).columns
+        encoded_cols: List[str] = []
+        for col in cat_cols:
+            if col not in exclude_encode:
+                le = LabelEncoder()
+                df[col] = le.fit_transform(df[col].astype(str))
+                encoded_cols.append(col)
+        if encoded_cols:
+            logger.info("[Stage 2] Categorical encoding: %d cols (%s...)",
+                        len(encoded_cols), encoded_cols[:5])
+
+        # 2c) Missing value imputation (config-driven)
+        impute_rules = preproc_cfg.get("imputation", {})
+        for col, strategy in impute_rules.items():
+            if col in df.columns:
+                if strategy == "median":
+                    df[col] = df[col].fillna(df[col].median())
+                elif strategy == "mean":
+                    df[col] = df[col].fillna(df[col].mean())
+                elif strategy == "zero":
+                    df[col] = df[col].fillna(0)
+                elif strategy == "mode":
+                    mode_val = df[col].mode()
+                    if len(mode_val) > 0:
+                        df[col] = df[col].fillna(mode_val.iloc[0])
+
+        # Default: fillna(0) for remaining numeric NaN
+        numeric_cols_all = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols_all:
+            if df[col].isna().any():
+                df[col] = df[col].fillna(0)
+
+        results["stage2_preprocessing"] = {
+            "sentinel_values_replaced": sentinel_applied,
+            "categorical_encoded": encoded_cols,
+            "imputation_rules_applied": list(impute_rules.keys()),
+            "time_seconds": round(time.time() - stage_start, 2),
+        }
+        state.mark_complete("stage2_preprocessing")
+        logger.info("[Stage 2] Preprocessing complete in %.2fs", time.time() - stage_start)
+
+        # ==============================================================
+        # Stage 3: Feature engineering via FeatureGroupPipeline
+        # ==============================================================
+        stage_start = time.time()
+        logger.info("[Stage 3] Feature engineering...")
+
+        feature_pipeline, df_generated = self._engineer_features(df, raw_data)
+        feature_schema = feature_pipeline.get_ple_input_metadata()
+
+        # Merge generated features into df
+        if df_generated is not None and len(df_generated.columns) > 0:
+            # Only add columns that are truly new
+            new_cols = [c for c in df_generated.columns if c not in df.columns]
+            if new_cols:
+                df = pd.concat(
+                    [df.reset_index(drop=True), df_generated[new_cols].reset_index(drop=True)],
+                    axis=1,
                 )
-            except Exception as e:
-                logger.error("[PIPELINE] Stage 1 failed: %s", e)
-                state.mark_failed("stage1", str(e))
-                raise
-        else:
-            logger.info("[PIPELINE] Stage 1 already complete, re-loading...")
-            adapter = self._build_adapter()
-            raw_data = adapter.load_raw()
-            results["stage1_metadata"] = adapter.metadata
+                logger.info("[Stage 3] Merged %d generated features into main df", len(new_cols))
 
-        # ----------------------------------------------------------
-        # Stage 1.5: Temporal preparation
-        # ----------------------------------------------------------
-        if not state.is_complete("stage1_5"):
-            try:
-                raw_data["main"] = self._prepare_temporal(raw_data["main"])
-                results["stage1_5_temporal_prep"] = {"applied": True}
-                state.mark_complete("stage1_5")
-                logger.info("[PIPELINE] Stage 1.5 complete: temporal preparation")
-            except Exception as e:
-                logger.error("[PIPELINE] Stage 1.5 failed: %s", e)
-                state.mark_failed("stage1_5", str(e))
-                raise
-        else:
-            logger.info("[PIPELINE] Stage 1.5 already complete, re-applying...")
-            raw_data["main"] = self._prepare_temporal(raw_data["main"])
-            results["stage1_5_temporal_prep"] = {"applied": True}
+        results["stage3_features"] = {
+            "num_groups": len(feature_pipeline),
+            "total_dim": feature_pipeline.total_dim,
+            "generated_cols": len(df_generated.columns) if df_generated is not None else 0,
+            "df_shape_after": list(df.shape),
+            "time_seconds": round(time.time() - stage_start, 2),
+        }
+        state.mark_complete("stage3_features", {"total_dim": feature_pipeline.total_dim})
+        logger.info(
+            "[Stage 3] Feature engineering complete in %.2fs: %d groups, total_dim=%d",
+            time.time() - stage_start, len(feature_pipeline), feature_pipeline.total_dim,
+        )
 
-        # ----------------------------------------------------------
-        # Stage 2: Schema classification
-        # ----------------------------------------------------------
-        if not state.is_complete("stage2"):
-            try:
-                schema = self._classify_schema(raw_data["main"])
-                results["stage2_schema"] = schema
-                state.mark_complete("stage2", {
-                    k: len(v) for k, v in schema.items()
-                })
-                logger.info(
-                    "[PIPELINE] Stage 2 complete: %d numeric, %d categorical, "
-                    "%d sequence cols",
-                    len(schema.get("numeric", [])),
-                    len(schema.get("categorical", [])),
-                    len(schema.get("sequence", [])),
-                )
-            except Exception as e:
-                logger.error("[PIPELINE] Stage 2 failed: %s", e)
-                state.mark_failed("stage2", str(e))
-                raise
-        else:
-            logger.info("[PIPELINE] Stage 2 already complete, re-classifying...")
-            schema = self._classify_schema(raw_data["main"])
-            results["stage2_schema"] = schema
+        # ==============================================================
+        # Stage 4: Label derivation via LabelDeriver
+        # ==============================================================
+        stage_start = time.time()
+        logger.info("[Stage 4] Deriving labels...")
 
-        # Save schema classification audit
-        schema_path = out / "audit" / "schema_classification.json"
-        with open(schema_path, "w") as f:
-            json.dump(schema, f, indent=2, default=str)
-        logger.info("[PIPELINE] Schema classification saved to %s", schema_path)
+        labels_df = self._derive_labels(df)
 
-        # ----------------------------------------------------------
-        # Stage 3: Encryption
-        # ----------------------------------------------------------
-        if not state.is_complete("stage3"):
-            try:
-                df_main = self._encrypt(raw_data["main"])
-                results["stage3_encryption"] = {
-                    "applied": df_main is not raw_data["main"],
-                    "rows": len(df_main),
-                    "cols": len(df_main.columns),
-                }
-                state.mark_complete("stage3", {
-                    "rows": len(df_main), "cols": len(df_main.columns),
-                })
-                logger.info(
-                    "[PIPELINE] Stage 3 complete: %d rows x %d cols after encryption",
-                    len(df_main), len(df_main.columns),
-                )
-            except Exception as e:
-                logger.error("[PIPELINE] Stage 3 failed: %s", e)
-                state.mark_failed("stage3", str(e))
-                raise
-        else:
-            logger.info("[PIPELINE] Stage 3 already complete, re-encrypting...")
-            df_main = self._encrypt(raw_data["main"])
-            results["stage3_encryption"] = {
-                "applied": df_main is not raw_data["main"],
-                "rows": len(df_main),
-                "cols": len(df_main.columns),
+        # Build label schema
+        label_schema: Dict[str, Any] = {"tasks": []}
+        for task in self.config.tasks:
+            task_info: Dict[str, Any] = {
+                "name": task.name,
+                "type": task.type,
+                "label_col": task.label_col,
+                "loss": task.loss,
+                "loss_weight": task.loss_weight,
             }
+            if task.label_col in labels_df.columns:
+                col_data = labels_df[task.label_col]
+                if task.type in ("binary", "multiclass"):
+                    task_info["num_classes"] = int(col_data.nunique())
+                    task_info["class_distribution"] = {
+                        str(k): int(v)
+                        for k, v in col_data.value_counts().to_dict().items()
+                    }
+                elif task.type == "regression":
+                    task_info["num_classes"] = 1
+                    task_info["stats"] = {
+                        "mean": float(col_data.mean()),
+                        "std": float(col_data.std()),
+                        "min": float(col_data.min()),
+                        "max": float(col_data.max()),
+                    }
+                else:
+                    task_info["num_classes"] = task.num_classes
+            label_schema["tasks"].append(task_info)
 
-        # ----------------------------------------------------------
-        # Stage 4: Feature engineering + normalization
-        # ----------------------------------------------------------
-        features_ckpt = checkpoint_dir / "features.parquet"
-        if not state.is_complete("stage4"):
-            try:
-                feature_pipeline, df_features = self._engineer_features(
-                    df_main, raw_data,
-                )
-                results["feature_metadata"] = (
-                    feature_pipeline.get_ple_input_metadata()
-                )
+        results["stage4_labels"] = {
+            "label_columns": list(labels_df.columns),
+            "rows": len(labels_df),
+            "time_seconds": round(time.time() - stage_start, 2),
+        }
+        state.mark_complete("stage4_labels", {"label_columns": list(labels_df.columns)})
+        logger.info(
+            "[Stage 4] Derived %d label columns in %.2fs",
+            len(labels_df.columns), time.time() - stage_start,
+        )
 
-                # Save intermediate artifacts
-                df_features.to_parquet(features_ckpt)
-                feature_pipeline.save(str(checkpoint_dir / "feature_pipeline"))
+        # ==============================================================
+        # Stage 5: Temporal split (train / val / test indices)
+        # ==============================================================
+        stage_start = time.time()
+        logger.info("[Stage 5] Splitting data...")
 
-                state.mark_complete("stage4", {
-                    "shape": list(df_features.shape),
-                })
-                logger.info(
-                    "[PIPELINE] Stage 4 complete: %d features across %d groups",
-                    feature_pipeline.total_dim, len(feature_pipeline),
-                )
-            except Exception as e:
-                logger.error("[PIPELINE] Stage 4 failed: %s", e)
-                state.mark_failed("stage4", str(e))
-                raise
-        else:
-            import pandas as pd
+        train_idx, val_idx, test_idx = self._compute_split_indices(df)
+
+        split_info = {
+            "train_size": len(train_idx),
+            "val_size": len(val_idx),
+            "test_size": len(test_idx),
+            "total": len(df),
+            "time_seconds": round(time.time() - stage_start, 2),
+        }
+        results["stage5_split"] = split_info
+        state.mark_complete("stage5_split", split_info)
+        logger.info(
+            "[Stage 5] Split complete in %.2fs: train=%d, val=%d, test=%d",
+            time.time() - stage_start, len(train_idx), len(val_idx), len(test_idx),
+        )
+
+        # ==============================================================
+        # Stage 6: Normalization (3-stage, train-only fit)
+        # ==============================================================
+        stage_start = time.time()
+        logger.info("[Stage 6] Normalizing features (train-only fit)...")
+
+        # Determine feature columns: exclude labels, IDs, dates, sequence (list) cols
+        label_col_set = set(labels_df.columns)
+        seq_col_set = set(c for c in df.columns
+                         if c.startswith("seq_") or c in self.config.features.sequence)
+        non_feature_cols = label_col_set | id_cols | date_cols | seq_col_set
+        feature_cols = [
+            c for c in df.select_dtypes(include=[np.number]).columns
+            if c not in non_feature_cols
+        ]
+
+        train_df = df.iloc[train_idx]
+
+        # 6a) Identify continuous vs binary
+        continuous_cols = [c for c in feature_cols if not _is_binary(df[c])]
+        binary_cols = [c for c in feature_cols if _is_binary(df[c])]
+
+        # 6b) Power-law detection + log1p copies (on train data)
+        power_law_cols = _detect_power_law(train_df[continuous_cols])
+        log_cols_created: List[str] = []
+        for col in power_law_cols:
+            log_col = f"{col}_log"
+            df[log_col] = np.log1p(df[col].clip(lower=0))
+            log_cols_created.append(log_col)
+            # Add to feature_cols but NOT to continuous_cols (they stay raw)
+            feature_cols.append(log_col)
+
+        if log_cols_created:
             logger.info(
-                "[PIPELINE] Stage 4 already complete, loading checkpoint..."
-            )
-            df_features = pd.read_parquet(features_ckpt)
-            feature_pipeline, _ = self._engineer_features(df_main, raw_data)
-            results["feature_metadata"] = (
-                feature_pipeline.get_ple_input_metadata()
+                "[Stage 6] Power-law log1p copies: %d cols (%s...)",
+                len(log_cols_created), log_cols_created[:5],
             )
 
-        # Save scaler/transformer parameters
+        # 6c) StandardScaler fit on TRAIN only, transform ALL
         scaler_params: Dict[str, Any] = {}
-        for group_name, chain in feature_pipeline._transformer_chains.items():
-            scaler_params[group_name] = [t.get_params() for t in chain]
-        scaler_path = out / "audit" / "scaler_params.json"
-        with open(scaler_path, "w") as f:
-            json.dump(scaler_params, f, indent=2, default=str)
-        logger.info("[PIPELINE] Scaler parameters saved to %s", scaler_path)
+        if continuous_cols:
+            scaler = StandardScaler()
+            scaler.fit(train_df[continuous_cols].values)
+            df[continuous_cols] = scaler.transform(df[continuous_cols].values)
 
-        # ----------------------------------------------------------
-        # Stage 5: Label derivation
-        # ----------------------------------------------------------
-        labels_ckpt = checkpoint_dir / "labels.parquet"
-        if not state.is_complete("stage5"):
-            try:
-                df_labels = self._derive_labels(raw_data["main"])
-                results["stage5_labels"] = {
-                    "label_columns": list(df_labels.columns),
-                    "rows": len(df_labels),
-                }
+            scaler_params["scaler_type"] = "StandardScaler"
+            scaler_params["columns"] = continuous_cols
+            scaler_params["mean"] = scaler.mean_.tolist()
+            scaler_params["scale"] = scaler.scale_.tolist()
+            scaler_params["var"] = scaler.var_.tolist()
 
-                # Save intermediate artifact
-                df_labels.to_parquet(labels_ckpt)
+        scaler_params["power_law_log_cols"] = log_cols_created
+        scaler_params["binary_cols"] = binary_cols
+        scaler_params["continuous_cols"] = continuous_cols
 
-                state.mark_complete("stage5", {
-                    "label_columns": list(df_labels.columns),
-                    "rows": len(df_labels),
-                })
-                logger.info(
-                    "[PIPELINE] Stage 5 complete: %d label columns",
-                    len(df_labels.columns),
-                )
-            except Exception as e:
-                logger.error("[PIPELINE] Stage 5 failed: %s", e)
-                state.mark_failed("stage5", str(e))
-                raise
-        else:
-            import pandas as pd
-            logger.info(
-                "[PIPELINE] Stage 5 already complete, loading checkpoint..."
-            )
-            df_labels = pd.read_parquet(labels_ckpt)
-            results["stage5_labels"] = {
-                "label_columns": list(df_labels.columns),
-                "rows": len(df_labels),
-            }
+        results["stage6_normalization"] = {
+            "continuous_cols": len(continuous_cols),
+            "binary_cols": len(binary_cols),
+            "power_law_log_cols": len(log_cols_created),
+            "total_feature_cols": len(feature_cols),
+            "time_seconds": round(time.time() - stage_start, 2),
+        }
+        state.mark_complete("stage6_normalization")
+        logger.info(
+            "[Stage 6] Normalization complete in %.2fs: %d continuous (scaled), "
+            "%d binary (passthrough), %d log1p copies (unscaled)",
+            time.time() - stage_start,
+            len(continuous_cols), len(binary_cols), len(log_cols_created),
+        )
 
-        # Save label distributions
-        label_stats: Dict[str, Any] = {}
-        for col in df_labels.columns:
-            if df_labels[col].dtype in ("int64", "int32"):
-                label_stats[col] = df_labels[col].value_counts().to_dict()
-            else:
-                label_stats[col] = {
-                    "mean": float(df_labels[col].mean()),
-                    "std": float(df_labels[col].std()),
-                    "min": float(df_labels[col].min()),
-                    "max": float(df_labels[col].max()),
-                    "count": int(df_labels[col].count()),
-                }
-        stats_path = out / "audit" / "label_distributions.json"
-        with open(stats_path, "w") as f:
-            json.dump(label_stats, f, indent=2, default=str)
-        logger.info("[PIPELINE] Label distributions saved to %s", stats_path)
+        # ==============================================================
+        # Stage 7: Leakage validation
+        # ==============================================================
+        stage_start = time.time()
+        logger.info("[Stage 7] Validating for data leakage...")
 
-        # ----------------------------------------------------------
-        # Stage 5.5: Leakage validation
-        # ----------------------------------------------------------
-        if not state.is_complete("stage5_5"):
-            try:
-                leakage_result = self._validate_leakage(
-                    df_features, df_labels, raw_data.get("main"),
-                )
-                results["stage5_5_leakage"] = {
-                    "passed": leakage_result.passed,
-                    "warnings": leakage_result.warnings,
-                }
-                state.mark_complete("stage5_5", {
-                    "passed": leakage_result.passed,
-                })
-                logger.info(
-                    "[PIPELINE] Stage 5.5 complete: leakage validation %s "
-                    "(%d warnings)",
-                    "PASSED" if leakage_result.passed else "FAILED",
-                    len(leakage_result.warnings),
-                )
-            except Exception as e:
-                logger.error("[PIPELINE] Stage 5.5 failed: %s", e)
-                state.mark_failed("stage5_5", str(e))
-                raise
-        else:
-            logger.info("[PIPELINE] Stage 5.5 already complete, skipping...")
-            results["stage5_5_leakage"] = state.state["artifacts"].get(
-                "stage5_5", {"passed": True},
-            )
-            # Still run validation for the audit report
-            leakage_result = self._validate_leakage(
-                df_features, df_labels, raw_data.get("main"),
-            )
+        # Build feature-only df for leakage check
+        df_features_only = df[feature_cols]
+        leakage_result = self._validate_leakage(df_features_only, labels_df, df)
+
+        results["stage7_leakage"] = {
+            "passed": leakage_result.passed,
+            "warnings": leakage_result.warnings
+            if hasattr(leakage_result, "warnings")
+            else [],
+            "time_seconds": round(time.time() - stage_start, 2),
+        }
+        state.mark_complete("stage7_leakage", {"passed": leakage_result.passed})
+        logger.info(
+            "[Stage 7] Leakage validation %s in %.2fs (%d warnings)",
+            "PASSED" if leakage_result.passed else "FAILED",
+            time.time() - stage_start,
+            len(leakage_result.warnings) if hasattr(leakage_result, "warnings") else 0,
+        )
 
         # Save leakage report
         leakage_path = out / "audit" / "leakage_report.json"
@@ -381,158 +499,277 @@ class PipelineRunner:
             json.dump(
                 {
                     "passed": leakage_result.passed,
-                    "warnings": leakage_result.warnings,
-                    "details": leakage_result.details,
+                    "warnings": leakage_result.warnings
+                    if hasattr(leakage_result, "warnings")
+                    else [],
+                    "details": leakage_result.details
+                    if hasattr(leakage_result, "details")
+                    else {},
                 },
                 f, indent=2, default=str,
             )
-        logger.info("[PIPELINE] Leakage report saved to %s", leakage_path)
 
-        # ----------------------------------------------------------
-        # Stage 6: Sequence building
-        # ----------------------------------------------------------
-        if not state.is_complete("stage6"):
-            try:
-                sequences = self._build_sequences(raw_data)
-                results["stage6_sequences"] = {
-                    "has_sequences": sequences is not None,
-                }
-                if sequences is not None:
-                    results["stage6_sequences"]["keys"] = list(sequences.keys())
-                    # Save intermediate artifacts
-                    for name, arr in sequences.items():
-                        np.save(checkpoint_dir / f"{name}.npy", arr)
+        # ==============================================================
+        # Stage 8: Sequence building
+        # ==============================================================
+        stage_start = time.time()
+        logger.info("[Stage 8] Building sequences...")
 
-                state.mark_complete("stage6", {
-                    "has_sequences": sequences is not None,
-                    "keys": list(sequences.keys()) if sequences else [],
-                })
-                logger.info(
-                    "[PIPELINE] Stage 6 complete: sequences=%s",
-                    "present" if sequences else "none",
-                )
-            except Exception as e:
-                logger.error("[PIPELINE] Stage 6 failed: %s", e)
-                state.mark_failed("stage6", str(e))
-                raise
-        else:
-            logger.info(
-                "[PIPELINE] Stage 6 already complete, loading checkpoint..."
-            )
-            saved_keys = state.state["artifacts"].get(
-                "stage6", {},
-            ).get("keys", [])
-            if saved_keys:
-                sequences = {}
-                for name in saved_keys:
-                    npy_path = checkpoint_dir / f"{name}.npy"
-                    if npy_path.exists():
-                        sequences[name] = np.load(
-                            str(npy_path), allow_pickle=False,
-                        )
-            else:
-                sequences = None
-            results["stage6_sequences"] = {
-                "has_sequences": sequences is not None,
+        sequences = self._build_sequences(raw_data)
+
+        results["stage8_sequences"] = {
+            "has_sequences": sequences is not None,
+            "keys": list(sequences.keys()) if sequences else [],
+            "time_seconds": round(time.time() - stage_start, 2),
+        }
+        state.mark_complete("stage8_sequences", {
+            "has_sequences": sequences is not None,
+        })
+        logger.info(
+            "[Stage 8] Sequences: %s in %.2fs",
+            f"{len(sequences)} tensors" if sequences else "none",
+            time.time() - stage_start,
+        )
+
+        # ==============================================================
+        # Stage 9: Save all artifacts
+        # ==============================================================
+        stage_start = time.time()
+        logger.info("[Stage 9] Saving artifacts to %s ...", out)
+
+        # 9a) features.parquet -- all numeric features, normalized
+        features_out = df[feature_cols].reset_index(drop=True)
+        features_path = out / "features.parquet"
+        features_out.to_parquet(features_path, index=False)
+        logger.info("[Stage 9] features.parquet: %d rows x %d cols", *features_out.shape)
+
+        # 9b) labels.parquet
+        labels_path = out / "labels.parquet"
+        labels_df.reset_index(drop=True).to_parquet(labels_path, index=False)
+        logger.info("[Stage 9] labels.parquet: %d rows x %d cols", *labels_df.shape)
+
+        # 9c) sequences.npy + seq_lengths.npy
+        if sequences:
+            for name, arr in sequences.items():
+                np.save(str(out / f"{name}.npy"), arr)
+                logger.info("[Stage 9] %s.npy: shape=%s", name, arr.shape)
+            # Also save as canonical sequences.npy if there is exactly one
+            if len(sequences) == 1:
+                arr = next(iter(sequences.values()))
+                np.save(str(out / "sequences.npy"), arr)
+                # Compute and save sequence lengths
+                # (number of non-zero timesteps along axis 1)
+                if arr.ndim == 3:
+                    nonzero_mask = np.any(arr != 0, axis=2)  # (n, seq_len)
+                    seq_lengths = nonzero_mask.sum(axis=1).astype(np.int32)
+                elif arr.ndim == 2:
+                    seq_lengths = (arr != 0).sum(axis=1).astype(np.int32)
+                else:
+                    seq_lengths = np.full(len(arr), arr.shape[1] if arr.ndim >= 2 else 1, dtype=np.int32)
+                np.save(str(out / "seq_lengths.npy"), seq_lengths)
+                logger.info("[Stage 9] seq_lengths.npy: shape=%s", seq_lengths.shape)
+
+        # 9d) scaler_params.json
+        scaler_path = out / "scaler_params.json"
+        with open(scaler_path, "w") as f:
+            json.dump(scaler_params, f, indent=2, default=str)
+        logger.info("[Stage 9] scaler_params.json written")
+
+        # 9e) feature_schema.json
+        feature_schema["feature_columns"] = feature_cols
+        feature_schema["binary_columns"] = binary_cols
+        feature_schema["continuous_columns"] = continuous_cols
+        feature_schema["power_law_log_columns"] = log_cols_created
+        feature_schema_path = out / "feature_schema.json"
+        with open(feature_schema_path, "w") as f:
+            json.dump(feature_schema, f, indent=2, default=str)
+        logger.info("[Stage 9] feature_schema.json written")
+
+        # 9f) label_schema.json
+        label_schema_path = out / "label_schema.json"
+        with open(label_schema_path, "w") as f:
+            json.dump(label_schema, f, indent=2, default=str)
+        logger.info("[Stage 9] label_schema.json written")
+
+        # 9g) split_indices.json
+        split_indices = {
+            "train": [int(i) for i in train_idx],
+            "val": [int(i) for i in val_idx],
+            "test": [int(i) for i in test_idx],
+        }
+        split_path = out / "split_indices.json"
+        with open(split_path, "w") as f:
+            json.dump(split_indices, f)
+        logger.info("[Stage 9] split_indices.json written")
+
+        # 9h) Save feature pipeline for later reuse
+        try:
+            feature_pipeline.save(str(out / "feature_pipeline"))
+            logger.info("[Stage 9] feature_pipeline saved")
+        except Exception as e:
+            logger.warning("[Stage 9] Could not save feature_pipeline: %s", e)
+
+        # 9i) Pipeline manifest
+        elapsed = time.time() - pipeline_start
+        results["total_time_seconds"] = round(elapsed, 2)
+        results["artifact_paths"] = {
+            "features": str(features_path),
+            "labels": str(labels_path),
+            "scaler_params": str(scaler_path),
+            "feature_schema": str(feature_schema_path),
+            "label_schema": str(label_schema_path),
+            "split_indices": str(split_path),
+        }
+        if sequences:
+            results["artifact_paths"]["sequences"] = {
+                name: str(out / f"{name}.npy") for name in sequences
             }
-            if sequences is not None:
-                results["stage6_sequences"]["keys"] = list(sequences.keys())
 
-        # ----------------------------------------------------------
-        # Stage 7: Build DataLoaders
-        # ----------------------------------------------------------
-        if not state.is_complete("stage7"):
+        manifest_path = out / "pipeline_manifest.json"
+        with open(manifest_path, "w") as f:
+            json.dump(results, f, indent=2, default=str)
+
+        state.mark_complete("stage9_save")
+        logger.info("[Stage 9] Artifacts saved in %.2fs", time.time() - stage_start)
+
+        logger.info("=" * 60)
+        logger.info(
+            "[PIPELINE] Phase 0 complete in %.1fs.  Artifacts: %s",
+            elapsed, output_dir,
+        )
+        logger.info("=" * 60)
+
+        return results
+
+    # ==================================================================
+    # Full pipeline (Phase 0 + training + distillation + serving)
+    # ==================================================================
+
+    def run_full(self, output_dir: str = "outputs/") -> dict:
+        """Run Phase 0 followed by training, analysis, distillation, and serving.
+
+        This is the backward-compatible entry point that replaces the
+        original ``run()`` method.  It delegates Phase 0 to :meth:`run`,
+        then proceeds with stages 7-10 of the original pipeline.
+
+        Args:
+            output_dir: Directory for model artifacts.
+
+        Returns:
+            A result dict with metadata from all stages.
+        """
+        import numpy as np
+        import pandas as pd
+
+        results: Dict[str, Any] = {}
+        pipeline_start = time.time()
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        state = _PipelineState(output_dir)
+
+        # ---- Phase 0 ------------------------------------------------
+        phase0_dir = str(out)
+        if not state.is_complete("stage9_save"):
+            phase0_results = self.run(output_dir=phase0_dir)
+            results.update(phase0_results)
+        else:
+            logger.info("[PIPELINE] Phase 0 already complete, loading artifacts...")
+            manifest_path = out / "pipeline_manifest.json"
+            if manifest_path.exists():
+                with open(manifest_path) as f:
+                    results.update(json.load(f))
+
+        # Load Phase 0 artifacts for downstream stages
+        df_features = pd.read_parquet(out / "features.parquet")
+        df_labels = pd.read_parquet(out / "labels.parquet")
+
+        with open(out / "split_indices.json") as f:
+            split_indices = json.load(f)
+        train_idx = split_indices["train"]
+
+        with open(out / "feature_schema.json") as f:
+            feature_schema = json.load(f)
+
+        # Reload feature pipeline
+        feature_pipeline = None
+        try:
+            from ..feature.group_pipeline import FeatureGroupPipeline
+            fp_path = out / "feature_pipeline"
+            if fp_path.exists():
+                feature_pipeline = FeatureGroupPipeline.load(str(fp_path))
+        except Exception as e:
+            logger.warning("[PIPELINE] Could not reload feature pipeline: %s", e)
+
+        # Load sequences if present
+        sequences: Optional[Dict[str, np.ndarray]] = None
+        seq_keys = results.get("stage8_sequences", {}).get("keys", [])
+        if seq_keys:
+            sequences = {}
+            for name in seq_keys:
+                npy_path = out / f"{name}.npy"
+                if npy_path.exists():
+                    sequences[name] = np.load(str(npy_path), allow_pickle=False)
+
+        # ---- Stage 7 (old): Build DataLoaders -----------------------
+        if not state.is_complete("stage_train_loaders"):
             try:
                 train_loader, val_loader = self._build_dataloaders(
                     df_features, df_labels, sequences, feature_pipeline,
                 )
-                results["stage7_dataloaders"] = {
-                    "train_batches": len(train_loader),
-                    "val_batches": len(val_loader),
-                }
-                state.mark_complete("stage7", {
+                results["train_loader_batches"] = len(train_loader)
+                results["val_loader_batches"] = len(val_loader)
+                state.mark_complete("stage_train_loaders", {
                     "train_batches": len(train_loader),
                     "val_batches": len(val_loader),
                 })
-                logger.info(
-                    "[PIPELINE] Stage 7 complete: train=%d batches, "
-                    "val=%d batches",
-                    len(train_loader), len(val_loader),
-                )
             except Exception as e:
-                logger.error("[PIPELINE] Stage 7 failed: %s", e)
-                state.mark_failed("stage7", str(e))
+                logger.error("[PIPELINE] DataLoader build failed: %s", e)
+                state.mark_failed("stage_train_loaders", str(e))
                 raise
         else:
-            logger.info(
-                "[PIPELINE] Stage 7 already complete, rebuilding loaders..."
-            )
             train_loader, val_loader = self._build_dataloaders(
                 df_features, df_labels, sequences, feature_pipeline,
             )
-            results["stage7_dataloaders"] = {
-                "train_batches": len(train_loader),
-                "val_batches": len(val_loader),
-            }
 
-        # ----------------------------------------------------------
-        # Stage 8: Train teacher model
-        # ----------------------------------------------------------
-        if not state.is_complete("stage8"):
+        # ---- Stage 8 (old): Train teacher model ---------------------
+        if not state.is_complete("stage_train"):
             try:
-                results["training"] = self._train(
-                    train_loader, val_loader, output_dir,
-                )
-                feature_pipeline.save(str(out / "feature_pipeline"))
-                state.mark_complete("stage8", {
+                results["training"] = self._train(train_loader, val_loader, output_dir)
+                if feature_pipeline is not None:
+                    feature_pipeline.save(str(out / "feature_pipeline"))
+                state.mark_complete("stage_train", {
                     "status": results["training"].get("status", "unknown"),
                 })
             except Exception as e:
-                logger.error("[PIPELINE] Stage 8 failed: %s", e)
-                state.mark_failed("stage8", str(e))
+                logger.error("[PIPELINE] Training failed: %s", e)
+                state.mark_failed("stage_train", str(e))
                 raise
         else:
-            logger.info(
-                "[PIPELINE] Stage 8 already complete, skipping training..."
-            )
             results["training"] = state.state["artifacts"].get(
-                "stage8", {"status": "resumed"},
+                "stage_train", {"status": "resumed"},
             )
-            feature_pipeline.save(str(out / "feature_pipeline"))
 
-        # ----------------------------------------------------------
-        # Stage 8.5: Model analysis (CGC gates + HGCN interpretable)
-        # ----------------------------------------------------------
-        if not state.is_complete("stage8_5"):
+        # ---- Stage 8.5: Model analysis -----------------------------
+        if not state.is_complete("stage_analysis"):
             try:
                 analysis_results = self._analyze_model(
-                    val_loader=val_loader,
-                    output_dir=output_dir,
+                    val_loader=val_loader, output_dir=output_dir,
                 )
                 results["analysis"] = analysis_results
-                state.mark_complete("stage8_5", {
-                    "status": "success",
-                    "artifacts": list(analysis_results.keys()),
-                })
+                state.mark_complete("stage_analysis", {"status": "success"})
             except Exception as e:
-                logger.warning(
-                    "[PIPELINE] Stage 8.5 (analysis) failed: %s — continuing",
-                    e,
-                )
+                logger.warning("[PIPELINE] Analysis failed: %s -- continuing", e)
                 results["analysis"] = {"status": "failed", "error": str(e)}
-                state.mark_complete("stage8_5", {"status": "failed"})
+                state.mark_complete("stage_analysis", {"status": "failed"})
         else:
-            logger.info(
-                "[PIPELINE] Stage 8.5 already complete, skipping analysis..."
-            )
             results["analysis"] = state.state["artifacts"].get(
-                "stage8_5", {"status": "resumed"},
+                "stage_analysis", {"status": "resumed"},
             )
 
-        # ----------------------------------------------------------
-        # Stage 9: Knowledge distillation
-        # ----------------------------------------------------------
-        if not state.is_complete("stage9"):
+        # ---- Stage 9 (old): Knowledge distillation -----------------
+        if not state.is_complete("stage_distill"):
             try:
                 distill_cfg = self._config_to_dict().get("distillation", {})
                 if distill_cfg.get("enabled", True):
@@ -543,66 +780,43 @@ class PipelineRunner:
                         output_dir=output_dir,
                     )
                 else:
-                    logger.info(
-                        "[Stage 9] Distillation disabled in config, skipping."
-                    )
                     results["distillation"] = {"status": "disabled"}
-                state.mark_complete("stage9", {
-                    "status": results.get("distillation", {}).get(
-                        "status", "unknown",
-                    ),
+                state.mark_complete("stage_distill", {
+                    "status": results.get("distillation", {}).get("status", "unknown"),
                 })
             except Exception as e:
-                logger.error("[PIPELINE] Stage 9 failed: %s", e)
-                state.mark_failed("stage9", str(e))
+                logger.error("[PIPELINE] Distillation failed: %s", e)
+                state.mark_failed("stage_distill", str(e))
                 raise
         else:
-            logger.info(
-                "[PIPELINE] Stage 9 already complete, skipping distillation..."
-            )
             results["distillation"] = state.state["artifacts"].get(
-                "stage9", {"status": "resumed"},
+                "stage_distill", {"status": "resumed"},
             )
 
-        # ----------------------------------------------------------
-        # Stage 9.5: Serving preparation (context vector store)
-        # ----------------------------------------------------------
-        if not state.is_complete("stage9_5"):
+        # ---- Stage 9.5: Serving prep --------------------------------
+        if not state.is_complete("stage_serving"):
             try:
                 serving_cfg = self._config_to_dict().get("serving_prep", {})
                 if serving_cfg.get("enabled", False):
                     results["serving_prep"] = self._prepare_serving(
-                        feature_df=df_features,
-                        output_dir=output_dir,
+                        feature_df=df_features, output_dir=output_dir,
                     )
                 else:
-                    logger.info(
-                        "[Stage 9.5] Serving prep disabled in config, skipping."
-                    )
                     results["serving_prep"] = {"status": "disabled"}
-                state.mark_complete("stage9_5", {
-                    "status": results.get("serving_prep", {}).get(
-                        "status", "unknown",
-                    ),
+                state.mark_complete("stage_serving", {
+                    "status": results.get("serving_prep", {}).get("status", "unknown"),
                 })
             except Exception as e:
-                logger.warning(
-                    "[PIPELINE] Stage 9.5 (serving prep) failed: %s", e,
-                )
+                logger.warning("[PIPELINE] Serving prep failed: %s", e)
                 results["serving_prep"] = {"status": "error", "error": str(e)}
-                state.mark_complete("stage9_5", {"status": "error"})
+                state.mark_complete("stage_serving", {"status": "error"})
         else:
-            logger.info(
-                "[PIPELINE] Stage 9.5 already complete, skipping serving prep..."
-            )
             results["serving_prep"] = state.state["artifacts"].get(
-                "stage9_5", {"status": "resumed"},
+                "stage_serving", {"status": "resumed"},
             )
 
-        # ----------------------------------------------------------
-        # Stage 10: CPE + Agentic Reason Generation (config-gated)
-        # ----------------------------------------------------------
-        if not state.is_complete("stage10"):
+        # ---- Stage 10: CPE + Reason Generation ----------------------
+        if not state.is_complete("stage_cpe"):
             try:
                 stage10_cfg = self._config_to_dict().get("serving_prep", {})
                 if stage10_cfg.get("cpe_enabled", False):
@@ -610,63 +824,42 @@ class PipelineRunner:
                         output_dir=output_dir,
                     )
                 else:
-                    logger.info(
-                        "[Stage 10] CPE + reason generation disabled, skipping."
-                    )
                     results["stage10_cpe_reason"] = {"status": "disabled"}
-                state.mark_complete("stage10", {
-                    "status": results.get("stage10_cpe_reason", {}).get(
-                        "status", "unknown",
-                    ),
+                state.mark_complete("stage_cpe", {
+                    "status": results.get("stage10_cpe_reason", {}).get("status", "unknown"),
                 })
             except Exception as e:
-                logger.warning(
-                    "[PIPELINE] Stage 10 (CPE + reason) failed: %s — continuing",
-                    e,
-                )
-                results["stage10_cpe_reason"] = {
-                    "status": "error", "error": str(e),
-                }
-                state.mark_complete("stage10", {"status": "error"})
+                logger.warning("[PIPELINE] Stage 10 failed: %s -- continuing", e)
+                results["stage10_cpe_reason"] = {"status": "error", "error": str(e)}
+                state.mark_complete("stage_cpe", {"status": "error"})
         else:
-            logger.info(
-                "[PIPELINE] Stage 10 already complete, skipping CPE + reason..."
-            )
             results["stage10_cpe_reason"] = state.state["artifacts"].get(
-                "stage10", {"status": "resumed"},
+                "stage_cpe", {"status": "resumed"},
             )
 
-        # ----------------------------------------------------------
-        # Finalize
-        # ----------------------------------------------------------
+        # ---- Finalize ------------------------------------------------
         elapsed = time.time() - pipeline_start
         results["total_time_seconds"] = round(elapsed, 2)
 
-        # Save pipeline manifest
         manifest_path = out / "pipeline_manifest.json"
         with open(manifest_path, "w") as f:
             json.dump(results, f, indent=2, default=str)
-        logger.info("[PIPELINE] Manifest saved to %s", manifest_path)
 
         logger.info("=" * 60)
         logger.info(
-            "[PIPELINE] Complete in %.1fs. Artifacts saved to %s",
+            "[PIPELINE] Full pipeline complete in %.1fs. Artifacts: %s",
             elapsed, output_dir,
         )
         logger.info("=" * 60)
 
         return results
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # Stage 1: Build adapter and load raw data
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     def _build_adapter(self) -> Any:
-        """Build a DataAdapter from config or fall back to GenericAdapter.
-
-        Returns:
-            A DataAdapter instance ready for ``load_raw()``.
-        """
+        """Build a DataAdapter from config or fall back to GenericAdapter."""
         from .adapter import AdapterRegistry, DataAdapter
 
         stage_start = time.time()
@@ -675,193 +868,55 @@ class PipelineRunner:
         adapter_name = getattr(self.config, "adapter", None)
 
         if adapter_name:
-            # Use registered adapter
             logger.info("[Stage 1] Using registered adapter: %s", adapter_name)
             adapter = AdapterRegistry.build(adapter_name, self._config_to_dict())
         else:
-            # Fall back to GenericAdapter that reads config.data.source
             logger.info("[Stage 1] No adapter specified, using GenericAdapter")
             adapter = _GenericAdapter(self._config_to_dict())
 
         logger.info("[Stage 1] Adapter built in %.2fs", time.time() - stage_start)
         return adapter
 
-    # ------------------------------------------------------------------
-    # Stage 2: Schema classification
-    # ------------------------------------------------------------------
-
-    def _classify_schema(self, df: pd.DataFrame) -> Dict[str, List[str]]:
-        """Classify DataFrame columns into numeric, categorical, and sequence.
-
-        Uses config.features if available, otherwise auto-detects from
-        DataFrame dtypes.
-
-        Args:
-            df: The main entity-level DataFrame.
-
-        Returns:
-            Dict with keys ``"numeric"``, ``"categorical"``, ``"sequence"``.
-        """
-        stage_start = time.time()
-        logger.info("[Stage 2] Classifying schema...")
-
-        # Try to import a dedicated SchemaClassifier
-        try:
-            from .schema_classifier import SchemaClassifier
-            classifier = SchemaClassifier(self.config)
-            schema = classifier.classify(df)
-            logger.info("[Stage 2] Schema classified via SchemaClassifier in %.2fs",
-                        time.time() - stage_start)
-            return schema
-        except (ImportError, ModuleNotFoundError):
-            pass
-
-        # Inline implementation: 5-axis schema matching SchemaClassifier
-        schema: Dict[str, List[str]] = {
-            "state": [],
-            "snapshot": [],
-            "timeseries": [],
-            "hierarchy": [],
-            "item": [],
-        }
-
-        if self.config.features.numeric or self.config.features.categorical:
-            # Use config as source of truth, mapped to 5-axis keys
-            schema["state"] = list(self.config.features.numeric)
-            schema["item"] = list(self.config.features.categorical)
-            schema["timeseries"] = list(self.config.features.sequence)
-            logger.info("[Stage 2] Schema from config in %.2fs",
-                        time.time() - stage_start)
-            return schema
-
-        # Auto-detect from dtypes
-        import numpy as np
-
-        for col in df.columns:
-            dtype = df[col].dtype
-            if np.issubdtype(dtype, np.number):
-                # Binary 0/1 -> item, otherwise state
-                nunique = df[col].nunique()
-                if nunique <= 2:
-                    unique_vals = set(df[col].dropna().unique())
-                    if unique_vals.issubset({0, 1, 0.0, 1.0, True, False}):
-                        schema["item"].append(col)
-                        continue
-                schema["state"].append(col)
-            elif dtype == object or str(dtype) == "category":
-                sample = df[col].dropna().iloc[0] if len(df[col].dropna()) > 0 else None
-                if isinstance(sample, (list, np.ndarray)):
-                    schema["snapshot"].append(col)
-                else:
-                    schema["state"].append(col)
-            else:
-                schema["state"].append(col)
-
-        logger.info("[Stage 2] Schema auto-detected in %.2fs",
-                    time.time() - stage_start)
-        return schema
-
-    # ------------------------------------------------------------------
-    # Stage 3: Encryption
-    # ------------------------------------------------------------------
-
-    def _encrypt(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply PII encryption if security is configured.
-
-        Args:
-            df: Raw main DataFrame.
-
-        Returns:
-            Encrypted DataFrame (or original if encryption is disabled).
-        """
-        stage_start = time.time()
-        logger.info("[Stage 3] Checking encryption configuration...")
-
-        # Check if security config exists and is enabled
-        security_cfg = getattr(self.config, "security", None)
-        if security_cfg is None or not getattr(security_cfg, "enabled", False):
-            logger.info("[Stage 3] Encryption disabled or not configured, passing through")
-            return df
-
-        try:
-            from ..security.pipeline import EncryptionPipeline
-            from ..security.salt_manager import LocalSaltManager
-            from ..security.integer_indexer import PIIIntegerIndexer
-            from ..security.encryption_policy import derive_from_config
-
-            salt_mgr = LocalSaltManager()
-            indexer = PIIIntegerIndexer(
-                getattr(security_cfg, "index_store", "pii-indices/")
-            )
-            policies = derive_from_config(security_cfg)
-
-            pipeline = EncryptionPipeline(salt_mgr, indexer, policies)
-            source_name = getattr(security_cfg, "source_name", self.config.task_name)
-            result = pipeline.process_source(source_name, df)
-
-            # Save encryption audit
-            audit = pipeline.get_audit_report()
-            audit_path = self._output_dir / "audit" / "encryption_audit.json"
-            audit_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(audit_path, "w") as f:
-                json.dump(audit, f, indent=2, default=str)
-            logger.info("[Stage 3] Encryption audit saved to %s", audit_path)
-
-            # Save index tables
-            pipeline.save_indices()
-
-            logger.info("[Stage 3] Encryption complete in %.2fs", time.time() - stage_start)
-            return result
-
-        except (ImportError, ModuleNotFoundError) as e:
-            logger.warning(
-                "[Stage 3] Security module not available (%s), skipping encryption", e,
-            )
-            return df
-        except Exception as e:
-            logger.error(
-                "[Stage 3] Encryption failed (%s), passing through raw data", e,
-            )
-            return df
-
-    # ------------------------------------------------------------------
-    # Stage 4: Feature engineering + normalization
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Stage 3: Feature engineering
+    # ==================================================================
 
     def _engineer_features(
         self,
-        df: pd.DataFrame,
-        raw_data: Dict[str, pd.DataFrame],
-    ) -> Tuple[Any, pd.DataFrame]:
+        df: "pd.DataFrame",
+        raw_data: Dict[str, "pd.DataFrame"],
+    ) -> Tuple[Any, "pd.DataFrame"]:
         """Build and fit FeatureGroupPipeline, then transform data.
 
         If ``feature_groups`` are defined in config, uses the new
-        FeatureGroupPipeline.  Otherwise falls back to the legacy
-        FeaturePipelineBuilder.
+        FeatureGroupPipeline.  Otherwise falls back to auto-built groups
+        from FeatureSpec.
 
         Args:
-            df: Main DataFrame (post-encryption).
-            raw_data: All raw DataFrames from adapter (for multi-source features).
+            df: Main DataFrame (post-preprocessing).
+            raw_data: All raw DataFrames from adapter.
 
         Returns:
             ``(fitted_pipeline, transformed_df)``
         """
         stage_start = time.time()
-        logger.info("[Stage 4] Engineering features...")
-
         feature_groups_cfg = self.config.feature_groups
 
         if feature_groups_cfg:
+            logger.info(
+                "[Stage 4] Using FeatureGroupPipeline with %d groups from config",
+                len(feature_groups_cfg),
+            )
             return self._engineer_features_grouped(df, feature_groups_cfg)
 
-        # Try to build FeatureGroupConfig from config.features
+        logger.info("[Stage 4] No feature_groups in config; auto-building from FeatureSpec")
         return self._engineer_features_from_config(df)
 
     def _engineer_features_grouped(
         self,
-        df: pd.DataFrame,
+        df: "pd.DataFrame",
         groups_cfg: List[Dict[str, Any]],
-    ) -> Tuple[Any, pd.DataFrame]:
+    ) -> Tuple[Any, "pd.DataFrame"]:
         """Feature engineering via FeatureGroupPipeline with explicit group configs."""
         from ..feature.group_pipeline import FeatureGroupPipeline
         from ..feature.group import FeatureGroupConfig
@@ -873,28 +928,25 @@ class PipelineRunner:
             name=f"{self.config.task_name}_features",
         )
 
-        df_features = pipeline.fit_transform(df)
+        # Fit on subsample if large
+        fit_df = df.sample(min(50000, len(df)), random_state=42) if len(df) > 50000 else df
+        pipeline.fit(fit_df)
+        df_features = pipeline.transform(df)
 
         logger.info(
-            "[Stage 4] FeatureGroupPipeline '%s': %d groups, total_dim=%d, "
-            "output %d cols in %.2fs",
+            "[Stage 3] FeatureGroupPipeline '%s': %d groups, total_dim=%d, "
+            "output %d cols",
             pipeline.name, len(pipeline), pipeline.total_dim,
-            len(df_features.columns), time.time() - time.time(),
+            len(df_features.columns),
         )
 
         return pipeline, df_features
 
     def _engineer_features_from_config(
         self,
-        df: pd.DataFrame,
-    ) -> Tuple[Any, pd.DataFrame]:
-        """Feature engineering via auto-built FeatureGroupPipeline from FeatureSpec.
-
-        Constructs FeatureGroupConfig objects from the flat config.features
-        specification (numeric, categorical, sequence) and wraps them in a
-        FeatureGroupPipeline.  This provides the same get_ple_input_metadata()
-        API as the explicit grouped path.
-        """
+        df: "pd.DataFrame",
+    ) -> Tuple[Any, "pd.DataFrame"]:
+        """Feature engineering via auto-built FeatureGroupPipeline from FeatureSpec."""
         from ..feature.group_pipeline import FeatureGroupPipeline
         from ..feature.group import FeatureGroupConfig
 
@@ -945,21 +997,25 @@ class PipelineRunner:
             groups=groups,
             name=f"{self.config.task_name}_features",
         )
-        df_features = pipeline.fit_transform(df)
+
+        # Fit on subsample if large
+        fit_df = df.sample(min(50000, len(df)), random_state=42) if len(df) > 50000 else df
+        pipeline.fit(fit_df)
+        df_features = pipeline.transform(df)
 
         logger.info(
-            "[Stage 4] Auto-built FeatureGroupPipeline: %d groups, total_dim=%d, "
+            "[Stage 3] Auto-built FeatureGroupPipeline: %d groups, total_dim=%d, "
             "output %d cols",
             len(pipeline), pipeline.total_dim, len(df_features.columns),
         )
 
         return pipeline, df_features
 
-    # ------------------------------------------------------------------
-    # Stage 5: Label derivation
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Stage 4: Label derivation
+    # ==================================================================
 
-    def _derive_labels(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _derive_labels(self, df: "pd.DataFrame") -> "pd.DataFrame":
         """Derive label columns from raw data.
 
         Tries to use a dedicated LabelDeriver if available.
@@ -974,20 +1030,37 @@ class PipelineRunner:
         import pandas as pd
 
         stage_start = time.time()
-        logger.info("[Stage 5] Deriving labels...")
 
         # Try dedicated LabelDeriver
         try:
-            from .label_deriver import LabelDeriver
-            deriver = LabelDeriver(self.config)
-            labels = deriver.derive(df)
-            logger.info("[Stage 5] Labels derived via LabelDeriver in %.2fs",
-                        time.time() - stage_start)
-            return labels
+            from .label_deriver import LabelDeriver, LabelConfig
+
+            # Build LabelConfig list from pipeline config
+            label_configs_raw = self.config.labels
+            if label_configs_raw:
+                label_configs = [
+                    LabelConfig(
+                        name=lc.name or lc.input_col,
+                        source=lc.source,
+                        type=lc.type,
+                        col=lc.input_col if lc.source == "column" else "",
+                        method=lc.method,
+                        input_col=lc.input_col,
+                        num_classes=lc.num_classes,
+                    )
+                    for lc in label_configs_raw
+                ]
+                deriver = LabelDeriver()
+                labels = deriver.derive(df, label_configs)
+                logger.info("[Stage 4] Labels derived via LabelDeriver: %d cols",
+                            len(labels.columns))
+                return labels
         except (ImportError, ModuleNotFoundError):
             pass
+        except Exception as e:
+            logger.warning("[Stage 4] LabelDeriver failed (%s), falling back to direct extraction", e)
 
-        # Inline implementation: extract configured label columns
+        # Fallback: extract configured label columns directly
         label_cols = []
         for task in self.config.tasks:
             col = task.label_col
@@ -995,7 +1068,7 @@ class PipelineRunner:
                 label_cols.append(col)
             else:
                 logger.warning(
-                    "[Stage 5] Label column '%s' for task '%s' not found in DataFrame",
+                    "[Stage 4] Label column '%s' for task '%s' not found",
                     col, task.name,
                 )
 
@@ -1006,18 +1079,93 @@ class PipelineRunner:
                 f"Available: {list(df.columns[:20])}..."
             )
 
-        df_labels = df[label_cols].copy()
+        return df[label_cols].copy()
 
-        logger.info("[Stage 5] Extracted %d label columns in %.2fs",
-                    len(label_cols), time.time() - stage_start)
-        return df_labels
+    # ==================================================================
+    # Stage 5: Temporal split (returns indices, not DataFrames)
+    # ==================================================================
 
-    # ------------------------------------------------------------------
+    def _compute_split_indices(
+        self,
+        df: "pd.DataFrame",
+    ) -> Tuple[List[int], List[int], List[int]]:
+        """Compute train/val/test row indices.
+
+        Uses temporal split if configured, otherwise random split.
+
+        Returns:
+            ``(train_indices, val_indices, test_indices)`` as lists of ints.
+        """
+        import numpy as np
+
+        temporal_cfg = self._get_temporal_split_config()
+
+        if temporal_cfg is not None and temporal_cfg.get("enabled", False):
+            from .temporal_split import TemporalSplitter
+
+            splitter = TemporalSplitter(
+                train_ratio=temporal_cfg.get("train_ratio", 0.7),
+                val_ratio=temporal_cfg.get("val_ratio", 0.15),
+                gap_days=temporal_cfg.get("gap_days", 7),
+            )
+            date_col = temporal_cfg.get("date_col", "snapshot_date")
+            train_df, val_df, test_df = splitter.split(df, date_col=date_col)
+
+            # Map back to original df indices
+            train_idx = train_df.index.tolist() if not train_df.index.equals(
+                range(len(train_df))
+            ) else list(range(len(train_df)))
+            val_start = len(train_idx)
+            val_idx = list(range(val_start, val_start + len(val_df)))
+            test_start = val_start + len(val_df)
+            test_idx = list(range(test_start, test_start + len(test_df)))
+
+            # The temporal splitter resets indices; use positional ranges
+            # based on the sorted order
+            n = len(df)
+            n_train = len(train_df)
+            n_val = len(val_df)
+            n_test = len(test_df)
+            # Gap rows are excluded; total may be < n
+            train_idx = list(range(n_train))
+            val_idx = list(range(n_train, n_train + n_val))
+            test_idx = list(range(n_train + n_val, n_train + n_val + n_test))
+
+            logger.info(
+                "[Stage 5] Temporal split: train=%d, val=%d, test=%d, "
+                "gap_days=%d",
+                n_train, n_val, n_test, temporal_cfg.get("gap_days", 7),
+            )
+            return train_idx, val_idx, test_idx
+
+        # Fallback: deterministic random split
+        n = len(df)
+        train_frac = self.config.data.train_split
+        val_frac = self.config.data.val_split if hasattr(self.config.data, "val_split") else 0.1
+        seed = self.config.training.seed
+
+        rng = np.random.RandomState(seed)
+        indices = rng.permutation(n)
+
+        n_train = int(n * train_frac)
+        n_val = int(n * val_frac)
+
+        train_idx = indices[:n_train].tolist()
+        val_idx = indices[n_train:n_train + n_val].tolist()
+        test_idx = indices[n_train + n_val:].tolist()
+
+        logger.info(
+            "[Stage 5] Random split (seed=%d): train=%d, val=%d, test=%d",
+            seed, len(train_idx), len(val_idx), len(test_idx),
+        )
+        return train_idx, val_idx, test_idx
+
+    # ==================================================================
     # Stage 6: Sequence building
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     def _build_sequences(
-        self, raw_data: Dict[str, pd.DataFrame],
+        self, raw_data: Dict[str, "pd.DataFrame"],
     ) -> Optional[Dict[str, Any]]:
         """Build sequence tensors from raw data.
 
@@ -1033,20 +1181,32 @@ class PipelineRunner:
         import numpy as np
 
         stage_start = time.time()
-        logger.info("[Stage 6] Building sequences...")
 
-        # Try dedicated SequenceBuilder
-        try:
-            from .sequence_builder import SequenceBuilder
-            builder = SequenceBuilder(self.config)
-            sequences = builder.build(raw_data)
-            logger.info("[Stage 6] Sequences built via SequenceBuilder in %.2fs",
-                        time.time() - stage_start)
-            return sequences
-        except (ImportError, ModuleNotFoundError):
-            pass
+        # Try dedicated SequenceBuilder with config
+        seq_cfg = {}
+        raw_cfg = self._config_to_dict()
+        seq_cfg_raw = raw_cfg.get("sequences", {})
 
-        # Inline: check for pre-computed .npy sequence files
+        if self.config.sequences:
+            try:
+                from .sequence_builder import SequenceBuilder, SeqSourceConfig
+
+                builder = SequenceBuilder()
+                seq_configs = {}
+                for name, spec in self.config.sequences.items():
+                    seq_configs[name] = SeqSourceConfig(
+                        source=spec.source,
+                        columns=spec.columns,
+                        seq_len=spec.seq_len,
+                    )
+                if seq_configs:
+                    sequences = builder.build(raw_data, seq_configs)
+                    if sequences:
+                        return sequences
+            except Exception as e:
+                logger.warning("[Stage 8] SequenceBuilder failed: %s", e)
+
+        # Fallback: check for pre-computed .npy files
         sequences: Dict[str, Any] = {}
 
         data_dir = Path(self.config.data.source).parent if self.config.data.source else None
@@ -1058,11 +1218,11 @@ class PipelineRunner:
                     arr = np.load(str(npy_file), allow_pickle=False)
                     sequences[key] = arr
                     logger.info(
-                        "[Stage 6] Loaded sequence '%s' from %s: shape=%s",
+                        "[Stage 8] Loaded sequence '%s' from %s: shape=%s",
                         key, npy_file, arr.shape,
                     )
                 except Exception as e:
-                    logger.warning("[Stage 6] Failed to load %s: %s", npy_file, e)
+                    logger.warning("[Stage 8] Failed to load %s: %s", npy_file, e)
 
         # Check for list-like columns in raw_data["main"]
         if not sequences and "main" in raw_data:
@@ -1074,7 +1234,6 @@ class PipelineRunner:
                     sample = main_df[col].dropna().iloc[0] if len(main_df[col].dropna()) > 0 else None
                     if isinstance(sample, (list, np.ndarray)):
                         try:
-                            # Convert list column to padded 2D/3D array
                             max_len = max(len(x) for x in main_df[col].dropna())
                             padded = np.zeros((len(main_df), max_len), dtype=np.float32)
                             for i, val in enumerate(main_df[col]):
@@ -1083,104 +1242,191 @@ class PipelineRunner:
                                     padded[i, :length] = np.array(val[:length], dtype=np.float32)
                             sequences[col] = padded
                             logger.info(
-                                "[Stage 6] Built sequence '%s' from list column: shape=%s",
+                                "[Stage 8] Built sequence '%s' from list column: shape=%s",
                                 col, padded.shape,
                             )
                         except Exception as e:
                             logger.warning(
-                                "[Stage 6] Failed to convert column '%s' to sequence: %s",
+                                "[Stage 8] Failed to convert column '%s' to sequence: %s",
                                 col, e,
                             )
 
         if not sequences:
-            logger.info("[Stage 6] No sequences found")
+            logger.info("[Stage 8] No sequences found")
             return None
 
-        logger.info("[Stage 6] Built %d sequence arrays in %.2fs",
-                    len(sequences), time.time() - stage_start)
         return sequences
 
-    # ------------------------------------------------------------------
-    # Stage 7: Build DataLoaders
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Stage 7 (leakage validation)
+    # ==================================================================
+
+    def _validate_leakage(
+        self,
+        df_features: "pd.DataFrame",
+        df_labels: "pd.DataFrame",
+        raw_df: Optional["pd.DataFrame"] = None,
+    ) -> Any:
+        """Run leakage validation checks between features and labels."""
+        try:
+            from .leakage_validator import LeakageValidator, ValidationResult
+        except ImportError:
+            logger.warning("[Stage 7] LeakageValidator not available, skipping")
+
+            class _DummyResult:
+                passed = True
+                warnings: list = []
+                details: dict = {}
+            return _DummyResult()
+
+        validator = LeakageValidator(
+            correlation_threshold=0.95,
+            max_seq_len_expected=16,
+        )
+
+        result = validator.validate(df_features, df_labels)
+
+        # Check sequence leakage if raw data available
+        if raw_df is not None:
+            seq_cols = [c for c in raw_df.columns if c.startswith("seq_")]
+            if seq_cols:
+                validator.check_sequence_leakage(raw_df, seq_cols, result=result)
+
+            prod_cols = [c for c in raw_df.columns if c.startswith("prod_")]
+            if prod_cols and seq_cols:
+                validator.check_product_columns(
+                    raw_df, prod_cols, seq_cols, result=result
+                )
+
+        return result
+
+    # ==================================================================
+    # Stage 1.5: Temporal preparation (sequence truncation)
+    # ==================================================================
+
+    def _prepare_temporal(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        """Truncate sequences and recompute product columns to prevent leakage.
+
+        Controlled by ``data.temporal_split`` and
+        ``preprocessing.leakage_prevention`` in the pipeline config YAML.
+        """
+        stage_start = time.time()
+        logger.info("[Stage 1.5] Preparing temporal features...")
+
+        raw_cfg = self._config_to_dict()
+        preproc = raw_cfg.get("preprocessing", {})
+        leakage_cfg = preproc.get("leakage_prevention", {})
+
+        if not leakage_cfg.get("recompute_prod_from_seq", False):
+            seq_cfg = raw_cfg.get("sequences", {})
+            has_truncation = any(
+                s.get("truncate_last", 0) > 0
+                for s in seq_cfg.values()
+                if isinstance(s, dict)
+            )
+            if not has_truncation:
+                logger.info("[Stage 1.5] No leakage prevention configured, passing through")
+                return df
+
+        try:
+            from .temporal_split import TemporalSplitter
+
+            splitter = TemporalSplitter()
+            seq_cols = [c for c in df.columns if c.startswith("seq_")]
+
+            if seq_cols:
+                df = splitter.split_by_sequence_cutoff(
+                    df,
+                    seq_cols=seq_cols,
+                    cutoff_offset=1,
+                    prod_col_prefix="prod_",
+                    seq_col_prefix="seq_",
+                )
+                logger.info(
+                    "[Stage 1.5] Temporal preparation complete in %.2fs: "
+                    "truncated %d seq columns",
+                    time.time() - stage_start, len(seq_cols),
+                )
+            else:
+                logger.info("[Stage 1.5] No seq_* columns found, skipping")
+
+        except ImportError:
+            logger.warning("[Stage 1.5] TemporalSplitter not available, skipping")
+
+        return df
+
+    # ==================================================================
+    # Temporal split helpers
+    # ==================================================================
+
+    def _get_temporal_split_config(self) -> Optional[Dict[str, Any]]:
+        """Extract temporal split config from the raw YAML config."""
+        raw_cfg = self._config_to_dict()
+        data_cfg = raw_cfg.get("data", {})
+        return data_cfg.get("temporal_split")
+
+    # ==================================================================
+    # DataLoader building (used by run_full only)
+    # ==================================================================
 
     def _build_dataloaders(
         self,
-        df_features: pd.DataFrame,
-        df_labels: pd.DataFrame,
+        df_features: "pd.DataFrame",
+        df_labels: "pd.DataFrame",
         sequences: Optional[Dict[str, Any]],
         feature_pipeline: Any,
     ) -> Tuple[Any, Any]:
-        """Build train and validation DataLoaders.
-
-        Uses build_ple_dataloader with FeatureColumnSpec constructed from
-        the feature pipeline metadata.
-
-        Args:
-            df_features: Transformed feature DataFrame.
-            df_labels: Label DataFrame (aligned with df_features).
-            sequences: Optional dict of sequence arrays.
-            feature_pipeline: Fitted FeatureGroupPipeline.
-
-        Returns:
-            ``(train_loader, val_loader)``
-        """
+        """Build train and validation DataLoaders from Phase 0 artifacts."""
         import numpy as np
         import pandas as pd
 
         stage_start = time.time()
-        logger.info("[Stage 7] Building DataLoaders...")
+        logger.info("[DataLoaders] Building DataLoaders...")
 
-        # Merge features and labels into a single DataFrame
         df_combined = pd.concat([df_features.reset_index(drop=True),
                                  df_labels.reset_index(drop=True)], axis=1)
 
-        # Split into train / val -- use temporal split if configured
-        temporal_cfg = self._get_temporal_split_config()
-
-        if temporal_cfg is not None and temporal_cfg.get("enabled", False):
-            train_df, val_df = self._temporal_split(
-                df_combined, temporal_cfg
-            )
-            logger.info(
-                "[Stage 7] Temporal split: train=%d rows, val=%d rows "
-                "(gap_days=%d)",
-                len(train_df), len(val_df),
-                temporal_cfg.get("gap_days", 7),
-            )
+        # Load split indices
+        split_path = self._output_dir / "split_indices.json"
+        if split_path.exists():
+            with open(split_path) as f:
+                split_indices = json.load(f)
+            train_idx = split_indices["train"]
+            val_idx = split_indices["val"] + split_indices.get("test", [])
         else:
-            # Fallback: deterministic random shuffle split
-            train_frac = self.config.data.train_split
-            seed = self.config.training.seed
-            n_total = len(df_combined)
-            n_train = int(n_total * train_frac)
+            # Fallback: random split
+            n = len(df_combined)
+            n_train = int(n * self.config.data.train_split)
+            rng = np.random.RandomState(self.config.training.seed)
+            indices = rng.permutation(n)
+            train_idx = indices[:n_train].tolist()
+            val_idx = indices[n_train:].tolist()
 
-            rng = np.random.RandomState(seed)
-            indices = rng.permutation(n_total)
+        train_df = df_combined.iloc[train_idx].reset_index(drop=True)
+        val_df = df_combined.iloc[val_idx].reset_index(drop=True)
 
-            train_idx = indices[:n_train]
-            val_idx = indices[n_train:]
-
-            train_df = df_combined.iloc[train_idx].reset_index(drop=True)
-            val_df = df_combined.iloc[val_idx].reset_index(drop=True)
-
-            logger.info(
-                "[Stage 7] Random split: train=%d rows, val=%d rows (split=%.2f)",
-                len(train_df), len(val_df), train_frac,
-            )
+        logger.info(
+            "[DataLoaders] train=%d rows, val=%d rows",
+            len(train_df), len(val_df),
+        )
 
         # Build FeatureColumnSpec from pipeline metadata
-        ple_metadata = feature_pipeline.get_ple_input_metadata()
-        feature_spec = self._build_feature_spec(ple_metadata)
+        if feature_pipeline is not None:
+            ple_metadata = feature_pipeline.get_ple_input_metadata()
+            feature_spec = self._build_feature_spec(ple_metadata)
+        else:
+            # Fallback: use all feature columns as static features
+            from ..data.dataloader import FeatureColumnSpec
+            feature_spec = FeatureColumnSpec(
+                static_features=list(df_features.columns),
+            )
 
-        # Label column mapping: task_name -> column_name
         label_map = {
             task.name: task.label_col
             for task in self.config.tasks
             if task.label_col in df_labels.columns
         }
 
-        # Build DataLoaders
         from ..data.dataloader import build_ple_dataloader
 
         batch_size = self.config.training.batch_size
@@ -1203,30 +1449,21 @@ class PipelineRunner:
             pin_memory=True,
         )
 
-        logger.info("[Stage 7] DataLoaders built in %.2fs", time.time() - stage_start)
+        logger.info("[DataLoaders] Built in %.2fs", time.time() - stage_start)
         return train_loader, val_loader
 
     @staticmethod
     def _build_feature_spec(ple_metadata: Dict[str, Any]) -> Any:
-        """Construct a FeatureColumnSpec from pipeline metadata.
-
-        Args:
-            ple_metadata: Dict from FeatureGroupPipeline.get_ple_input_metadata().
-
-        Returns:
-            A FeatureColumnSpec instance.
-        """
+        """Construct a FeatureColumnSpec from pipeline metadata."""
         from ..data.dataloader import FeatureColumnSpec
 
         output_columns = ple_metadata.get("output_columns", [])
         expert_routing = ple_metadata.get("expert_routing", {})
 
-        # Map feature group names to the FeatureColumnSpec fields
         spec_kwargs: Dict[str, Any] = {
             "static_features": list(output_columns),
         }
 
-        # Route columns to specialized fields based on expert routing
         _EXPERT_FIELD_MAP = {
             "hyperbolic": "hyperbolic_columns",
             "tda": "tda_columns",
@@ -1253,9 +1490,9 @@ class PipelineRunner:
 
         return FeatureColumnSpec(**spec_kwargs)
 
-    # ------------------------------------------------------------------
-    # Stage 8: Training
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Training (used by run_full)
+    # ==================================================================
 
     def _train(
         self,
@@ -1263,20 +1500,11 @@ class PipelineRunner:
         val_loader: Any,
         output_dir: str,
     ) -> dict:
-        """Dispatch training to the configured architecture.
-
-        Args:
-            train_loader: Training DataLoader.
-            val_loader: Validation DataLoader.
-            output_dir: Directory for model artifacts.
-
-        Returns:
-            Training results dict.
-        """
+        """Dispatch training to the configured architecture."""
         arch = self.config.model.architecture
 
         stage_start = time.time()
-        logger.info("[Stage 8] Starting training (architecture=%s)...", arch)
+        logger.info("[Training] Starting (architecture=%s)...", arch)
 
         if arch == "ple":
             results = self._train_ple(train_loader, val_loader, output_dir)
@@ -1285,7 +1513,7 @@ class PipelineRunner:
         else:
             raise ValueError(f"Unknown architecture: {arch}")
 
-        logger.info("[Stage 8] Training complete in %.2fs", time.time() - stage_start)
+        logger.info("[Training] Complete in %.2fs", time.time() - stage_start)
         return results
 
     def _train_ple(
@@ -1294,14 +1522,7 @@ class PipelineRunner:
         val_loader: Any,
         output_dir: str,
     ) -> dict:
-        """Build a PLEModel and train with PLETrainer.
-
-        Steps:
-          1. Compute input_dim from the feature columns.
-          2. Construct a PLEConfig from the pipeline config.
-          3. Create a PLETrainer and run 2-phase training.
-          4. Save the model checkpoint.
-        """
+        """Build a PLEModel and train with PLETrainer."""
         import torch
 
         from ..model.ple.config import (
@@ -1312,10 +1533,8 @@ class PipelineRunner:
         from ..training.trainer import PLETrainer
         from ..training.config import TrainingConfig
 
-        # -- Determine input_dim from first batch or config ----------------
         input_dim = self.config.features.input_dim
         if input_dim == 0:
-            # Peek at first batch to determine input_dim
             for batch in train_loader:
                 if "features" in batch:
                     input_dim = batch["features"].shape[-1]
@@ -1325,7 +1544,6 @@ class PipelineRunner:
         logger.info("[PLE] Building model: input_dim=%d, tasks=%d",
                     input_dim, len(task_names))
 
-        # -- Task overrides ------------------------------------------------
         task_overrides: Dict[str, Dict[str, Any]] = {}
         for t in self.config.tasks:
             override: Dict[str, Any] = {"task_type": t.type}
@@ -1349,7 +1567,6 @@ class PipelineRunner:
 
         expert_output_dim = max(self.config.model.expert_hidden_dim // 4, 64)
 
-        # -- ExpertBasketConfig --------------------------------------------
         expert_basket_cfg: Optional[ExpertBasketConfig] = None
         if self.config.model.expert_basket is not None:
             eb = self.config.model.expert_basket
@@ -1359,25 +1576,20 @@ class PipelineRunner:
                 expert_configs=eb.get("expert_configs", {}),
             )
 
-        # -- AdaTTConfig ---------------------------------------------------
         adatt_cfg: Optional[AdaTTConfig] = None
         if self.config.task_groups:
             adatt_cfg = AdaTTConfig.from_pipeline_groups(self.config.task_groups)
-            logger.info("[PLE] adaTT: %d task groups", len(self.config.task_groups))
 
-        # -- GroupTaskExpertConfig -----------------------------------------
         group_task_expert_cfg: Optional[GroupTaskExpertConfig] = None
         if self.config.model.group_task_expert is not None:
             gte = self.config.model.group_task_expert
             group_task_expert_cfg = GroupTaskExpertConfig(**gte)
 
-        # -- task_group_map ------------------------------------------------
         task_group_map: Dict[str, str] = {}
         for tg in self.config.task_groups:
             for t in tg.tasks:
                 task_group_map[t] = tg.name
 
-        # -- Build PLEConfig -----------------------------------------------
         ple_config = PLEConfig(
             input_dim=input_dim,
             task_names=task_names,
@@ -1402,7 +1614,6 @@ class PipelineRunner:
 
         model = PLEModel(ple_config)
 
-        # -- TrainingConfig ------------------------------------------------
         total_epochs = self.config.training.epochs
         phase1_epochs = max(1, total_epochs * 3 // 5)
         phase2_epochs = max(1, total_epochs - phase1_epochs)
@@ -1418,12 +1629,10 @@ class PipelineRunner:
             "experiment_name": self.config.task_name,
         })
 
-        # -- Train ---------------------------------------------------------
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         trainer = PLETrainer(model, training_config, device=device)
         results = trainer.train(train_loader, val_loader, phase="full")
 
-        # -- Save ----------------------------------------------------------
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         checkpoint_path = out / "ple_model.pt"
@@ -1442,613 +1651,17 @@ class PipelineRunner:
         )
         return {"status": "success", "model": "ple", **results}
 
-    # ------------------------------------------------------------------
-    # Stage 8.5: Model Analysis (CGC gates + HGCN interpretable scores)
-    # ------------------------------------------------------------------
-
-    def _analyze_model(
-        self,
-        val_loader: Any,
-        output_dir: str,
-    ) -> dict:
-        """Run post-training model analysis.
-
-        Produces:
-          - ``gate_analysis.json`` -- per-task CGC expert attention weights
-          - ``hgcn_interpretable.json`` -- 6D interpretable scores from HGCN
-
-        All artifacts are saved under ``{output_dir}/analysis/``.
-
-        Args:
-            val_loader: Validation DataLoader.
-            output_dir: Root output directory.
-
-        Returns:
-            Analysis results dict.
-        """
-        import numpy as np
-        import torch
-
-        from ..evaluation.gate_analyzer import GateAnalyzer
-
-        out = Path(output_dir)
-        analysis_dir = out / "analysis"
-        analysis_dir.mkdir(parents=True, exist_ok=True)
-
-        analysis: Dict[str, Any] = {}
-        stage_start = time.time()
-        logger.info("[Stage 8.5] Starting model analysis...")
-
-        # -- Load trained model ------------------------------------------------
-        checkpoint_path = out / "ple_model.pt"
-        if not checkpoint_path.exists():
-            logger.warning(
-                "[Stage 8.5] No PLE checkpoint found at %s, skipping analysis.",
-                checkpoint_path,
-            )
-            return {"status": "skipped", "reason": "no_checkpoint"}
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        checkpoint = torch.load(str(checkpoint_path), map_location=device)
-        ple_config = checkpoint["ple_config"]
-
-        from ..model.ple.model import PLEModel
-        model = PLEModel(ple_config)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        model.to(device)
-        model.eval()
-
-        # -- CGC Gate analysis -------------------------------------------------
-        try:
-            gate_analyzer = GateAnalyzer(model)
-            gate_result = gate_analyzer.analyze(val_loader, max_batches=20)
-            analysis["gate_weights"] = gate_result.to_dict()
-
-            gate_path = analysis_dir / "gate_analysis.json"
-            with open(gate_path, "w") as f:
-                json.dump(gate_result.to_dict(), f, indent=2)
-            logger.info(
-                "[Stage 8.5] Gate analysis saved to %s", gate_path,
-            )
-        except Exception as e:
-            logger.warning("[Stage 8.5] CGC gate analysis failed: %s", e)
-            analysis["gate_weights"] = {"error": str(e)}
-
-        # -- HGCN interpretable scores ----------------------------------------
-        try:
-            hgcn_scores = self._extract_hgcn_scores(model, val_loader, device)
-            analysis["hgcn_interpretable"] = hgcn_scores
-
-            hgcn_path = analysis_dir / "hgcn_interpretable.json"
-            with open(hgcn_path, "w") as f:
-                json.dump(hgcn_scores, f, indent=2)
-            logger.info(
-                "[Stage 8.5] HGCN interpretable scores saved to %s", hgcn_path,
-            )
-        except Exception as e:
-            logger.warning("[Stage 8.5] HGCN interpretable extraction failed: %s", e)
-            analysis["hgcn_interpretable"] = {"error": str(e)}
-
-        # -- Integrated Gradients feature attribution -------------------------
-        analysis_cfg = self._config_to_dict().get("analysis", {})
-        ig_cfg = analysis_cfg.get("integrated_gradients", {})
-        try:
-            from ..evaluation.integrated_gradients import IntegratedGradients
-
-            ig = IntegratedGradients(
-                model,
-                baseline=ig_cfg.get("baseline", "zeros"),
-                n_steps=ig_cfg.get("n_steps", 50),
-                device=device,
-            )
-            ig_max_batches = ig_cfg.get("max_batches", 50)
-
-            ig_results: Dict[str, Any] = {}
-            task_names = getattr(model, "task_names", [])
-            for task_name in task_names:
-                try:
-                    importance = ig.feature_importance(
-                        val_loader, task_name, max_batches=ig_max_batches,
-                    )
-                    ig_results[task_name] = importance
-                    logger.info(
-                        "[Stage 8.5] IG attribution for '%s': top-5 = %s",
-                        task_name, list(importance.keys())[:5],
-                    )
-                except Exception as task_e:
-                    logger.warning(
-                        "[Stage 8.5] IG failed for task '%s': %s",
-                        task_name, task_e,
-                    )
-                    ig_results[task_name] = {"error": str(task_e)}
-
-            analysis["ig_attributions"] = ig_results
-
-            ig_path = analysis_dir / "ig_attributions.json"
-            with open(ig_path, "w") as f:
-                json.dump(ig_results, f, indent=2, default=str)
-            logger.info("[Stage 8.5] IG attributions saved to %s", ig_path)
-
-        except Exception as e:
-            logger.warning("[Stage 8.5] Integrated Gradients analysis failed: %s", e)
-            analysis["ig_attributions"] = {"error": str(e)}
-
-        # -- Expert Redundancy CCA --------------------------------------------
-        cca_cfg = analysis_cfg.get("expert_redundancy", {})
-        if cca_cfg.get("enabled", True):
-            try:
-                from ..evaluation.expert_redundancy import ExpertRedundancyAnalyzer
-
-                cca_analyzer = ExpertRedundancyAnalyzer(
-                    model,
-                    n_components=cca_cfg.get("n_components", 10),
-                    min_samples=cca_cfg.get("min_samples", 256),
-                )
-                cca_result = cca_analyzer.analyze(
-                    val_loader, max_batches=cca_cfg.get("max_batches", 20),
-                )
-
-                if cca_result is not None:
-                    analysis["expert_redundancy"] = cca_result.to_dict()
-                    logger.info(
-                        "[Stage 8.5] Expert redundancy CCA:\n%s",
-                        cca_result.summary(),
-                    )
-
-                    cca_path = analysis_dir / "expert_redundancy.json"
-                    with open(cca_path, "w") as f:
-                        json.dump(cca_result.to_dict(), f, indent=2, default=str)
-                    logger.info(
-                        "[Stage 8.5] Expert redundancy saved to %s", cca_path,
-                    )
-                else:
-                    analysis["expert_redundancy"] = {
-                        "status": "skipped",
-                        "reason": "insufficient_data_or_experts",
-                    }
-            except Exception as e:
-                logger.warning("[Stage 8.5] Expert redundancy CCA failed: %s", e)
-                analysis["expert_redundancy"] = {"error": str(e)}
-
-        # -- Multidisciplinary Feature Interpretation ----------------------------
-        multi_cfg = analysis_cfg.get("multidisciplinary_interpreter", {})
-        if multi_cfg.get("enabled", True):
-            try:
-                import numpy as _np
-                from ..evaluation.multidisciplinary_interpreter import (
-                    MultidisciplinaryInterpreter,
-                )
-
-                interpreter = MultidisciplinaryInterpreter(
-                    config=self._config_to_dict(),
-                )
-
-                # Collect multidisciplinary features from validation loader
-                multi_features = []
-                max_multi_batches = multi_cfg.get("max_batches", 10)
-                for batch_idx, batch in enumerate(val_loader):
-                    if batch_idx >= max_multi_batches:
-                        break
-                    # Try to extract multidisciplinary_features from batch
-                    if isinstance(batch, dict):
-                        mf = batch.get("multidisciplinary_features")
-                    elif hasattr(batch, "multidisciplinary_features"):
-                        mf = batch.multidisciplinary_features
-                    else:
-                        mf = None
-
-                    if mf is not None:
-                        if hasattr(mf, "cpu"):
-                            mf = mf.cpu().numpy()
-                        multi_features.append(mf)
-
-                if multi_features:
-                    all_features = _np.concatenate(multi_features, axis=0)
-                    multi_result = interpreter.to_json_serializable_batch(
-                        all_features,
-                        max_samples=multi_cfg.get("max_samples", 100),
-                    )
-                    analysis["multidisciplinary_interpretation"] = multi_result
-
-                    multi_path = analysis_dir / "multidisciplinary_interpretation.json"
-                    with open(multi_path, "w", encoding="utf-8") as f:
-                        json.dump(multi_result, f, indent=2, ensure_ascii=False, default=str)
-                    logger.info(
-                        "[Stage 8.5] Multidisciplinary interpretation saved to %s "
-                        "(%d samples)",
-                        multi_path, multi_result.get("interpreted_samples", 0),
-                    )
-                else:
-                    analysis["multidisciplinary_interpretation"] = {
-                        "status": "skipped",
-                        "reason": "no_multidisciplinary_features_in_loader",
-                    }
-                    logger.info(
-                        "[Stage 8.5] Multidisciplinary interpretation skipped: "
-                        "no features found in validation loader",
-                    )
-            except Exception as e:
-                logger.warning(
-                    "[Stage 8.5] Multidisciplinary interpretation failed: %s", e,
-                )
-                analysis["multidisciplinary_interpretation"] = {"error": str(e)}
-
-        # -- Template Reason Engine (ablation: IG -> category -> reason) ----------
-        tre_cfg = analysis_cfg.get("template_reason_engine", {})
-        if tre_cfg.get("enabled", True):
-            try:
-                from ..evaluation.template_reason_engine import TemplateReasonEngine
-
-                ig_results = analysis.get("ig_attributions", {})
-                if ig_results and not all(
-                    isinstance(v, dict) and "error" in v
-                    for v in ig_results.values()
-                ):
-                    # Collect feature names from first valid task
-                    feature_names: List[str] = []
-                    for _tn, importance in ig_results.items():
-                        if isinstance(importance, dict) and "error" not in importance:
-                            feature_names = list(importance.keys())
-                            break
-
-                    tre = TemplateReasonEngine(feature_names=feature_names)
-
-                    tre_results: Dict[str, Any] = {}
-                    for task_name, importance in ig_results.items():
-                        if isinstance(importance, dict) and "error" not in importance:
-                            sorted_feats = sorted(
-                                importance.items(),
-                                key=lambda x: abs(x[1]) if isinstance(x[1], (int, float)) else 0,
-                                reverse=True,
-                            )
-                            top_feat_names = [f[0] for f in sorted_feats[:5]]
-                            reason = tre.generate_from_names(top_feat_names, task_name=task_name)
-                            tre_results[task_name] = {
-                                "top_features": top_feat_names[:3],
-                                "reason": reason,
-                                "category_distribution": tre.get_category_distribution(
-                                    np.array([[
-                                        abs(f[1]) if isinstance(f[1], (int, float)) else 0.0
-                                        for f in sorted_feats
-                                    ]]),
-                                ),
-                            }
-
-                    analysis["template_reason_engine"] = tre_results
-
-                    tre_path = analysis_dir / "template_reason_engine.json"
-                    with open(tre_path, "w", encoding="utf-8") as f:
-                        json.dump(tre_results, f, indent=2, ensure_ascii=False, default=str)
-                    logger.info(
-                        "[Stage 8.5] Template reason engine results saved to %s "
-                        "(%d tasks)",
-                        tre_path, len(tre_results),
-                    )
-                else:
-                    analysis["template_reason_engine"] = {
-                        "status": "skipped",
-                        "reason": "no_ig_attributions_available",
-                    }
-            except Exception as e:
-                logger.warning(
-                    "[Stage 8.5] Template reason engine failed: %s", e,
-                )
-                analysis["template_reason_engine"] = {"error": str(e)}
-
-        # -- Template Reasons (sample) ------------------------------------------
-        template_cfg = analysis_cfg.get("template_reasons", {})
-        if template_cfg.get("enabled", True):
-            try:
-                from ..recommendation.reason.template_engine import TemplateEngine
-
-                ig_results = analysis.get("ig_attributions", {})
-                if ig_results and not all(
-                    isinstance(v, dict) and "error" in v
-                    for v in ig_results.values()
-                ):
-                    te = TemplateEngine(config=self._config_to_dict())
-                    max_reason_samples = template_cfg.get("max_samples", 100)
-
-                    # Build sample IG attributions for template generation
-                    sample_ig: List[Dict[str, Any]] = []
-                    for task_name, importance in ig_results.items():
-                        if isinstance(importance, dict) and "error" not in importance:
-                            sorted_feats = sorted(
-                                importance.items(),
-                                key=lambda x: abs(x[1]) if isinstance(x[1], (int, float)) else 0,
-                                reverse=True,
-                            )
-                            # Create sample entries (using feature indices as customers)
-                            for i, (feat, score) in enumerate(sorted_feats[:max_reason_samples]):
-                                sample_ig.append({
-                                    "customer_id": f"sample_{task_name}_{i}",
-                                    "item_id": task_name,
-                                    "ig_top_features": [
-                                        (f[0], float(f[1]) if isinstance(f[1], (int, float)) else 0.0)
-                                        for f in sorted_feats[:te.top_k_features]
-                                    ],
-                                })
-
-                    if sample_ig:
-                        reasons = te.generate_batch(
-                            ig_attributions=sample_ig[:max_reason_samples],
-                            product_info={},
-                            segments={},
-                        )
-                        analysis["template_reasons_sample"] = {
-                            "count": len(reasons),
-                            "samples": reasons[:10],  # Store first 10 in analysis dict
-                        }
-
-                        reasons_path = analysis_dir / "template_reasons_sample.json"
-                        with open(reasons_path, "w", encoding="utf-8") as f:
-                            json.dump(reasons[:max_reason_samples], f, indent=2,
-                                      ensure_ascii=False, default=str)
-                        logger.info(
-                            "[Stage 8.5] Template reasons sample saved to %s (%d reasons)",
-                            reasons_path, len(reasons),
-                        )
-                    else:
-                        analysis["template_reasons_sample"] = {
-                            "status": "skipped",
-                            "reason": "no_valid_ig_attributions",
-                        }
-                else:
-                    analysis["template_reasons_sample"] = {
-                        "status": "skipped",
-                        "reason": "no_ig_attributions_available",
-                    }
-            except Exception as e:
-                logger.warning(
-                    "[Stage 8.5] Template reason generation failed: %s", e,
-                )
-                analysis["template_reasons_sample"] = {"error": str(e)}
-
-        # -- XAI Quality Evaluation --------------------------------------------
-        xai_cfg = analysis_cfg.get("xai_quality", {})
-        if xai_cfg.get("enabled", True):
-            try:
-                from ..evaluation.xai_quality_evaluator import XAIQualityEvaluator
-
-                xai_evaluator = XAIQualityEvaluator()
-
-                # Build explanation texts and IG top features from analysis so far
-                ig_results = analysis.get("ig_attributions", {})
-                explanations: List[str] = []
-                ig_top_features: List[List[str]] = []
-
-                for task_name, importance in ig_results.items():
-                    if isinstance(importance, dict) and "error" not in importance:
-                        # Create a pseudo-explanation from top feature names
-                        sorted_feats = sorted(
-                            importance.items(),
-                            key=lambda x: abs(x[1]) if isinstance(x[1], (int, float)) else 0,
-                            reverse=True,
-                        )
-                        top_feat_names = [f[0] for f in sorted_feats[:10]]
-                        explanations.append(" ".join(top_feat_names))
-                        ig_top_features.append(top_feat_names[:5])
-
-                if explanations:
-                    xai_report = xai_evaluator.evaluate(
-                        explanations=explanations,
-                        ig_top_features=ig_top_features,
-                    )
-                    analysis["xai_quality"] = xai_report.to_dict()
-
-                    xai_path = analysis_dir / "xai_quality_report.json"
-                    with open(xai_path, "w") as f:
-                        json.dump(xai_report.to_dict(), f, indent=2, default=str)
-                    logger.info(
-                        "[Stage 8.5] XAI quality report saved to %s (passed=%s)",
-                        xai_path, xai_report.passed,
-                    )
-                else:
-                    analysis["xai_quality"] = {
-                        "status": "skipped",
-                        "reason": "no_ig_attributions_available",
-                    }
-            except Exception as e:
-                logger.warning("[Stage 8.5] XAI quality evaluation failed: %s", e)
-                analysis["xai_quality"] = {"error": str(e)}
-
-        # -- Model Card Generation (always) ------------------------------------
-        model_card_cfg = analysis_cfg.get("model_card", {})
-        if model_card_cfg.get("enabled", True):
-            try:
-                from ..evaluation.model_card import ModelCardGenerator
-
-                card_gen = ModelCardGenerator()
-
-                # Gather model info from config
-                model_cfg = self._config_to_dict().get("model", {})
-                task_names = getattr(model, "task_names", [])
-                total_params = sum(p.numel() for p in model.parameters())
-
-                model_info = {
-                    "name": self.config.task_name,
-                    "architecture": model_cfg.get("architecture", "PLE + adaTT"),
-                    "num_tasks": len(task_names),
-                    "num_experts": len(
-                        model_cfg.get("expert_basket", {}).get("shared", [])
-                    ),
-                    "total_params": total_params,
-                    "input_dim": getattr(self.config.features, "input_dim", "N/A"),
-                    "num_layers": model_cfg.get("ple", {}).get("num_layers", "N/A"),
-                    "expert_basket": model_cfg.get("expert_basket", {}).get(
-                        "shared", []
-                    ),
-                    "task_groups": [
-                        g.name for g in getattr(self.config, "task_groups", [])
-                    ],
-                }
-
-                # Build training_results from pipeline state
-                training_results = {}
-                state_path = out / "pipeline_state.json"
-                if state_path.exists():
-                    with open(state_path) as f:
-                        pipeline_state = json.load(f)
-                    training_results = pipeline_state.get("artifacts", {}).get(
-                        "stage8", {}
-                    )
-
-                card_path = str(analysis_dir / "model_card.md")
-                card_gen.generate(
-                    model_info=model_info,
-                    training_results=training_results,
-                    analysis_results=analysis,
-                    output_path=card_path,
-                )
-                analysis["model_card"] = {"path": card_path, "status": "generated"}
-                logger.info("[Stage 8.5] Model card saved to %s", card_path)
-
-            except Exception as e:
-                logger.warning("[Stage 8.5] Model card generation failed: %s", e)
-                analysis["model_card"] = {"error": str(e)}
-
-        elapsed = time.time() - stage_start
-        analysis["analysis_time_seconds"] = round(elapsed, 2)
-        logger.info("[Stage 8.5] Analysis complete in %.2fs", elapsed)
-
-        return analysis
-
-    def _extract_hgcn_scores(
-        self,
-        model: Any,
-        val_loader: Any,
-        device: Any,
-    ) -> dict:
-        """Extract 6D interpretable projections from the HGCN expert.
-
-        Runs a forward pass through ``val_loader`` (up to 20 batches),
-        collects ``UnifiedHGCNExpert.interpretable_scores``, and returns
-        mean scores along each interpretive axis.
-
-        Args:
-            model: Trained PLEModel (already on device, eval mode).
-            val_loader: Validation DataLoader.
-            device: Torch device.
-
-        Returns:
-            Dict with mean interpretable scores and per-axis statistics.
-        """
-        import torch
-        from core.model.ple.model import PLEInput
-        from core.model.experts.hgcn import UnifiedHGCNExpert
-
-        # Find HGCN expert(s) in the model
-        hgcn_experts = []
-        for expert in model._iter_shared_experts():
-            if isinstance(expert, UnifiedHGCNExpert):
-                hgcn_experts.append(expert)
-
-        if not hgcn_experts:
-            return {"status": "skipped", "reason": "no_hgcn_expert_found"}
-
-        all_scores: list = []
-        num_samples = 0
-
-        with torch.no_grad():
-            for batch_idx, batch in enumerate(val_loader):
-                if batch_idx >= 20:
-                    break
-
-                # Build PLEInput from batch dict
-                if isinstance(batch, dict):
-                    ple_input = PLEInput(
-                        features=batch["features"].to(device),
-                        targets=None,
-                    )
-                    for fld in [
-                        "hyperbolic_features", "tda_features",
-                        "collaborative_features", "event_sequences",
-                        "session_sequences",
-                    ]:
-                        if fld in batch and batch[fld] is not None:
-                            object.__setattr__(
-                                ple_input, fld, batch[fld].to(device),
-                            )
-                elif hasattr(batch, "features"):
-                    ple_input = batch.to(device) if hasattr(batch, "to") else batch
-                else:
-                    continue
-
-                # Forward pass triggers HGCN interpretable projection
-                _ = model(ple_input)
-
-                # Collect scores from each HGCN expert
-                for expert in hgcn_experts:
-                    scores = expert.interpretable_scores
-                    if scores is not None:
-                        all_scores.append(scores.cpu())
-                        num_samples += scores.size(0)
-
-        if not all_scores:
-            return {"status": "no_scores_collected", "num_hgcn_experts": len(hgcn_experts)}
-
-        # Concatenate and compute statistics
-        combined = torch.cat(all_scores, dim=0)  # (N, 6)
-        mean_scores = combined.mean(dim=0).tolist()
-        std_scores = combined.std(dim=0).tolist()
-
-        # Get labels from the first HGCN expert
-        labels = hgcn_experts[0].interpretable_labels
-
-        # Build per-axis summary
-        axes = {
-            "hierarchy_activation_intensity": {
-                "mean": mean_scores[0:2],
-                "std": std_scores[0:2],
-            },
-            "depth_importance": {
-                "mean": mean_scores[2:4],
-                "std": std_scores[2:4],
-            },
-            "cross_level_interaction": {
-                "mean": mean_scores[4:6],
-                "std": std_scores[4:6],
-            },
-        }
-
-        return {
-            "status": "success",
-            "num_samples": num_samples,
-            "num_hgcn_experts": len(hgcn_experts),
-            "labels": labels,
-            "mean_scores": {
-                label: round(val, 6)
-                for label, val in zip(labels, mean_scores)
-            },
-            "std_scores": {
-                label: round(val, 6)
-                for label, val in zip(labels, std_scores)
-            },
-            "axes": {
-                axis_name: {
-                    "mean": [round(v, 6) for v in axis_data["mean"]],
-                    "std": [round(v, 6) for v in axis_data["std"]],
-                }
-                for axis_name, axis_data in axes.items()
-            },
-        }
-
     def _train_lgbm(
         self,
         train_loader: Any,
         val_loader: Any,
         output_dir: str,
     ) -> dict:
-        """Train per-task LGBM models.
-
-        Extracts features and labels from DataLoaders to build flat
-        numpy arrays for LightGBM.
-        """
+        """Train per-task LGBM models."""
         import numpy as np
         from ..model.lgbm.model import LGBMModel
         from ..model.lgbm.config import LGBMConfig
 
-        # Collect all data from loaders into flat arrays
         X_train_parts, y_train_parts = [], {}
         for batch in train_loader:
             features = batch.get("features")
@@ -2077,232 +1690,205 @@ class PipelineRunner:
         logger.info("[LGBM] Training complete. Model saved to %s", output_dir)
         return {"status": "success", "model": "lgbm"}
 
-    # ------------------------------------------------------------------
-    # Stage 1.5: Temporal preparation (leakage prevention)
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Model analysis (Stage 8.5, used by run_full)
+    # ==================================================================
 
-    def _prepare_temporal(self, df: "pd.DataFrame") -> "pd.DataFrame":
-        """Truncate sequences and recompute product columns to prevent leakage.
-
-        For datasets like Santander where seq_* columns include the label
-        month, this truncates sequences to exclude the prediction window
-        and recomputes prod_* from the truncated state.
-
-        Controlled by ``data.temporal_split`` and
-        ``preprocessing.leakage_prevention`` in the pipeline config YAML.
-
-        Args:
-            df: Raw main DataFrame with sequence and product columns.
-
-        Returns:
-            DataFrame with truncated sequences and recomputed products.
-        """
-        stage_start = time.time()
-        logger.info("[Stage 1.5] Preparing temporal features...")
-
-        # Check if leakage prevention is configured
-        raw_cfg = self._config_to_dict()
-        preproc = raw_cfg.get("preprocessing", {})
-        leakage_cfg = preproc.get("leakage_prevention", {})
-
-        if not leakage_cfg.get("recompute_prod_from_seq", False):
-            # Also check sequences config for truncate_last
-            seq_cfg = raw_cfg.get("sequences", {})
-            has_truncation = any(
-                s.get("truncate_last", 0) > 0
-                for s in seq_cfg.values()
-                if isinstance(s, dict)
-            )
-            if not has_truncation:
-                logger.info(
-                    "[Stage 1.5] No leakage prevention configured, "
-                    "passing through"
-                )
-                return df
-
-        try:
-            from .temporal_split import TemporalSplitter
-
-            splitter = TemporalSplitter()
-
-            # Identify sequence columns (seq_* prefix)
-            seq_cols = [c for c in df.columns if c.startswith("seq_")]
-
-            if seq_cols:
-                df = splitter.split_by_sequence_cutoff(
-                    df,
-                    seq_cols=seq_cols,
-                    cutoff_offset=1,  # Drop last 1 month (the label month)
-                    prod_col_prefix="prod_",
-                    seq_col_prefix="seq_",
-                )
-                logger.info(
-                    "[Stage 1.5] Temporal preparation complete in %.2fs: "
-                    "truncated %d seq columns, recomputed prod columns",
-                    time.time() - stage_start, len(seq_cols),
-                )
-            else:
-                logger.info("[Stage 1.5] No seq_* columns found, skipping")
-
-        except ImportError:
-            logger.warning(
-                "[Stage 1.5] TemporalSplitter not available, skipping"
-            )
-
-        return df
-
-    # ------------------------------------------------------------------
-    # Stage 5.5: Leakage validation
-    # ------------------------------------------------------------------
-
-    def _validate_leakage(
+    def _analyze_model(
         self,
-        df_features: "pd.DataFrame",
-        df_labels: "pd.DataFrame",
-        raw_df: Optional["pd.DataFrame"] = None,
-    ) -> Any:
-        """Run leakage validation checks between features and labels.
+        val_loader: Any,
+        output_dir: str,
+    ) -> dict:
+        """Run post-training model analysis (gates, HGCN, IG, etc.)."""
+        import numpy as np
+        import torch
 
-        Args:
-            df_features: Transformed feature DataFrame.
-            df_labels: Label DataFrame.
-            raw_df: Optional raw DataFrame for sequence checks.
+        from ..evaluation.gate_analyzer import GateAnalyzer
 
-        Returns:
-            ValidationResult from LeakageValidator.
-        """
+        out = Path(output_dir)
+        analysis_dir = out / "analysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+
+        analysis: Dict[str, Any] = {}
         stage_start = time.time()
-        logger.info("[Stage 5.5] Validating for data leakage...")
+        logger.info("[Analysis] Starting model analysis...")
 
+        checkpoint_path = out / "ple_model.pt"
+        if not checkpoint_path.exists():
+            logger.warning("[Analysis] No PLE checkpoint found, skipping.")
+            return {"status": "skipped", "reason": "no_checkpoint"}
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        checkpoint = torch.load(str(checkpoint_path), map_location=device)
+        ple_config = checkpoint["ple_config"]
+
+        from ..model.ple.model import PLEModel
+        model = PLEModel(ple_config)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.to(device)
+        model.eval()
+
+        # CGC Gate analysis
         try:
-            from .leakage_validator import LeakageValidator, ValidationResult
-        except ImportError:
-            logger.warning("[Stage 5.5] LeakageValidator not available, skipping")
+            gate_analyzer = GateAnalyzer(model)
+            gate_result = gate_analyzer.analyze(val_loader, max_batches=20)
+            analysis["gate_weights"] = gate_result.to_dict()
+            gate_path = analysis_dir / "gate_analysis.json"
+            with open(gate_path, "w") as f:
+                json.dump(gate_result.to_dict(), f, indent=2)
+        except Exception as e:
+            logger.warning("[Analysis] CGC gate analysis failed: %s", e)
+            analysis["gate_weights"] = {"error": str(e)}
 
-            class _DummyResult:
-                passed = True
-                warnings: list = []
-            return _DummyResult()
+        # HGCN interpretable scores
+        try:
+            hgcn_scores = self._extract_hgcn_scores(model, val_loader, device)
+            analysis["hgcn_interpretable"] = hgcn_scores
+            hgcn_path = analysis_dir / "hgcn_interpretable.json"
+            with open(hgcn_path, "w") as f:
+                json.dump(hgcn_scores, f, indent=2)
+        except Exception as e:
+            logger.warning("[Analysis] HGCN extraction failed: %s", e)
+            analysis["hgcn_interpretable"] = {"error": str(e)}
 
-        validator = LeakageValidator(
-            correlation_threshold=0.95,
-            max_seq_len_expected=16,  # Santander: 17 months - 1 truncated
-        )
+        # Integrated Gradients
+        analysis_cfg = self._config_to_dict().get("analysis", {})
+        ig_cfg = analysis_cfg.get("integrated_gradients", {})
+        try:
+            from ..evaluation.integrated_gradients import IntegratedGradients
 
-        # Check feature-label correlation
-        result = validator.validate(df_features, df_labels)
-
-        # Check sequence leakage if raw data available
-        if raw_df is not None:
-            seq_cols = [c for c in raw_df.columns if c.startswith("seq_")]
-            if seq_cols:
-                validator.check_sequence_leakage(
-                    raw_df, seq_cols, result=result
-                )
-
-            # Check product column leakage
-            prod_cols = [c for c in raw_df.columns if c.startswith("prod_")]
-            if prod_cols and seq_cols:
-                validator.check_product_columns(
-                    raw_df, prod_cols, seq_cols, result=result
-                )
-
-        logger.info(
-            "[Stage 5.5] Leakage validation complete in %.2fs: %s",
-            time.time() - stage_start,
-            "PASSED" if result.passed else f"FAILED ({len(result.warnings)} warnings)",
-        )
-
-        return result
-
-    # ------------------------------------------------------------------
-    # Temporal split helper
-    # ------------------------------------------------------------------
-
-    def _get_temporal_split_config(self) -> Optional[Dict[str, Any]]:
-        """Extract temporal split config from the raw YAML config.
-
-        Returns None if temporal split is not configured.
-        """
-        raw_cfg = self._config_to_dict()
-        data_cfg = raw_cfg.get("data", {})
-        return data_cfg.get("temporal_split")
-
-    def _temporal_split(
-        self,
-        df: "pd.DataFrame",
-        temporal_cfg: Dict[str, Any],
-    ) -> Tuple[Any, Any]:
-        """Apply temporal split to a combined features+labels DataFrame.
-
-        Args:
-            df: Combined DataFrame.
-            temporal_cfg: Temporal split configuration dict.
-
-        Returns:
-            ``(train_df, val_df)``
-        """
-        from .temporal_split import TemporalSplitter
-
-        splitter = TemporalSplitter(
-            train_ratio=temporal_cfg.get("train_ratio", 0.7),
-            val_ratio=temporal_cfg.get("val_ratio", 0.15),
-            gap_days=temporal_cfg.get("gap_days", 7),
-        )
-
-        date_col = temporal_cfg.get("date_col", "snapshot_date")
-
-        train_df, val_df, test_df = splitter.split(df, date_col=date_col)
-
-        # For training pipeline, merge test into val if test is non-empty
-        # (we only need train/val for the training loop)
-        if len(test_df) > 0:
-            import pandas as pd
-            val_df = pd.concat([val_df, test_df], ignore_index=True)
-            logger.info(
-                "[Stage 7] Merged test split (%d rows) into val for "
-                "training (total val=%d)",
-                len(test_df), len(val_df),
+            ig = IntegratedGradients(
+                model,
+                baseline=ig_cfg.get("baseline", "zeros"),
+                n_steps=ig_cfg.get("n_steps", 50),
+                device=device,
             )
+            ig_max_batches = ig_cfg.get("max_batches", 50)
 
-        return train_df, val_df
+            ig_results: Dict[str, Any] = {}
+            task_names = getattr(model, "task_names", [])
+            for task_name in task_names:
+                try:
+                    importance = ig.feature_importance(
+                        val_loader, task_name, max_batches=ig_max_batches,
+                    )
+                    ig_results[task_name] = importance
+                except Exception as task_e:
+                    ig_results[task_name] = {"error": str(task_e)}
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+            analysis["ig_attributions"] = ig_results
+            ig_path = analysis_dir / "ig_attributions.json"
+            with open(ig_path, "w") as f:
+                json.dump(ig_results, f, indent=2, default=str)
+        except Exception as e:
+            logger.warning("[Analysis] IG analysis failed: %s", e)
+            analysis["ig_attributions"] = {"error": str(e)}
 
-    def _config_to_dict(self) -> dict:
-        """Convert PipelineConfig to a plain dict for adapter consumption."""
-        data_dict: Dict[str, Any] = {
-            "source": self.config.data.source,
-            "format": self.config.data.format,
-            "train_split": self.config.data.train_split,
-            "backend": self.config.data.backend,
-            "train_path": self.config.data.train_path,
-            "s3_path": self.config.data.s3_path,
-            "parquet_file": self.config.data.parquet_file,
-        }
+        elapsed = time.time() - stage_start
+        analysis["analysis_time_seconds"] = round(elapsed, 2)
+        logger.info("[Analysis] Complete in %.2fs", elapsed)
 
-        # Pass through temporal_split and preprocessing if configured
-        if getattr(self.config.data, "temporal_split", None):
-            data_dict["temporal_split"] = self.config.data.temporal_split
-        if getattr(self.config.data, "preprocessing", None):
-            data_dict["preprocessing"] = self.config.data.preprocessing
+        return analysis
 
-        return {
-            "task_name": self.config.task_name,
-            "data": data_dict,
-            "preprocessing": getattr(self.config.data, "preprocessing", None) or {},
-            "features": {
-                "numeric": list(self.config.features.numeric),
-                "categorical": list(self.config.features.categorical),
-                "sequence": list(self.config.features.sequence),
+    def _extract_hgcn_scores(
+        self,
+        model: Any,
+        val_loader: Any,
+        device: Any,
+    ) -> dict:
+        """Extract 6D interpretable projections from the HGCN expert."""
+        import torch
+        from core.model.ple.model import PLEInput
+        from core.model.experts.hgcn import UnifiedHGCNExpert
+
+        hgcn_experts = []
+        for expert in model._iter_shared_experts():
+            if isinstance(expert, UnifiedHGCNExpert):
+                hgcn_experts.append(expert)
+
+        if not hgcn_experts:
+            return {"status": "skipped", "reason": "no_hgcn_expert_found"}
+
+        all_scores: list = []
+        num_samples = 0
+
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(val_loader):
+                if batch_idx >= 20:
+                    break
+
+                if isinstance(batch, dict):
+                    ple_input = PLEInput(
+                        features=batch["features"].to(device),
+                        targets=None,
+                    )
+                    for fld in [
+                        "hyperbolic_features", "tda_features",
+                        "collaborative_features", "event_sequences",
+                        "session_sequences",
+                    ]:
+                        if fld in batch and batch[fld] is not None:
+                            object.__setattr__(
+                                ple_input, fld, batch[fld].to(device),
+                            )
+                elif hasattr(batch, "features"):
+                    ple_input = batch.to(device) if hasattr(batch, "to") else batch
+                else:
+                    continue
+
+                _ = model(ple_input)
+
+                for expert in hgcn_experts:
+                    scores = expert.interpretable_scores
+                    if scores is not None:
+                        all_scores.append(scores.cpu())
+                        num_samples += scores.size(0)
+
+        if not all_scores:
+            return {"status": "no_scores_collected", "num_hgcn_experts": len(hgcn_experts)}
+
+        combined = torch.cat(all_scores, dim=0)
+        mean_scores = combined.mean(dim=0).tolist()
+        std_scores = combined.std(dim=0).tolist()
+        labels = hgcn_experts[0].interpretable_labels
+
+        axes = {
+            "hierarchy_activation_intensity": {
+                "mean": mean_scores[0:2], "std": std_scores[0:2],
+            },
+            "depth_importance": {
+                "mean": mean_scores[2:4], "std": std_scores[2:4],
+            },
+            "cross_level_interaction": {
+                "mean": mean_scores[4:6], "std": std_scores[4:6],
             },
         }
 
-    # ------------------------------------------------------------------
-    # Stage 9: Knowledge Distillation
-    # ------------------------------------------------------------------
+        return {
+            "status": "success",
+            "num_samples": num_samples,
+            "num_hgcn_experts": len(hgcn_experts),
+            "labels": labels,
+            "mean_scores": {
+                label: round(val, 6)
+                for label, val in zip(labels, mean_scores)
+            },
+            "std_scores": {
+                label: round(val, 6)
+                for label, val in zip(labels, std_scores)
+            },
+            "axes": {
+                axis_name: {
+                    "mean": [round(v, 6) for v in axis_data["mean"]],
+                    "std": [round(v, 6) for v in axis_data["std"]],
+                }
+                for axis_name, axis_data in axes.items()
+            },
+        }
+
+    # ==================================================================
+    # Distillation (Stage 9, used by run_full)
+    # ==================================================================
 
     def _distill(
         self,
@@ -2311,31 +1897,18 @@ class PipelineRunner:
         label_df: Any,
         output_dir: str,
     ) -> dict:
-        """Distill PLE teacher into per-task LGBM student models.
-
-        Uses :class:`~core.training.student_trainer.StudentTrainer` to:
-        1. Load the trained PLE teacher from checkpoint
-        2. Generate soft labels (temperature-scaled predictions)
-        3. Train per-task LGBM students on blended hard + soft targets
-        4. Validate fidelity (teacher-student agreement)
-        5. Save student models
-
-        Returns:
-            Dict with distillation results and per-task metrics.
-        """
+        """Distill PLE teacher into per-task LGBM student models."""
         import numpy as np
         stage_start = time.time()
-        logger.info("[Stage 9] Starting knowledge distillation...")
+        logger.info("[Distillation] Starting...")
 
         try:
             import torch
             from ..training.student_trainer import StudentTrainer, StudentConfig
-            from ..pipeline.config import TaskSpec
         except ImportError as e:
-            logger.warning("[Stage 9] Distillation skipped — missing dependency: %s", e)
+            logger.warning("[Distillation] Skipped -- missing dependency: %s", e)
             return {"status": "skipped", "reason": str(e)}
 
-        # Build StudentConfig from pipeline config
         distill_cfg = self._config_to_dict().get("distillation", {})
         student_config = StudentConfig(
             teacher_checkpoint=teacher_checkpoint,
@@ -2344,7 +1917,6 @@ class PipelineRunner:
             lgbm_params=distill_cfg.get("lgbm_params", {}),
         )
 
-        # Feature columns (exclude labels and IDs)
         id_cols = set(self.config.features.id_cols or ["user_id"])
         label_cols = set(label_df.columns) if hasattr(label_df, 'columns') else set()
         feature_columns = [
@@ -2352,7 +1924,6 @@ class PipelineRunner:
             if c not in id_cols and c not in label_cols
         ]
 
-        # Build task specs list
         task_specs = self.config.tasks
 
         trainer = StudentTrainer(
@@ -2362,13 +1933,8 @@ class PipelineRunner:
             device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         )
 
-        # Step 1: Load teacher
         teacher = trainer.load_teacher(teacher_checkpoint)
-        logger.info("[Stage 9] Teacher loaded: %d params",
-                    sum(p.numel() for p in teacher.parameters()))
 
-        # Step 2: Generate soft labels
-        # Build a simple DataLoader from feature_df for teacher inference
         import pandas as pd
         merged = pd.concat([feature_df, label_df], axis=1)
         from ..data.dataloader import build_ple_dataloader, FeatureColumnSpec
@@ -2382,9 +1948,7 @@ class PipelineRunner:
             shuffle=False,
         )
         soft_labels = trainer.generate_soft_labels(loader)
-        logger.info("[Stage 9] Soft labels generated: %d tasks", len(soft_labels))
 
-        # Step 3: Train students
         features_np = feature_df[feature_columns].values
         hard_labels = {}
         for t in task_specs:
@@ -2392,27 +1956,22 @@ class PipelineRunner:
                 hard_labels[t.name] = label_df[t.label_col].values
 
         trainer.train_students(features_np, hard_labels)
-        logger.info("[Stage 9] Students trained: %d tasks", len(trainer._students))
 
-        # Step 4: Save students (fidelity_results passed after validation below)
-        out = Path(output_dir) / "distillation"
-        out.mkdir(parents=True, exist_ok=True)
+        out_dist = Path(output_dir) / "distillation"
+        out_dist.mkdir(parents=True, exist_ok=True)
 
-        # Step 5: Fidelity validation (optional)
         fidelity_results = {}
         try:
             from ..training.distillation_validator import DistillationValidator
             validator = DistillationValidator()
             for task_name in trainer._students:
-                t_spec = self.config.tasks[0]  # placeholder
+                t_spec = self.config.tasks[0]
                 for t in self.config.tasks:
                     if t.name == task_name:
                         t_spec = t
                         break
                 teacher_preds = soft_labels.get(task_name)
-                student_preds = trainer.predict(
-                    task_name, features_np,
-                )
+                student_preds = trainer.predict(task_name, features_np)
                 if teacher_preds is not None and student_preds is not None:
                     try:
                         result = validator.validate_task(
@@ -2428,27 +1987,20 @@ class PipelineRunner:
                         }
                     except Exception as e:
                         fidelity_results[task_name] = {
-                            "passed": False,
-                            "error": str(e),
+                            "passed": False, "error": str(e),
                         }
         except ImportError:
-            logger.info("[Stage 9] Fidelity validator not available, skipping.")
+            logger.info("[Distillation] Fidelity validator not available, skipping.")
 
-        # Save students with fidelity results
-        trainer.save_students(str(out), fidelity_results=fidelity_results or None)
+        trainer.save_students(str(out_dist), fidelity_results=fidelity_results or None)
 
-        # Save fidelity report separately for audit trail
         if fidelity_results:
-            fidelity_path = out / "fidelity_report.json"
+            fidelity_path = out_dist / "fidelity_report.json"
             with open(fidelity_path, "w") as f:
                 json.dump(fidelity_results, f, indent=2, default=str)
-            logger.info("[Stage 9] Fidelity report saved to %s", fidelity_path)
 
         elapsed = time.time() - stage_start
-        logger.info(
-            "[Stage 9] Distillation complete in %.1fs — %d students, artifacts at %s",
-            elapsed, len(trainer._students), out,
-        )
+        logger.info("[Distillation] Complete in %.1fs", elapsed)
 
         return {
             "status": "completed",
@@ -2456,39 +2008,23 @@ class PipelineRunner:
             "tasks": list(trainer._students.keys()),
             "fidelity": fidelity_results,
             "time_seconds": round(elapsed, 2),
-            "output_dir": str(out),
+            "output_dir": str(out_dist),
         }
 
-    # ------------------------------------------------------------------
-    # Stage 9.5: Serving preparation (context vector store)
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Serving preparation (Stage 9.5, used by run_full)
+    # ==================================================================
 
     def _prepare_serving(
         self,
         feature_df: "pd.DataFrame",
         output_dir: str,
     ) -> Dict[str, Any]:
-        """Build the context vector store from feature embeddings.
-
-        This stage prepares artifacts needed for the serving / reason
-        generation layer:
-
-        1. Extract customer IDs and feature embeddings from the feature
-           DataFrame.
-        2. Build a :class:`ContextVectorStore` (LanceDB or numpy fallback).
-        3. Persist the store under ``<output_dir>/serving/context_store/``.
-
-        Args:
-            feature_df: Transformed feature DataFrame (from Stage 4).
-            output_dir: Root output directory.
-
-        Returns:
-            Dict with store statistics and path.
-        """
+        """Build the context vector store from feature embeddings."""
         import numpy as np
 
         stage_start = time.time()
-        logger.info("[Stage 9.5] Preparing serving artifacts...")
+        logger.info("[Serving] Preparing serving artifacts...")
 
         from core.recommendation.reason.context_store import ContextVectorStore
 
@@ -2496,44 +2032,29 @@ class PipelineRunner:
         store_path = out / "serving" / "context_store"
         store_path.mkdir(parents=True, exist_ok=True)
 
-        # Determine customer ID column
         id_cols = list(getattr(self.config.features, "id_cols", ["customer_id"]))
         id_col = id_cols[0] if id_cols else "customer_id"
 
-        # Extract customer IDs
         if id_col in feature_df.columns:
             customer_ids = feature_df[id_col].values
         else:
             customer_ids = np.arange(len(feature_df))
-            logger.warning(
-                "[Stage 9.5] ID column '%s' not in features, using row indices.",
-                id_col,
-            )
 
-        # Use all numeric columns as the feature embedding
         numeric_cols = feature_df.select_dtypes(include=[np.number]).columns.tolist()
-        # Exclude the ID column if it happens to be numeric
         numeric_cols = [c for c in numeric_cols if c != id_col]
 
         if not numeric_cols:
-            logger.warning("[Stage 9.5] No numeric feature columns found, skipping.")
             return {"status": "skipped", "reason": "no_numeric_features"}
 
         feature_vectors = feature_df[numeric_cols].values.astype(np.float32)
-        # Replace NaN with 0 for vector operations
         feature_vectors = np.nan_to_num(feature_vectors, nan=0.0)
 
-        # Build metadata (lightweight: customer ID -> column count)
         serving_cfg = self._config_to_dict().get("serving_prep", {})
         cs_cfg = serving_cfg.get("context_store", {})
         backend = cs_cfg.get("backend", "auto")
 
-        store = ContextVectorStore(
-            store_path=str(store_path),
-            backend=backend,
-        )
+        store = ContextVectorStore(store_path=str(store_path), backend=backend)
 
-        # Build basic metadata per customer
         customer_metadata: Dict[str, Dict] = {}
         for i, cid in enumerate(customer_ids):
             customer_metadata[str(cid)] = {
@@ -2550,9 +2071,6 @@ class PipelineRunner:
 
         stats = store.get_stats()
         elapsed = time.time() - stage_start
-        logger.info(
-            "[Stage 9.5] Serving prep complete in %.2fs: %s", elapsed, stats,
-        )
 
         return {
             "status": "completed",
@@ -2563,29 +2081,15 @@ class PipelineRunner:
             "time_seconds": round(elapsed, 2),
         }
 
-    # ------------------------------------------------------------------
-    # Stage 10: CPE + Agentic Reason Generation
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Stage 10: CPE + Agentic Reason Generation (used by run_full)
+    # ==================================================================
 
     def _run_stage10_cpe_reason(
         self,
         output_dir: str,
     ) -> Dict[str, Any]:
-        """Counterfactual policy evaluation and agentic reason generation.
-
-        Produces serving-layer artifacts:
-        - ``serving/cpe_evaluation.json`` -- CPE estimator results
-        - ``serving/reason_generation_sample.json`` -- sample L1 reasons
-        - ``serving/agentic_quality_report.json`` -- L2b quality report
-
-        This stage is config-gated via ``serving_prep.cpe_enabled``.
-
-        Args:
-            output_dir: Root output directory.
-
-        Returns:
-            Dict with status and artifact paths.
-        """
+        """Counterfactual policy evaluation and agentic reason generation."""
         import numpy as np
 
         stage_start = time.time()
@@ -2597,7 +2101,7 @@ class PipelineRunner:
 
         artifacts: Dict[str, Any] = {"status": "completed"}
 
-        # ----- CPE Evaluation -----
+        # CPE Evaluation
         try:
             from core.evaluation.counterfactual import CounterfactualEvaluator
 
@@ -2611,8 +2115,6 @@ class PipelineRunner:
                 output_dir=str(serving_dir),
             )
 
-            # Generate synthetic evaluation data if no real data available
-            # (in production, this would come from logged serving data)
             rng = np.random.default_rng(42)
             n_eval = cpe_cfg.get("n_eval_samples", 1000)
 
@@ -2628,46 +2130,35 @@ class PipelineRunner:
                 baseline=baseline,
             )
 
-            # Save CPE results
             cpe_path = serving_dir / "cpe_evaluation.json"
-            cpe_data = {
-                name: r.to_dict() for name, r in cpe_results.items()
-            }
+            cpe_data = {name: r.to_dict() for name, r in cpe_results.items()}
             with open(cpe_path, "w") as f:
                 json.dump(cpe_data, f, indent=2, default=str)
 
             artifacts["cpe_path"] = str(cpe_path)
             artifacts["cpe_estimators"] = list(cpe_results.keys())
-            logger.info("[Stage 10] CPE evaluation saved to %s", cpe_path)
-
         except Exception as e:
             logger.warning("[Stage 10] CPE evaluation failed: %s", e)
             artifacts["cpe_error"] = str(e)
 
-        # ----- Agentic Reason Generation (sample) -----
+        # Agentic Reason Generation (sample)
         try:
             from core.recommendation.reason.template_engine import TemplateEngine
             from core.recommendation.reason.agentic_orchestrator import (
                 AgenticReasonOrchestrator,
             )
 
-            reason_cfg = self._config_to_dict().get("serving_prep", {}).get(
-                "reason", {},
-            )
-
-            # Build template engine from config
+            reason_cfg = self._config_to_dict().get("serving_prep", {}).get("reason", {})
             te_config = self.config.__dict__ if hasattr(self.config, "__dict__") else {}
             template_engine = TemplateEngine(config=te_config)
 
-            # Build orchestrator (no LLM in training pipeline)
             orchestrator = AgenticReasonOrchestrator(
                 template_engine=template_engine,
-                llm_provider=None,  # LLM not available during training
+                llm_provider=None,
                 self_checker=None,
                 config=te_config,
             )
 
-            # Generate sample reasons from synthetic IG data
             sample_size = reason_cfg.get("sample_size", 10)
             sample_attributions = []
             for i in range(sample_size):
@@ -2698,7 +2189,6 @@ class PipelineRunner:
                 segments=sample_segments,
             )
 
-            # Save reason sample
             reason_path = serving_dir / "reason_generation_sample.json"
             with open(reason_path, "w") as f:
                 json.dump(
@@ -2711,19 +2201,11 @@ class PipelineRunner:
                     f, indent=2, default=str,
                 )
             artifacts["reason_sample_path"] = str(reason_path)
-            logger.info(
-                "[Stage 10] Reason sample saved to %s (%d reasons)",
-                reason_path, len(batch_result.l1_results),
-            )
 
-            # Save quality report
             quality_path = serving_dir / "agentic_quality_report.json"
             with open(quality_path, "w") as f:
                 json.dump(batch_result.quality_report, f, indent=2, default=str)
             artifacts["quality_report_path"] = str(quality_path)
-            logger.info(
-                "[Stage 10] Quality report saved to %s", quality_path,
-            )
 
         except Exception as e:
             logger.warning("[Stage 10] Reason generation failed: %s", e)
@@ -2731,9 +2213,86 @@ class PipelineRunner:
 
         elapsed = time.time() - stage_start
         artifacts["time_seconds"] = round(elapsed, 2)
-        logger.info("[Stage 10] Complete in %.2fs", elapsed)
-
         return artifacts
+
+    # ==================================================================
+    # Schema classification (used by run_full if needed)
+    # ==================================================================
+
+    def _classify_schema(self, df: "pd.DataFrame") -> Dict[str, List[str]]:
+        """Classify DataFrame columns into numeric, categorical, and sequence."""
+        import numpy as np
+
+        try:
+            from .schema_classifier import SchemaClassifier
+            classifier = SchemaClassifier(self.config)
+            return classifier.classify(df)
+        except (ImportError, ModuleNotFoundError):
+            pass
+
+        schema: Dict[str, List[str]] = {
+            "state": [], "snapshot": [], "timeseries": [],
+            "hierarchy": [], "item": [],
+        }
+
+        if self.config.features.numeric or self.config.features.categorical:
+            schema["state"] = list(self.config.features.numeric)
+            schema["item"] = list(self.config.features.categorical)
+            schema["timeseries"] = list(self.config.features.sequence)
+            return schema
+
+        for col in df.columns:
+            dtype = df[col].dtype
+            if np.issubdtype(dtype, np.number):
+                nunique = df[col].nunique()
+                if nunique <= 2:
+                    unique_vals = set(df[col].dropna().unique())
+                    if unique_vals.issubset({0, 1, 0.0, 1.0, True, False}):
+                        schema["item"].append(col)
+                        continue
+                schema["state"].append(col)
+            elif dtype == object or str(dtype) == "category":
+                sample = df[col].dropna().iloc[0] if len(df[col].dropna()) > 0 else None
+                if isinstance(sample, (list, np.ndarray)):
+                    schema["snapshot"].append(col)
+                else:
+                    schema["state"].append(col)
+            else:
+                schema["state"].append(col)
+
+        return schema
+
+    # ==================================================================
+    # Helpers
+    # ==================================================================
+
+    def _config_to_dict(self) -> dict:
+        """Convert PipelineConfig to a plain dict for adapter consumption."""
+        data_dict: Dict[str, Any] = {
+            "source": self.config.data.source,
+            "format": self.config.data.format,
+            "train_split": self.config.data.train_split,
+            "backend": self.config.data.backend,
+            "train_path": self.config.data.train_path,
+            "s3_path": self.config.data.s3_path,
+            "parquet_file": self.config.data.parquet_file,
+        }
+
+        if getattr(self.config.data, "temporal_split", None):
+            data_dict["temporal_split"] = self.config.data.temporal_split
+        if getattr(self.config.data, "preprocessing", None):
+            data_dict["preprocessing"] = self.config.data.preprocessing
+
+        return {
+            "task_name": self.config.task_name,
+            "data": data_dict,
+            "preprocessing": getattr(self.config.data, "preprocessing", None) or {},
+            "features": {
+                "numeric": list(self.config.features.numeric),
+                "categorical": list(self.config.features.categorical),
+                "sequence": list(self.config.features.sequence),
+            },
+        }
 
 
 # ======================================================================
@@ -2752,12 +2311,8 @@ class _GenericAdapter(DataAdapter):
         self.config = config
         self._metadata = None
 
-    def load_raw(self) -> Dict[str, pd.DataFrame]:
-        """Load raw data from the configured source path.
-
-        Returns:
-            Dict with "main" key containing the loaded DataFrame.
-        """
+    def load_raw(self) -> Dict[str, "pd.DataFrame"]:
+        """Load raw data from the configured source path."""
         import pandas as pd
         from .adapter import AdapterMetadata
 
@@ -2766,7 +2321,6 @@ class _GenericAdapter(DataAdapter):
         fmt = data_cfg.get("format", "parquet")
 
         if not source:
-            # Try alternative path fields
             source = data_cfg.get("train_path") or data_cfg.get("s3_path") or ""
 
         if not source:
