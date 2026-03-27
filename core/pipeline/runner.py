@@ -281,6 +281,13 @@ class PipelineRunner:
 
         # Merge generated features into df
         if df_generated is not None and len(df_generated.columns) > 0:
+            nonzero_ratio = (df_generated != 0).mean().mean()
+            zero_cols = [c for c in df_generated.columns if (df_generated[c] == 0).all()]
+            logger.info("[Stage 3] Generated features: nonzero_ratio=%.2f%%, zero_variance_cols=%d",
+                        nonzero_ratio * 100, len(zero_cols))
+            if zero_cols:
+                logger.warning("[Stage 3] All-zero generated columns: %s", zero_cols[:10])
+
             # Only add columns that are truly new
             new_cols = [c for c in df_generated.columns if c not in df.columns]
             if new_cols:

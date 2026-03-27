@@ -829,10 +829,13 @@ class PLETrainer:
 
                 if (batch_idx + 1) % accum_steps == 0:
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(),
                         self.config.gradient.clip_norm,
                     )
+                    if grad_norm > self.config.gradient.clip_norm * 10:
+                        logger.warning("Gradient explosion: norm=%.2f (clip=%.2f) at batch %d",
+                                        grad_norm, self.config.gradient.clip_norm, batch_idx)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                     self.optimizer.zero_grad()
@@ -840,10 +843,13 @@ class PLETrainer:
                 loss.backward()
 
                 if (batch_idx + 1) % accum_steps == 0:
-                    torch.nn.utils.clip_grad_norm_(
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(),
                         self.config.gradient.clip_norm,
                     )
+                    if grad_norm > self.config.gradient.clip_norm * 10:
+                        logger.warning("Gradient explosion: norm=%.2f (clip=%.2f) at batch %d",
+                                        grad_norm, self.config.gradient.clip_norm, batch_idx)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
@@ -1108,6 +1114,29 @@ class PLETrainer:
                     parts.append(f"{key}={val:.4f}")
 
         logger.info("  ".join(parts))
+
+        # Log adaTT affinity matrix every 5 epochs
+        if self.current_epoch % 5 == 0 and hasattr(self.model, "adatt") and self.model.adatt is not None:
+            try:
+                affinity = self.model.adatt.get_transfer_matrix()
+                if affinity is not None:
+                    task_names_adatt = self.model.task_names
+                    n = len(task_names_adatt)
+                    pairs = []
+                    for i in range(n):
+                        for j in range(n):
+                            if i != j:
+                                pairs.append((task_names_adatt[i], task_names_adatt[j], affinity[i, j].item()))
+                    pairs.sort(key=lambda x: -x[2])
+                    top3 = pairs[:3]
+                    bot3 = pairs[-3:]
+                    logger.info("=== adaTT Affinity (epoch %d) ===", self.current_epoch)
+                    for src, tgt, strength in top3:
+                        logger.info("  Top transfer: %s -> %s = %.4f", src, tgt, strength)
+                    for src, tgt, strength in bot3:
+                        logger.info("  Bottom transfer: %s -> %s = %.4f", src, tgt, strength)
+            except Exception as e:
+                logger.debug("adaTT affinity logging failed: %s", e)
 
         # Record epoch history for eval_metrics.json
         epoch_record = {

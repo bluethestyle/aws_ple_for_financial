@@ -265,6 +265,10 @@ if not _training_defaults_raw:
     )
 TRAINING_DEFAULTS: Dict[str, str] = {k: str(v) for k, v in _training_defaults_raw.items()}
 
+# Module-level globals for pre-built source package (set once in main)
+_GLOBAL_SOURCE_DIR: Optional[str] = None      # Extracted source dir for training jobs
+_GLOBAL_SOURCE_TAR: Optional[str] = None      # Source tar.gz for processing jobs
+
 
 def _experts_for_scenario(removed_groups: List[str]) -> List[str]:
     """Determine which experts to keep given removed feature groups."""
@@ -358,6 +362,11 @@ def parse_args() -> argparse.Namespace:
         help="Max retry attempts for processing jobs on failure (default: 3)",
     )
     parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Force a fresh run, ignoring any saved state from a previous run",
+    )
+    parser.add_argument(
         "--config-path",
         type=str,
         default=CONFIG_PATH,
@@ -426,6 +435,107 @@ def _prepare_source_package(output_dir: str) -> str:
         os.path.getsize(tar_path) / 1024 / 1024,
     )
     return tar_path
+
+
+def _prepare_and_extract_source() -> str:
+    """Build source package ONCE and extract to a temp directory.
+
+    Returns the path to the extracted source directory, suitable for
+    passing as ``source_dir`` to SageMaker Estimator constructions.
+    This avoids rebuilding the tar.gz for every job submission.
+    """
+    tmp = tempfile.mkdtemp(prefix="santander_src_pkg_")
+    tar_path = _prepare_source_package(tmp)
+    extract_dir = Path(tempfile.mkdtemp(prefix="santander_src_ext_")) / "source"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(tar_path, "r:gz") as tar:
+        tar.extractall(str(extract_dir))
+    logger.info("Source extracted once to: %s", extract_dir)
+    return str(extract_dir)
+
+
+# ===================================================================
+# Orchestrator state file — crash recovery (Issue 14)
+# ===================================================================
+
+_STATE_FILE = PROJECT_ROOT / ".ablation_state.json"
+
+
+def _save_state(state: Dict[str, Any]) -> None:
+    """Persist orchestrator state to a local JSON file for crash recovery.
+
+    Automatically extracts and includes a ``failed_jobs`` section from any
+    phase results present in the state dict.
+    """
+    # Build failed_jobs section from phase results
+    failed_jobs = []
+    for key, val in state.items():
+        if not isinstance(val, list):
+            continue
+        for r in val:
+            if isinstance(r, dict) and r.get("status") in ("Failed", "Stopped"):
+                failed_jobs.append({
+                    "name": r.get("job_name", r.get("scenario", "unknown")),
+                    "status": r["status"],
+                    "failure_reason": r.get("failure_reason", ""),
+                    "billable_seconds": r.get("billable_seconds", 0),
+                })
+    if failed_jobs:
+        state["failed_jobs"] = failed_jobs
+
+    state["_updated_at"] = datetime.now().isoformat()
+    with open(_STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2, default=str)
+    logger.debug("State saved to %s", _STATE_FILE)
+
+
+def _load_state() -> Optional[Dict[str, Any]]:
+    """Load orchestrator state from a previous run, if available."""
+    if _STATE_FILE.exists():
+        try:
+            with open(_STATE_FILE) as f:
+                state = json.load(f)
+            logger.info("Loaded previous state from %s (ts=%s)",
+                        _STATE_FILE, state.get("timestamp", "?"))
+            return state
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to load state file: %s", e)
+    return None
+
+
+def _recover_running_jobs(state: Dict[str, Any]) -> List[str]:
+    """Check SageMaker API for jobs that are still running from a previous run.
+
+    Matches jobs whose name contains the state timestamp.
+    """
+    import boto3
+    sm = boto3.client("sagemaker", region_name=REGION)
+    ts = state.get("timestamp", "")
+    if not ts:
+        return []
+
+    running: List[str] = []
+    # Check training jobs
+    try:
+        resp = sm.list_training_jobs(StatusEquals="InProgress", MaxResults=100)
+        for job in resp.get("TrainingJobSummaries", []):
+            if ts in job["TrainingJobName"]:
+                running.append(job["TrainingJobName"])
+    except Exception as e:
+        logger.warning("Failed to list running training jobs: %s", e)
+
+    # Check processing jobs
+    try:
+        resp = sm.list_processing_jobs(StatusEquals="InProgress", MaxResults=100)
+        for job in resp.get("ProcessingJobSummaries", []):
+            if ts in job["ProcessingJobName"]:
+                running.append(job["ProcessingJobName"])
+    except Exception as e:
+        logger.warning("Failed to list running processing jobs: %s", e)
+
+    if running:
+        logger.info("Recovered %d running jobs from previous run: %s", len(running), running)
+    return running
 
 
 # ===================================================================
@@ -515,10 +625,26 @@ def _wait_for_training_job(job_name: str) -> str:
         desc = sm.describe_training_job(TrainingJobName=job_name)
         status = desc["TrainingJobStatus"]
         if status in ("Completed", "Failed", "Stopped"):
-            logger.info("Job %s -> %s", job_name, status)
+            billable = desc.get("BillableTimeInSeconds", 0)
+            spot_savings = desc.get("TrainingTimeInSeconds", 0) - billable if desc.get("EnableManagedSpotTraining") else 0
+            logger.info("Job %s: status=%s, billable=%ds (%.2f hrs), spot savings=%ds",
+                        job_name, status, billable, billable / 3600, spot_savings)
             if status == "Failed":
                 reason = desc.get("FailureReason", "unknown")
-                logger.error("  Failure reason: %s", reason)
+                log_url = (
+                    f"https://{REGION}.console.aws.amazon.com/cloudwatch/home?"
+                    f"region={REGION}#logsV2:log-groups/log-group/"
+                    f"$252Faws$252Fsagemaker$252FTrainingJobs/log-events/{job_name}"
+                )
+                logger.error("Job %s FAILED: %s", job_name, reason[:200])
+                logger.error("CloudWatch logs: %s", log_url)
+            if status == "Stopped":
+                transitions = desc.get("SecondaryStatusTransitions", [])
+                was_spot = any(t.get("Status") == "Interrupted" for t in transitions)
+                if was_spot:
+                    logger.warning("SPOT INTERRUPTION: %s — will auto-retry", job_name)
+                else:
+                    logger.info("Job %s stopped (manual or eviction)", job_name)
             return status
         time.sleep(30)
 
@@ -536,7 +662,13 @@ def _wait_for_processing_job(job_name: str) -> str:
             logger.info("Job %s -> %s", job_name, status)
             if status == "Failed":
                 reason = desc.get("FailureReason", "unknown")
-                logger.error("  Failure reason: %s", reason)
+                log_url = (
+                    f"https://{REGION}.console.aws.amazon.com/cloudwatch/home?"
+                    f"region={REGION}#logsV2:log-groups/log-group/"
+                    f"$252Faws$252Fsagemaker$252FProcessingJobs/log-events/{job_name}"
+                )
+                logger.error("Job %s FAILED: %s", job_name, reason[:200])
+                logger.error("CloudWatch logs: %s", log_url)
             return status
         time.sleep(30)
 
@@ -549,28 +681,106 @@ def _get_model_artifact_uri(job_name: str) -> Optional[str]:
     return desc.get("ModelArtifacts", {}).get("S3ModelArtifacts")
 
 
-def _wait_for_any_job(job_names: List[str]) -> Tuple[str, str]:
-    """Wait for ANY of the given training jobs to complete.
+def _wait_for_any_job(
+    job_names: List[str],
+    expected_runtime_s: int = 7200,
+) -> Tuple[str, str]:
+    """Wait for ANY of the given training jobs to complete, with timeout eviction.
 
-    Returns (job_name, status) of the first job to finish.
+    Parameters
+    ----------
+    job_names : list
+        List of SageMaker training job names to monitor.
+    expected_runtime_s : int
+        Expected runtime in seconds. Jobs running longer than 2x this value
+        will be stopped (evicted) to prevent runaway costs.
+
+    Returns (job_name, status) of the first job to finish or be evicted.
     """
     import boto3
     sm = boto3.client("sagemaker", region_name=REGION)
     logger.info("Waiting for any of %d jobs: %s", len(job_names), job_names)
+
+    deadline = time.time() + expected_runtime_s * 2  # 2x expected as hard timeout
+    job_start_times: Dict[str, float] = {}
+
     while True:
+        now = time.time()
+
+        # Global deadline exceeded — evict the longest-running job
+        if now > deadline:
+            logger.warning(
+                "Global deadline exceeded (%.0fs). Evicting longest-running job.",
+                expected_runtime_s * 2,
+            )
+            oldest_job = min(job_start_times, key=job_start_times.get) if job_start_times else job_names[0]
+            try:
+                sm.stop_training_job(TrainingJobName=oldest_job)
+                logger.warning("Evicted (stopped) job: %s", oldest_job)
+            except Exception as e:
+                logger.error("Failed to stop job %s: %s", oldest_job, e)
+            return oldest_job, "Evicted"
+
         for jn in job_names:
             desc = sm.describe_training_job(TrainingJobName=jn)
             status = desc["TrainingJobStatus"]
+
+            # Track when we first saw each job
+            if jn not in job_start_times:
+                creation = desc.get("CreationTime")
+                if creation:
+                    job_start_times[jn] = creation.timestamp()
+                else:
+                    job_start_times[jn] = now
+
             if status in ("Completed", "Failed", "Stopped"):
                 logger.info("Job %s -> %s", jn, status)
                 return jn, status
+
         time.sleep(30)
+
+
+def _check_budget(budget_limit: float) -> bool:
+    """Check current AWS spend against budget limit. Returns True if under budget."""
+    import boto3
+    from datetime import timedelta
+
+    try:
+        ce = boto3.client("ce", region_name="us-east-1")
+        end = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        resp = ce.get_cost_and_usage(
+            TimePeriod={"Start": start, "End": end},
+            Granularity="MONTHLY",
+            Metrics=["UnblendedCost"],
+        )
+        total = sum(float(r["Total"]["UnblendedCost"]["Amount"]) for r in resp["ResultsByTime"])
+        if total >= budget_limit:
+            logger.error("BUDGET EXCEEDED: $%.2f >= $%.2f limit. Stopping.", total, budget_limit)
+            return False
+        logger.info("Budget check: $%.2f / $%.2f (%.0f%% used)", total, budget_limit, total / budget_limit * 100)
+        return True
+    except Exception as e:
+        logger.warning("Budget check failed (proceeding): %s", e)
+        return True
+
+
+def _enrich_failure_info(job_name: str, result: Dict[str, Any]) -> None:
+    """Fetch failure reason and billable seconds from a finished job and add to result."""
+    import boto3
+    try:
+        sm = boto3.client("sagemaker", region_name=REGION)
+        desc = sm.describe_training_job(TrainingJobName=job_name)
+        result["failure_reason"] = desc.get("FailureReason", "")[:500]
+        result["billable_seconds"] = desc.get("BillableTimeInSeconds", 0)
+    except Exception as e:
+        logger.warning("Could not fetch failure info for %s: %s", job_name, e)
 
 
 def _run_scenarios_parallel(
     scenarios: List[Dict[str, Any]],
     make_job_fn,
-    max_parallel: int = 8,
+    max_parallel: int = 4,
     args: Optional[argparse.Namespace] = None,
 ) -> List[Dict[str, Any]]:
     """Run training scenarios with up to max_parallel concurrent jobs.
@@ -600,6 +810,8 @@ def _run_scenarios_parallel(
                 check_path = f"{skip_check_s3_base}/phase1/{scenario_name}/output/eval_metrics.json"
             elif "experts" in scenario:
                 check_path = f"{skip_check_s3_base}/phase2/{scenario_name}/output/eval_metrics.json"
+            elif "tier" in scenario and "structure" in scenario:
+                check_path = f"{skip_check_s3_base}/phase3/{scenario_name}/output/eval_metrics.json"
             else:
                 check_path = ""
             if check_path:
@@ -609,8 +821,15 @@ def _run_scenarios_parallel(
                     results.append({"scenario": scenario_name, "status": "Reused", "metrics": existing})
                     continue
 
-        # Alternate spot/on-demand for parallel utilization
-        use_spot = (i % max_parallel != max_parallel - 1)  # last slot = on-demand fallback
+        # Budget guard: check cost before each batch of submissions
+        if not (args and args.dry_run):
+            budget_limit = _PIPELINE_CONFIG.get("ablation", {}).get("budget_limit", 100.0)
+            if not _check_budget(budget_limit):
+                logger.error("Stopping scenario submissions due to budget limit.")
+                break
+
+        # 50/50 spot/on-demand for stability
+        use_spot = (i % 2 == 0)  # alternating: spot, on-demand, spot, on-demand
 
         result = make_job_fn(scenario, use_spot)
         results.append(result)
@@ -627,6 +846,8 @@ def _run_scenarios_parallel(
             running[finished_name]["status"] = finished_status
             if finished_status == "Completed":
                 running[finished_name]["model_uri"] = _get_model_artifact_uri(finished_name)
+            if finished_status in ("Failed", "Stopped"):
+                _enrich_failure_info(finished_name, running[finished_name])
             del running[finished_name]
 
     # Wait for remaining running jobs
@@ -635,6 +856,8 @@ def _run_scenarios_parallel(
         running[finished_name]["status"] = finished_status
         if finished_status == "Completed":
             running[finished_name]["model_uri"] = _get_model_artifact_uri(finished_name)
+        if finished_status in ("Failed", "Stopped"):
+            _enrich_failure_info(finished_name, running[finished_name])
         del running[finished_name]
 
     return results
@@ -650,6 +873,7 @@ def _submit_training_job(
     wait: bool = True,
     dry_run: bool = False,
     use_spot: bool = True,
+    source_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Submit a SageMaker PyTorch Training Job.
 
@@ -671,6 +895,9 @@ def _submit_training_job(
         Whether to block until job completes.
     dry_run : bool
         Print config without submitting.
+    source_dir : str, optional
+        Pre-built source directory (from ``_prepare_and_extract_source``).
+        If provided, skips per-job source packaging for efficiency.
 
     Returns
     -------
@@ -721,16 +948,21 @@ def _submit_training_job(
         "NCCL_DEBUG": "WARN",
     }
 
-    # Package source code
-    tmp_dir = tempfile.mkdtemp()
-    source_tar = _prepare_source_package(tmp_dir)
+    # Use pre-built source directory if provided, or fall back to module global,
+    # or build per-job as last resort (legacy fallback)
+    effective_source_dir = source_dir or _GLOBAL_SOURCE_DIR
+    if effective_source_dir:
+        pkg_dir = effective_source_dir
+    else:
+        tmp_dir = tempfile.mkdtemp()
+        source_tar = _prepare_source_package(tmp_dir)
+        pkg_dir_path = Path(tempfile.mkdtemp()) / "source"
+        pkg_dir_path.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(source_tar, "r:gz") as tar:
+            tar.extractall(str(pkg_dir_path))
+        pkg_dir = str(pkg_dir_path)
 
-    # Extract tar.gz to a temp dir for SageMaker Estimator source_dir
-    import shutil
-    pkg_dir = Path(tempfile.mkdtemp()) / "source"
-    pkg_dir.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(source_tar, "r:gz") as tar:
-        tar.extractall(str(pkg_dir))
+    max_run = 28800  # 8 hours (safety margin; actual ~1h with batch 4096 + AMP)
 
     estimator_kwargs: Dict[str, Any] = {
         "entry_point": "containers/training/train.py",
@@ -744,8 +976,9 @@ def _submit_training_job(
         "hyperparameters": hyperparameters,
         "environment": env,
         "use_spot_instances": use_spot,
-        "max_run": 28800,       # 8 hours (safety margin; actual ~1h with batch 4096 + AMP)
-        **({"max_wait": 36000} if use_spot else {}),  # 10h max wait for spot
+        "max_run": max_run,
+        # max_wait = max_run + 1h buffer for spot provisioning (was 36000 fixed)
+        **({"max_wait": max_run + 3600} if use_spot else {}),
         "tags": [
             {"Key": "Project", "Value": "santander-ablation"},
             {"Key": "Phase", "Value": hyperparameters.get("ablation_phase", "unknown")},
@@ -755,7 +988,13 @@ def _submit_training_job(
         # SageMaker checkpoint syncing — trainer saves to /opt/ml/checkpoints/
         "checkpoint_s3_uri": f"{s3_output.rstrip('/')}/checkpoints",
         "checkpoint_local_path": "/opt/ml/checkpoints",
+        # Explicitly disable profiler to avoid costly ProfilerReport Processing Jobs
+        "disable_profiler": True,
     }
+
+    # Warm pool: keep instance alive for 5 min between jobs to avoid cold starts.
+    # Requires SageMaker SDK >= 2.100.
+    estimator_kwargs["keep_alive_period_in_seconds"] = 300
 
     # Add profiler config if available
     if profiler_config is not None:
@@ -798,6 +1037,7 @@ def _submit_processing_job(
     dry_run: bool = False,
     use_gpu: bool = False,
     max_retries: int = 0,
+    source_tar_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Submit a SageMaker Processing Job (SKLearn or PyTorch).
 
@@ -823,6 +1063,9 @@ def _submit_processing_job(
         If True, use PyTorchProcessor with GPU deps instead of SKLearnProcessor.
     max_retries : int
         Number of retry attempts on failure (0 = no retries).
+    source_tar_path : str, optional
+        Pre-built source tar.gz path. If provided, skips per-job source
+        packaging for efficiency.
 
     Returns
     -------
@@ -851,9 +1094,14 @@ def _submit_processing_job(
 
     session = sagemaker.Session()
 
-    # Package source code as tar.gz
-    tmp_dir = tempfile.mkdtemp()
-    source_tar = _prepare_source_package(tmp_dir)
+    # Use pre-built source tar.gz if provided, or fall back to module global,
+    # or build per-job as last resort (legacy fallback)
+    effective_tar = source_tar_path or _GLOBAL_SOURCE_TAR
+    if effective_tar:
+        source_tar = effective_tar
+    else:
+        tmp_dir = tempfile.mkdtemp()
+        source_tar = _prepare_source_package(tmp_dir)
     s3_source_key = f"santander-ablation/{job_name}/source/source_pkg.tar.gz"
     s3_source = f"s3://{S3_BUCKET}/{s3_source_key}"
     import boto3 as _b3
@@ -1071,7 +1319,7 @@ def run_phase1(
         result["phase"] = 1
         return result
 
-    return _run_scenarios_parallel(FEATURE_SCENARIOS, make_job, max_parallel=8, args=args)
+    return _run_scenarios_parallel(FEATURE_SCENARIOS, make_job, max_parallel=4, args=args)
 
 
 def run_phase2(
@@ -1115,7 +1363,7 @@ def run_phase2(
         result["phase"] = 2
         return result
 
-    return _run_scenarios_parallel(EXPERT_SCENARIOS, make_job, max_parallel=8, args=args)
+    return _run_scenarios_parallel(EXPERT_SCENARIOS, make_job, max_parallel=4, args=args)
 
 
 def run_phase3(
@@ -1188,7 +1436,7 @@ def run_phase3(
         result["phase"] = 3
         return result
 
-    return _run_scenarios_parallel(cross_scenarios, make_job, max_parallel=8, args=args)
+    return _run_scenarios_parallel(cross_scenarios, make_job, max_parallel=4, args=args)
 
 
 def _select_best_config(
@@ -1785,8 +2033,22 @@ def main() -> None:
     if args.feature_groups_path != FEATURE_GROUPS_PATH:
         FEATURE_GROUPS_PATH = args.feature_groups_path
 
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    s3_base = _s3_base_path(ts)
+    # Auto-resume from previous run state unless --fresh is specified
+    existing_state = _load_state()
+    if existing_state and not args.fresh:
+        ts = existing_state.get("timestamp", "")
+        s3_base = existing_state.get("s3_base", "")
+        if ts and s3_base:
+            logger.info("Resuming from previous run: %s", s3_base)
+        else:
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            s3_base = _s3_base_path(ts)
+    else:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        s3_base = _s3_base_path(ts)
+
+    # Persist state for future resume
+    _save_state({"s3_base": s3_base, "timestamp": ts, "completed": []})
 
     logger.info("=" * 70)
     logger.info("Santander 4-Dimension Ablation Orchestrator")
@@ -1804,14 +2066,28 @@ def main() -> None:
     run_all = args.phase == "all"
     phase = args.phase
 
-    # Prepare source package
+    # Build source package ONCE and reuse across all job submissions
+    global _GLOBAL_SOURCE_DIR, _GLOBAL_SOURCE_TAR
     if not args.dry_run:
+        _GLOBAL_SOURCE_DIR = _prepare_and_extract_source()
+        # Also create a tar.gz for S3 upload (processing jobs need it on S3)
         tmp_dir = tempfile.mkdtemp(prefix="santander_ablation_src_")
-        source_tar = _prepare_source_package(tmp_dir)
-        source_uri = _upload_source_to_s3(source_tar, s3_base)
+        _GLOBAL_SOURCE_TAR = _prepare_source_package(tmp_dir)
+        source_uri = _upload_source_to_s3(_GLOBAL_SOURCE_TAR, s3_base)
     else:
+        _GLOBAL_SOURCE_DIR = None
+        _GLOBAL_SOURCE_TAR = None
         source_uri = f"{s3_base}/source/source.tar.gz"
         logger.info("[DRY RUN] Source package: %s", source_uri)
+
+    # Update state with running job tracking info
+    _save_state({
+        "s3_base": s3_base,
+        "timestamp": ts,
+        "phase": args.phase,
+        "running_jobs": [],
+        "completed_phases": [],
+    })
 
     # Default data URI
     data_uri = os.environ.get(
@@ -1822,36 +2098,55 @@ def main() -> None:
     # Collect results from each phase
     all_results: Dict[str, Any] = {}
 
+    # Recover running jobs from a previous crashed run
+    if existing_state and not args.dry_run:
+        try:
+            recovered = _recover_running_jobs(existing_state)
+            if recovered:
+                logger.info("Found %d running jobs from previous run", len(recovered))
+        except Exception as e:
+            logger.warning("Could not recover running jobs: %s", e)
+
     # Phase 0: Data Preparation
     if run_all or phase == "0":
         p0_result = run_phase0(s3_base, ts, args)
         all_results["phase0"] = p0_result
         if p0_result.get("data_uri"):
             data_uri = p0_result["data_uri"]
+        _save_state({"s3_base": s3_base, "timestamp": ts, "completed_phases": ["0"],
+                      "running_jobs": [], "phase_progress": "phase0_done"})
 
     # Phase 1: Feature Group Ablation (10 scenarios)
     p1_results: List[Dict[str, Any]] = []
     if run_all or phase == "1":
         p1_results = run_phase1(s3_base, ts, data_uri, source_uri, args)
         all_results["phase1"] = p1_results
+        _save_state({"s3_base": s3_base, "timestamp": ts, "completed_phases": ["0", "1"],
+                      "running_jobs": [], "phase_progress": "phase1_done"})
 
     # Phase 2: Expert Ablation (7 scenarios)
     p2_results: List[Dict[str, Any]] = []
     if run_all or phase == "2":
         p2_results = run_phase2(s3_base, ts, data_uri, source_uri, args)
         all_results["phase2"] = p2_results
+        _save_state({"s3_base": s3_base, "timestamp": ts, "completed_phases": ["0", "1", "2"],
+                      "running_jobs": [], "phase_progress": "phase2_done"})
 
     # Phase 3: Task x Structure Cross Ablation (16 scenarios)
     p3_results: List[Dict[str, Any]] = []
     if run_all or phase == "3":
         p3_results = run_phase3(s3_base, ts, data_uri, source_uri, args)
         all_results["phase3"] = p3_results
+        _save_state({"s3_base": s3_base, "timestamp": ts, "completed_phases": ["0", "1", "2", "3"],
+                      "running_jobs": [], "phase_progress": "phase3_done"})
 
     # Phase 4: Best Config Teacher + Distillation
     if run_all or phase == "4":
         best_config = _select_best_config(p1_results, p2_results, p3_results, s3_base)
         p4_result = run_phase4(s3_base, ts, data_uri, source_uri, args, best_config)
         all_results["phase4"] = p4_result
+        _save_state({"s3_base": s3_base, "timestamp": ts, "completed_phases": ["0", "1", "2", "3", "4"],
+                      "running_jobs": [], "phase_progress": "phase4_done"})
 
     # Phase 5: Analysis + HTML Report
     if run_all or phase == "5":
@@ -1869,6 +2164,23 @@ def main() -> None:
     )
     logger.info("  Total Jobs Submitted: %d", total_jobs)
 
+    # Accumulate total billable time across all training results
+    total_billable_s = 0
+    all_job_results = []
+    for v in all_results.values():
+        if isinstance(v, list):
+            all_job_results.extend(v)
+        elif isinstance(v, dict):
+            all_job_results.append(v)
+    for r in all_job_results:
+        if isinstance(r, dict) and "billable_seconds" in r:
+            total_billable_s += r["billable_seconds"]
+    if total_billable_s > 0:
+        # Estimate cost: ml.g4dn.xlarge spot ~ $0.1578/hr, on-demand ~ $0.526/hr
+        est_cost = total_billable_s / 3600 * 0.526
+        logger.info("  Total Billable Time: %ds (%.2f hrs), estimated cost: $%.2f",
+                     total_billable_s, total_billable_s / 3600, est_cost)
+
     # Summary by dimension
     n_p1 = len([r for r in p1_results if r.get("status") in ("Completed", "DRY_RUN", "InProgress")])
     n_p2 = len([r for r in p2_results if r.get("status") in ("Completed", "DRY_RUN", "InProgress")])
@@ -1876,6 +2188,16 @@ def main() -> None:
     logger.info("  Dim 1 (Feature):       %d/%d", n_p1, len(FEATURE_SCENARIOS))
     logger.info("  Dim 2 (Expert):        %d/%d", n_p2, len(EXPERT_SCENARIOS))
     logger.info("  Dim 3 (Task x Struct): %d/%d", n_p3, len(TASK_TIERS) * len(STRUCTURE_VARIANTS))
+
+    # Detailed failure summary
+    failed = [r for r in all_job_results if isinstance(r, dict) and r.get("status") in ("Failed", "Stopped")]
+    if failed:
+        logger.error("=== FAILED JOBS (%d) ===", len(failed))
+        for f in failed:
+            logger.error("  %s: %s",
+                         f.get("job_name", f.get("scenario", "unknown")),
+                         f.get("failure_reason", "unknown")[:100])
+
     logger.info("=" * 70)
 
 

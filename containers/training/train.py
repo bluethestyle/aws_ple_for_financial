@@ -131,6 +131,15 @@ def load_ready_data(channel_dir: str) -> dict:
         logger.info("Loaded %d parquet files (fallback): %d rows, %d columns",
                      len(parquet_files), len(features), len(features.columns))
 
+    # Data loading diagnostics
+    logger.info("Features: %d rows x %d cols, memory=%.1f MB",
+                 len(features), len(features.columns), features.memory_usage(deep=True).sum() / 1e6)
+    logger.info("Dtypes: %s", dict(features.dtypes.value_counts()))
+    nan_count = features.isna().sum().sum()
+    if nan_count > 0:
+        logger.warning("Features contain %d NaN values across %d columns",
+                        nan_count, features.isna().any().sum())
+
     # -- Labels --
     labels_path = channel_path / "labels.parquet"
     labels = pd.read_parquet(labels_path) if labels_path.exists() else None
@@ -156,6 +165,11 @@ def load_ready_data(channel_dir: str) -> dict:
         with open(feature_schema_path) as f:
             feature_schema = json.load(f)
         logger.info("Loaded feature_schema: %d keys", len(feature_schema))
+        group_ranges = feature_schema.get("group_ranges", {})
+        if group_ranges:
+            logger.info("=== Feature Groups ===")
+            for name, (start, end) in sorted(group_ranges.items(), key=lambda x: x[1][0]):
+                logger.info("  %s: cols %d-%d (%d dims)", name, start, end, end - start)
     else:
         # Auto-generate minimal schema from DataFrame columns
         feature_schema = {
@@ -772,8 +786,8 @@ def validate(model, dataloader, device, task_names, task_type_map=None):
             if len(unique_labels) >= 2:
                 try:
                     metrics[f"auc_{name}"] = roc_auc_score(tgts_sq, preds_sq)
-                except ValueError:
-                    pass
+                except ValueError as e:
+                    logger.debug("Metric computation failed for task '%s': %s", name, e)
             try:
                 _thresholds = [0.01, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5]
                 best_f1, best_t = 0.0, 0.5
@@ -790,8 +804,8 @@ def validate(model, dataloader, device, task_names, task_type_map=None):
                 metrics[f"f1_at_0.5_{name}"] = f1_score(tgts_sq, pred_labels_05, zero_division=0)
                 cm = _confusion_matrix(tgts_sq, pred_labels, labels=[0, 1]).tolist()
                 metrics[f"confusion_matrix_{name}"] = cm
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Metric computation failed for task '%s': %s", name, e)
 
         elif task_type == "multiclass":
             if preds.ndim == 2:
@@ -801,35 +815,35 @@ def validate(model, dataloader, device, task_names, task_type_map=None):
             tgts_int = tgts.astype(int).squeeze()
             try:
                 metrics[f"accuracy_{name}"] = accuracy_score(tgts_int, pred_classes)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Metric computation failed for task '%s': %s", name, e)
             try:
                 metrics[f"f1_macro_{name}"] = f1_score(tgts_int, pred_classes, average="macro", zero_division=0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Metric computation failed for task '%s': %s", name, e)
             try:
                 metrics[f"f1_weighted_{name}"] = f1_score(tgts_int, pred_classes, average="weighted", zero_division=0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Metric computation failed for task '%s': %s", name, e)
             try:
                 valid_mask = tgts_int >= 0
                 labels = sorted(set(tgts_int[valid_mask]))
                 cm = _confusion_matrix(tgts_int[valid_mask], pred_classes[valid_mask], labels=labels).tolist()
                 metrics[f"confusion_matrix_{name}"] = cm
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Metric computation failed for task '%s': %s", name, e)
 
         elif task_type == "regression":
             preds_sq = preds.squeeze()
             tgts_sq = tgts.squeeze()
             try:
                 metrics[f"mae_{name}"] = float(np.mean(np.abs(preds_sq - tgts_sq)))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Metric computation failed for task '%s': %s", name, e)
             try:
                 metrics[f"rmse_{name}"] = float(np.sqrt(np.mean((preds_sq - tgts_sq) ** 2)))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Metric computation failed for task '%s': %s", name, e)
 
         else:
             # Fallback heuristic
@@ -839,12 +853,12 @@ def validate(model, dataloader, device, task_names, task_type_map=None):
             if len(unique_labels) == 2:
                 try:
                     metrics[f"auc_{name}"] = roc_auc_score(tgts_sq, preds_sq)
-                except ValueError:
-                    pass
+                except ValueError as e:
+                    logger.debug("Metric computation failed for task '%s': %s", name, e)
             try:
                 metrics[f"mae_{name}"] = float(np.mean(np.abs(preds_sq - tgts_sq)))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Metric computation failed for task '%s': %s", name, e)
 
     # Aggregate AUC
     auc_values = [v for k, v in metrics.items() if k.startswith("auc_")]
@@ -1164,6 +1178,13 @@ def main() -> None:
         torch.cuda.manual_seed_all(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    if device.type == "cuda":
+        props = torch.cuda.get_device_properties(device)
+        logger.info("GPU: %s, VRAM: %.1f GB, Compute: %d.%d",
+                     props.name, props.total_mem / 1e9, props.major, props.minor)
+        logger.info("GPU memory: %.1f MB allocated, %.1f MB reserved",
+                     torch.cuda.memory_allocated() / 1e6, torch.cuda.memory_reserved() / 1e6)
+
     # ---- 2. Load training-ready data ----
     data = load_ready_data(train_dir)
     features = data["features"]
@@ -1228,6 +1249,24 @@ def main() -> None:
     )
     task_names = [t["name"] for t in tasks]
 
+    # ---- Label distribution ----
+    logger.info("=== Label Distribution ===")
+    for task in tasks:
+        col = task["label_col"]
+        if labels is not None and col in labels.columns:
+            vals = labels[col]
+            if task["type"] == "binary":
+                pos_rate = (vals > 0).mean()
+                logger.info("  %s [binary]: positive=%.2f%% (%d/%d)",
+                            task["name"], pos_rate * 100, (vals > 0).sum(), len(vals))
+            elif task["type"] == "multiclass":
+                logger.info("  %s [multi-%s]: top classes=%s",
+                            task["name"], task.get("num_classes", "?"),
+                            dict(vals.value_counts().head(5)))
+            else:
+                logger.info("  %s [regression]: mean=%.4f, std=%.4f, range=[%.4f, %.4f]",
+                            task["name"], vals.mean(), vals.std(), vals.min(), vals.max())
+
     # ---- Label sanity check ----
     try:
         _peek = next(iter(train_loader))
@@ -1261,6 +1300,10 @@ def main() -> None:
         logger.info("Model input_dim (from schema): %d", input_dim)
 
     model, ple_config = build_model(feature_schema, label_schema, hp, input_dim, device)
+
+    n_params = sum(p.numel() for p in model.parameters())
+    logger.info("Model: %d parameters (%.1f MB), estimated GPU memory: %.1f MB",
+                 n_params, n_params * 4 / 1e6, n_params * 4 * 3 / 1e6)  # params + grads + optim
 
     # ---- Apply phase config (load pretrained for phase 2) ----
     if phase == "2" and pretrained_uri:
@@ -1334,7 +1377,12 @@ def main() -> None:
     if resume_state:
         trainer.current_epoch = resume_state.get("epoch", 0)
         trainer.global_step = resume_state.get("global_step", 0)
-        logger.info("Resuming from epoch %d", trainer.current_epoch)
+        logger.info(
+            "CHECKPOINT RESTORED: epoch %d, global_step %d from %s",
+            trainer.current_epoch, trainer.global_step, ckpt_mgr.local_dir,
+        )
+    else:
+        logger.info("No checkpoint found, starting from scratch")
 
     trainer_results = trainer.train(train_loader, val_loader, phase=trainer_phase)
     logger.info("PLETrainer finished: %s", trainer_results)
@@ -1393,14 +1441,20 @@ def main() -> None:
 
 if __name__ == "__main__":
     import argparse as _argparse
+    import traceback
 
     _parser = _argparse.ArgumentParser(add_help=False)
     _parser.add_argument("--pipeline", type=str, default=None,
                          help="Path to pipeline YAML config.")
     _known, _remaining = _parser.parse_known_args()
 
-    if _known.pipeline:
-        logger.info("Running via PipelineRunner (config=%s)", _known.pipeline)
-        main_pipeline(_known.pipeline)
-    else:
-        main()
+    try:
+        if _known.pipeline:
+            logger.info("Running via PipelineRunner (config=%s)", _known.pipeline)
+            main_pipeline(_known.pipeline)
+        else:
+            main()
+    except Exception:
+        logger.exception("FATAL: training failed")
+        traceback.print_exc()
+        sys.exit(1)

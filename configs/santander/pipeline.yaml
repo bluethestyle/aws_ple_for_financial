@@ -801,12 +801,15 @@ ablation:
       use_ple: true
       use_adatt: true
 
+  # Budget limit (USD) for cost guard — ablation stops if exceeded
+  budget_limit: 80.0
+
   # Default training hyperparameters for all ablation phases (read once by script)
   training_defaults:
     epochs: 10
     batch_size: 4096
     learning_rate: 0.008
-    amp: false
+    amp: true
     gradient_accumulation_steps: 2
     early_stopping_patience: 3
     seed: 42
@@ -871,6 +874,7 @@ aws:
   region: ap-northeast-2
   s3_bucket: aiops-ple-financial
   instance_type: ml.g4dn.xlarge
+  cpu_instance_type: ml.m5.2xlarge  # 32GB RAM for Phase 0 (processing jobs)
   use_spot: true
   max_run_seconds: 43200
   role_arn: arn:aws:iam::ACCOUNT_ID:role/SageMakerExecutionRole

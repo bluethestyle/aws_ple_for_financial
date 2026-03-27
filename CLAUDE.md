@@ -28,11 +28,22 @@
   5. **소규모 테스트**: 50K subsample로 end-to-end 성공을 확인한 후 전체 데이터 실행
 
 ### 1.5 비용 관리
-- **ProfilerReport는 반드시 비활성화**한다 (`disable_profiler=True`).
-- **max_run은 넉넉하게 설정**하되, 비용은 실제 사용 시간만 청구되므로 문제없다.
+- **ProfilerReport는 반드시 비활성화**한다 (`disable_profiler=True`를 estimator kwargs에 명시적으로 전달).
+- **AMP (Mixed Precision)는 반드시 활성화**한다 — g4dn T4 GPU에서 ~2배 속도 향상.
 - **batch_size는 VRAM과 데이터 크기에 맞게 최적화**한다 (941K 데이터 → 4096 권장).
-- **spot 인스턴스 8대 이상 동시 사용 시 중단 빈도가 높아진다** — checkpoint를 반드시 활성화한다.
+- **spot 인스턴스는 동시 4대 이하**로 제한한다 — 8대 이상 시 같은 AZ 경쟁으로 중단 빈도가 급증한다.
+- **max_wait는 max_run + 1시간**으로 설정한다 — 10시간 대기는 낭비.
 - 실험 전 `aws ce get-cost-and-usage`로 현재 비용을 확인한다.
+- **source 패키지는 1회만 빌드**하고 모든 Job에서 재사용한다.
+
+### 1.6 오케스트레이션 비용 효율성
+- **상태 파일 기반 자동 복구**: orchestrator가 죽어도 재시작 시 `pipeline_state.json`에서 완료된 Job을 감지하고 건너뛴다.
+- **S3 결과 존재 확인**: Job 제출 전에 해당 시나리오의 `eval_metrics.json`이 S3에 이미 있는지 확인 → 있으면 스킵.
+- **예산 가드**: 매 batch 제출 전에 `aws ce get-cost-and-usage`로 누적 비용을 확인, 설정된 예산 한도(`ablation.budget_limit`)를 초과하면 자동 중단.
+- **실패 Job 자동 eviction**: Job이 예상 시간의 2배를 초과하면 자동 stop → 슬롯 반환.
+- **Phase 0는 CPU 인스턴스** 사용 (pipeline.yaml `aws.cpu_instance_type`), GPU 인스턴스를 Phase 0에 낭비하지 않는다.
+- **Warm Pool 활성화**: `keep_alive_period_in_seconds`를 설정하여 연속 Job 간 인스턴스 재사용.
+- **비용 추정 vs 실제 비용 비교**: 실험 완료 후 `aws ce get-cost-and-usage`로 실제 비용을 확인하고, 추정치 대비 2배 이상 차이나면 원인을 분석하여 다음 실험에 반영.
 
 ## 2. 아키텍처 규칙
 
@@ -106,6 +117,18 @@ generator_params:
 ### 4.5 "완료" 보고 기준
 - 위 4단계를 **모두 통과한 후에만** "0건 잔여" 또는 "완료"로 보고한다
 - 일부만 검증한 경우 "컴파일 OK, 인터페이스 미검증, 하드코딩 미스캔"으로 명시한다
+
+### 4.6 에러 로깅 및 진단 기준
+- **orchestrator**: Job 실패 시 FailureReason + CloudWatch 로그 URL을 함께 출력한다.
+- **orchestrator**: Spot 중단과 알고리즘 에러를 구분하여 로깅한다 (SecondaryStatusTransitions 확인).
+- **orchestrator**: 실패 사유를 state 파일에 저장한다 (재시작 시 이전 실패 원인 확인 가능).
+- **orchestrator**: 실행 종료 시 성공/실패/중단 Job 목록 + 사유 + billable time 요약을 출력한다.
+- **train.py**: `main()` 전체를 `try/except`로 감싸고 `logger.exception()`으로 full traceback을 출력한다.
+- **train.py**: 학습 시작 전에 GPU 메모리, 데이터 shape/dtype/NaN 비율, 레이블 분포, 피처 스키마를 로깅한다.
+- **model**: NaN/Inf loss 발생 시 **어떤 태스크**에서 발생했는지 로깅한다.
+- **model**: gradient norm이 clip 임계값의 10배를 초과하면 경고 로깅한다.
+- **adapter/generator**: 실패 시 `exc_info=True`로 full traceback을 포함한다.
+- **validation**: metric 계산 실패 시 silent pass 대신 `logger.debug()`로 원인을 기록한다.
 
 ## 5. 서브에이전트 사용 규칙
 - 서브에이전트는 **반드시 opus 모델**만 사용한다.

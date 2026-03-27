@@ -173,7 +173,7 @@ def run_generators_from_config(
                 group_name, len(result.columns), time.time() - t0,
             )
         except Exception as e:
-            logger.warning("Generator '%s' failed: %s", group_name, e)
+            logger.warning("Generator '%s' failed: %s", group_name, e, exc_info=True)
             # Produce fallback zeros using output_dim from config
             n_cols = group.get("output_dim", 10)
             fallback = pd.DataFrame(

@@ -1590,6 +1590,17 @@ class PLEModel(nn.Module):
                 else:
                     loss = F.mse_loss(pred.squeeze(-1), target.float())
 
+            # NaN/Inf guard with task-level diagnostics
+            if torch.isnan(loss) or torch.isinf(loss):
+                logger.warning(
+                    "NaN/Inf loss for task '%s': pred range=[%.4f, %.4f], "
+                    "target range=[%.4f, %.4f]",
+                    task_name,
+                    pred.min().item(), pred.max().item(),
+                    target.float().min().item(), target.float().max().item(),
+                )
+                continue  # skip this task
+
             # Apply per-task loss weight from config (Gap 1 fix)
             weight = self.config.task_loss_weights.get(task_name, 1.0)
             if weight != 1.0:

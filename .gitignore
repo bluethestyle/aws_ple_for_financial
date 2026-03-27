@@ -67,3 +67,6 @@ cdk.out/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Orchestrator state (crash recovery)
+.ablation_state.json
