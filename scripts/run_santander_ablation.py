@@ -993,8 +993,9 @@ def _submit_training_job(
     }
 
     # Warm pool: keep instance alive for 5 min between jobs to avoid cold starts.
-    # Requires SageMaker SDK >= 2.100.
-    estimator_kwargs["keep_alive_period_in_seconds"] = 300
+    # Only works with on-demand instances (spot cannot retain cluster).
+    if not use_spot:
+        estimator_kwargs["keep_alive_period_in_seconds"] = 300
 
     # Add profiler config if available
     if profiler_config is not None:
