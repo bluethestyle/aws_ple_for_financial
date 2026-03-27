@@ -542,6 +542,7 @@ data:
     val_ratio: 0.15
 
   preprocessing:
+    fit_subsample_limit: 10000  # ablation: 10K sufficient for encoder fitting (production: 50K)
     # income: 25.4% missing (value=0 means missing) -- impute with median
     income:
       null_indicator: 0
