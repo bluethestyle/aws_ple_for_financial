@@ -1009,6 +1009,7 @@ def _submit_training_job(
         "train": TrainingInput(
             data_uri,
             distribution="FullyReplicated",
+            input_mode="FastFile",  # Stream from S3, avoid local disk/memory pressure
         ),
     }
 
