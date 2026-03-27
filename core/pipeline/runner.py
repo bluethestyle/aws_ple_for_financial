@@ -101,33 +101,6 @@ def _is_binary(series: "pd.Series", max_sample: int = 5000) -> bool:
     return unique.issubset({0, 1, 0.0, 1.0, True, False})
 
 
-def _detect_power_law(
-    df: "pd.DataFrame",
-    skew_threshold: float = 2.0,
-) -> List[str]:
-    """Identify continuous columns with power-law-like distributions.
-
-    Heuristic: columns whose absolute skewness exceeds *skew_threshold*
-    are candidates for ``log1p`` transformation.
-
-    Returns a list of column names.
-    """
-    import numpy as np
-
-    power_law_cols: List[str] = []
-    for col in df.columns:
-        try:
-            s = df[col].dropna()
-            if len(s) < 20:
-                continue
-            skew = float(s.skew())
-            if abs(skew) > skew_threshold and (s >= 0).all():
-                power_law_cols.append(col)
-        except Exception:
-            continue
-    return power_law_cols
-
-
 class PipelineRunner:
     """Execute the pipeline driven by :class:`PipelineConfig`.
 
@@ -246,11 +219,14 @@ class PipelineRunner:
             logger.info("[Stage 2] Sentinel normalization: replaced %d values", sentinel_applied)
 
         # 2b) Categorical encoding
-        id_cols = set(self.config.features.id_cols or ["customer_id", "user_id"])
+        id_cols = set(self.config.features.id_cols or [])
+        if not id_cols:
+            logger.warning("[Stage 2] No id_cols specified in config.features.id_cols — "
+                           "no columns will be excluded as ID columns")
         date_cols_cfg = preproc_cfg.get("date_cols", [])
         if isinstance(date_cols_cfg, str):
             date_cols_cfg = [date_cols_cfg]
-        date_cols = set(date_cols_cfg) | {"snapshot_date", "fecha_dato"}
+        date_cols = set(date_cols_cfg)
         exclude_encode = id_cols | date_cols
 
         cat_cols = df.select_dtypes(include=["object", "string", "category"]).columns
@@ -950,7 +926,9 @@ class PipelineRunner:
         )
 
         # Fit on subsample if large
-        fit_df = df.sample(min(50000, len(df)), random_state=42) if len(df) > 50000 else df
+        raw_cfg = self._config_to_dict()
+        fit_subsample = raw_cfg.get("preprocessing", {}).get("fit_subsample_limit", 50000)
+        fit_df = df.sample(min(fit_subsample, len(df)), random_state=42) if len(df) > fit_subsample else df
         pipeline.fit(fit_df)
         df_features = pipeline.transform(df)
 
@@ -1020,7 +998,9 @@ class PipelineRunner:
         )
 
         # Fit on subsample if large
-        fit_df = df.sample(min(50000, len(df)), random_state=42) if len(df) > 50000 else df
+        raw_cfg = self._config_to_dict()
+        fit_subsample = raw_cfg.get("preprocessing", {}).get("fit_subsample_limit", 50000)
+        fit_df = df.sample(min(fit_subsample, len(df)), random_state=42) if len(df) > fit_subsample else df
         pipeline.fit(fit_df)
         df_features = pipeline.transform(df)
 
@@ -1122,42 +1102,48 @@ class PipelineRunner:
         temporal_cfg = self._get_temporal_split_config()
 
         if temporal_cfg is not None and temporal_cfg.get("enabled", False):
-            from .temporal_split import TemporalSplitter
+            date_col = temporal_cfg.get("date_col")
+            if not date_col:
+                logger.warning(
+                    "No date_col configured for temporal split; "
+                    "falling back to random split"
+                )
+            else:
+                from .temporal_split import TemporalSplitter
 
-            splitter = TemporalSplitter(
-                train_ratio=temporal_cfg.get("train_ratio", 0.7),
-                val_ratio=temporal_cfg.get("val_ratio", 0.15),
-                gap_days=temporal_cfg.get("gap_days", 7),
-            )
-            date_col = temporal_cfg.get("date_col", "snapshot_date")
-            train_df, val_df, test_df = splitter.split(df, date_col=date_col)
+                splitter = TemporalSplitter(
+                    train_ratio=temporal_cfg.get("train_ratio", 0.7),
+                    val_ratio=temporal_cfg.get("val_ratio", 0.15),
+                    gap_days=temporal_cfg.get("gap_days", 7),
+                )
+                train_df, val_df, test_df = splitter.split(df, date_col=date_col)
 
-            # Map back to original df indices
-            train_idx = train_df.index.tolist() if not train_df.index.equals(
-                range(len(train_df))
-            ) else list(range(len(train_df)))
-            val_start = len(train_idx)
-            val_idx = list(range(val_start, val_start + len(val_df)))
-            test_start = val_start + len(val_df)
-            test_idx = list(range(test_start, test_start + len(test_df)))
+                # Map back to original df indices
+                train_idx = train_df.index.tolist() if not train_df.index.equals(
+                    range(len(train_df))
+                ) else list(range(len(train_df)))
+                val_start = len(train_idx)
+                val_idx = list(range(val_start, val_start + len(val_df)))
+                test_start = val_start + len(val_df)
+                test_idx = list(range(test_start, test_start + len(test_df)))
 
-            # The temporal splitter resets indices; use positional ranges
-            # based on the sorted order
-            n = len(df)
-            n_train = len(train_df)
-            n_val = len(val_df)
-            n_test = len(test_df)
-            # Gap rows are excluded; total may be < n
-            train_idx = list(range(n_train))
-            val_idx = list(range(n_train, n_train + n_val))
-            test_idx = list(range(n_train + n_val, n_train + n_val + n_test))
+                # The temporal splitter resets indices; use positional ranges
+                # based on the sorted order
+                n = len(df)
+                n_train = len(train_df)
+                n_val = len(val_df)
+                n_test = len(test_df)
+                # Gap rows are excluded; total may be < n
+                train_idx = list(range(n_train))
+                val_idx = list(range(n_train, n_train + n_val))
+                test_idx = list(range(n_train + n_val, n_train + n_val + n_test))
 
-            logger.info(
-                "[Stage 5] Temporal split: train=%d, val=%d, test=%d, "
-                "gap_days=%d",
-                n_train, n_val, n_test, temporal_cfg.get("gap_days", 7),
-            )
-            return train_idx, val_idx, test_idx
+                logger.info(
+                    "[Stage 5] Temporal split: train=%d, val=%d, test=%d, "
+                    "gap_days=%d",
+                    n_train, n_val, n_test, temporal_cfg.get("gap_days", 7),
+                )
+                return train_idx, val_idx, test_idx
 
         # Fallback: deterministic random split
         n = len(df)
@@ -1300,20 +1286,26 @@ class PipelineRunner:
                 details: dict = {}
             return _DummyResult()
 
+        raw_cfg = self._config_to_dict()
+        preproc = raw_cfg.get("preprocessing", {})
+        seq_prefix = preproc.get("sequence_column_prefix", "seq_")
+        prod_prefix = preproc.get("product_column_prefix", "prod_")
+        max_seq_len = raw_cfg.get("sequences", {}).get("max_seq_len_expected", 16)
+
         validator = LeakageValidator(
             correlation_threshold=0.95,
-            max_seq_len_expected=16,
+            max_seq_len_expected=max_seq_len,
         )
 
         result = validator.validate(df_features, df_labels)
 
         # Check sequence leakage if raw data available
         if raw_df is not None:
-            seq_cols = [c for c in raw_df.columns if c.startswith("seq_")]
+            seq_cols = [c for c in raw_df.columns if c.startswith(seq_prefix)]
             if seq_cols:
                 validator.check_sequence_leakage(raw_df, seq_cols, result=result)
 
-            prod_cols = [c for c in raw_df.columns if c.startswith("prod_")]
+            prod_cols = [c for c in raw_df.columns if c.startswith(prod_prefix)]
             if prod_cols and seq_cols:
                 validator.check_product_columns(
                     raw_df, prod_cols, seq_cols, result=result
@@ -1352,16 +1344,19 @@ class PipelineRunner:
         try:
             from .temporal_split import TemporalSplitter
 
+            seq_prefix = preproc.get("sequence_column_prefix", "seq_")
+            prod_prefix = preproc.get("product_column_prefix", "prod_")
+
             splitter = TemporalSplitter()
-            seq_cols = [c for c in df.columns if c.startswith("seq_")]
+            seq_cols = [c for c in df.columns if c.startswith(seq_prefix)]
 
             if seq_cols:
                 df = splitter.split_by_sequence_cutoff(
                     df,
                     seq_cols=seq_cols,
                     cutoff_offset=1,
-                    prod_col_prefix="prod_",
-                    seq_col_prefix="seq_",
+                    prod_col_prefix=prod_prefix,
+                    seq_col_prefix=seq_prefix,
                 )
                 logger.info(
                     "[Stage 1.5] Temporal preparation complete in %.2fs: "
@@ -2053,8 +2048,8 @@ class PipelineRunner:
         store_path = out / "serving" / "context_store"
         store_path.mkdir(parents=True, exist_ok=True)
 
-        id_cols = list(getattr(self.config.features, "id_cols", ["customer_id"]))
-        id_col = id_cols[0] if id_cols else "customer_id"
+        id_cols = list(getattr(self.config.features, "id_cols", None) or [])
+        id_col = id_cols[0] if id_cols else None
 
         if id_col in feature_df.columns:
             customer_ids = feature_df[id_col].values

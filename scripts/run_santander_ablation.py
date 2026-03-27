@@ -52,8 +52,12 @@ logger = logging.getLogger("run_santander_ablation")
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = "configs/santander/pipeline.yaml"
-FEATURE_GROUPS_PATH = "configs/santander/feature_groups.yaml"
+CONFIG_PATH = os.environ.get(
+    "ABLATION_CONFIG_PATH", "configs/santander/pipeline.yaml"
+)
+FEATURE_GROUPS_PATH = os.environ.get(
+    "ABLATION_FEATURE_GROUPS_PATH", "configs/santander/feature_groups.yaml"
+)
 
 # Framework versions (for PyTorch Estimator)
 PYTORCH_VERSION = "2.1"
@@ -79,14 +83,24 @@ def _load_feature_groups_config() -> Dict[str, Any]:
 
 
 def _extract_aws_constants(config: Dict[str, Any]) -> Dict[str, str]:
-    """Extract AWS/SageMaker constants from pipeline config."""
+    """Extract AWS/SageMaker constants from pipeline config.
+
+    Raises ValueError if required aws fields are missing.
+    """
     aws = config.get("aws", {})
+    required_keys = {"region": "aws.region", "s3_bucket": "aws.s3_bucket"}
+    for key, desc in required_keys.items():
+        if not aws.get(key):
+            raise ValueError(
+                f"{desc} not configured in pipeline.yaml — "
+                "all AWS constants must be explicit in the config"
+            )
     return {
-        "region": aws.get("region", "ap-northeast-2"),
-        "s3_bucket": aws.get("s3_bucket", "aiops-ple-financial"),
+        "region": aws["region"],
+        "s3_bucket": aws["s3_bucket"],
         "role_arn": aws.get("role_arn", ""),
-        "gpu_instance": aws.get("instance_type", "ml.g4dn.xlarge"),
-        "cpu_instance": aws.get("cpu_instance_type", "ml.m5.4xlarge"),
+        "gpu_instance": aws["instance_type"],
+        "cpu_instance": aws.get("cpu_instance_type", aws["instance_type"]),
     }
 
 
@@ -163,24 +177,29 @@ def _build_feature_scenarios(
 def _build_expert_scenarios(all_experts: List[str]) -> List[Dict[str, Any]]:
     """Build bottom-up + top-down expert ablation scenarios from config.
 
-    Uses ``deepfm`` as the base expert (always present in bottom-up).
+    Uses base_expert and minimal_expert from ablation config
+    (defaults: deepfm / mlp).
 
     Returns
     -------
     list of scenario dicts with keys ``name`` and ``experts``.
     """
+    ablation_cfg = _PIPELINE_CONFIG.get("ablation", {})
+    base_expert = ablation_cfg.get("base_expert", "deepfm")
+    minimal_expert = ablation_cfg.get("minimal_expert", "mlp")
+
     scenarios: List[Dict[str, Any]] = []
 
-    # Bottom-up: deepfm alone, then deepfm + one other expert
-    scenarios.append({"name": "deepfm_only", "experts": ["deepfm"]})
+    # Bottom-up: base expert alone, then base expert + one other expert
+    scenarios.append({"name": f"{base_expert}_only", "experts": [base_expert]})
     for expert in all_experts:
-        if expert == "deepfm":
+        if expert == base_expert:
             continue
         # Short name for the scenario
         short = expert.replace("optimal_transport", "ot").replace("temporal_ensemble", "temporal")
         scenarios.append({
-            "name": f"deepfm+{short}",
-            "experts": ["deepfm", expert],
+            "name": f"{base_expert}+{short}",
+            "experts": [base_expert, expert],
         })
 
     # Top-down: full minus one expert
@@ -191,8 +210,8 @@ def _build_expert_scenarios(all_experts: List[str]) -> List[Dict[str, Any]]:
             "experts": [e for e in all_experts if e != expert],
         })
 
-    # Minimal baseline: MLP only
-    scenarios.append({"name": "mlp_only", "experts": ["mlp"]})
+    # Minimal baseline
+    scenarios.append({"name": f"{minimal_expert}_only", "experts": [minimal_expert]})
 
     return scenarios
 
@@ -229,9 +248,22 @@ ALL_SHARED_EXPERTS: List[str] = _extract_shared_experts(_PIPELINE_CONFIG)
 FEATURE_EXPERT_DEPS: Dict[str, List[str]] = _build_feature_expert_deps(_FG_CONFIG)
 
 # Base groups (not removed in base_only scenario)
-_BASE_GROUP_NAMES: List[str] = _PIPELINE_CONFIG.get("ablation", {}).get(
-    "base_groups", ["demographics", "product_holdings"]
-)
+_base_groups_raw = _PIPELINE_CONFIG.get("ablation", {}).get("base_groups")
+if not _base_groups_raw:
+    raise ValueError(
+        "ablation.base_groups is required in pipeline.yaml but was not found. "
+        "Please define it (e.g., base_groups: [demographics, product_holdings])."
+    )
+_BASE_GROUP_NAMES: List[str] = _base_groups_raw
+
+# Training defaults for all ablation phases (read once from config)
+_training_defaults_raw = _PIPELINE_CONFIG.get("ablation", {}).get("training_defaults")
+if not _training_defaults_raw:
+    raise ValueError(
+        "ablation.training_defaults is required in pipeline.yaml but was not found. "
+        "Define epochs, batch_size, learning_rate, etc. under ablation.training_defaults."
+    )
+TRAINING_DEFAULTS: Dict[str, str] = {k: str(v) for k, v in _training_defaults_raw.items()}
 
 
 def _experts_for_scenario(removed_groups: List[str]) -> List[str]:
@@ -324,6 +356,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=3,
         help="Max retry attempts for processing jobs on failure (default: 3)",
+    )
+    parser.add_argument(
+        "--config-path",
+        type=str,
+        default=CONFIG_PATH,
+        help="Path to pipeline YAML config (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--feature-groups-path",
+        type=str,
+        default=FEATURE_GROUPS_PATH,
+        help="Path to feature_groups YAML config (default: %(default)s)",
     )
     return parser.parse_args()
 
@@ -960,7 +1004,7 @@ def run_phase0(s3_base: str, ts: str, args: argparse.Namespace) -> Dict[str, Any
         instance_type=args.instance_type_cpu,
         inputs=[
             ProcessingInput(
-                source=f"s3://{S3_BUCKET}/data/santander/",
+                source=_PIPELINE_CONFIG.get("data", {}).get("s3_path", f"s3://{S3_BUCKET}/data/"),
                 destination="/opt/ml/processing/input/raw",
             ),
         ],
@@ -1010,13 +1054,7 @@ def run_phase1(
             "ablation_scenario": name,
             "removed_feature_groups": json.dumps(scenario["remove"]),
             "shared_experts": json.dumps(_experts_for_scenario(scenario["remove"])),
-            "epochs": "10",
-            "batch_size": "4096",
-            "learning_rate": "0.008",
-            "amp": "false",
-            "gradient_accumulation_steps": "2",
-            "early_stopping_patience": "3",
-            "seed": "42",
+            **TRAINING_DEFAULTS,
             "_s3_output": f"{s3_base}/phase1/{name}",
         }
         active_experts = _experts_for_scenario(scenario["remove"])
@@ -1062,13 +1100,7 @@ def run_phase2(
             "ablation_type": "expert",
             "ablation_scenario": name,
             "shared_experts": json.dumps(scenario["experts"]),
-            "epochs": "10",
-            "batch_size": "4096",
-            "learning_rate": "0.008",
-            "amp": "false",
-            "gradient_accumulation_steps": "2",
-            "early_stopping_patience": "3",
-            "seed": "42",
+            **TRAINING_DEFAULTS,
             "_s3_output": f"{s3_base}/phase2/{name}",
         }
         logger.info("--- Scenario: %s (experts=%s, spot=%s) ---", name, scenario["experts"], use_spot)
@@ -1135,13 +1167,7 @@ def run_phase3(
             "active_tasks": json.dumps(scenario["task_list"]),
             "use_ple": json.dumps(scenario["use_ple"]),
             "use_adatt": json.dumps(scenario["use_adatt"]),
-            "epochs": "10",
-            "batch_size": "4096",
-            "learning_rate": "0.008",
-            "amp": "false",
-            "gradient_accumulation_steps": "2",
-            "early_stopping_patience": "3",
-            "seed": "42",
+            **TRAINING_DEFAULTS,
             "_s3_output": f"{s3_base}/phase3/{name}",
         }
         logger.info(
@@ -1308,13 +1334,7 @@ def run_phase4(
             "active_tasks": json.dumps(best_config.get("active_tasks", TASK_TIERS["tasks_18"])),
             "use_ple": json.dumps(best_config.get("use_ple", True)),
             "use_adatt": json.dumps(best_config.get("use_adatt", True)),
-            "epochs": "10",
-            "batch_size": "4096",
-            "learning_rate": "0.008",
-            "amp": "false",
-            "gradient_accumulation_steps": "2",
-            "early_stopping_patience": "3",
-            "seed": "42",
+            **TRAINING_DEFAULTS,
             "_s3_output": f"{s3_base}/phase4/teacher",
         }
 
@@ -1358,13 +1378,14 @@ def run_phase4(
             )
         )
 
+    distill_temp = str(_PIPELINE_CONFIG.get("distillation", {}).get("temperature", 5.0))
     distill_arguments = [
         "--teacher-checkpoint", "/opt/ml/processing/input/teacher/model.pth",
         "--data-path", "/opt/ml/processing/input/data/",
         "--output-dir", "/opt/ml/processing/output",
         "--config", CONFIG_PATH,
         "--soft-label-path", "/opt/ml/processing/output/soft_labels.parquet",
-        "--temperature", "5.0",
+        "--temperature", distill_temp,
     ]
     if args.skip_fidelity_gate:
         distill_arguments.append("--skip-fidelity-gate")
@@ -1411,7 +1432,7 @@ def run_phase5(
     manifest: Dict[str, Any] = {
         "timestamp": ts,
         "s3_base": s3_base,
-        "dataset": "santander",
+        "dataset": _PIPELINE_CONFIG.get("task_name", "santander"),
         "dimensions": [
             "feature_group (Phase 1)",
             "expert (Phase 2)",
@@ -1755,7 +1776,15 @@ def _generate_santander_report(
 # ===================================================================
 
 def main() -> None:
+    global CONFIG_PATH, FEATURE_GROUPS_PATH
     args = parse_args()
+
+    # Allow CLI to override config paths
+    if args.config_path != CONFIG_PATH:
+        CONFIG_PATH = args.config_path
+    if args.feature_groups_path != FEATURE_GROUPS_PATH:
+        FEATURE_GROUPS_PATH = args.feature_groups_path
+
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     s3_base = _s3_base_path(ts)
 

@@ -524,6 +524,7 @@ constraints:
 data:
   source: data/synthetic/santander_final.parquet
   s3_path: s3://aiops-ple-financial/data/santander/
+  id_col: customer_id
   backend: [cudf, duckdb, pandas]
   format: parquet
   total_rows: 941132
@@ -799,6 +800,16 @@ ablation:
     full:
       use_ple: true
       use_adatt: true
+
+  # Default training hyperparameters for all ablation phases (read once by script)
+  training_defaults:
+    epochs: 10
+    batch_size: 4096
+    learning_rate: 0.008
+    amp: false
+    gradient_accumulation_steps: 2
+    early_stopping_patience: 3
+    seed: 42
 
   hyperparams:
     learning_rate: [0.0001, 0.0005, 0.001, 0.005]

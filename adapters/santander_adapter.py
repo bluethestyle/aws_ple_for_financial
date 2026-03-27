@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 def _resolve_columns_by_filter(
     df: pd.DataFrame,
     filter_config: Dict[str, Any],
+    id_col: Optional[str] = None,
 ) -> List[str]:
     """Resolve columns matching the filter criteria from config.
 
@@ -61,7 +62,7 @@ def _resolve_columns_by_filter(
     # Start with numeric columns only
     cols: List[str] = []
     for col in df.select_dtypes(include="number").columns:
-        if col == "customer_id":
+        if id_col and col == id_col:
             continue
         if exclude_binary and set(df[col].dropna().unique()).issubset({0, 1}):
             continue
@@ -78,6 +79,7 @@ def _resolve_columns_by_filter(
 def run_generators_from_config(
     df: pd.DataFrame,
     feature_groups_config: List[Dict[str, Any]],
+    id_col: Optional[str] = None,
 ) -> pd.DataFrame:
     """Run generators based on feature_groups config, NOT hardcoded columns.
 
@@ -129,12 +131,12 @@ def run_generators_from_config(
         # --- Resolve input columns from config filter ---
         input_filter = gen_params.pop("input_filter", None)
         if input_filter is not None:
-            input_cols = _resolve_columns_by_filter(df, input_filter)
+            input_cols = _resolve_columns_by_filter(df, input_filter, id_col=id_col)
         else:
-            # Fallback: no filter → all numeric columns
+            # Fallback: no filter → all numeric columns (exclude id_col)
             input_cols = [
                 c for c in df.select_dtypes(include="number").columns
-                if c != "customer_id"
+                if not (id_col and c == id_col)
             ]
 
         if not input_cols:
@@ -214,6 +216,9 @@ class SantanderAdapter(DataAdapter):
         source = self.config.get("data", {}).get(
             "source", "data/synthetic/santander_final.parquet",
         )
+        self._id_col = self.config.get("data", {}).get("id_col")
+        if not self._id_col:
+            raise ValueError("data.id_col must be specified in adapter config")
 
         logger.info("SantanderAdapter: loading %s with backend=%s", source, backend)
 
@@ -229,7 +234,7 @@ class SantanderAdapter(DataAdapter):
             df = pd.read_parquet(source)
 
         self._metadata = AdapterMetadata(
-            id_col="customer_id",
+            id_col=self._id_col,
             entity_granularity="user",
             num_entities=len(df),
             num_raw_rows=len(df),
@@ -271,7 +276,11 @@ if __name__ == "__main__":
         default="configs/santander/feature_groups.yaml",
         help="Path to feature_groups.yaml",
     )
-    parser.add_argument("--pipeline", default="", help="(unused, for compat)")
+    parser.add_argument(
+        "--pipeline",
+        default="configs/santander/pipeline.yaml",
+        help="Path to pipeline.yaml (used for label column discovery)",
+    )
     parser.add_argument("--stages", default="1-6", help="(unused, for compat)")
     cli_args = parser.parse_args()
 
@@ -291,8 +300,27 @@ if __name__ == "__main__":
     source = parquet_files[0]
     logger.info("Found source: %s", source)
 
+    # Load pipeline config for label discovery and id_col
+    pipeline_cfg: Dict[str, Any] = {}
+    _pipeline_path = cli_args.pipeline
+    if not os.path.exists(_pipeline_path):
+        _alt_pipeline = os.path.join(input_dir, "pipeline.yaml")
+        if os.path.exists(_alt_pipeline):
+            _pipeline_path = _alt_pipeline
+    if os.path.exists(_pipeline_path):
+        with open(_pipeline_path) as f:
+            pipeline_cfg = yaml.safe_load(f) or {}
+        logger.info("Loaded pipeline config from %s", _pipeline_path)
+    else:
+        logger.warning("pipeline.yaml not found at %s -- label discovery will be empty", _pipeline_path)
+
+    _id_col = pipeline_cfg.get("data", {}).get("id_col")
+    if not _id_col:
+        logger.warning("data.id_col not found in config, defaulting to first column")
+        _id_col = None
+
     # Load via adapter
-    config = {"data": {"source": source, "backend": ["duckdb", "pandas"]}}
+    config: Dict[str, Any] = {"data": {"source": source, "backend": ["duckdb", "pandas"], "id_col": _id_col}}
     adapter = SantanderAdapter(config)
     raw_data = adapter.load_raw()
     df = raw_data["main"]
@@ -343,7 +371,7 @@ if __name__ == "__main__":
     if feature_groups:
         logger.info("Starting config-driven feature generation on %d rows ...", len(df))
         t_gen_start = time.time()
-        df = run_generators_from_config(df, feature_groups)
+        df = run_generators_from_config(df, feature_groups, id_col=_id_col)
         logger.info(
             "Feature generation finished in %.1fs. Shape: %s",
             time.time() - t_gen_start, df.shape,
@@ -371,11 +399,9 @@ if __name__ == "__main__":
         json.dump(stats, f, indent=2)
     logger.info("Feature stats saved: %d numeric columns", len(stats))
 
-    # --- Label statistics ---
-    label_cols = [
-        c for c in df.columns
-        if c in {"has_nba", "churn_signal", "product_stability", "nba_label"}
-    ]
+    # --- Label statistics (config-driven from pipeline.yaml labels section) ---
+    _label_keys = set(pipeline_cfg.get("labels", {}).keys())
+    label_cols = [c for c in df.columns if c in _label_keys]
     label_stats = {}
     for col in label_cols:
         if df[col].dtype in [np.int32, np.int64]:

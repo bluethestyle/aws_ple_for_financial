@@ -51,12 +51,20 @@ class FeatureNormalizer:
     """
 
     # Power-law detection thresholds (2-stage: fast filter + log-log R²)
+    # These are class-level defaults; instance-level values come from config.
     SKEW_THRESH: float = 2.0
     KURT_THRESH: float = 6.0
     R2_THRESH: float = 0.9
 
     def __init__(self, config: Optional[Dict] = None):
-        self.config = config or {}
+        cfg = config or {}
+        self.config = cfg
+        # Allow config overrides for detection thresholds
+        self.SKEW_THRESH = cfg.get("skew_threshold", self.__class__.SKEW_THRESH)
+        self.KURT_THRESH = cfg.get("kurtosis_threshold", self.__class__.KURT_THRESH)
+        self.R2_THRESH = cfg.get("loglog_r2_threshold", self.__class__.R2_THRESH)
+        self._min_nunique: int = cfg.get("min_nunique", 20)
+        self._min_samples: int = cfg.get("min_samples_loglog", 50)
         self.scaler = None  # sklearn StandardScaler
         self.power_law_cols: List[str] = []
         self.continuous_cols: List[str] = []
@@ -212,7 +220,7 @@ class FeatureNormalizer:
                     abs(skew) > self.SKEW_THRESH
                     and kurt > self.KURT_THRESH
                     and df[col].min() >= 0
-                    and nunique > 20
+                    and nunique > self._min_nunique
                 ):
                     candidates.append((col, skew, kurt))
             except (TypeError, ValueError):
@@ -238,14 +246,14 @@ class FeatureNormalizer:
 
         return confirmed, details
 
-    @staticmethod
-    def _loglog_r2(series: pd.Series) -> float:
+    def _loglog_r2(self, series: pd.Series) -> float:
         """Log-log rank-frequency R²."""
+        min_samples = self._min_samples
         vals = series.dropna()
         vals = vals[vals > 0].sort_values(ascending=False).values
-        if len(vals) < 50:
+        if len(vals) < min_samples:
             return 0.0
-        n = max(50, len(vals) // 2)
+        n = max(min_samples, len(vals) // 2)
         vals = vals[:n]
         log_rank = np.log(1 + np.arange(n))
         log_val = np.log(vals)

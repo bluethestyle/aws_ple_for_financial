@@ -77,12 +77,43 @@ generator_params:
 - DuckDB 파일 기반 → S3 Parquet (저장소)
 - Docker GPU 컨테이너 → SageMaker Training Job (실행 환경)
 
-## 4. 서브에이전트 사용 규칙
+## 4. 코드 검수 기준 (커밋 전 필수)
+
+모든 코드 작업 후, 커밋 전에 반드시 아래 **4단계 검수**를 통과해야 한다. 하나라도 빠지면 "완료"로 보고하지 않는다.
+
+### 4.1 컴파일 검증
+- 수정된 모든 `.py` 파일에 `py_compile.compile(f, doraise=True)` 실행
+- 수정된 모든 `.yaml` 파일에 `yaml.safe_load()` 실행
+
+### 4.2 인터페이스 계약 검증
+- **파일 A가 저장하는 키 이름**과 **파일 B가 읽는 키 이름**이 일치하는지 확인
+- 예: runner.py가 `feature_schema["group_ranges"]`로 저장하면, train.py도 `schema["group_ranges"]`로 읽어야 한다
+- 병렬 에이전트 작업 후에는 반드시 **cross-file 키/필드 매핑 테이블**을 만들어 검증
+
+### 4.3 하드코딩 스캔
+- 실행 경로의 모든 파일에서 다음을 grep 검색:
+  - **컬럼명**: `"customer_id"`, `"snapshot_date"`, `"income"`, `"tenure"`, `"prod_"`, `"synth_"`, `"seq_"`, `"nba_"` 등 dataset-specific 문자열
+  - **AWS 상수**: `"ap-northeast"`, `"aiops-ple"`, `"ml.g4dn"`, `"795833"` 등
+  - **매직넘버**: config에서 읽어야 하는 임계값, 경계값, 서브샘플 크기
+- config fallback (`config.get("key", "하드코딩값")`)도 dataset-specific이면 안 된다
+- `id_cols`, `date_cols`, `label_cols`는 반드시 config에서 읽는다
+
+### 4.4 관심사 분리 검증
+- train.py에 전처리 코드(fillna, LabelEncoder, scaler, label derivation)가 없는지 확인
+- adapter에 generator 호출이 없는지 확인
+- ablation script에 시나리오/전문가/태스크 목록이 하드코딩되지 않았는지 확인
+
+### 4.5 "완료" 보고 기준
+- 위 4단계를 **모두 통과한 후에만** "0건 잔여" 또는 "완료"로 보고한다
+- 일부만 검증한 경우 "컴파일 OK, 인터페이스 미검증, 하드코딩 미스캔"으로 명시한다
+
+## 5. 서브에이전트 사용 규칙
 - 서브에이전트는 **반드시 opus 모델**만 사용한다.
 - 병렬 서브에이전트 실행 시 각각의 역할을 명확히 구분한다.
 - 서브에이전트 결과를 반드시 검수한 후 커밋한다.
+- **병렬 에이전트 작업 후에는 반드시 인터페이스 계약 검증 에이전트를 추가로 실행한다.**
 
-## 5. 금지사항
+## 6. 금지사항
 - 로컬에서 pip install이나 패키지 실행 금지 (SageMaker에서만 테스트)
 - train.py에 전처리 코드를 넣지 않는다
 - adapter에 generator 호출을 하드코딩하지 않는다

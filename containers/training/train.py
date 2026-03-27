@@ -412,7 +412,8 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
 
         # Split dataset
         n = len(full_loader.dataset)
-        val_size = max(1, int(n * 0.1))
+        val_ratio = float(label_schema.get("val_split", hp.get("val_ratio", 0.1)))
+        val_size = max(1, int(n * val_ratio))
         train_size = n - val_size
         seed = int(hp.get("seed", 42))
         gen = torch.Generator().manual_seed(seed)
