@@ -127,7 +127,15 @@ def load_ready_data(channel_dir: str) -> dict:
         parquet_files = sorted(channel_path.glob("**/*.parquet"))
         if not parquet_files:
             raise FileNotFoundError(f"No features.parquet or .parquet files in {channel_dir}")
-        features = pd.concat([pd.read_parquet(f) for f in parquet_files], ignore_index=True)
+        # Only load scalar columns (skip list/struct to prevent OOM on 16GB)
+        import pyarrow.parquet as _pq
+        _schema = _pq.read_schema(str(parquet_files[0]))
+        _scalar_cols = [
+            _schema.field(i).name for i in range(len(_schema))
+            if not str(_schema.field(i).type).startswith(("list", "large_list", "struct"))
+        ]
+        logger.info("Selecting %d scalar columns (skipping list/struct)", len(_scalar_cols))
+        features = pd.concat([pd.read_parquet(f, columns=_scalar_cols) for f in parquet_files], ignore_index=True)
         logger.info("Loaded %d parquet files (fallback): %d rows, %d columns",
                      len(parquet_files), len(features), len(features.columns))
 
