@@ -877,4 +877,4 @@ aws:
   cpu_instance_type: ml.m5.2xlarge  # 32GB RAM for Phase 0 (processing jobs)
   use_spot: true
   max_run_seconds: 43200
-  role_arn: arn:aws:iam::ACCOUNT_ID:role/SageMakerExecutionRole
+  role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole
