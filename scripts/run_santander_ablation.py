@@ -71,14 +71,14 @@ PY_VERSION = "py310"
 def _load_pipeline_config() -> Dict[str, Any]:
     """Load the pipeline YAML config as a raw dict."""
     cfg_path = PROJECT_ROOT / CONFIG_PATH
-    with open(cfg_path) as f:
+    with open(cfg_path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def _load_feature_groups_config() -> Dict[str, Any]:
     """Load the feature_groups YAML config as a raw dict."""
     fg_path = PROJECT_ROOT / FEATURE_GROUPS_PATH
-    with open(fg_path) as f:
+    with open(fg_path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
