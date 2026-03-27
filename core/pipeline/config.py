@@ -223,6 +223,9 @@ class PipelineConfig:
     item_universe: Optional[ItemUniverseSpec] = None
     feature_groups: List[dict] = field(default_factory=list)
     adapter: str = ""
+    task_relationships: List[dict] = field(default_factory=list)
+    logit_transfer_strength: float = 0.5
+    adatt: dict = field(default_factory=dict)
 
     def get_task_group(self, task_name: str) -> Optional[str]:
         """Return the group name that *task_name* belongs to, or ``None``."""
@@ -323,6 +326,11 @@ def load_config(path: Union[str, Path]) -> PipelineConfig:
 
     adapter_name = raw.get("adapter", "")
 
+    # Top-level task relationship / transfer config (optional)
+    task_relationships = raw.get("task_relationships", [])
+    logit_transfer_strength = float(raw.get("logit_transfer_strength", 0.5))
+    adatt = raw.get("adatt", {})
+
     return PipelineConfig(
         task_name=raw["task_name"],
         tasks=tasks,
@@ -338,4 +346,7 @@ def load_config(path: Union[str, Path]) -> PipelineConfig:
         item_universe=item_universe,
         feature_groups=feature_groups_raw,
         adapter=adapter_name,
+        task_relationships=task_relationships,
+        logit_transfer_strength=logit_transfer_strength,
+        adatt=adatt,
     )

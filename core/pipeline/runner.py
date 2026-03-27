@@ -170,7 +170,7 @@ class PipelineRunner:
         """
         import numpy as np
         import pandas as pd
-        from sklearn.preprocessing import StandardScaler, LabelEncoder
+        from sklearn.preprocessing import LabelEncoder
 
         results: Dict[str, Any] = {}
         pipeline_start = time.time()
@@ -399,10 +399,12 @@ class PipelineRunner:
         )
 
         # ==============================================================
-        # Stage 6: Normalization (3-stage, train-only fit)
+        # Stage 6: Normalization (3-stage, train-only fit via FeatureNormalizer)
         # ==============================================================
         stage_start = time.time()
         logger.info("[Stage 6] Normalizing features (train-only fit)...")
+
+        from core.pipeline.normalizer import FeatureNormalizer
 
         # Determine feature columns: exclude labels, IDs, dates, sequence (list) cols
         label_col_set = set(labels_df.columns)
@@ -416,42 +418,37 @@ class PipelineRunner:
 
         train_df = df.iloc[train_idx]
 
-        # 6a) Identify continuous vs binary
-        continuous_cols = [c for c in feature_cols if not _is_binary(df[c])]
-        binary_cols = [c for c in feature_cols if _is_binary(df[c])]
+        # Fit normalizer on TRAIN split only, transform ALL data
+        normalizer = FeatureNormalizer()
+        normalizer.fit(train_df, feature_cols)
+        df_normed = normalizer.transform(df, feature_cols)
 
-        # 6b) Power-law detection + log1p copies (on train data)
-        power_law_cols = _detect_power_law(train_df[continuous_cols])
-        log_cols_created: List[str] = []
-        for col in power_law_cols:
-            log_col = f"{col}_log"
-            df[log_col] = np.log1p(df[col].clip(lower=0))
-            log_cols_created.append(log_col)
-            # Add to feature_cols but NOT to continuous_cols (they stay raw)
-            feature_cols.append(log_col)
+        # Extract column classifications from fitted normalizer
+        continuous_cols = normalizer.continuous_cols
+        binary_cols = normalizer.binary_cols
+        log_cols_created = [f"{c}_log" for c in normalizer.power_law_cols]
 
-        if log_cols_created:
-            logger.info(
-                "[Stage 6] Power-law log1p copies: %d cols (%s...)",
-                len(log_cols_created), log_cols_created[:5],
-            )
+        # Write normalized columns back into df so downstream stages can use df[feature_cols]
+        for col in df_normed.columns:
+            df[col] = df_normed[col].values
+        # Update feature_cols to match the normalizer output order
+        feature_cols = list(df_normed.columns)
 
-        # 6c) StandardScaler fit on TRAIN only, transform ALL
+        # Build scaler_params for backward-compatible scaler_params.json
         scaler_params: Dict[str, Any] = {}
-        if continuous_cols:
-            scaler = StandardScaler()
-            scaler.fit(train_df[continuous_cols].values)
-            df[continuous_cols] = scaler.transform(df[continuous_cols].values)
-
+        if normalizer.scaler is not None:
             scaler_params["scaler_type"] = "StandardScaler"
             scaler_params["columns"] = continuous_cols
-            scaler_params["mean"] = scaler.mean_.tolist()
-            scaler_params["scale"] = scaler.scale_.tolist()
-            scaler_params["var"] = scaler.var_.tolist()
+            scaler_params["mean"] = normalizer.scaler.mean_.tolist()
+            scaler_params["scale"] = normalizer.scaler.scale_.tolist()
+            scaler_params["var"] = normalizer.scaler.var_.tolist()
 
         scaler_params["power_law_log_cols"] = log_cols_created
         scaler_params["binary_cols"] = binary_cols
         scaler_params["continuous_cols"] = continuous_cols
+
+        # Save normalizer for inference reuse
+        normalizer.save(str(out / "normalizer"))
 
         results["stage6_normalization"] = {
             "continuous_cols": len(continuous_cols),
@@ -580,12 +577,36 @@ class PipelineRunner:
         feature_schema["binary_columns"] = binary_cols
         feature_schema["continuous_columns"] = continuous_cols
         feature_schema["power_law_log_columns"] = log_cols_created
+        # Key aliases for train.py compatibility (reads "group_ranges" / "columns")
+        feature_schema["group_ranges"] = feature_schema.get("feature_group_ranges", {})
+        feature_schema["columns"] = feature_schema.get(
+            "feature_columns", feature_schema.get("output_columns", [])
+        )
         feature_schema_path = out / "feature_schema.json"
         with open(feature_schema_path, "w") as f:
             json.dump(feature_schema, f, indent=2, default=str)
         logger.info("[Stage 9] feature_schema.json written")
 
-        # 9f) label_schema.json
+        # 9f) label_schema.json — include model/task config for train.py
+        label_schema["task_groups"] = [
+            {
+                "name": tg.name,
+                "tasks": tg.tasks,
+                "adatt_intra_strength": getattr(tg, "adatt_intra_strength", 0.8),
+                "adatt_inter_strength": getattr(tg, "adatt_inter_strength", 0.3),
+            }
+            for tg in self.config.task_groups
+        ]
+        label_schema["task_group_map"] = {
+            t: tg.name for tg in self.config.task_groups for t in tg.tasks
+        }
+        # Pass through task relationships and model config
+        raw_config = self._config_to_dict()
+        label_schema["task_relationships"] = raw_config.get("task_relationships", [])
+        label_schema["logit_transfer_strength"] = raw_config.get("logit_transfer_strength", 0.5)
+        label_schema["model"] = raw_config.get("model", {})
+        label_schema["adatt"] = raw_config.get("adatt", {})
+
         label_schema_path = out / "label_schema.json"
         with open(label_schema_path, "w") as f:
             json.dump(label_schema, f, indent=2, default=str)
@@ -2292,6 +2313,12 @@ class PipelineRunner:
                 "categorical": list(self.config.features.categorical),
                 "sequence": list(self.config.features.sequence),
             },
+            "task_relationships": getattr(self.config, "task_relationships", []),
+            "logit_transfer_strength": getattr(self.config, "logit_transfer_strength", 0.5),
+            "model": {
+                k: v for k, v in vars(self.config.model).items()
+            } if self.config.model else {},
+            "adatt": getattr(self.config, "adatt", {}),
         }
 
 

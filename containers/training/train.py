@@ -576,6 +576,9 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
         loss_weighting=loss_weighting,
     )
 
+    # -- Task loss weights from label schema --
+    ple_config.task_loss_weights = {t["name"]: t.get("loss_weight", 1.0) for t in tasks}
+
     # -- Task overrides (type + output_dim + loss) --
     for t in tasks:
         task_override = {
