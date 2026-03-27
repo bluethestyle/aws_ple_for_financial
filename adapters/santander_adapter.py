@@ -80,6 +80,7 @@ def run_generators_from_config(
     df: pd.DataFrame,
     feature_groups_config: List[Dict[str, Any]],
     id_col: Optional[str] = None,
+    fit_subsample_limit: int = 50_000,
 ) -> pd.DataFrame:
     """Run generators based on feature_groups config, NOT hardcoded columns.
 
@@ -108,7 +109,7 @@ def run_generators_from_config(
     gen_summary: Dict[str, int] = {}
 
     # Subsample for fitting to avoid OOM on large datasets
-    _FIT_SUBSAMPLE_LIMIT = 50_000
+    _FIT_SUBSAMPLE_LIMIT = fit_subsample_limit
     if len(df) > _FIT_SUBSAMPLE_LIMIT:
         fit_df = df.sample(_FIT_SUBSAMPLE_LIMIT, random_state=42)
         logger.info(
@@ -371,7 +372,10 @@ if __name__ == "__main__":
     if feature_groups:
         logger.info("Starting config-driven feature generation on %d rows ...", len(df))
         t_gen_start = time.time()
-        df = run_generators_from_config(df, feature_groups, id_col=_id_col)
+        _preproc = pipeline_cfg.get("data", {}).get("preprocessing", {})
+        _fit_subsample = int(_preproc.get("fit_subsample_limit", 50_000))
+        df = run_generators_from_config(df, feature_groups, id_col=_id_col,
+                                         fit_subsample_limit=_fit_subsample)
         logger.info(
             "Feature generation finished in %.1fs. Shape: %s",
             time.time() - t_gen_start, df.shape,
