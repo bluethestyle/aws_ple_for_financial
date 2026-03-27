@@ -1180,8 +1180,9 @@ def main() -> None:
 
     if device.type == "cuda":
         props = torch.cuda.get_device_properties(device)
+        vram_bytes = getattr(props, "total_memory", 0) or getattr(props, "total_mem", 0)
         logger.info("GPU: %s, VRAM: %.1f GB, Compute: %d.%d",
-                     props.name, props.total_mem / 1e9, props.major, props.minor)
+                     props.name, vram_bytes / 1e9, props.major, props.minor)
         logger.info("GPU memory: %.1f MB allocated, %.1f MB reserved",
                      torch.cuda.memory_allocated() / 1e6, torch.cuda.memory_reserved() / 1e6)
 
