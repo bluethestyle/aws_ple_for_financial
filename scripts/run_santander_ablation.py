@@ -2090,11 +2090,10 @@ def main() -> None:
         "completed_phases": [],
     })
 
-    # Default data URI
-    data_uri = os.environ.get(
-        "SANTANDER_DATA_URI",
-        f"s3://{S3_BUCKET}/data/adapted/santander/",
-    )
+    # Data URI: Phase 0 output or explicit override
+    _phase0_data = f"{s3_base}/phase0/data/"
+    data_uri = os.environ.get("SANTANDER_DATA_URI", _phase0_data)
+    logger.info("Data URI: %s", data_uri)
 
     # Collect results from each phase
     all_results: Dict[str, Any] = {}
