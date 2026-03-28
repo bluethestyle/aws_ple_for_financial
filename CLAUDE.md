@@ -88,6 +88,14 @@ generator_params:
 - DuckDB 파일 기반 → S3 Parquet (저장소)
 - Docker GPU 컨테이너 → SageMaker Training Job (실행 환경)
 
+### 3.3 데이터 처리 백엔드 정책
+- **pandas 직접 사용을 지양**한다. 대규모 데이터 로드/변환에 `pd.read_parquet()`, `pd.concat()`, `df.apply()` 등을 직접 쓰지 않는다.
+- **우선순위**: cuDF (GPU) → DuckDB (CPU columnar) → pandas (최후 fallback, 10K 이하 소규모만)
+- **Parquet 로드**: `duckdb.execute("SELECT ... FROM 'file.parquet'")` 사용. list/struct 컬럼도 네이티브 지원.
+- **집계/변환**: SQL로 처리 (`GROUP BY`, `WINDOW`, `CASE WHEN`). pandas의 `groupby().apply(lambda)` 금지.
+- **텐서 변환 직전**에만 `.df()` 또는 `.fetchnumpy()`로 pandas/numpy 변환.
+- train.py `load_ready_data()`에서 `pd.read_parquet()` 대신 `duckdb.read_parquet()` 사용.
+
 ## 4. 코드 검수 기준 (커밋 전 필수)
 
 모든 코드 작업 후, 커밋 전에 반드시 아래 **4단계 검수**를 통과해야 한다. 하나라도 빠지면 "완료"로 보고하지 않는다.
