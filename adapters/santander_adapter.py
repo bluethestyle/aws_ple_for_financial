@@ -278,6 +278,18 @@ class SantanderAdapter(DataAdapter):
             backend_used=backend,
         )
 
+        # Expose timestamp column info for time-based sequence building.
+        # The sequence builder auto-detects, but explicit metadata helps.
+        _date_cols = [c for c in df.columns if "date" in c.lower()]
+        if _date_cols:
+            self._metadata.extra = getattr(self._metadata, "extra", {})
+            if isinstance(self._metadata.extra, dict):
+                self._metadata.extra["timestamp_columns"] = _date_cols
+            logger.info(
+                "SantanderAdapter: detected timestamp columns: %s",
+                _date_cols,
+            )
+
         logger.info(
             "SantanderAdapter: loaded %d rows x %d cols (backend=%s)",
             len(df), len(df.columns), backend,

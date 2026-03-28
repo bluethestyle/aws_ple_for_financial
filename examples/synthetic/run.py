@@ -74,8 +74,8 @@ def make_local_config(data_path: str) -> PipelineConfig:
             numeric=["user_age", "item_price", "item_popularity", "days_since_last_visit"],
             categorical=["user_segment", "item_category", "platform"],
         ),
-        model=ModelSpec(architecture="lgbm"),
-        training=TrainingSpec(epochs=20, seed=42),
+        model=ModelSpec(architecture="ple"),
+        training=TrainingSpec(epochs=5, seed=42),  # PLE: fewer epochs for demo
         aws=AWSSpec(),
     )
 

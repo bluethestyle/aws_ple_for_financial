@@ -347,27 +347,41 @@ labels:
 # Sequences — two groups with different temporal resolutions
 # ---------------------------------------------------------------------------
 sequences:
-  # Transaction sequences (ealtman-based synthetic, max_len=60)
+  # Transaction sequences (ealtman-based synthetic)
+  # mode: time_based uses window_days to filter by date range;
+  #        count_based (legacy) uses max_len as fixed count.
+  # Auto-detection: if timestamp_col exists in data, time_based is used;
+  #                 otherwise falls back to count_based.
   txn_sequences:
-    max_len: 60
+    mode: time_based          # "time_based" | "count_based"
+    window_days: 90           # look-back window in days
+    stride_days: 30           # sliding window stride for bootstrapping
+    max_len: 200              # safety cap (pad/truncate to this length)
+    timestamp_col: txn_date   # column with per-txn timestamps (auto-detect)
     columns:
       txn_amount_seq:
         feat_dim: 1
         dtype: float
-        description: "Transaction amount sequence (USD, len 1-60, avg 41)"
+        description: "Transaction amount sequence (variable-length, up to 200)"
       txn_mcc_seq:
         feat_dim: 1
         dtype: int
-        description: "MCC code sequence (len 1-60)"
+        description: "MCC code sequence (variable-length, up to 200)"
       txn_hour_seq:
         feat_dim: 1
         dtype: int
-        description: "Transaction hour sequence (0-23, len 1-60)"
+        description: "Transaction hour sequence (0-23, variable-length)"
+      txn_date_seq:
+        feat_dim: 1
+        dtype: int
+        description: "Transaction date (YYYYMMDD int, for time-based windowing)"
 
   # Product holding sequences (Santander 17-month snapshots)
   # LEAKAGE FIX: truncate_last=1 drops month 17 (the label month) from
   # all product sequences.  max_len=16 uses months 1-16 only.
+  # Product sequences remain count_based (monthly snapshots, not date-indexed).
   product_sequences:
+    mode: count_based
     max_len: 16
     truncate_last: 1
     columns:

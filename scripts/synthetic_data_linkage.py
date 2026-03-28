@@ -243,6 +243,22 @@ print(f"  세그먼트 프로필: {con.execute('SELECT COUNT(*) FROM seg_profile
 print("\n[Phase 4] Lagged Tensor 시퀀스 구축...")
 t0 = time.time()
 
+# Config-driven pool size: use window_days from pipeline.yaml sequences config.
+# Default 90 for backward compat; the sequence builder further slices per max_len.
+_SEQ_POOL_SIZE = 90   # Matches sequences.txn_sequences.window_days in pipeline.yaml
+_SEQ_MAX_LEN = 200    # Matches sequences.txn_sequences.max_len in pipeline.yaml
+try:
+    import yaml as _yaml_seq
+    with open("configs/santander/pipeline.yaml", encoding="utf-8") as _f_seq:
+        _pipe_cfg_seq = _yaml_seq.safe_load(_f_seq) or {}
+    _txn_seq_cfg = _pipe_cfg_seq.get("sequences", {}).get("txn_sequences", {})
+    _SEQ_POOL_SIZE = int(_txn_seq_cfg.get("window_days", 90))
+    _SEQ_MAX_LEN = int(_txn_seq_cfg.get("max_len", 200))
+except Exception:
+    pass  # Fall back to defaults
+# Pool must be at least as large as max_len for slicing to work
+_SEQ_POOL_SIZE = max(_SEQ_POOL_SIZE, _SEQ_MAX_LEN)
+
 con.execute(f"""
     CREATE TABLE seg_sequences AS
     WITH txn AS (
@@ -260,9 +276,10 @@ con.execute(f"""
     )
     SELECT
         age_group, income_group,
-        LIST(amt ORDER BY dt DESC)[:90] as amt_pool,
-        LIST(mcc ORDER BY dt DESC)[:90] as mcc_pool,
-        LIST(hr ORDER BY dt DESC)[:90] as hr_pool
+        LIST(amt ORDER BY dt DESC)[:{_SEQ_POOL_SIZE}] as amt_pool,
+        LIST(mcc ORDER BY dt DESC)[:{_SEQ_POOL_SIZE}] as mcc_pool,
+        LIST(hr ORDER BY dt DESC)[:{_SEQ_POOL_SIZE}] as hr_pool,
+        LIST(dt ORDER BY dt DESC)[:{_SEQ_POOL_SIZE}] as dt_pool
     FROM txn_seg
     GROUP BY age_group, income_group
 """)
@@ -282,7 +299,7 @@ con.execute("DROP TABLE ealtman_user_seg")
 print("\n[Phase 5] 합성 결합...")
 t0 = time.time()
 
-con.execute("""
+con.execute(f"""
     CREATE TABLE result AS
     SELECT
         c.customer_id, c.snapshot_date, c.gender, c.age, c.income,
@@ -313,22 +330,28 @@ con.execute("""
         CASE WHEN COALESCE(p.sd_amt,0) > 0 THEN ROUND(COALESCE(p.mu_amt,50)/p.sd_amt, 3) ELSE 1.0 END as synth_stability,
         COALESCE(p.r_fraud, 0.001) as synth_fraud_ratio,
 
-        -- Lagged Tensor (LIST) — 세그먼트 시퀀스에서 고객별 랜덤 오프셋 슬라이싱
+        -- Lagged Tensor (LIST) — config-driven max_len slicing per customer
+        -- max_len from pipeline.yaml sequences.txn_sequences.max_len (default 200)
         COALESCE(
-            sq.amt_pool[1 + ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.amt_pool)-59) :
-                        ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.amt_pool)-59) + 60],
+            sq.amt_pool[1 + ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.amt_pool)-{_SEQ_MAX_LEN - 1}) :
+                        ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.amt_pool)-{_SEQ_MAX_LEN - 1}) + {_SEQ_MAX_LEN}],
             [0.0]
         ) as txn_amount_seq,
         COALESCE(
-            sq.mcc_pool[1 + ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.mcc_pool)-59) :
-                        ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.mcc_pool)-59) + 60],
+            sq.mcc_pool[1 + ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.mcc_pool)-{_SEQ_MAX_LEN - 1}) :
+                        ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.mcc_pool)-{_SEQ_MAX_LEN - 1}) + {_SEQ_MAX_LEN}],
             [0]
         ) as txn_mcc_seq,
         COALESCE(
-            sq.hr_pool[1 + ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.hr_pool)-59) :
-                       ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.hr_pool)-59) + 60],
+            sq.hr_pool[1 + ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.hr_pool)-{_SEQ_MAX_LEN - 1}) :
+                       ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.hr_pool)-{_SEQ_MAX_LEN - 1}) + {_SEQ_MAX_LEN}],
             [0]
-        ) as txn_hour_seq
+        ) as txn_hour_seq,
+        COALESCE(
+            sq.dt_pool[1 + ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.dt_pool)-{_SEQ_MAX_LEN - 1}) :
+                       ABS(HASH(c.customer_id)) % GREATEST(1, LENGTH(sq.dt_pool)-{_SEQ_MAX_LEN - 1}) + {_SEQ_MAX_LEN}],
+            [0]
+        ) as txn_date_seq
 
     FROM customers c
     LEFT JOIN seg_profile p ON c.age_group = p.age_group AND c.income_group = p.income_group

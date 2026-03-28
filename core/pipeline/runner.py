@@ -1261,7 +1261,12 @@ class PipelineRunner:
                     seq_configs[name] = SeqSourceConfig(
                         source=spec.source,
                         columns=spec.columns,
-                        seq_len=spec.seq_len,
+                        mode=getattr(spec, "mode", "count_based"),
+                        max_len=spec.seq_len,
+                        window_days=getattr(spec, "window_days", 90),
+                        stride_days=getattr(spec, "stride_days", 0),
+                        timestamp_col=getattr(spec, "timestamp_col", ""),
+                        truncate_last=getattr(spec, "truncate_last", 0),
                     )
                 if seq_configs:
                     sequences = builder.build(raw_data, seq_configs)

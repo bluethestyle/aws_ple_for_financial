@@ -147,6 +147,11 @@ class SequenceSpec:
     columns: List[str] = field(default_factory=list)
     seq_len: int = 50
     pad_value: float = 0.0
+    mode: str = "count_based"  # "count_based" | "time_based"
+    window_days: int = 90
+    stride_days: int = 0
+    timestamp_col: str = ""
+    truncate_last: int = 0
 
 
 @dataclass
