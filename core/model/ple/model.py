@@ -1575,7 +1575,7 @@ class PLEModel(nn.Module):
                 # BCEWithLogitsLoss), retrieve pre-activation logits from
                 # the tower to avoid double-sigmoid.  (Gap 3 fix)
                 _needs_logits = isinstance(loss_fn, (FocalLoss, nn.BCEWithLogitsLoss))
-                tower = self.task_towers.get(task_name)
+                tower = self.task_towers[task_name] if task_name in self.task_towers else None
                 if (_needs_logits
                         and tower is not None
                         and hasattr(tower, "_last_logits")):
@@ -1630,7 +1630,7 @@ class PLEModel(nn.Module):
             else:
                 # Fallback (should not happen after _build_task_loss_fns)
                 # Use logits from the tower to avoid double-sigmoid
-                tower = self.task_towers.get(task_name)
+                tower = self.task_towers[task_name] if task_name in self.task_towers else None
                 fallback_pred = (
                     tower._last_logits
                     if tower is not None and hasattr(tower, "_last_logits")

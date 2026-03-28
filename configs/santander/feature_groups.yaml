@@ -255,8 +255,10 @@ feature_groups:
         include_prefix: ["synth_"]
       output_dim: 50
       d_model: 128
-      num_epochs: 5        # ablation: 5 sufficient for pattern detection (production: 10)
-      prefer_gpu: false
+      num_epochs: 3
+      prefer_gpu: true
+      entity_column: customer_id
+      base_batch_size: 256   # RTX 4070 12GB: avoid OOM with seq_len=90
     output_dim: 50
     target_experts: [temporal_ensemble]
     interpretation:

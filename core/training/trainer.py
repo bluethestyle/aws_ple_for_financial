@@ -329,13 +329,13 @@ class PLETrainer:
     # ------------------------------------------------------------------
 
     def _create_grad_scaler(self) -> GradScaler:
-        """Create AMP GradScaler with device-type awareness."""
+        """Create AMP GradScaler with conservative init_scale to avoid FP16 overflow."""
         device_type = getattr(self.device, "type", "cuda")
         try:
-            return GradScaler(device_type)
+            return GradScaler(device_type, init_scale=1024.0)
         except TypeError:
             # PyTorch < 2.0 fallback
-            return GradScaler()
+            return GradScaler(init_scale=1024.0)
 
     # ------------------------------------------------------------------
     # Public API
@@ -794,7 +794,8 @@ class PLETrainer:
                 if self.config.amp.enabled:
                     with (autocast(device_type=device_type) if _AMP_NEW_API else autocast()):
                         outputs: PLEOutput = self.model(inputs, compute_loss=True)
-                        loss = outputs.total_loss / accum_steps
+                    # Loss scaling outside autocast to avoid FP16 overflow
+                    loss = outputs.total_loss.float() / accum_steps
                 else:
                     outputs = self.model(inputs, compute_loss=True)
                     loss = outputs.total_loss / accum_steps

@@ -141,10 +141,35 @@ def _check_cudf() -> bool:
         return False
 
 
-def _df_to_tensor_cpu(df: Any, columns: List[str], dtype: str = "float32") -> Any:
-    """Convert DataFrame columns to a CPU torch.Tensor via numpy."""
+def _arrow_table_to_tensor(table: Any, columns: List[str], dtype: str = "float32") -> Any:
+    """Convert Arrow Table columns to a CPU torch.Tensor (zero-copy when possible)."""
     import numpy as np
     import torch
+
+    # Select columns and convert to a single contiguous numpy array
+    subset = table.select(columns)
+    # to_pandas(zero_copy_only=...) may fail for some types; use numpy directly
+    # Arrow -> numpy via .to_pydict() is slow; prefer chunked array path
+    arrays = [subset.column(c).to_numpy(zero_copy_only=False) for c in range(subset.num_columns)]
+    arr = np.column_stack(arrays) if len(arrays) > 1 else arrays[0].reshape(-1, 1)
+    return torch.from_numpy(arr.astype(getattr(np, dtype)))
+
+
+def _df_to_tensor_cpu(df: Any, columns: List[str], dtype: str = "float32") -> Any:
+    """Convert DataFrame columns to a CPU torch.Tensor via numpy.
+
+    Accepts pandas DataFrame or PyArrow Table.
+    """
+    import numpy as np
+    import torch
+
+    # Fast path for Arrow tables
+    try:
+        import pyarrow as pa
+        if isinstance(df, pa.Table):
+            return _arrow_table_to_tensor(df, columns, dtype)
+    except ImportError:
+        pass
 
     arr = df[columns].values
     if not isinstance(arr, np.ndarray):
@@ -180,8 +205,10 @@ class PLEDataset:
 
     Parameters
     ----------
-    df : DataFrame
-        pandas or cuDF DataFrame.
+    df : DataFrame or pyarrow.Table
+        pandas DataFrame, cuDF DataFrame, or PyArrow Table.
+        When using DuckDB, prefer passing ``conn.execute(...).arrow()``
+        instead of ``.df()`` to avoid pandas overhead.
     feature_columns : FeatureColumnSpec
         Column-to-field mapping.
     label_columns : dict[str, str]
@@ -206,9 +233,20 @@ class PLEDataset:
         self._label_columns = label_columns
         self._seq_cfg = sequence_config or SequenceConfig()
         self._use_gpu = use_gpu and _check_cudf()
-        self._n_samples = len(df)
 
-        available = set(df.columns)
+        # Normalise column names for Arrow vs DataFrame
+        try:
+            import pyarrow as pa
+            self._is_arrow = isinstance(df, pa.Table)
+        except ImportError:
+            self._is_arrow = False
+
+        if self._is_arrow:
+            self._n_samples = df.num_rows
+            available = set(df.column_names)
+        else:
+            self._n_samples = len(df)
+            available = set(df.columns)
 
         # ---- Build column groups ----
         self._col_groups: Dict[str, List[str]] = {}
@@ -477,8 +515,9 @@ def build_ple_dataloader(
 
     Parameters
     ----------
-    df : DataFrame
-        pandas or cuDF DataFrame containing features and labels.
+    df : DataFrame or pyarrow.Table
+        pandas DataFrame, cuDF DataFrame, or PyArrow Table.
+        When using DuckDB, prefer ``conn.execute(...).arrow()`` to skip pandas.
     feature_spec : FeatureColumnSpec
         Column-to-field mapping.
     label_columns : dict[str, str]

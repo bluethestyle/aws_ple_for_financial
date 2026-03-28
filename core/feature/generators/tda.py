@@ -533,6 +533,57 @@ class TDAFeatureGenerator(AbstractFeatureGenerator):
 
         result = np.zeros((n_rows, self.output_dim), dtype=np.float32)
 
+        # Guard: row-by-row TDA is O(n*d^2); cap at 50K rows
+        _MAX_ROWS_FOR_ROW_TDA = 50_000
+        if n_rows > _MAX_ROWS_FOR_ROW_TDA:
+            logger.warning(
+                "TDA row-by-row on %d rows would be too slow — "
+                "computing on %d-row subsample and mapping via nearest neighbour",
+                n_rows, _MAX_ROWS_FOR_ROW_TDA,
+            )
+            rng = np.random.RandomState(42)
+            sample_idx = rng.choice(n_rows, size=_MAX_ROWS_FOR_ROW_TDA, replace=False)
+            sample_normed = normed[sample_idx]
+            sample_result = np.zeros((_MAX_ROWS_FOR_ROW_TDA, self.output_dim), dtype=np.float32)
+            for si, i in enumerate(sample_idx):
+                row = sample_normed[si]
+                valid_mask = ~np.isnan(row)
+                valid = row[valid_mask]
+                if len(valid) < 2:
+                    continue
+                point_cloud = self._build_point_cloud(valid)
+                if point_cloud.shape[0] < 2:
+                    continue
+                if point_cloud.shape[0] > self.n_points_subsample:
+                    _rng = np.random.RandomState(si)
+                    indices = _rng.choice(point_cloud.shape[0], size=self.n_points_subsample, replace=False)
+                    point_cloud = point_cloud[indices]
+                dist_matrix = self._pairwise_distances(point_cloud)
+                try:
+                    diagrams = _compute_persistence(dist_matrix, self.max_homology_dim, self.max_edge_length)
+                except Exception:
+                    continue
+                col_idx = 0
+                for h_dim in range(self.max_homology_dim + 1):
+                    stats = _persistence_stats(diagrams.get(h_dim, np.empty((0, 2))), self.stats_to_compute)
+                    for stat_val in stats:
+                        if col_idx < self.output_dim:
+                            sample_result[si, col_idx] = stat_val
+                            col_idx += 1
+            # kNN mapping: for each row, find nearest sample row
+            from sklearn.neighbors import NearestNeighbors
+            nn = NearestNeighbors(n_neighbors=1, algorithm="ball_tree").fit(sample_normed)
+            _, nn_idx = nn.kneighbors(normed)
+            result = sample_result[nn_idx.ravel()]
+            data_out = {}
+            col_idx = 0
+            for h_dim in range(self.max_homology_dim + 1):
+                for stat_name in self.stats_to_compute:
+                    if col_idx < self.output_dim:
+                        data_out[f"{self.prefix}_h{h_dim}_{stat_name}"] = result[:, col_idx]
+                        col_idx += 1
+            return df_backend.from_dict(data_out, index=pdf.index)
+
         for i in range(n_rows):
             row = normed[i]
             valid_mask = ~np.isnan(row)
@@ -971,16 +1022,39 @@ class TDALocalGenerator(TDAFeatureGenerator):
         result = np.zeros((n_rows, self.output_dim), dtype=np.float32)
 
         if self.entity_column not in pdf.columns:
-            # Fall back to parent row-by-row behaviour
             logger.warning(
-                "TDALocalGenerator: entity_column '%s' not found, falling back to row-by-row",
-                self.entity_column,
+                "TDALocalGenerator: entity_column '%s' not found — returning zeros "
+                "(row-by-row TDA on %d rows is infeasible)",
+                self.entity_column, n_rows,
             )
-            return super().generate(df, **context)
+            return df_backend.from_dict(
+                {f"{self.prefix}_h{h}_{s}": result[:, i]
+                 for i, (h, s) in enumerate(
+                     (h, s) for h in range(self.max_homology_dim + 1)
+                     for s in self.stats_to_compute
+                 ) if i < self.output_dim},
+                index=pdf.index,
+            )
 
         # Group rows by entity
         entity_col = pdf[self.entity_column].values
         unique_entities = pd.unique(entity_col)
+
+        # Short-circuit: if most entities have <=1 row, TDA is meaningless
+        avg_rows_per_entity = n_rows / max(len(unique_entities), 1)
+        if avg_rows_per_entity < 2.0:
+            logger.info(
+                "TDALocalGenerator: avg %.1f rows/entity — TDA needs multi-row sequences, returning zeros",
+                avg_rows_per_entity,
+            )
+            return df_backend.from_dict(
+                {f"{self.prefix}_h{h}_{s}": result[:, i]
+                 for i, (h, s) in enumerate(
+                     (h, s) for h in range(self.max_homology_dim + 1)
+                     for s in self.stats_to_compute
+                 ) if i < self.output_dim},
+                index=pdf.index,
+            )
         entity_to_rows: Dict[Any, np.ndarray] = {}
         for entity in unique_entities:
             mask = entity_col == entity

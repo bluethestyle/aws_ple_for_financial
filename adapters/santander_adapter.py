@@ -105,7 +105,10 @@ def run_generators_from_config(
     # Trigger side-effect registration of all built-in generators.
     import core.feature.generators  # noqa: F401
 
-    generated_frames: List[pd.DataFrame] = []
+    import pyarrow as pa
+    # Generated frames stored as Arrow tables; converted back to pandas only
+    # at the merge boundary where generators still expect pd.DataFrame.
+    generated_frames: List[pa.Table] = []
     gen_summary: Dict[str, int] = {}
 
     # Subsample for fitting to avoid OOM on large datasets
@@ -154,20 +157,30 @@ def run_generators_from_config(
 
         t0 = time.time()
         try:
+            # Avoid duplicate 'prefix' if config already specifies it
+            create_kwargs = dict(gen_params)
+            if "prefix" not in create_kwargs:
+                create_kwargs["prefix"] = group_name
             gen = FeatureGeneratorRegistry.create(
                 generator_name,
                 input_columns=input_cols,
-                prefix=group_name,
-                **gen_params,
+                **create_kwargs,
             )
-            gen.fit(fit_df[input_cols])
-            result = gen.generate(df[input_cols])
+            # Include entity column if generator needs it (mamba, hmm, etc.)
+            entity_col = getattr(gen, "entity_column", None)
+            fit_cols = list(input_cols)
+            gen_cols = list(input_cols)
+            if entity_col and entity_col in df.columns and entity_col not in fit_cols:
+                fit_cols = [entity_col] + fit_cols
+                gen_cols = [entity_col] + gen_cols
+            gen.fit(fit_df[fit_cols])
+            result = gen.generate(df[gen_cols])
 
             if not isinstance(result, pd.DataFrame):
                 result = pd.DataFrame(result)
             result.index = df.index
 
-            generated_frames.append(result)
+            generated_frames.append(pa.Table.from_pandas(result, preserve_index=False))
             gen_summary[group_name] = len(result.columns)
             logger.info(
                 "Generator '%s': %d features in %.1fs",
@@ -177,28 +190,30 @@ def run_generators_from_config(
             logger.warning("Generator '%s' failed: %s", group_name, e, exc_info=True)
             # Produce fallback zeros using output_dim from config
             n_cols = group.get("output_dim", 10)
-            fallback = pd.DataFrame(
-                np.zeros((len(df), n_cols), dtype=np.float32),
-                columns=[f"{group_name}_{i:03d}" for i in range(n_cols)],
-                index=df.index,
+            _fallback_cols = [f"{group_name}_{i:03d}" for i in range(n_cols)]
+            _fallback_data = np.zeros((len(df), n_cols), dtype=np.float32)
+            fallback = pa.table(
+                {c: _fallback_data[:, j] for j, c in enumerate(_fallback_cols)},
             )
             generated_frames.append(fallback)
             gen_summary[group_name] = n_cols
 
-    # Merge all generated features via DuckDB horizontal join
+    # Merge generated features via DuckDB POSITIONAL JOIN (all Arrow tables)
     if generated_frames:
         import duckdb as _ddb_merge
         _con_m = _ddb_merge.connect()
         try:
-            # Register all generated frames and build a chained POSITIONAL JOIN
-            _con_m.register("_base", df)
+            # Convert base df to Arrow to avoid DuckDB 'str' dtype issue
+            _base_arrow = pa.Table.from_pandas(df, preserve_index=False)
+            _con_m.register("_base", _base_arrow)
             join_sql = "SELECT _base.*"
             from_sql = "_base"
             for i, gf in enumerate(generated_frames):
                 alias = f"_gf{i}"
+                # gf is already a pyarrow.Table -- register directly
                 _con_m.register(alias, gf)
-                gen_cols = ", ".join(f'{alias}."{c}"' for c in gf.columns)
-                join_sql += f", {gen_cols}"
+                gen_cols_str = ", ".join(f'{alias}."{c}"' for c in gf.column_names)
+                join_sql += f", {gen_cols_str}"
                 from_sql += f" POSITIONAL JOIN {alias}"
             df = _con_m.execute(f"{join_sql} FROM {from_sql}").df()
         finally:
@@ -246,7 +261,13 @@ class SantanderAdapter(DataAdapter):
             df = con.execute(f"SELECT * FROM '{source}'").df()
             con.close()
         else:
-            df = pd.read_parquet(source)
+            # Use DuckDB for parquet loading even in pandas-fallback path
+            import duckdb as _ddb_load
+            _con_load = _ddb_load.connect()
+            try:
+                df = _con_load.execute(f"SELECT * FROM '{source}'").df()
+            finally:
+                _con_load.close()
 
         self._metadata = AdapterMetadata(
             id_col=self._id_col,
@@ -323,7 +344,7 @@ if __name__ == "__main__":
         if os.path.exists(_alt_pipeline):
             _pipeline_path = _alt_pipeline
     if os.path.exists(_pipeline_path):
-        with open(_pipeline_path) as f:
+        with open(_pipeline_path, encoding="utf-8") as f:
             pipeline_cfg = yaml.safe_load(f) or {}
         logger.info("Loaded pipeline config from %s", _pipeline_path)
     else:
@@ -372,7 +393,7 @@ if __name__ == "__main__":
             fg_config_path = alt
 
     if os.path.exists(fg_config_path):
-        with open(fg_config_path) as f:
+        with open(fg_config_path, encoding="utf-8") as f:
             fg_raw = yaml.safe_load(f)
         feature_groups = fg_raw.get("feature_groups", [])
     else:
@@ -395,13 +416,48 @@ if __name__ == "__main__":
             time.time() - t_gen_start, df.shape,
         )
 
+    # --- Label derivation (config-driven) ---
+    label_configs = pipeline_cfg.get("labels", {})
+    if label_configs:
+        from core.pipeline.label_deriver import LabelDeriver
+        deriver = LabelDeriver()
+        labels_df = deriver.derive(df, label_configs=label_configs)
+        if not labels_df.empty:
+            for col in labels_df.columns:
+                df[col] = labels_df[col].values
+            logger.info("Derived %d label columns: %s", len(labels_df.columns), list(labels_df.columns))
+        else:
+            logger.warning("LabelDeriver returned empty DataFrame")
+
+    # --- 3-stage normalization (fit on subsample, transform all) ---
+    from core.pipeline.normalizer import FeatureNormalizer
+    _id_cols = {_id_col} if _id_col else set()
+    _label_cols = set(label_configs.keys()) if label_configs else set()
+    _seq_cols = {c for c in df.columns if c.startswith("seq_") or c.endswith("_seq")}
+    _date_cols = {c for c in df.columns if "date" in c.lower()}
+    _str_cols = set(df.select_dtypes(include=["object", "string"]).columns)
+    _non_feature = _id_cols | _label_cols | _seq_cols | _date_cols | _str_cols
+    _feat_cols = [c for c in df.select_dtypes(include=["number"]).columns if c not in _non_feature]
+    if _feat_cols:
+        normalizer = FeatureNormalizer()
+        normalizer.fit(df, _feat_cols)
+        df_normed = normalizer.transform(df, _feat_cols)
+        for col in df_normed.columns:
+            df[col] = df_normed[col].values
+        normalizer.save(os.path.join(output_dir, "normalizer"))
+        logger.info("3-stage normalization: %d features (%d continuous, %d binary, %d power-law)",
+                     len(_feat_cols), len(normalizer.continuous_cols),
+                     len(normalizer.binary_cols), len(normalizer.power_law_cols))
+
     # Save to output dir
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, "santander_final.parquet")
     import duckdb as _ddb_save
+    import pyarrow as pa
     _con_s = _ddb_save.connect()
     try:
-        _con_s.register("_df_save", df)
+        _arrow_save = pa.Table.from_pandas(df, preserve_index=False)
+        _con_s.register("_df_save", _arrow_save)
         _con_s.execute(f"COPY _df_save TO '{out_path}' (FORMAT PARQUET)")
     finally:
         _con_s.close()

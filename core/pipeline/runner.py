@@ -456,12 +456,12 @@ class PipelineRunner:
 
         # Build scaler_params for backward-compatible scaler_params.json
         scaler_params: Dict[str, Any] = {}
-        if normalizer.scaler is not None:
+        if normalizer._mean is not None:
             scaler_params["scaler_type"] = "StandardScaler"
             scaler_params["columns"] = continuous_cols
-            scaler_params["mean"] = normalizer.scaler.mean_.tolist()
-            scaler_params["scale"] = normalizer.scaler.scale_.tolist()
-            scaler_params["var"] = normalizer.scaler.var_.tolist()
+            scaler_params["mean"] = normalizer._mean.tolist()
+            scaler_params["scale"] = normalizer._std.tolist()
+            scaler_params["var"] = (normalizer._std ** 2).tolist()
 
         scaler_params["power_law_log_cols"] = log_cols_created
         scaler_params["binary_cols"] = binary_cols

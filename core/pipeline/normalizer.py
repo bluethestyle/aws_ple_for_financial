@@ -9,8 +9,9 @@ Stages
    power-law columns before scaling so the scaler sees the log-space
    values (this is handled implicitly: we detect power-law columns,
    and their raw values are used to create unscaled log copies).
-2. **StandardScaler** — fit on *training split only*, applied to
-   continuous columns.  Binary columns are passed through as-is.
+2. **Z-score normalization** — mean/std computed on *training split
+   only* using CuPy (GPU) when available, numpy otherwise.  Applied
+   to continuous columns.  Binary columns are passed through as-is.
 3. **Power-law raw copies** — ``log1p`` of the original (pre-scaled)
    values, appended as ``{col}_log`` columns.  These are **never**
    scaled so the model can see raw magnitude.
@@ -22,14 +23,33 @@ from __future__ import annotations
 
 import json
 import logging
-import pickle
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
+try:
+    import cupy as cp  # GPU-accelerated array ops
+
+    _HAS_CUPY = True
+except ImportError:  # pragma: no cover
+    cp = None
+    _HAS_CUPY = False
+
 logger = logging.getLogger(__name__)
+
+
+def _xp():
+    """Return CuPy if available, else numpy."""
+    return cp if _HAS_CUPY else np
+
+
+def _to_numpy(arr) -> np.ndarray:
+    """Ensure *arr* is a plain numpy array (move off GPU if needed)."""
+    if _HAS_CUPY and isinstance(arr, cp.ndarray):
+        return cp.asnumpy(arr)
+    return np.asarray(arr)
 
 __all__ = ["FeatureNormalizer"]
 
@@ -65,7 +85,8 @@ class FeatureNormalizer:
         self.R2_THRESH = cfg.get("loglog_r2_threshold", self.__class__.R2_THRESH)
         self._min_nunique: int = cfg.get("min_nunique", 20)
         self._min_samples: int = cfg.get("min_samples_loglog", 50)
-        self.scaler = None  # sklearn StandardScaler
+        self._mean: Optional[np.ndarray] = None  # per-column means
+        self._std: Optional[np.ndarray] = None   # per-column stds
         self.power_law_cols: List[str] = []
         self.continuous_cols: List[str] = []
         self.binary_cols: List[str] = []
@@ -112,13 +133,18 @@ class FeatureNormalizer:
                 self.power_law_cols,
             )
 
-        # --- Stage 2: Fit StandardScaler on continuous columns only ---
-        from sklearn.preprocessing import StandardScaler
-
-        self.scaler = None
+        # --- Stage 2: Compute mean / std (CuPy when available) ---
+        self._mean = None
+        self._std = None
         if self.continuous_cols:
-            self.scaler = StandardScaler()
-            self.scaler.fit(df[self.continuous_cols].fillna(0).values)
+            xp = _xp()
+            raw = df[self.continuous_cols].fillna(0).values
+            arr = xp.asarray(raw)
+            self._mean = _to_numpy(xp.mean(arr, axis=0))
+            std = _to_numpy(xp.std(arr, axis=0))
+            # Guard against zero-variance columns (mirror sklearn behaviour)
+            std[std < 1e-10] = 1.0
+            self._std = std
 
         self._fitted = True
         logger.info(
@@ -148,11 +174,15 @@ class FeatureNormalizer:
         parts: List[pd.DataFrame] = []
 
         # --- Scaled continuous columns ---
-        if self.continuous_cols and self.scaler is not None:
+        if self.continuous_cols and self._mean is not None:
+            xp = _xp()
+            raw = df[self.continuous_cols].fillna(0).values
+            arr = xp.asarray(raw)
+            mean = xp.asarray(self._mean)
+            std = xp.asarray(self._std)
+            scaled = _to_numpy((arr - mean) / std)
             cont = pd.DataFrame(
-                self.scaler.transform(
-                    df[self.continuous_cols].fillna(0).values,
-                ),
+                scaled,
                 columns=self.continuous_cols,
                 index=df.index,
             )
@@ -273,9 +303,12 @@ class FeatureNormalizer:
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
 
-        if self.scaler is not None:
-            with open(path / "scaler.pkl", "wb") as f:
-                pickle.dump(self.scaler, f)
+        if self._mean is not None:
+            np.savez(
+                path / "scaler_params.npz",
+                mean=np.asarray(self._mean),
+                std=np.asarray(self._std),
+            )
 
         meta = {
             "continuous_cols": self.continuous_cols,
@@ -294,10 +327,11 @@ class FeatureNormalizer:
         path = Path(path)
 
         obj = cls()
-        scaler_path = path / "scaler.pkl"
-        if scaler_path.exists():
-            with open(scaler_path, "rb") as f:
-                obj.scaler = pickle.load(f)
+        params_path = path / "scaler_params.npz"
+        if params_path.exists():
+            data = np.load(params_path)
+            obj._mean = data["mean"]
+            obj._std = data["std"]
 
         with open(path / "normalizer_meta.json", "r") as f:
             meta = json.load(f)

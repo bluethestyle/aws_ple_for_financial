@@ -203,12 +203,13 @@ def _derive_weighted_sum(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
         if col_name not in df.columns:
             logger.warning("weighted_sum: column '%s' not found, skipping", col_name)
             continue
-        vals = df[col_name].fillna(0).astype(float)
+        vals = np.where(np.isnan(df[col_name].values.astype(float)), 0.0,
+                        df[col_name].values.astype(float))
         if normalize:
             max_val = vals.max()
             if max_val > 0:
                 vals = vals / max_val
-        score = score + weight * vals.values
+        score += weight * vals
 
     return pd.Series(score, index=df.index)
 
@@ -299,6 +300,48 @@ def _derive_sequence_mode_shift(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Ser
 # ============================================================================
 # DuckDB-accelerated derivation functions
 # ============================================================================
+
+def _derive_direct_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series:
+    """Copy an existing column directly via DuckDB."""
+    col = cfg["source"]
+    sql = f'SELECT "{col}" AS result FROM {table}'
+    return con.execute(sql).df()["result"]
+
+
+def _derive_weighted_sum_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series:
+    """Weighted sum of multiple columns via DuckDB SQL."""
+    columns = cfg.get("source") or cfg.get("sources") or cfg.get("columns", [])
+    weights = cfg["weights"]
+    normalize = cfg.get("normalize", False)
+
+    if not columns:
+        return None
+
+    # Check which columns actually exist
+    available = set(con.execute(f"SELECT * FROM {table} LIMIT 0").df().columns)
+    terms = []
+    for col_name, weight in zip(columns, weights):
+        if col_name not in available:
+            logger.warning("weighted_sum: column '%s' not found, skipping", col_name)
+            continue
+        coalesced = f'COALESCE("{col_name}"::DOUBLE, 0.0)'
+        if normalize:
+            # Normalize to [0,1] by dividing by MAX; use a subquery
+            terms.append(
+                f'{weight} * (CASE WHEN (SELECT MAX("{col_name}"::DOUBLE) FROM {table}) > 0 '
+                f'THEN {coalesced} / (SELECT MAX("{col_name}"::DOUBLE) FROM {table}) '
+                f'ELSE 0.0 END)'
+            )
+        else:
+            terms.append(f'{weight} * {coalesced}')
+
+    if not terms:
+        return None
+
+    expr = " + ".join(terms)
+    sql = f"SELECT ({expr})::DOUBLE AS result FROM {table}"
+    return con.execute(sql).df()["result"]
+
 
 def _derive_bucket_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series:
     """Bin a numeric column using CASE WHEN instead of pd.cut()."""
@@ -416,14 +459,6 @@ def _derive_sequence_last_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Ser
     default = cfg.get("default", -1)
     top_k = cfg.get("top_k") or cfg.get("cap")
 
-    # Extract last element
-    last_sql = f"""
-        SELECT CASE WHEN "{col}" IS NOT NULL AND len("{col}") > 0
-                    THEN "{col}"[len("{col}")]::INTEGER
-                    ELSE NULL END AS raw_last
-        FROM {table}
-    """
-
     if top_k is None:
         sql = f"""
             SELECT COALESCE(
@@ -436,31 +471,53 @@ def _derive_sequence_last_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Ser
         """
         return con.execute(sql).df()["result"]
 
-    # top_k remapping requires building the vocabulary first
-    raw_last = con.execute(last_sql).df()["raw_last"]
-    counts = raw_last.dropna().astype(int).value_counts()
-    top_values = list(counts.index[:int(top_k)])
+    # top_k remapping: build vocabulary entirely in DuckDB
+    vocab_sql = f"""
+        SELECT raw_last, COUNT(*) AS cnt FROM (
+            SELECT CASE WHEN "{col}" IS NOT NULL AND len("{col}") > 0
+                        THEN "{col}"[len("{col}")]::INTEGER
+                        ELSE NULL END AS raw_last
+            FROM {table}
+        ) sub
+        WHERE raw_last IS NOT NULL
+        GROUP BY raw_last
+        ORDER BY cnt DESC
+        LIMIT {int(top_k)}
+    """
+    vocab_rows = con.execute(vocab_sql).fetchall()
+    n_unique_sql = f"""
+        SELECT COUNT(DISTINCT raw_last) AS n FROM (
+            SELECT CASE WHEN "{col}" IS NOT NULL AND len("{col}") > 0
+                        THEN "{col}"[len("{col}")]::INTEGER
+                        ELSE NULL END AS raw_last
+            FROM {table}
+        ) sub WHERE raw_last IS NOT NULL
+    """
+    n_unique = con.execute(n_unique_sql).fetchone()[0]
+    top_values = [row[0] for row in vocab_rows]
     logger.info(
         "sequence_last(%s): built top-%d vocabulary from %d unique values",
-        col, top_k, len(counts),
+        col, top_k, n_unique,
     )
 
     if not top_values:
-        return pd.Series(default, index=range(len(raw_last)))
+        n_rows = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        return pd.Series(default, index=range(n_rows))
 
-    # Build CASE WHEN for remapping via SQL
+    # Build CASE WHEN for remapping via SQL against the original table
     cases = " ".join(
         f"WHEN raw_last = {v} THEN {idx}" for idx, v in enumerate(top_values)
     )
-    remap_df = pd.DataFrame({"raw_last": raw_last})
-    con.register("_remap_src", remap_df)
     remap_sql = f"""
         SELECT CASE {cases} ELSE {default} END::INTEGER AS result
-        FROM _remap_src
+        FROM (
+            SELECT CASE WHEN "{col}" IS NOT NULL AND len("{col}") > 0
+                        THEN "{col}"[len("{col}")]::INTEGER
+                        ELSE NULL END AS raw_last
+            FROM {table}
+        ) sub
     """
-    result = con.execute(remap_sql).df()["result"]
-    con.unregister("_remap_src")
-    return result
+    return con.execute(remap_sql).df()["result"]
 
 
 def _derive_sequence_diversity_trend_duckdb(
@@ -490,24 +547,61 @@ def _derive_sequence_diversity_trend_duckdb(
 def _derive_sequence_mode_shift_duckdb(
     con, table: str, cfg: Dict[str, Any]
 ) -> pd.Series:
-    """Mode shift between halves — DuckDB list + mode() aggregate.
+    """Mode shift between halves — DuckDB list + mode() via lateral unnest.
 
-    DuckDB does not have a direct list_mode, so we use a lateral unnest
-    approach with mode() aggregate.
+    Uses LATERAL UNNEST to compute the mode of each half per row,
+    then compares them.
     """
     col = cfg["source"]
-    # DuckDB does not support easy per-row mode on list slices,
-    # so for this derivation we fall back to pandas.
-    return None
+    sql = f"""
+        WITH numbered AS (
+            SELECT row_number() OVER () AS _rid, "{col}" AS seq
+            FROM {table}
+        ),
+        mode_first AS (
+            SELECT n._rid, u.val AS mode_val
+            FROM numbered n, LATERAL (
+                SELECT unnest(list_slice(n.seq, 1, len(n.seq) / 2)) AS val
+            ) u
+            WHERE n.seq IS NOT NULL AND len(n.seq) >= 4
+            GROUP BY n._rid, u.val
+            QUALIFY row_number() OVER (
+                PARTITION BY n._rid ORDER BY count(*) DESC, u.val
+            ) = 1
+        ),
+        mode_second AS (
+            SELECT n._rid, u.val AS mode_val
+            FROM numbered n, LATERAL (
+                SELECT unnest(list_slice(n.seq, (len(n.seq) / 2) + 1, len(n.seq))) AS val
+            ) u
+            WHERE n.seq IS NOT NULL AND len(n.seq) >= 4
+            GROUP BY n._rid, u.val
+            QUALIFY row_number() OVER (
+                PARTITION BY n._rid ORDER BY count(*) DESC, u.val
+            ) = 1
+        )
+        SELECT CASE
+            WHEN mf.mode_val IS NULL OR ms.mode_val IS NULL THEN 0
+            WHEN mf.mode_val != ms.mode_val THEN 1
+            ELSE 0
+        END::INTEGER AS result
+        FROM numbered n
+        LEFT JOIN mode_first mf ON n._rid = mf._rid
+        LEFT JOIN mode_second ms ON n._rid = ms._rid
+        ORDER BY n._rid
+    """
+    return con.execute(sql).df()["result"]
 
 
 # Map of DuckDB-accelerated derivation types
 _DUCKDB_DERIVE_METHODS = {
+    "direct": _derive_direct_duckdb,
     "bucket": _derive_bucket_duckdb,
     "string_map": _derive_string_map_duckdb,
     "list_first": _derive_list_first_duckdb,
     "list_length": _derive_list_length_duckdb,
     "list_intersect": _derive_list_intersect_duckdb,
+    "weighted_sum": _derive_weighted_sum_duckdb,
     "sequence_last": _derive_sequence_last_duckdb,
     "sequence_diversity_trend": _derive_sequence_diversity_trend_duckdb,
     "sequence_mode_shift": _derive_sequence_mode_shift_duckdb,
@@ -652,7 +746,7 @@ class LabelDeriver:
 
             # Check source column exists (skip early for missing columns)
             source_col = cfg.get("source")
-            if source_col and source_col not in df.columns and derive_type != "weighted_sum":
+            if source_col and not isinstance(source_col, list) and source_col not in df.columns and derive_type != "weighted_sum":
                 logger.warning(
                     "LabelDeriver: source '%s' not in df for label '%s', using default",
                     source_col, label_name,

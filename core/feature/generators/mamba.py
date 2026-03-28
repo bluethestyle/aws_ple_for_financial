@@ -347,6 +347,7 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
         prefix: str = "mamba",
         random_state: int = 42,
         prefer_gpu: bool = True,
+        base_batch_size: int = 512,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -360,6 +361,7 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
             use_pca=use_pca,
             num_epochs=num_epochs,
             learning_rate=learning_rate,
+            base_batch_size=base_batch_size,
         )
         self.entity_column = entity_column
         self.time_column = time_column

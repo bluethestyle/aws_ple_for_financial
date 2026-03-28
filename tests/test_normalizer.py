@@ -86,14 +86,14 @@ class TestScalerFitOnTrainOnly:
         norm.fit(train, feature_cols)
 
         # Record scaler params after fitting on train
-        mean_after_fit = norm.scaler.mean_.copy()
-        scale_after_fit = norm.scaler.scale_.copy()
+        mean_after_fit = norm._mean.copy()
+        std_after_fit = norm._std.copy()
 
         # Transform val — should NOT change scaler params
         _ = norm.transform(val, feature_cols)
 
-        np.testing.assert_array_equal(norm.scaler.mean_, mean_after_fit)
-        np.testing.assert_array_equal(norm.scaler.scale_, scale_after_fit)
+        np.testing.assert_array_equal(norm._mean, mean_after_fit)
+        np.testing.assert_array_equal(norm._std, std_after_fit)
 
     def test_train_scaled_approx_zero_mean(self):
         train, _, feature_cols = _make_dataset()

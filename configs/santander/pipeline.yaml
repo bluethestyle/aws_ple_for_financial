@@ -537,11 +537,12 @@ data:
 
   # ---- Temporal split (leakage prevention) ----
   # Use time-based split instead of random split to prevent temporal leakage.
-  # For Santander: split by snapshot_date with 30-day gap (1 month).
+  # For Santander: split by snapshot_date. Monthly snapshots with
+  # pre-aggregated sequences — gap_days=1 sufficient (no intra-day leak).
   temporal_split:
     enabled: true
     date_col: snapshot_date
-    gap_days: 30
+    gap_days: 1
     train_ratio: 0.7
     val_ratio: 0.15
 
@@ -620,13 +621,8 @@ model:
       - optimal_transport
     task: [mlp]
 
-  # Per-expert input dimensions for heterogeneous experts.
-  # Experts with feature routing receive only their designated feature
-  # groups, not the full concatenated feature vector.
-  expert_input_dims:
-    lightgcn: 64          # collaborative_features embedding_dim
-    hgcn: 47              # hyperbolic_dim(20) + merchant_dim(27)
-    perslay: 70           # tda_features (persistence diagrams)
+  # expert_input_dims: derived dynamically from feature_schema.json group_ranges
+  # (no hardcoding per CLAUDE.md §1.1)
 
   expert_config:
     deepfm:

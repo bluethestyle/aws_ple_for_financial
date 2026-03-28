@@ -141,6 +141,7 @@ def load_ready_data(channel_dir: str) -> dict:
             row["column_name"] for _, row in schema_df.iterrows()
             if not row["column_type"].endswith("[]")
             and "STRUCT" not in row["column_type"].upper()
+            and row["column_type"].upper() not in ("VARCHAR", "DATE", "TIMESTAMP")
         ]
         col_list = ", ".join(f'"{c}"' for c in scalar_cols)
         features = con.execute(
@@ -161,6 +162,7 @@ def load_ready_data(channel_dir: str) -> dict:
             row["column_name"] for _, row in schema_df.iterrows()
             if not row["column_type"].endswith("[]")
             and "STRUCT" not in row["column_type"].upper()
+            and row["column_type"].upper() not in ("VARCHAR", "DATE", "TIMESTAMP")
         ]
         logger.info("Selecting %d scalar columns (skipping list/struct)", len(scalar_cols))
         col_list = ", ".join(f'"{c}"' for c in scalar_cols)
@@ -230,7 +232,7 @@ def load_ready_data(channel_dir: str) -> dict:
             "group_ranges": {},
             "expert_routing": {},
         }
-        logger.warning("No feature_schema.json found — auto-generated from DataFrame columns")
+        logger.warning("No feature_schema.json found -- auto-generated from DataFrame columns")
 
     # -- Label schema --
     label_schema_path = channel_path / "label_schema.json"
@@ -404,10 +406,13 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
 
     # Use DuckDB to concatenate columns without a full pandas copy
     import duckdb as _ddb
+    import pyarrow as pa
     _con = _ddb.connect()
-    _con.register("_feat", features)
+    _feat_arrow = pa.Table.from_pandas(features, preserve_index=False)
+    _con.register("_feat", _feat_arrow)
     if labels is not None and len(labels.columns) > 0:
-        _con.register("_lbl", labels)
+        _lbl_arrow = pa.Table.from_pandas(labels, preserve_index=False)
+        _con.register("_lbl", _lbl_arrow)
         _feat_cols = ", ".join(f'_feat."{c}"' for c in features.columns)
         _lbl_cols = ", ".join(f'_lbl."{c}"' for c in labels.columns)
         df = _con.execute(
@@ -1316,7 +1321,7 @@ def main() -> None:
     seed = int(hp.get("seed", 42))
     phase = str(hp.get("phase", "single"))
     use_amp = str(hp.get("amp", "false")).lower() in ("true", "1", "yes")
-    grad_accum_steps = int(hp.get("gradient_accumulation_steps", 4))
+    grad_accum_steps = int(hp.get("gradient_accumulation_steps", 1))
     task_name = hp.get("task_name", "default")
     pretrained_uri = hp.get("pretrained_model_uri")
 
@@ -1364,7 +1369,7 @@ def main() -> None:
         if not config_path.exists():
             config_path = Path("/opt/ml/code") / config_str
         if config_path.exists():
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = yaml.safe_load(f)
             logger.info("Config loaded from YAML: %s", config_path)
         else:
@@ -1431,6 +1436,145 @@ def main() -> None:
             remaining_cols = [c for c in features.columns if c not in set(label_cols_present)]
             features = features[remaining_cols]
             logger.info("Extracted %d label columns from features DataFrame", len(label_cols_present))
+
+
+    # ---- 3b. Temporal split via DuckDB (if snapshot_date available) ----
+    if split_indices is None or not split_indices:
+        date_col = config.get("data", {}).get("date_col", "snapshot_date")
+        # Date column may have been filtered out (VARCHAR); reload from parquet
+        _date_series = None
+        if date_col not in features.columns:
+            import duckdb as _ddb_date
+            _parquet_path = list(Path(train_dir).glob("**/*.parquet"))
+            if _parquet_path:
+                _uri = str(_parquet_path[0]).replace("\\", "/")
+                _con_d = _ddb_date.connect()
+                try:
+                    _date_series = _con_d.execute(f"SELECT \"{date_col}\" FROM '{_uri}'").df()[date_col]
+                except Exception:
+                    pass
+                finally:
+                    _con_d.close()
+        if date_col in features.columns or _date_series is not None:
+            import duckdb as _ddb_split
+            import pandas as pd
+
+            _ts_cfg = config.get("data", {}).get("temporal_split", {})
+            gap_days = int(_ts_cfg.get("gap_days", 1))
+            train_ratio = 0.7
+            val_ratio = 0.15
+
+            # Build a date array aligned to feature rows
+            if date_col in features.columns:
+                _dates_arr = features[date_col].values
+            else:
+                _dates_arr = _date_series.values
+
+            # Create a minimal DataFrame with original row index and date
+            _idx_df = pd.DataFrame({
+                "_orig_idx": range(len(features)),
+                "_split_date": pd.to_datetime(_dates_arr),
+            })
+
+            _con_s = _ddb_split.connect()
+            try:
+                _con_s.register("idx_df", _idx_df)
+
+                # Compute min/max date and total span via DuckDB
+                _bounds = _con_s.execute("""
+                    SELECT
+                        MIN(_split_date) AS min_dt,
+                        MAX(_split_date) AS max_dt,
+                        DATE_DIFF('day', MIN(_split_date), MAX(_split_date)) AS total_span
+                    FROM idx_df
+                """).fetchone()
+                _min_dt, _max_dt, _total_span = _bounds
+
+                if _total_span is not None and _total_span > 0:
+                    # Compute cutoff dates matching TemporalSplitter logic
+                    _train_end_days = int(_total_span * train_ratio)
+                    _val_span_days = int(_total_span * val_ratio)
+
+                    # Query DuckDB for train and val original indices,
+                    # sorted by date so the output is temporally ordered.
+                    _split_result = _con_s.execute(f"""
+                        WITH cutoffs AS (
+                            SELECT
+                                CAST('{_min_dt}' AS TIMESTAMP) + INTERVAL '{_train_end_days} days'
+                                    AS train_end,
+                                CAST('{_min_dt}' AS TIMESTAMP) + INTERVAL '{_train_end_days} days'
+                                    + INTERVAL '{gap_days} days'
+                                    AS val_start,
+                                CAST('{_min_dt}' AS TIMESTAMP) + INTERVAL '{_train_end_days} days'
+                                    + INTERVAL '{gap_days} days'
+                                    + INTERVAL '{_val_span_days} days'
+                                    AS val_end
+                        )
+                        SELECT
+                            _orig_idx,
+                            CASE
+                                WHEN _split_date <= (SELECT train_end FROM cutoffs)
+                                    THEN 'train'
+                                WHEN _split_date >= (SELECT val_start FROM cutoffs)
+                                     AND _split_date <= (SELECT val_end FROM cutoffs)
+                                    THEN 'val'
+                                ELSE NULL
+                            END AS _split_label
+                        FROM idx_df
+                        WHERE _split_date <= (SELECT train_end FROM cutoffs)
+                           OR (_split_date >= (SELECT val_start FROM cutoffs)
+                               AND _split_date <= (SELECT val_end FROM cutoffs))
+                        ORDER BY _split_date, _orig_idx
+                    """).df()
+
+                    _train_orig = _split_result.loc[
+                        _split_result["_split_label"] == "train", "_orig_idx"
+                    ].tolist()
+                    _val_orig = _split_result.loc[
+                        _split_result["_split_label"] == "val", "_orig_idx"
+                    ].tolist()
+
+                    # Reorder features (and labels) by the temporal sort order
+                    _ordered_idx = _train_orig + _val_orig
+                    features = features.iloc[_ordered_idx].reset_index(drop=True)
+                    if labels is not None:
+                        labels = labels.iloc[_ordered_idx].reset_index(drop=True)
+
+                    train_idx = list(range(len(_train_orig)))
+                    val_idx = list(range(len(_train_orig), len(_train_orig) + len(_val_orig)))
+                    split_indices = {"train": train_idx, "val": val_idx}
+
+                    logger.info(
+                        "Temporal split (DuckDB): train=%d, val=%d (gap_days=%d, "
+                        "discarded=%d rows in gaps)",
+                        len(train_idx), len(val_idx), gap_days,
+                        len(_idx_df) - len(_train_orig) - len(_val_orig),
+                    )
+                else:
+                    logger.warning(
+                        "All dates identical -- falling back to random split"
+                    )
+            finally:
+                _con_s.close()
+
+            # Clean up temporaries
+            del _idx_df
+        else:
+            logger.warning("No date column '%s' found -- falling back to random split", date_col)
+
+    # ---- 3c. Leakage validation ----
+    if labels is not None:
+        try:
+            from core.pipeline.leakage_validator import LeakageValidator
+            validator = LeakageValidator(correlation_threshold=0.95)
+            result = validator.validate(features, labels, config)
+            if not result.passed:
+                for w in result.warnings[:5]:
+                    logger.warning("LEAKAGE: %s", w)
+            else:
+                logger.info("LeakageValidator: PASSED (no leakage detected)")
+        except Exception as e:
+            logger.warning("LeakageValidator skipped: %s", e)
 
     # ---- 4. Build DataLoaders ----
     train_loader, val_loader, tasks, task_type_map, label_stats = build_dataloaders(

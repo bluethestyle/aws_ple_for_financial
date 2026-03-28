@@ -187,8 +187,9 @@ def adaptive_batch_size(
     usable_memory = int(gpu_memory * memory_fraction)
     computed_batch = max(usable_memory // bytes_per_sample, 1)
 
-    # Clamp between base_batch and total_samples
-    batch = max(computed_batch, base_batch)
+    # Use the smaller of computed and base to respect user-specified limits
+    batch = min(computed_batch, base_batch)
+    batch = max(batch, 1)
     batch = min(batch, max(total_samples, 1))
 
     logger.debug(
