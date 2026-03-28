@@ -240,26 +240,51 @@ class PipelineRunner:
             logger.info("[Stage 2] Categorical encoding: %d cols (%s...)",
                         len(encoded_cols), encoded_cols[:5])
 
-        # 2c) Missing value imputation (config-driven)
+        # 2c) Missing value imputation (config-driven) -- single DuckDB pass
         impute_rules = preproc_cfg.get("imputation", {})
-        for col, strategy in impute_rules.items():
-            if col in df.columns:
-                if strategy == "median":
-                    df[col] = df[col].fillna(df[col].median())
-                elif strategy == "mean":
-                    df[col] = df[col].fillna(df[col].mean())
-                elif strategy == "zero":
-                    df[col] = df[col].fillna(0)
-                elif strategy == "mode":
-                    mode_val = df[col].mode()
-                    if len(mode_val) > 0:
-                        df[col] = df[col].fillna(mode_val.iloc[0])
+        numeric_cols_all = list(df.select_dtypes(include=[np.number]).columns)
 
-        # Default: fillna(0) for remaining numeric NaN
-        numeric_cols_all = df.select_dtypes(include=[np.number]).columns
-        for col in numeric_cols_all:
-            if df[col].isna().any():
-                df[col] = df[col].fillna(0)
+        # Build a single SQL SELECT that handles all imputation in one pass
+        import duckdb as _ddb_stage2
+        _con2 = _ddb_stage2.connect()
+        try:
+            _con2.register("_df_impute", df)
+            col_exprs: List[str] = []
+            handled_cols = set()
+            for col, strategy in impute_rules.items():
+                if col not in df.columns:
+                    continue
+                handled_cols.add(col)
+                qcol = f'"{col}"'
+                if strategy == "median":
+                    col_exprs.append(
+                        f'COALESCE({qcol}, (SELECT MEDIAN({qcol}) FROM _df_impute)) AS {qcol}')
+                elif strategy == "mean":
+                    col_exprs.append(
+                        f'COALESCE({qcol}, (SELECT AVG({qcol}) FROM _df_impute)) AS {qcol}')
+                elif strategy == "zero":
+                    col_exprs.append(f'COALESCE({qcol}, 0) AS {qcol}')
+                elif strategy == "mode":
+                    col_exprs.append(
+                        f'COALESCE({qcol}, (SELECT MODE({qcol}) FROM _df_impute)) AS {qcol}')
+                else:
+                    col_exprs.append(qcol)
+
+            # Default: fillna(0) for remaining numeric NaN columns
+            for col in numeric_cols_all:
+                if col not in handled_cols:
+                    col_exprs.append(f'COALESCE("{col}", 0) AS "{col}"')
+                    handled_cols.add(col)
+
+            # Non-numeric / non-imputed columns pass through unchanged
+            for col in df.columns:
+                if col not in handled_cols:
+                    col_exprs.append(f'"{col}"')
+
+            sql = f"SELECT {', '.join(col_exprs)} FROM _df_impute"
+            df = _con2.execute(sql).df()
+        finally:
+            _con2.close()
 
         results["stage2_preprocessing"] = {
             "sentinel_values_replaced": sentinel_applied,
@@ -288,13 +313,25 @@ class PipelineRunner:
             if zero_cols:
                 logger.warning("[Stage 3] All-zero generated columns: %s", zero_cols[:10])
 
-            # Only add columns that are truly new
+            # Only add columns that are truly new -- DuckDB positional join
             new_cols = [c for c in df_generated.columns if c not in df.columns]
             if new_cols:
-                df = pd.concat(
-                    [df.reset_index(drop=True), df_generated[new_cols].reset_index(drop=True)],
-                    axis=1,
-                )
+                import duckdb as _ddb_stage3
+                _con3 = _ddb_stage3.connect()
+                try:
+                    _df_main = df.reset_index(drop=True)
+                    _df_gen = df_generated[new_cols].reset_index(drop=True)
+                    _con3.register("_main", _df_main)
+                    _con3.register("_gen", _df_gen)
+                    main_cols = ", ".join(f'_main."{c}"' for c in _df_main.columns)
+                    gen_cols = ", ".join(f'_gen."{c}"' for c in _df_gen.columns)
+                    sql = (
+                        f"SELECT {main_cols}, {gen_cols} "
+                        f"FROM _main POSITIONAL JOIN _gen"
+                    )
+                    df = _con3.execute(sql).df()
+                finally:
+                    _con3.close()
                 logger.info("[Stage 3] Merged %d generated features into main df", len(new_cols))
 
         results["stage3_features"] = {
@@ -517,15 +554,27 @@ class PipelineRunner:
         stage_start = time.time()
         logger.info("[Stage 9] Saving artifacts to %s ...", out)
 
-        # 9a) features.parquet -- all numeric features, normalized
+        # 9a) features.parquet -- all numeric features, normalized (DuckDB COPY)
         features_out = df[feature_cols].reset_index(drop=True)
         features_path = out / "features.parquet"
-        features_out.to_parquet(features_path, index=False)
+        import duckdb as _ddb_stage9
+        _con9 = _ddb_stage9.connect()
+        try:
+            _con9.register("_features_out", features_out)
+            _con9.execute(f"COPY _features_out TO '{features_path}' (FORMAT PARQUET)")
+        finally:
+            _con9.close()
         logger.info("[Stage 9] features.parquet: %d rows x %d cols", *features_out.shape)
 
-        # 9b) labels.parquet
+        # 9b) labels.parquet (DuckDB COPY)
         labels_path = out / "labels.parquet"
-        labels_df.reset_index(drop=True).to_parquet(labels_path, index=False)
+        _labels_out = labels_df.reset_index(drop=True)
+        _con9b = _ddb_stage9.connect()
+        try:
+            _con9b.register("_labels_out", _labels_out)
+            _con9b.execute(f"COPY _labels_out TO '{labels_path}' (FORMAT PARQUET)")
+        finally:
+            _con9b.close()
         logger.info("[Stage 9] labels.parquet: %d rows x %d cols", *labels_df.shape)
 
         # 9c) sequences.npy + seq_lengths.npy
@@ -1406,8 +1455,21 @@ class PipelineRunner:
         stage_start = time.time()
         logger.info("[DataLoaders] Building DataLoaders...")
 
-        df_combined = pd.concat([df_features.reset_index(drop=True),
-                                 df_labels.reset_index(drop=True)], axis=1)
+        # DuckDB positional join instead of pd.concat on 941K rows
+        import duckdb as _ddb_dl
+        _con_dl = _ddb_dl.connect()
+        try:
+            _feat_reset = df_features.reset_index(drop=True)
+            _lbl_reset = df_labels.reset_index(drop=True)
+            _con_dl.register("_feat", _feat_reset)
+            _con_dl.register("_lbl", _lbl_reset)
+            _fcols = ", ".join(f'_feat."{c}"' for c in _feat_reset.columns)
+            _lcols = ", ".join(f'_lbl."{c}"' for c in _lbl_reset.columns)
+            df_combined = _con_dl.execute(
+                f"SELECT {_fcols}, {_lcols} FROM _feat POSITIONAL JOIN _lbl"
+            ).df()
+        finally:
+            _con_dl.close()
 
         # Load split indices
         split_path = self._output_dir / "split_indices.json"
@@ -2361,9 +2423,16 @@ class _GenericAdapter(DataAdapter):
         logger.info("[GenericAdapter] Loading '%s' (format=%s)", source, fmt)
 
         if fmt == "parquet":
-            df = pd.read_parquet(source)
+            import duckdb as _ddb_generic
+            _con_g = _ddb_generic.connect()
+            try:
+                df = _con_g.execute(f"SELECT * FROM '{source}'").df()
+            finally:
+                _con_g.close()
+            _backend_used = "duckdb"
         elif fmt == "csv":
             df = pd.read_csv(source)
+            _backend_used = "pandas"
         else:
             raise ValueError(f"Unsupported data format: {fmt}")
 
@@ -2371,7 +2440,7 @@ class _GenericAdapter(DataAdapter):
             num_entities=len(df),
             num_raw_rows=len(df),
             source_files=[source],
-            backend_used="pandas",
+            backend_used=_backend_used,
         )
 
         logger.info("[GenericAdapter] Loaded %d rows x %d cols", len(df), len(df.columns))

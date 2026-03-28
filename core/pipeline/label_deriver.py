@@ -49,6 +49,12 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 
+try:
+    import duckdb
+    _HAS_DUCKDB = True
+except ImportError:
+    _HAS_DUCKDB = False
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["LabelDeriver", "LabelConfig"]
@@ -291,6 +297,229 @@ def _derive_sequence_mode_shift(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Ser
 
 
 # ============================================================================
+# DuckDB-accelerated derivation functions
+# ============================================================================
+
+def _derive_bucket_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series:
+    """Bin a numeric column using CASE WHEN instead of pd.cut()."""
+    col = cfg["source"]
+    boundaries = cfg["boundaries"]
+    sentinel = cfg.get("sentinel") or cfg.get("sentinel_value")
+    sentinel_class = cfg.get("sentinel_class")
+
+    # Build CASE WHEN for boundaries: bucket 0 = < boundaries[0], etc.
+    cases = []
+    for i, b in enumerate(boundaries):
+        cases.append(f'WHEN val < {b} THEN {i}')
+    cases.append(f'ELSE {len(boundaries)}')
+    case_sql = " ".join(cases)
+
+    if sentinel is not None:
+        fill = int(sentinel_class) if sentinel_class is not None else 0
+        sql = f"""
+            WITH src AS (
+                SELECT CASE WHEN "{col}"::DOUBLE = {float(sentinel)}
+                            THEN NULL
+                            ELSE "{col}"::DOUBLE END AS val
+                FROM {table}
+            )
+            SELECT COALESCE(CASE {case_sql} END, {fill})::INTEGER AS result
+            FROM src
+        """
+    else:
+        fill = int(sentinel_class) if sentinel_class is not None else 0
+        sql = f"""
+            WITH src AS (
+                SELECT "{col}"::DOUBLE AS val FROM {table}
+            )
+            SELECT COALESCE(CASE {case_sql} END, {fill})::INTEGER AS result
+            FROM src
+        """
+
+    return con.execute(sql).df()["result"]
+
+
+def _derive_string_map_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series:
+    """Map string values to integers via CASE WHEN."""
+    col = cfg["source"]
+    mapping = cfg["mapping"]
+    default_class = max(mapping.values())
+
+    # Check if column is numeric — fall back to pandas for that path
+    dtype_sql = f"""
+        SELECT typeof("{col}") AS t FROM {table} LIMIT 1
+    """
+    try:
+        col_type = con.execute(dtype_sql).fetchone()[0]
+    except Exception:
+        col_type = "VARCHAR"
+
+    if col_type in ("INTEGER", "BIGINT", "FLOAT", "DOUBLE", "HUGEINT",
+                     "SMALLINT", "TINYINT", "DECIMAL"):
+        max_class = max(mapping.values())
+        sql = f"""
+            SELECT LEAST("{col}"::INTEGER, {max_class})::INTEGER AS result
+            FROM {table}
+        """
+        return con.execute(sql).df()["result"]
+
+    cases = " ".join(
+        f"WHEN \"{col}\"::VARCHAR = '{k}' THEN {v}" for k, v in mapping.items()
+    )
+    sql = f"""
+        SELECT CASE {cases} ELSE {default_class} END::INTEGER AS result
+        FROM {table}
+    """
+    return con.execute(sql).df()["result"]
+
+
+def _derive_list_first_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series:
+    """First element of a list column via DuckDB list indexing."""
+    col = cfg["source"]
+    default = cfg.get("default", -1)
+    sql = f"""
+        SELECT CASE WHEN "{col}" IS NOT NULL AND len("{col}") > 0
+                    THEN "{col}"[1]::INTEGER
+                    ELSE {default} END AS result
+        FROM {table}
+    """
+    return con.execute(sql).df()["result"]
+
+
+def _derive_list_length_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series:
+    """Length of a list column via DuckDB len()."""
+    col = cfg["source"]
+    sql = f"""
+        SELECT COALESCE(len("{col}"), 0)::INTEGER AS result
+        FROM {table}
+    """
+    return con.execute(sql).df()["result"]
+
+
+def _derive_list_intersect_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series:
+    """Check if any of `indices` appear in the list column."""
+    col = cfg["source"]
+    indices = cfg["indices"]
+    checks = " OR ".join(f'list_contains("{col}", {idx})' for idx in indices)
+    sql = f"""
+        SELECT CASE WHEN "{col}" IS NOT NULL AND len("{col}") > 0
+                         AND ({checks})
+                    THEN 1 ELSE 0 END::INTEGER AS result
+        FROM {table}
+    """
+    return con.execute(sql).df()["result"]
+
+
+def _derive_sequence_last_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series:
+    """Last element of a sequence column via DuckDB negative indexing."""
+    col = cfg["source"]
+    default = cfg.get("default", -1)
+    top_k = cfg.get("top_k") or cfg.get("cap")
+
+    # Extract last element
+    last_sql = f"""
+        SELECT CASE WHEN "{col}" IS NOT NULL AND len("{col}") > 0
+                    THEN "{col}"[len("{col}")]::INTEGER
+                    ELSE NULL END AS raw_last
+        FROM {table}
+    """
+
+    if top_k is None:
+        sql = f"""
+            SELECT COALESCE(
+                CASE WHEN "{col}" IS NOT NULL AND len("{col}") > 0
+                     THEN "{col}"[len("{col}")]::INTEGER
+                     ELSE NULL END,
+                {default}
+            )::INTEGER AS result
+            FROM {table}
+        """
+        return con.execute(sql).df()["result"]
+
+    # top_k remapping requires building the vocabulary first
+    raw_last = con.execute(last_sql).df()["raw_last"]
+    counts = raw_last.dropna().astype(int).value_counts()
+    top_values = list(counts.index[:int(top_k)])
+    logger.info(
+        "sequence_last(%s): built top-%d vocabulary from %d unique values",
+        col, top_k, len(counts),
+    )
+
+    if not top_values:
+        return pd.Series(default, index=range(len(raw_last)))
+
+    # Build CASE WHEN for remapping via SQL
+    cases = " ".join(
+        f"WHEN raw_last = {v} THEN {idx}" for idx, v in enumerate(top_values)
+    )
+    remap_df = pd.DataFrame({"raw_last": raw_last})
+    con.register("_remap_src", remap_df)
+    remap_sql = f"""
+        SELECT CASE {cases} ELSE {default} END::INTEGER AS result
+        FROM _remap_src
+    """
+    result = con.execute(remap_sql).df()["result"]
+    con.unregister("_remap_src")
+    return result
+
+
+def _derive_sequence_diversity_trend_duckdb(
+    con, table: str, cfg: Dict[str, Any]
+) -> pd.Series:
+    """Diversity trend via DuckDB list slicing and list_distinct.
+
+    unique(second_half) / unique(first_half) - 1.0
+    """
+    col = cfg["source"]
+    # DuckDB list slicing: list[start:end] is 1-based inclusive
+    # first_half = list[1 : mid], second_half = list[mid+1 : ]
+    sql = f"""
+        SELECT CASE
+            WHEN "{col}" IS NULL OR len("{col}") < 4 THEN 0.0
+            ELSE (
+                len(list_distinct(list_slice("{col}", (len("{col}") / 2) + 1, len("{col}"))))::DOUBLE
+                / GREATEST(len(list_distinct(list_slice("{col}", 1, len("{col}") / 2)))::DOUBLE, 1.0)
+                - 1.0
+            )
+        END AS result
+        FROM {table}
+    """
+    return con.execute(sql).df()["result"]
+
+
+def _derive_sequence_mode_shift_duckdb(
+    con, table: str, cfg: Dict[str, Any]
+) -> pd.Series:
+    """Mode shift between halves — DuckDB list + mode() aggregate.
+
+    DuckDB does not have a direct list_mode, so we use a lateral unnest
+    approach with mode() aggregate.
+    """
+    col = cfg["source"]
+    # DuckDB does not support easy per-row mode on list slices,
+    # so for this derivation we fall back to pandas.
+    return None
+
+
+# Map of DuckDB-accelerated derivation types
+_DUCKDB_DERIVE_METHODS = {
+    "bucket": _derive_bucket_duckdb,
+    "string_map": _derive_string_map_duckdb,
+    "list_first": _derive_list_first_duckdb,
+    "list_length": _derive_list_length_duckdb,
+    "list_intersect": _derive_list_intersect_duckdb,
+    "sequence_last": _derive_sequence_last_duckdb,
+    "sequence_diversity_trend": _derive_sequence_diversity_trend_duckdb,
+    "sequence_mode_shift": _derive_sequence_mode_shift_duckdb,
+
+    # Legacy aliases
+    "first_from_list": _derive_list_first_duckdb,
+    "len_of_list": _derive_list_length_duckdb,
+    "nba_group_check": _derive_list_intersect_duckdb,
+}
+
+
+# ============================================================================
 # Dispatch table — maps type strings to derivation functions
 # ============================================================================
 
@@ -387,6 +616,10 @@ class LabelDeriver:
     ) -> pd.DataFrame:
         """Derive all configured label columns.
 
+        Uses DuckDB-accelerated SQL when available (avoids row-wise
+        ``.apply()`` on 941K+ rows).  Falls back to pandas per-label
+        if a DuckDB derivation fails or returns None.
+
         Parameters
         ----------
         df : pd.DataFrame
@@ -402,30 +635,92 @@ class LabelDeriver:
         cfgs = self._resolve_configs(label_configs)
         results: Dict[str, pd.Series] = {}
 
+        # ---- Try DuckDB path for eligible derivation types ----
+        con = None
+        table_name = "_label_src"
+        if _HAS_DUCKDB:
+            try:
+                con = duckdb.connect()
+                con.register(table_name, df)
+                logger.debug("LabelDeriver: DuckDB connection opened for %d rows", len(df))
+            except Exception:
+                logger.debug("LabelDeriver: DuckDB init failed, using pandas", exc_info=True)
+                con = None
+
         for label_name, cfg in cfgs.items():
             derive_type = cfg.get("type", "direct")
-            method = self.DERIVE_METHODS.get(derive_type)
 
-            if method is None:
+            # Check source column exists (skip early for missing columns)
+            source_col = cfg.get("source")
+            if source_col and source_col not in df.columns and derive_type != "weighted_sum":
                 logger.warning(
-                    "LabelDeriver: unknown type '%s' for label '%s', skipping",
-                    derive_type, label_name,
+                    "LabelDeriver: source '%s' not in df for label '%s', using default",
+                    source_col, label_name,
                 )
+                # Let the pandas fallback handle defaults gracefully
+                method = self.DERIVE_METHODS.get(derive_type)
+                if method is not None:
+                    try:
+                        results[label_name] = method(df, cfg)
+                    except Exception:
+                        logger.exception(
+                            "LabelDeriver: failed to derive '%s' (type=%s)",
+                            label_name, derive_type,
+                        )
                 continue
 
+            # Attempt DuckDB derivation
+            duckdb_done = False
+            if con is not None:
+                duckdb_method = _DUCKDB_DERIVE_METHODS.get(derive_type)
+                if duckdb_method is not None:
+                    try:
+                        series = duckdb_method(con, table_name, cfg)
+                        if series is not None:
+                            series.index = df.index
+                            results[label_name] = series
+                            duckdb_done = True
+                            logger.debug(
+                                "LabelDeriver: derived '%s' via DuckDB (type=%s, non-null=%d/%d)",
+                                label_name, derive_type,
+                                series.notna().sum(), len(series),
+                            )
+                    except Exception:
+                        logger.debug(
+                            "LabelDeriver: DuckDB failed for '%s' (type=%s), falling back to pandas",
+                            label_name, derive_type, exc_info=True,
+                        )
+
+            # Pandas fallback
+            if not duckdb_done:
+                method = self.DERIVE_METHODS.get(derive_type)
+                if method is None:
+                    logger.warning(
+                        "LabelDeriver: unknown type '%s' for label '%s', skipping",
+                        derive_type, label_name,
+                    )
+                    continue
+                try:
+                    series = method(df, cfg)
+                    results[label_name] = series
+                    logger.debug(
+                        "LabelDeriver: derived '%s' via pandas (type=%s, non-null=%d/%d)",
+                        label_name, derive_type,
+                        series.notna().sum(), len(series),
+                    )
+                except Exception:
+                    logger.exception(
+                        "LabelDeriver: failed to derive '%s' (type=%s)",
+                        label_name, derive_type,
+                    )
+
+        # Cleanup DuckDB
+        if con is not None:
             try:
-                series = method(df, cfg)
-                results[label_name] = series
-                logger.debug(
-                    "LabelDeriver: derived '%s' (type=%s, non-null=%d/%d)",
-                    label_name, derive_type,
-                    series.notna().sum(), len(series),
-                )
+                con.unregister(table_name)
+                con.close()
             except Exception:
-                logger.exception(
-                    "LabelDeriver: failed to derive '%s' (type=%s)",
-                    label_name, derive_type,
-                )
+                pass
 
         out = pd.DataFrame(results, index=df.index)
         logger.info(

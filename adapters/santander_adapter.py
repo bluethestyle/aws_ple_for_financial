@@ -185,10 +185,24 @@ def run_generators_from_config(
             generated_frames.append(fallback)
             gen_summary[group_name] = n_cols
 
-    # Merge all generated features
+    # Merge all generated features via DuckDB horizontal join
     if generated_frames:
-        all_gen = pd.concat(generated_frames, axis=1)
-        df = pd.concat([df, all_gen], axis=1)
+        import duckdb as _ddb_merge
+        _con_m = _ddb_merge.connect()
+        try:
+            # Register all generated frames and build a chained POSITIONAL JOIN
+            _con_m.register("_base", df)
+            join_sql = "SELECT _base.*"
+            from_sql = "_base"
+            for i, gf in enumerate(generated_frames):
+                alias = f"_gf{i}"
+                _con_m.register(alias, gf)
+                gen_cols = ", ".join(f'{alias}."{c}"' for c in gf.columns)
+                join_sql += f", {gen_cols}"
+                from_sql += f" POSITIONAL JOIN {alias}"
+            df = _con_m.execute(f"{join_sql} FROM {from_sql}").df()
+        finally:
+            _con_m.close()
         total_new = sum(gen_summary.values())
         logger.info(
             "Feature generation complete: %d new columns from %d generators. "
@@ -384,21 +398,50 @@ if __name__ == "__main__":
     # Save to output dir
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, "santander_final.parquet")
-    df.to_parquet(out_path, index=False)
+    import duckdb as _ddb_save
+    _con_s = _ddb_save.connect()
+    try:
+        _con_s.register("_df_save", df)
+        _con_s.execute(f"COPY _df_save TO '{out_path}' (FORMAT PARQUET)")
+    finally:
+        _con_s.close()
     logger.info("Saved %d rows to %s", len(df), out_path)
 
-    # --- Feature statistics ---
+    # --- Feature statistics (single DuckDB aggregate query) ---
     numeric = df.select_dtypes(include="number")
     stats = {}
-    for col in numeric.columns:
-        stats[col] = {
-            "mean": float(numeric[col].mean()),
-            "std": float(numeric[col].std()),
-            "min": float(numeric[col].min()),
-            "max": float(numeric[col].max()),
-            "null_pct": float(numeric[col].isna().mean()),
-            "nunique": int(numeric[col].nunique()),
-        }
+    if len(numeric.columns) > 0:
+        import duckdb as _ddb_stats
+        _con_st = _ddb_stats.connect()
+        try:
+            _con_st.register("_num_df", numeric)
+            # Build one aggregate query for all numeric columns
+            agg_parts = []
+            for col in numeric.columns:
+                qc = f'"{col}"'
+                agg_parts.append(
+                    f"AVG({qc}) AS \"{col}__mean\", "
+                    f"STDDEV({qc}) AS \"{col}__std\", "
+                    f"MIN({qc}) AS \"{col}__min\", "
+                    f"MAX({qc}) AS \"{col}__max\", "
+                    f"(SUM(CASE WHEN {qc} IS NULL THEN 1 ELSE 0 END)::DOUBLE / COUNT(*)) AS \"{col}__null_pct\", "
+                    f"COUNT(DISTINCT {qc}) AS \"{col}__nunique\""
+                )
+            sql = f"SELECT {', '.join(agg_parts)} FROM _num_df"
+            row = _con_st.execute(sql).fetchone()
+            idx = 0
+            for col in numeric.columns:
+                stats[col] = {
+                    "mean": float(row[idx]) if row[idx] is not None else 0.0,
+                    "std": float(row[idx + 1]) if row[idx + 1] is not None else 0.0,
+                    "min": float(row[idx + 2]) if row[idx + 2] is not None else 0.0,
+                    "max": float(row[idx + 3]) if row[idx + 3] is not None else 0.0,
+                    "null_pct": float(row[idx + 4]) if row[idx + 4] is not None else 0.0,
+                    "nunique": int(row[idx + 5]) if row[idx + 5] is not None else 0,
+                }
+                idx += 6
+        finally:
+            _con_st.close()
     with open(os.path.join(output_dir, "feature_stats.json"), "w") as f:
         json.dump(stats, f, indent=2)
     logger.info("Feature stats saved: %d numeric columns", len(stats))

@@ -20,10 +20,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Ensure duckdb is installed in SageMaker container
+try:
+    import duckdb  # noqa: F401
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "duckdb>=1.0.0"])
+    import duckdb  # noqa: F401
 
 import numpy as np
 
@@ -102,6 +110,9 @@ def _parse_hp_value(v: str) -> Any:
 def load_ready_data(channel_dir: str) -> dict:
     """Load training-ready artifacts produced by Phase 0.
 
+    Uses DuckDB for all parquet reads to minimise peak memory.
+    Converts to pandas DataFrame only after column filtering is done.
+
     Returns
     -------
     dict with keys:
@@ -113,30 +124,60 @@ def load_ready_data(channel_dir: str) -> dict:
         label_schema : dict — task definitions
         split_indices : dict or None — train/val/test row indices
     """
-    import pandas as pd
+    import duckdb
 
     channel_path = Path(channel_dir)
+    con = duckdb.connect()
 
     # -- Features --
     features_path = channel_path / "features.parquet"
     if features_path.exists():
-        features = pd.read_parquet(features_path)
-        logger.info("Loaded features: %d rows, %d columns", len(features), len(features.columns))
+        parquet_uri = str(features_path).replace("\\", "/")
+        # Identify scalar columns (skip list/struct to prevent OOM on 16GB)
+        schema_df = con.execute(
+            f"DESCRIBE SELECT * FROM '{parquet_uri}'"
+        ).df()
+        scalar_cols = [
+            row["column_name"] for _, row in schema_df.iterrows()
+            if not row["column_type"].endswith("[]")
+            and "STRUCT" not in row["column_type"].upper()
+        ]
+        col_list = ", ".join(f'"{c}"' for c in scalar_cols)
+        features = con.execute(
+            f"SELECT {col_list} FROM '{parquet_uri}'"
+        ).df()
+        logger.info("Loaded features via DuckDB: %d rows, %d columns", len(features), len(features.columns))
     else:
         # Fallback: load from generic parquet files (backward compat)
         parquet_files = sorted(channel_path.glob("**/*.parquet"))
         if not parquet_files:
             raise FileNotFoundError(f"No features.parquet or .parquet files in {channel_dir}")
         # Only load scalar columns (skip list/struct to prevent OOM on 16GB)
-        import pyarrow.parquet as _pq
-        _schema = _pq.read_schema(str(parquet_files[0]))
-        _scalar_cols = [
-            _schema.field(i).name for i in range(len(_schema))
-            if not str(_schema.field(i).type).startswith(("list", "large_list", "struct"))
+        first_uri = str(parquet_files[0]).replace("\\", "/")
+        schema_df = con.execute(
+            f"DESCRIBE SELECT * FROM '{first_uri}'"
+        ).df()
+        scalar_cols = [
+            row["column_name"] for _, row in schema_df.iterrows()
+            if not row["column_type"].endswith("[]")
+            and "STRUCT" not in row["column_type"].upper()
         ]
-        logger.info("Selecting %d scalar columns (skipping list/struct)", len(_scalar_cols))
-        features = pd.concat([pd.read_parquet(f, columns=_scalar_cols) for f in parquet_files], ignore_index=True)
-        logger.info("Loaded %d parquet files (fallback): %d rows, %d columns",
+        logger.info("Selecting %d scalar columns (skipping list/struct)", len(scalar_cols))
+        col_list = ", ".join(f'"{c}"' for c in scalar_cols)
+        # Build UNION ALL across all parquet files via DuckDB glob or explicit union
+        if len(parquet_files) == 1:
+            features = con.execute(
+                f"SELECT {col_list} FROM '{first_uri}'"
+            ).df()
+        else:
+            # Use DuckDB read_parquet with glob/list for multi-file load
+            file_list = ", ".join(
+                f"'{str(f).replace(chr(92), '/')}'" for f in parquet_files
+            )
+            features = con.execute(
+                f"SELECT {col_list} FROM read_parquet([{file_list}])"
+            ).df()
+        logger.info("Loaded %d parquet files via DuckDB (fallback): %d rows, %d columns",
                      len(parquet_files), len(features), len(features.columns))
 
     # Data loading diagnostics
@@ -150,9 +191,13 @@ def load_ready_data(channel_dir: str) -> dict:
 
     # -- Labels --
     labels_path = channel_path / "labels.parquet"
-    labels = pd.read_parquet(labels_path) if labels_path.exists() else None
+    if labels_path.exists():
+        labels_uri = str(labels_path).replace("\\", "/")
+        labels = con.execute(f"SELECT * FROM '{labels_uri}'").df()
+    else:
+        labels = None
     if labels is not None:
-        logger.info("Loaded labels: %d rows, %d columns", len(labels), len(labels.columns))
+        logger.info("Loaded labels via DuckDB: %d rows, %d columns", len(labels), len(labels.columns))
 
     # -- Sequences (optional) --
     sequences = None
@@ -206,6 +251,9 @@ def load_ready_data(channel_dir: str) -> dict:
         logger.info("Loaded split_indices: %s",
                      {k: len(v) for k, v in split_indices.items()})
 
+    # Close DuckDB connection — all data is now in pandas/numpy
+    con.close()
+
     return {
         "features": features,
         "labels": labels,
@@ -249,15 +297,17 @@ def apply_ablation(features, labels, feature_schema, label_schema, hp):
     columns = feature_schema.get("columns", list(features.columns))
 
     if removed:
-        cols_to_drop = []
+        cols_to_drop = set()
         for group_name in removed:
             if group_name in group_ranges:
                 start, end = group_ranges[group_name]
-                cols_to_drop.extend(columns[start:end])
+                cols_to_drop.update(columns[start:end])
             else:
                 logger.warning("Ablation: group '%s' not in schema group_ranges", group_name)
         if cols_to_drop:
-            features = features.drop(columns=cols_to_drop, errors="ignore")
+            # Filter columns via list selection instead of .drop() to avoid copy
+            remaining_cols = [c for c in features.columns if c not in cols_to_drop]
+            features = features[remaining_cols]
             logger.info("Ablation: removed %d columns from groups %s. Remaining: %d",
                          len(cols_to_drop), removed, len(features.columns))
         else:
@@ -308,7 +358,6 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
     -------
     train_loader, val_loader, tasks, task_type_map, label_stats
     """
-    import pandas as pd
     from core.data.dataloader import build_ple_dataloader, FeatureColumnSpec
 
     tasks = label_schema.get("tasks", [])
@@ -317,14 +366,17 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
     # Subsample if max_rows HP is set (for fast testing)
     max_rows = int(hp.get("max_rows", 0))
     if max_rows and max_rows > 0 and len(features) > max_rows:
-        idx = features.sample(n=max_rows, random_state=42).index
-        features = features.loc[idx].reset_index(drop=True)
+        # Use numpy random choice for index-based subsampling (avoids pandas .sample() copy)
+        rng = np.random.RandomState(42)
+        idx = rng.choice(len(features), size=max_rows, replace=False)
+        idx.sort()
+        features = features.iloc[idx].reset_index(drop=True)
         if labels is not None:
-            labels = labels.loc[idx].reset_index(drop=True)
+            labels = labels.iloc[idx].reset_index(drop=True)
         if sequences is not None:
-            sequences = sequences[idx.values]
+            sequences = sequences[idx]
         if seq_lengths is not None:
-            seq_lengths = seq_lengths[idx.values]
+            seq_lengths = seq_lengths[idx]
         logger.info("Subsampled to %d rows for fast testing", max_rows)
 
     # Validate tasks against available label columns
@@ -347,13 +399,28 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
     label_map = {t["name"]: t["label_col"] for t in tasks}
 
     # -- Merge features + labels into a single DataFrame for PLEDataset --
-    df = features.copy()
-    if labels is not None:
-        for col in labels.columns:
-            df[col] = labels[col].values
+    # Capture feature column names before merge (needed for FeatureColumnSpec)
+    _feature_col_names = list(features.columns)
+
+    # Use DuckDB to concatenate columns without a full pandas copy
+    import duckdb as _ddb
+    _con = _ddb.connect()
+    _con.register("_feat", features)
+    if labels is not None and len(labels.columns) > 0:
+        _con.register("_lbl", labels)
+        _feat_cols = ", ".join(f'_feat."{c}"' for c in features.columns)
+        _lbl_cols = ", ".join(f'_lbl."{c}"' for c in labels.columns)
+        df = _con.execute(
+            f"SELECT {_feat_cols}, {_lbl_cols} FROM _feat POSITIONAL JOIN _lbl"
+        ).df()
+    else:
+        df = _con.execute("SELECT * FROM _feat").df()
+    _con.close()
+    # Release original DataFrames to free memory
+    del features
 
     # -- Build FeatureColumnSpec from schema --
-    feature_columns = feature_schema.get("columns", list(features.columns))
+    feature_columns = feature_schema.get("columns", _feature_col_names)
     # Only include columns actually present in the DataFrame (post-ablation)
     static_features = [c for c in feature_columns if c in df.columns]
 
@@ -1243,12 +1310,12 @@ def main() -> None:
 
     # If labels is None, try to extract label columns from features DataFrame
     if labels is None:
-        import pandas as pd
         tasks = label_schema.get("tasks", [])
         label_cols_present = [t["label_col"] for t in tasks if t["label_col"] in features.columns]
         if label_cols_present:
-            labels = features[label_cols_present].copy()
-            features = features.drop(columns=label_cols_present, errors="ignore")
+            labels = features[label_cols_present]
+            remaining_cols = [c for c in features.columns if c not in set(label_cols_present)]
+            features = features[remaining_cols]
             logger.info("Extracted %d label columns from features DataFrame", len(label_cols_present))
 
     # ---- 4. Build DataLoaders ----
