@@ -5,9 +5,18 @@ Ensembles multiple temporal modelling paradigms to capture different aspects
 of sequential data:
 
 * **Mamba (SSM)** -- linear-complexity long-range dependency modelling.
+* **LNN (LNNSingleStep)** -- processes Mamba's last hidden state with
+  input-dependent time constants.  This is a **serial** pipeline
+  (Mamba -> LNN), matching the on-prem design.
 * **PatchTST (Transformer)** -- patch-based attention for periodic patterns.
-* **LNN (Liquid Neural Network)** -- input-dependent time constants for
-  adaptive temporal dynamics, especially useful for irregularly sampled data.
+  Runs independently on the raw sequence.
+
+Architecture::
+
+    raw_seq ──> Mamba ──> last_hidden ──> LNNSingleStep ──> lnn_out
+    raw_seq ──> PatchTST ──────────────────────────────────> tf_out
+                                                              |
+    gate([mamba_out, lnn_out, tf_out]) ──> ensemble_output
 
 A learned gating network decides per-sample how much to trust each sub-model,
 providing both capacity and interpretability (gate entropy monitoring).
@@ -232,9 +241,90 @@ class LiquidTimeConstantCell(nn.Module):
         return h_new
 
 
+class LNNSingleStep(nn.Module):
+    """
+    Single-step Liquid Neural Network that processes Mamba's last hidden state.
+
+    On-prem design: Mamba processes the full sequence and produces a hidden
+    state at the last timestep.  LNN then takes this single hidden vector
+    and applies a single LTC update step, enabling adaptive temporal dynamics
+    on top of Mamba's SSM representation.
+
+    This is a **serial** pipeline: Mamba -> LNN (not parallel).
+
+    Parameters
+    ----------
+    input_dim : int
+        Dimension of Mamba's last hidden state (= Mamba d_model).
+    hidden_dim : int
+        LNN hidden dimension (output dimension).
+    n_layers : int
+        Number of stacked LTC cells applied sequentially in one step.
+    dropout : float
+        Dropout probability.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 64,
+        n_layers: int = 2,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+
+        # Project Mamba's output dim to LNN hidden dim if they differ
+        if input_dim != hidden_dim:
+            self.input_proj: Optional[nn.Linear] = nn.Linear(input_dim, hidden_dim)
+        else:
+            self.input_proj = None
+
+        # Stacked LTC cells for the single step
+        self.cells = nn.ModuleList([
+            LiquidTimeConstantCell(hidden_dim, hidden_dim, dropout=dropout)
+            for _ in range(n_layers)
+        ])
+        self.norm = nn.LayerNorm(hidden_dim)
+
+    def forward(self, mamba_last_hidden: torch.Tensor) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        mamba_last_hidden : torch.Tensor
+            ``[batch, input_dim]`` -- Mamba's last timestep hidden state.
+
+        Returns
+        -------
+        torch.Tensor
+            ``[batch, hidden_dim]`` -- LNN-refined representation.
+        """
+        x = mamba_last_hidden
+        if self.input_proj is not None:
+            x = self.input_proj(x)
+
+        # Initialise hidden states as zeros (single-step, no recurrence)
+        batch = x.size(0)
+        h_states = [
+            torch.zeros(batch, self.hidden_dim, device=x.device, dtype=x.dtype)
+            for _ in self.cells
+        ]
+
+        # Single-step: pass through stacked LTC cells
+        x_t = x
+        for layer_idx, cell in enumerate(self.cells):
+            x_t = cell(x_t, h_states[layer_idx], dt=1.0)
+
+        return self.norm(x_t)
+
+
 class LiquidNeuralNetwork(nn.Module):
     """
-    Stacked Liquid Time-Constant cells processing a sequence.
+    Stacked Liquid Time-Constant cells processing a full sequence.
+
+    .. deprecated::
+        This class is retained for backward compatibility. New code should
+        use :class:`LNNSingleStep` in the serial Mamba -> LNN pipeline.
 
     Each layer consists of an :class:`LiquidTimeConstantCell`.  The network
     processes the sequence step-by-step and returns the mean-pooled hidden
@@ -442,14 +532,22 @@ class TemporalEnsembleExpert(AbstractExpert):
                 )
                 transformer_out_dim += t_aux_d
 
-        # -- LNN branch --------------------------------------------------------
+        # -- LNN branch (serial: takes Mamba's last hidden state) -------------
+        # On-prem design: Mamba -> LNN single-step (serial pipeline).
+        # LNN input_dim = Mamba d_model (not raw input_dim).
         lnn_out_dim = 0
         if self.lnn_enabled:
+            if not self.mamba_enabled:
+                raise ValueError(
+                    "LNN requires Mamba to be enabled (serial Mamba -> LNN pipeline). "
+                    "Either enable Mamba or disable LNN."
+                )
             l_hidden_dim = l_cfg.get("hidden_dim", 64)
             l_n_layers = l_cfg.get("n_layers", 2)
 
-            self.lnn_primary = LiquidNeuralNetwork(
-                input_dim=input_dim,
+            # LNN receives Mamba's d_model as input (serial pipeline)
+            self.lnn_single_step = LNNSingleStep(
+                input_dim=m_d_model,
                 hidden_dim=l_hidden_dim,
                 n_layers=l_n_layers,
                 dropout=dropout,
@@ -457,9 +555,10 @@ class TemporalEnsembleExpert(AbstractExpert):
             lnn_out_dim += l_hidden_dim
 
             if aux_input_dim is not None:
+                m_aux_d = m_cfg.get("d_model", 128) // 2
                 l_aux_d = l_hidden_dim // 2
-                self.lnn_aux = LiquidNeuralNetwork(
-                    input_dim=aux_input_dim,
+                self.lnn_aux_single_step = LNNSingleStep(
+                    input_dim=m_aux_d,
                     hidden_dim=l_aux_d,
                     n_layers=l_n_layers,
                     dropout=dropout,
@@ -536,11 +635,17 @@ class TemporalEnsembleExpert(AbstractExpert):
         outputs: list[torch.Tensor] = []
 
         # -- Mamba branch ------------------------------------------------------
+        # Mamba processes the full sequence; we keep full output for LNN
+        mamba_last_primary: Optional[torch.Tensor] = None
+        mamba_last_aux: Optional[torch.Tensor] = None
         if self.mamba_enabled:
-            h_mamba = self.mamba_primary(x)[:, -1, :]
-            parts = [h_mamba]
+            mamba_full = self.mamba_primary(x)  # (batch, seq_len, d_model)
+            mamba_last_primary = mamba_full[:, -1, :]  # (batch, d_model)
+            parts = [mamba_last_primary]
             if self._has_aux and aux_seq is not None:
-                parts.append(self.mamba_aux(aux_seq)[:, -1, :])
+                mamba_aux_full = self.mamba_aux(aux_seq)
+                mamba_last_aux = mamba_aux_full[:, -1, :]
+                parts.append(mamba_last_aux)
             outputs.append(torch.cat(parts, dim=-1))
 
         # -- Transformer branch ------------------------------------------------
@@ -551,12 +656,14 @@ class TemporalEnsembleExpert(AbstractExpert):
                 parts.append(self.transformer_aux(aux_seq))
             outputs.append(torch.cat(parts, dim=-1))
 
-        # -- LNN branch --------------------------------------------------------
+        # -- LNN branch (serial: Mamba last hidden -> LNN single step) --------
         if self.lnn_enabled:
-            h_lnn = self.lnn_primary(x, time_delta=time_delta)
+            # mamba_last_primary is guaranteed non-None because __init__
+            # enforces mamba_enabled when lnn_enabled
+            h_lnn = self.lnn_single_step(mamba_last_primary)
             parts = [h_lnn]
-            if self._has_aux and aux_seq is not None:
-                parts.append(self.lnn_aux(aux_seq, time_delta=time_delta))
+            if self._has_aux and aux_seq is not None and mamba_last_aux is not None:
+                parts.append(self.lnn_aux_single_step(mamba_last_aux))
             outputs.append(torch.cat(parts, dim=-1))
 
         # -- Ensemble ----------------------------------------------------------
@@ -594,12 +701,15 @@ class TemporalEnsembleExpert(AbstractExpert):
             # Compute gate weights directly without a full forward pass
             parts: list[torch.Tensor] = []
             aux_seq = kwargs.get("aux_seq")
-            time_delta = kwargs.get("time_delta")
+            mamba_last_primary: Optional[torch.Tensor] = None
+            mamba_last_aux: Optional[torch.Tensor] = None
             if self.mamba_enabled:
-                h = self.mamba_primary(x)[:, -1, :]
-                ps = [h]
+                mamba_full = self.mamba_primary(x)
+                mamba_last_primary = mamba_full[:, -1, :]
+                ps = [mamba_last_primary]
                 if self._has_aux and aux_seq is not None:
-                    ps.append(self.mamba_aux(aux_seq)[:, -1, :])
+                    mamba_last_aux = self.mamba_aux(aux_seq)[:, -1, :]
+                    ps.append(mamba_last_aux)
                 parts.append(torch.cat(ps, dim=-1))
             if self.transformer_enabled:
                 h = self.transformer_primary(x)
@@ -608,10 +718,10 @@ class TemporalEnsembleExpert(AbstractExpert):
                     ps.append(self.transformer_aux(aux_seq))
                 parts.append(torch.cat(ps, dim=-1))
             if self.lnn_enabled:
-                h = self.lnn_primary(x, time_delta=time_delta)
+                h = self.lnn_single_step(mamba_last_primary)
                 ps = [h]
-                if self._has_aux and aux_seq is not None:
-                    ps.append(self.lnn_aux(aux_seq, time_delta=time_delta))
+                if self._has_aux and aux_seq is not None and mamba_last_aux is not None:
+                    ps.append(self.lnn_aux_single_step(mamba_last_aux))
                 parts.append(torch.cat(ps, dim=-1))
 
             concat = torch.cat(parts, dim=-1)

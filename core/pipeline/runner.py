@@ -638,6 +638,7 @@ class PipelineRunner:
         label_schema["logit_transfer_strength"] = raw_config.get("logit_transfer_strength", 0.5)
         label_schema["model"] = raw_config.get("model", {})
         label_schema["adatt"] = raw_config.get("adatt", {})
+        label_schema["training"] = raw_config.get("training", {})
 
         label_schema_path = out / "label_schema.json"
         with open(label_schema_path, "w") as f:

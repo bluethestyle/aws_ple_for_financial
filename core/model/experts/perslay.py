@@ -53,7 +53,7 @@ class PersLayConfig:
     output_dim: int = 64
     tda_dim: int = 70
     hidden_dims: List[int] = None  # type: ignore[assignment]
-    dropout: float = 0.2
+    dropout: float = 0.1
     use_raw_diagram: bool = False
     # Full PersLay parameters (only used when use_raw_diagram=True)
     phi_dim: int = 32
@@ -63,7 +63,8 @@ class PersLayConfig:
 
     def __post_init__(self):
         if self.hidden_dims is None:
-            self.hidden_dims = [128, 64]
+            # 3-layer MLP matching on-prem PersLay hidden structure
+            self.hidden_dims = [128, 96, 64]
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, Any]) -> "PersLayConfig":
@@ -268,9 +269,9 @@ class PersLayExpert(AbstractExpert):
         Dimension of pre-computed TDA feature vector (default 70).
         Only used in legacy mode (``use_raw_diagram=False``).
     hidden_dims : list[int]
-        Hidden layer sizes for the legacy MLP (default ``[128, 64]``).
+        Hidden layer sizes for the legacy MLP (default ``[128, 96, 64]``).
     dropout : float
-        Dropout rate (default 0.2).
+        Dropout rate (default 0.1).
     use_raw_diagram : bool
         If ``True``, expect raw persistence diagrams and use the full
         PersLay pipeline.  If ``False`` (default), expect a pre-computed
@@ -313,25 +314,40 @@ class PersLayExpert(AbstractExpert):
             )
         else:
             # -- Legacy MLP mode ------------------------------------------------
-            # Use input_dim (what CGCLayer will actually pass) as the first
-            # layer dimension, NOT cfg.tda_dim.  tda_dim is kept in the config
-            # as documentation of the expected TDA feature semantics but must
-            # not be used for layer sizing -- the expert receives the full
-            # feature vector from CGCLayer, not a pre-sliced TDA subset.
+            # Pre-computed TDA features -> 3-layer refine MLP -> output
+            # Matches on-prem hidden structure: SiLU activation, LayerNorm,
+            # dropout after each hidden layer, final LayerNorm on output.
             layers: List[nn.Module] = []
             prev_dim = input_dim
             for hdim in cfg.hidden_dims:
                 layers.append(nn.Linear(prev_dim, hdim))
-                layers.append(nn.LayerNorm(hdim))
                 layers.append(nn.SiLU())
                 layers.append(nn.Dropout(cfg.dropout))
                 prev_dim = hdim
             layers.append(nn.Linear(prev_dim, cfg.output_dim))
             layers.append(nn.LayerNorm(cfg.output_dim))
-            layers.append(nn.SiLU())
 
             self.network = nn.Sequential(*layers)
 
+        # -- Interpretable 4D projection (detached for audit) -----------------
+        # Produces scores along 2 interpretive axes (2D each):
+        #   - topological_complexity (2D): H0/H1 feature importance
+        #   - persistence_scale (2D): local vs global structure
+        self.interpretable_proj = nn.Linear(cfg.output_dim, 4)
+        self._interpretable_scores: Optional[torch.Tensor] = None
+
+        # Interpretable dimension labels for downstream consumers
+        self.interpretable_labels: List[str] = [
+            "topological_complexity_0",
+            "topological_complexity_1",
+            "persistence_scale_0",
+            "persistence_scale_1",
+        ]
+
+        # -- Output LayerNorm (on-prem normalization) -------------------------
+        self.output_norm = nn.LayerNorm(cfg.output_dim)
+
+        if not self.use_raw_diagram:
             logger.info(
                 "PersLayExpert (legacy MLP): input_dim=%d (tda_dim=%d) -> hidden=%s -> output=%d  (params=%s)",
                 input_dim, cfg.tda_dim, cfg.hidden_dims,
@@ -341,6 +357,18 @@ class PersLayExpert(AbstractExpert):
     @property
     def output_dim(self) -> int:
         return self._output_dim
+
+    @property
+    def interpretable_scores(self) -> Optional[torch.Tensor]:
+        """Return the most recent 4D interpretable projection.
+
+        Shape: ``[batch, 4]`` -- 2 axes x 2 dimensions each:
+          - ``[0:2]`` topological_complexity
+          - ``[2:4]`` persistence_scale
+
+        Returns ``None`` if :meth:`forward` has not been called yet.
+        """
+        return getattr(self, "_interpretable_scores", None)
 
     def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
         """
@@ -360,6 +388,12 @@ class PersLayExpert(AbstractExpert):
         if self.use_raw_diagram:
             mask = kwargs.get("mask")
             pooled = self.perslay_block(x, mask=mask)
-            return self.output_proj(pooled)
+            out = self.output_proj(pooled)
         else:
-            return self.network(x)
+            out = self.network(x)
+
+        # Compute 4D interpretable scores (detached -- no grad backprop)
+        self._interpretable_scores = self.interpretable_proj(out).detach()
+
+        # On-prem output normalization
+        return self.output_norm(out)

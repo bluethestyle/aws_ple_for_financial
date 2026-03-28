@@ -526,7 +526,27 @@ class PLEModel(nn.Module):
             # Subsequent stacked layers keep the default homogeneous MLP
             # experts (they operate on expert output vectors, not raw features).
             if self.expert_basket is not None and layer_idx == 0:
-                basket_experts = self.expert_basket.build_shared_experts()
+                # Compute per-expert input_dim overrides from:
+                # 1. FeatureRouter (routing-derived dims), or
+                # 2. PLEConfig.expert_input_dims (explicit YAML config)
+                expert_dim_overrides: Dict[str, int] = {}
+                if self.feature_router is not None:
+                    # FeatureRouter already computed actual input dims
+                    # per expert from group_ranges + routing config.
+                    basket_names = self.expert_basket.shared_expert_names
+                    for i, bname in enumerate(basket_names):
+                        router_key = f"shared_{i}"
+                        if self.feature_router.has_routing(router_key):
+                            expert_dim_overrides[bname] = (
+                                self.feature_router.get_expert_input_dim(router_key)
+                            )
+                if hasattr(cfg, "expert_input_dims") and cfg.expert_input_dims:
+                    # Explicit overrides from config take precedence
+                    for ename, edim in cfg.expert_input_dims.items():
+                        expert_dim_overrides[ename] = edim
+                basket_experts = self.expert_basket.build_shared_experts(
+                    input_dim_overrides=expert_dim_overrides or None,
+                )
                 layer.shared_experts = basket_experts
                 layer.num_shared_experts = len(basket_experts)
                 logger.info(
@@ -624,27 +644,42 @@ class PLEModel(nn.Module):
             self._task_expert_output_dim = cfg.task_expert_output_dim
 
     # -- HMM triple-mode projectors ----------------------------------------
-    # Maps task_group -> hmm_mode for routing HMM features to tasks.
-    _HMM_GROUP_MODE_MAP: Dict[str, str] = {
+    # Default mapping from task_group -> hmm_mode.
+    # Overridden at runtime by config.hmm_group_mode_map when available.
+    _DEFAULT_HMM_GROUP_MODE_MAP: Dict[str, str] = {
         "engagement": "behavior",
         "lifecycle": "lifecycle",
         "value": "journey",
         "consumption": "journey",
     }
 
-    _HMM_DIM: int = 16  # Each HMM mode produces 16D state posteriors
+    # Per-mode input dimensions.  The HMM generator produces:
+    #   journey:   1 state_id + 5 probs + dwell_time + transition_entropy = 8D
+    #   lifecycle: 1 state_id + 5 probs + dwell_time + transition_entropy = 8D
+    #   behavior:  1 state_id + 6 probs + dwell_time + transition_entropy = 9D
+    # These are overridden at runtime from feature_group_ranges when available.
+    _DEFAULT_HMM_MODE_DIMS: Dict[str, int] = {
+        "journey": 8,
+        "lifecycle": 8,
+        "behavior": 9,
+    }
 
     def _build_hmm_projectors(self) -> None:
         """Build HMM triple-mode projection layers.
 
-        Creates 3 mode-specific Linear projections that map 16D HMM state
-        posteriors to ``_task_expert_output_dim``.  During forward(), the
-        projected HMM vector is additively fused into the task expert
-        output based on the task's group -> hmm_mode mapping.
+        Creates 3 mode-specific Linear projections that map each mode's
+        HMM features (variable dimensionality per mode) to
+        ``_task_expert_output_dim``.  During forward(), the projected HMM
+        vector is additively fused into the task expert output based on
+        the task's group -> hmm_mode mapping.
 
-        This mirrors the original project's ``hmm_projectors`` design
-        where each HMM mode (journey / lifecycle / behavior) is projected
-        to hidden_dim and routed to task experts by task group.
+        HMM mode dimensions are resolved from ``feature_group_ranges``
+        when available (keys ``hmm_journey``, ``hmm_lifecycle``,
+        ``hmm_behavior``), falling back to ``_DEFAULT_HMM_MODE_DIMS``.
+
+        The group-to-mode mapping is read from
+        ``config.hmm_group_mode_map`` (set from pipeline.yaml), falling
+        back to ``_DEFAULT_HMM_GROUP_MODE_MAP``.
         """
         cfg = self.config
         # Only build if we have task groups that can map to HMM modes
@@ -652,18 +687,38 @@ class PLEModel(nn.Module):
             self.hmm_projectors = None
             return
 
+        # Resolve group -> mode mapping (config override or default)
+        self._hmm_group_mode_map: Dict[str, str] = (
+            dict(cfg.hmm_group_mode_map)
+            if getattr(cfg, "hmm_group_mode_map", None)
+            else dict(self._DEFAULT_HMM_GROUP_MODE_MAP)
+        )
+
+        # Resolve per-mode input dimensions from feature_group_ranges
+        hmm_mode_dims: Dict[str, int] = {}
+        for mode in ("journey", "lifecycle", "behavior"):
+            fgr_key = f"hmm_{mode}"
+            if cfg.feature_group_ranges and fgr_key in cfg.feature_group_ranges:
+                start, end = cfg.feature_group_ranges[fgr_key]
+                hmm_mode_dims[mode] = end - start
+            else:
+                hmm_mode_dims[mode] = self._DEFAULT_HMM_MODE_DIMS[mode]
+
+        self._hmm_mode_dims = hmm_mode_dims
+
         self.hmm_projectors = nn.ModuleDict({
             mode: nn.Sequential(
-                nn.Linear(self._HMM_DIM, self._task_expert_output_dim),
+                nn.Linear(dim, self._task_expert_output_dim),
                 nn.LayerNorm(self._task_expert_output_dim),
                 nn.SiLU(),
             )
-            for mode in ("journey", "lifecycle", "behavior")
+            for mode, dim in hmm_mode_dims.items()
         })
         logger.info(
-            "HMM projectors built: 3 modes x %dD -> %dD, group mapping: %s",
-            self._HMM_DIM, self._task_expert_output_dim,
-            {g: m for g, m in self._HMM_GROUP_MODE_MAP.items()
+            "HMM projectors built: %s -> %dD, group mapping: %s",
+            {m: f"{d}D" for m, d in hmm_mode_dims.items()},
+            self._task_expert_output_dim,
+            {g: m for g, m in self._hmm_group_mode_map.items()
              if g in set(cfg.task_group_map.values())},
         )
 
@@ -1236,7 +1291,7 @@ class PLEModel(nn.Module):
             }
             for task_name, task_out in task_expert_outputs.items():
                 group = self.config.task_group_map.get(task_name)
-                hmm_mode = self._HMM_GROUP_MODE_MAP.get(group) if group else None
+                hmm_mode = self._hmm_group_mode_map.get(group) if group else None
                 if hmm_mode and hmm_tensors.get(hmm_mode) is not None:
                     hmm_proj = self.hmm_projectors[hmm_mode](hmm_tensors[hmm_mode])
                     task_expert_outputs[task_name] = task_out + hmm_proj
@@ -1480,7 +1535,9 @@ class PLEModel(nn.Module):
             )
             all_outs = torch.cat([task_outs, shared_outs], dim=1)
 
-            gate_logits = layer.gating[task_idx](task_inputs[task_idx])
+            # Gate on concatenated expert outputs (post-hoc, on-prem design)
+            gate_input = all_outs.reshape(all_outs.size(0), -1)
+            gate_logits = layer.gating[task_idx](gate_input)
             gate_weights = F.softmax(gate_logits, dim=-1)
 
             gated = (gate_weights.unsqueeze(-1) * all_outs).sum(dim=1)
@@ -1737,6 +1794,7 @@ class PLEModel(nn.Module):
             (f"  Logit transfers: {self.logit_transfer_sources}"
              f" (methods={self.logit_transfer_methods})")
             if self.logit_transfer_sources else "  Logit transfers: none",
+            f"  HMM projectors: {dict(self._hmm_mode_dims) if self.hmm_projectors is not None else 'disabled'}",
             f"  Multidisciplinary routing: {list(self.md_routing_indices.keys()) if self.md_routing_indices else 'none'}",
             f"  Loss weighting: {self.config.loss_weighting.strategy}",
             f"  Evidential: {'enabled (' + ', '.join(self.evidential_layers.keys()) + ')' if self.evidential_layers else 'disabled'}",

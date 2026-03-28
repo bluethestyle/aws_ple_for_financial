@@ -11,6 +11,16 @@ Combines:
 The input feature vector is split into *fields* (logical sub-groups) and each
 field is independently embedded before being fed to FM / Deep / Cross.
 
+Field splitting modes:
+
+* **Explicit list** -- ``field_dims: [34, 16, 80, ...]`` in config.
+* **Auto from feature groups** -- ``field_dims: "auto"`` reads
+  ``feature_group_ranges`` from the PLE config / feature_schema.json.
+  Each feature group becomes one FM field.
+* **Fixed fallback** -- when ``field_dims: "auto"`` but no group_ranges
+  are available, splits every ``field_split_size`` (default 20) features
+  into one field.
+
 References
 ----------
 * Guo et al., *DeepFM: A Factorization-Machine based Neural Network for CTR
@@ -22,7 +32,7 @@ References
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -31,6 +41,71 @@ from .base import AbstractExpert
 from .registry import ExpertRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _derive_field_dims_from_group_ranges(
+    group_ranges: Dict[str, tuple],
+    input_dim: int,
+) -> List[int]:
+    """Derive field_dims from feature_group_ranges.
+
+    Each feature group becomes one FM field.  Groups are sorted by their
+    start index.  Any gaps between groups (or a trailing remainder) are
+    collected into additional fields so the dims always sum to *input_dim*.
+
+    Parameters
+    ----------
+    group_ranges : dict
+        ``{group_name: (start, end)}`` where ``end`` is exclusive.
+    input_dim : int
+        Total feature dimension that the field_dims must sum to.
+
+    Returns
+    -------
+    list[int]
+        Per-field dimensions that sum to *input_dim*.
+    """
+    if not group_ranges:
+        return [input_dim]
+
+    sorted_groups = sorted(group_ranges.items(), key=lambda kv: kv[1][0])
+    dims: List[int] = []
+    prev_end = 0
+
+    for name, (start, end) in sorted_groups:
+        start, end = int(start), int(end)
+        # Fill any gap before this group
+        if start > prev_end:
+            dims.append(start - prev_end)
+        dims.append(end - start)
+        prev_end = end
+
+    # Trailing remainder
+    if prev_end < input_dim:
+        dims.append(input_dim - prev_end)
+
+    total = sum(dims)
+    if total != input_dim:
+        logger.warning(
+            "field_dims from group_ranges sum to %d but input_dim=%d; "
+            "falling back to fixed split",
+            total, input_dim,
+        )
+        return _fixed_split(input_dim, 20)
+
+    return dims
+
+
+def _fixed_split(input_dim: int, split_size: int) -> List[int]:
+    """Split *input_dim* into fields of *split_size*, last field gets the remainder."""
+    if split_size <= 0 or split_size >= input_dim:
+        return [input_dim]
+    n_full = input_dim // split_size
+    remainder = input_dim % split_size
+    dims = [split_size] * n_full
+    if remainder > 0:
+        dims.append(remainder)
+    return dims
 
 
 # =============================================================================
@@ -136,15 +211,34 @@ class DeepFMExpert(AbstractExpert):
     """
     DeepFM Expert -- FM + Deep for joint low/high-order feature interactions.
 
+    The input feature vector is split into *fields* (logical sub-groups) and
+    each field is independently embedded into ``embedding_dim`` before being
+    fed to the FM / Deep / Cross branches.  This allows FM to learn meaningful
+    2nd-order interactions between semantic feature groups (e.g. demographics
+    x product holdings), matching the on-prem 28-field design.
+
     Config keys
     -----------
     output_dim : int
         Expert output dimension (default 64).
     embedding_dim : int
         Per-field embedding size (default 16).
-    field_dims : list[int]
-        Sizes of each logical field.  **Must** sum to ``input_dim``.
-        If omitted the input is treated as a single field (degenerates to MLP).
+    field_dims : ``"auto"`` | list[int] | None
+        * ``"auto"`` -- derive field boundaries from
+          ``feature_group_ranges`` (each feature group = one FM field).
+          Falls back to fixed split of ``field_split_size`` if group_ranges
+          are unavailable.
+        * ``list[int]`` -- explicit per-field sizes.  Must sum to
+          ``input_dim``.
+        * ``None`` -- treat entire input as 1 field (degenerates to MLP;
+          FM interaction is meaningless).
+    feature_group_ranges : dict, optional
+        ``{group_name: (start, end)}`` injected by train.py from
+        ``feature_schema.json``'s ``group_ranges``.  Used when
+        ``field_dims == "auto"``.
+    field_split_size : int
+        Fallback fixed field width when ``field_dims == "auto"`` but no
+        group_ranges are available (default 20).
     hidden_dims : list[int]
         Deep branch hidden sizes (default ``[256, 128, 64]``).
     use_fm : bool
@@ -158,6 +252,8 @@ class DeepFMExpert(AbstractExpert):
     dropout : float
         Dropout rate (default 0.2).
     """
+
+    INTERPRET_DIM = 4
 
     def __init__(self, input_dim: int, config: Dict[str, Any]):
         super().__init__(input_dim, config)
@@ -173,11 +269,47 @@ class DeepFMExpert(AbstractExpert):
         cross_layers: int = config.get("cross_layers", 3)
 
         # -- Field definitions ------------------------------------------------
-        field_dims: Optional[List[int]] = config.get("field_dims")
-        if field_dims is None:
-            # Treat entire input as one field -- still useful for Deep branch
-            field_dims = [input_dim]
-        self.field_dims = list(field_dims)
+        raw_field_dims = config.get("field_dims")
+
+        if raw_field_dims == "auto":
+            # Auto-detect from feature_group_ranges (injected by train.py)
+            group_ranges: Optional[Dict[str, tuple]] = config.get(
+                "feature_group_ranges"
+            )
+            if group_ranges:
+                field_dims_resolved = _derive_field_dims_from_group_ranges(
+                    group_ranges, input_dim
+                )
+                logger.info(
+                    "DeepFM field_dims='auto': derived %d fields from "
+                    "feature_group_ranges",
+                    len(field_dims_resolved),
+                )
+            else:
+                split_size = config.get("field_split_size", 20)
+                field_dims_resolved = _fixed_split(input_dim, split_size)
+                logger.warning(
+                    "DeepFM field_dims='auto' but no feature_group_ranges "
+                    "available; falling back to fixed split of %d -> %d fields",
+                    split_size, len(field_dims_resolved),
+                )
+        elif isinstance(raw_field_dims, list):
+            field_dims_resolved = list(raw_field_dims)
+        elif raw_field_dims is None:
+            # Legacy fallback: single field (FM interaction is meaningless)
+            field_dims_resolved = [input_dim]
+            logger.warning(
+                "DeepFM: field_dims not set -- treating entire input as 1 "
+                "field.  FM interaction is effectively disabled.  Set "
+                "field_dims='auto' to derive fields from feature groups."
+            )
+        else:
+            raise ValueError(
+                f"DeepFM: invalid field_dims={raw_field_dims!r}. "
+                f"Expected 'auto', list[int], or None."
+            )
+
+        self.field_dims = field_dims_resolved
         self.num_fields = len(self.field_dims)
 
         field_total = sum(self.field_dims)
@@ -226,6 +358,13 @@ class DeepFMExpert(AbstractExpert):
             nn.SiLU(),
         )
 
+        # Interpretable projection: 4D output
+        # [low-order interaction, high-order interaction, sparse pattern, dense pattern]
+        self.interpret_proj = nn.Linear(self._output_dim, self.INTERPRET_DIM)
+
+        # Stores detached interpretable scores from the last forward pass
+        self._interpretable_scores: Optional[torch.Tensor] = None
+
         logger.info(
             "DeepFMExpert: input=%d, fields=%d, emb=%d, "
             "FM=%s, Deep=%s, Cross=%s -> output=%d  (params=%s)",
@@ -249,6 +388,12 @@ class DeepFMExpert(AbstractExpert):
         -------
         torch.Tensor
             ``[batch, output_dim]``
+
+        Side Effects
+        ------------
+        Stores ``self._interpretable_scores`` (detached ``[batch, 4]``)
+        with semantic dimensions:
+        ``[low_order_interaction, high_order_interaction, sparse_pattern, dense_pattern]``.
         """
         outputs: list[torch.Tensor] = []
 
@@ -262,20 +407,25 @@ class DeepFMExpert(AbstractExpert):
         # [batch, num_fields, embedding_dim]
         embeddings = torch.stack(field_embs, dim=1)
 
-        # FM
+        # FM: field-level 2nd-order interactions
         if self.use_fm:
             outputs.append(self.fm(embeddings))
 
         # Flatten for Cross / Deep
         flat = embeddings.view(x.size(0), -1)
 
-        # Cross Network
+        # Cross Network: explicit feature crosses
         if self.use_cross:
             outputs.append(self.cross_network(flat))
 
-        # Deep
+        # Deep: higher-order non-linear interactions
         if self.use_deep:
             outputs.append(self.deep_network(flat))
 
         combined = torch.cat(outputs, dim=-1)
-        return self.output_layer(combined)
+        expert_output = self.output_layer(combined)
+
+        # Interpretable projection (detached -- not part of main gradient path)
+        self._interpretable_scores = self.interpret_proj(expert_output).detach()
+
+        return expert_output

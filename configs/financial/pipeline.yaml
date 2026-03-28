@@ -514,8 +514,9 @@ model:
         hidden_dims: [256, 128, 64]
       temporal_ensemble: {}
       lightgcn:
+        output_dim: 64
         hidden_dim: 128
-        num_layers: 3
+        dropout: 0.1
       causal: {}
       optimal_transport: {}
   # -------------------------------------------------------------------------

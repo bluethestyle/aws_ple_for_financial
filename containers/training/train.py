@@ -554,6 +554,7 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
     from core.model.ple.config import (
         PLEConfig, ExpertConfig, ExpertBasketConfig,
         LossWeightingConfig, LogitTransferDef,
+        GroupTaskExpertConfig, AdaTTConfig, TaskGroupDef,
     )
 
     tasks = label_schema.get("tasks", [])
@@ -666,6 +667,14 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
         loss_weighting=loss_weighting,
     )
 
+    # -- Per-expert input dimensions from model config --
+    expert_input_dims_raw = model_config.get("expert_input_dims", {})
+    if expert_input_dims_raw:
+        ple_config.expert_input_dims = {
+            k: int(v) for k, v in expert_input_dims_raw.items()
+        }
+        logger.info("Expert input_dim overrides: %s", ple_config.expert_input_dims)
+
     # -- Task loss weights from label schema --
     ple_config.task_loss_weights = {t["name"]: t.get("loss_weight", 1.0) for t in tasks}
 
@@ -702,6 +711,21 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
     if group_ranges:
         ple_config.feature_group_ranges = {k: tuple(v) for k, v in group_ranges.items()}
 
+    # -- Inject feature_group_ranges into DeepFM expert config ----------------
+    # When field_dims="auto", the DeepFM expert reads feature_group_ranges
+    # from its config dict to derive per-field boundaries for FM interaction.
+    if group_ranges and ple_config.expert_basket is not None:
+        deepfm_cfg = ple_config.expert_basket.expert_configs.get("deepfm")
+        if deepfm_cfg is not None and deepfm_cfg.get("field_dims") == "auto":
+            deepfm_cfg["feature_group_ranges"] = {
+                k: tuple(v) for k, v in group_ranges.items()
+            }
+            logger.info(
+                "Injected %d feature_group_ranges into DeepFM expert config "
+                "for auto field splitting",
+                len(group_ranges),
+            )
+
     # -- Expert routing from schema --
     expert_routing = feature_schema.get("expert_routing", {})
     if expert_routing:
@@ -715,6 +739,65 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
     task_group_map = label_schema.get("task_group_map", {})
     if task_group_map:
         ple_config.task_group_map = task_group_map
+
+    # -- adaTT task_groups from schema (enables build_task_group_map_from_groups) --
+    raw_task_groups = label_schema.get("task_groups", [])
+    if raw_task_groups:
+        # Try model-level first, then root-level label_schema (where
+        # runner.py stores the pipeline.yaml root-level adatt section).
+        adatt_cfg_raw = model_config.get("adatt", {})
+        if not adatt_cfg_raw:
+            adatt_cfg_raw = label_schema.get("adatt", {})
+        adatt_task_groups: Dict[str, TaskGroupDef] = {}
+        for tg in raw_task_groups:
+            tg_name = tg["name"] if isinstance(tg, dict) else tg.name
+            tg_tasks = tg["tasks"] if isinstance(tg, dict) else tg.tasks
+            tg_intra = (
+                tg.get("adatt_intra_strength", 0.7) if isinstance(tg, dict)
+                else getattr(tg, "adatt_intra_strength", 0.7)
+            )
+            adatt_task_groups[tg_name] = TaskGroupDef(
+                members=list(tg_tasks),
+                intra_strength=tg_intra,
+            )
+
+        ple_config.adatt = AdaTTConfig(
+            enabled=adatt_cfg_raw.get("enabled", True),
+            task_groups=adatt_task_groups,
+            inter_group_strength=adatt_cfg_raw.get("inter_group_strength", 0.3),
+            transfer_lambda=adatt_cfg_raw.get("transfer_lambda", 0.1),
+            temperature=adatt_cfg_raw.get("temperature", 1.0),
+            warmup_epochs=adatt_cfg_raw.get("warmup_epochs", 10),
+            grad_interval=adatt_cfg_raw.get("grad_interval", 10),
+        )
+        logger.info(
+            "AdaTT task_groups: %d groups (%s)",
+            len(adatt_task_groups), list(adatt_task_groups.keys()),
+        )
+
+    # -- GroupTaskExpert config from model section --
+    gte_cfg_raw = model_config.get("group_task_expert", {})
+    if gte_cfg_raw:
+        ple_config.group_task_expert = GroupTaskExpertConfig(
+            enabled=gte_cfg_raw.get("enabled", True),
+            group_hidden_dim=gte_cfg_raw.get("group_hidden_dim",
+                                              gte_cfg_raw.get("group_hidden", 128)),
+            group_output_dim=gte_cfg_raw.get("group_output_dim",
+                                              gte_cfg_raw.get("group_output", 64)),
+            cluster_embed_dim=gte_cfg_raw.get("cluster_embed_dim", 32),
+            dropout=gte_cfg_raw.get("dropout", 0.2),
+        )
+        logger.info(
+            "GroupTaskExpert: hidden=%d, output=%d, cluster_embed=%d",
+            ple_config.group_task_expert.group_hidden_dim,
+            ple_config.group_task_expert.group_output_dim,
+            ple_config.group_task_expert.cluster_embed_dim,
+        )
+
+    # -- HMM group-to-mode mapping from model section --
+    hmm_gm_map = model_config.get("hmm_group_mode_map", {})
+    if hmm_gm_map:
+        ple_config.hmm_group_mode_map = {str(k): str(v) for k, v in hmm_gm_map.items()}
 
     # -- Multidisciplinary routing from schema --
     md_routing = model_config.get("multidisciplinary_routing", {})
@@ -1302,6 +1385,37 @@ def main() -> None:
     # If label_schema has no model config, merge from YAML
     if not label_schema.get("model") and config.get("model"):
         label_schema["model"] = config["model"]
+
+    # If label_schema has no training config, merge from YAML
+    if not label_schema.get("training") and config.get("training"):
+        label_schema["training"] = config["training"]
+
+    # ---- Re-apply training defaults from YAML config ----
+    # HP defaults (batch_size, epochs, lr, etc.) were set with generic
+    # fallbacks before label_schema was loaded.  Now that we have the
+    # full config, override with YAML values when HP was not explicitly
+    # passed by the SageMaker hyperparameter channel.
+    training_yaml = label_schema.get("training", config.get("training", {}))
+    if training_yaml:
+        if "batch_size" not in hp:
+            batch_size = int(training_yaml.get("batch_size", batch_size))
+        if "epochs" not in hp:
+            epochs = int(training_yaml.get("epochs", epochs))
+        if "learning_rate" not in hp:
+            lr = float(training_yaml.get("learning_rate", lr))
+        if "early_stopping_patience" not in hp:
+            es_cfg = training_yaml.get("early_stopping", {})
+            patience = int(es_cfg.get("patience", patience))
+        if "seed" not in hp:
+            seed = int(training_yaml.get("seed", seed))
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+        logger.info(
+            "Training defaults from YAML: epochs=%d, batch=%d, lr=%s, patience=%d",
+            epochs, batch_size, lr, patience,
+        )
 
     # ---- 3. Apply ablation filters ----
     features, labels, feature_schema, label_schema = apply_ablation(

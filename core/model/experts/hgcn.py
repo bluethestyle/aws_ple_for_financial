@@ -73,32 +73,27 @@ class RefineMLP(nn.Module):
     """
     Two-layer MLP with GELU activation and a residual connection.
 
-    If ``input_dim != hidden_dim`` a skip projection is added so that
-    the residual shapes match.
+    Matches the on-prem refine MLP structure:
+    ``Linear(input, hidden) -> GELU -> Linear(hidden, input) + residual``
+
+    No dropout or LayerNorm inside the refine block -- regularisation is
+    handled at the expert level (output_proj has LayerNorm).
+
+    If ``input_dim != hidden_dim`` the second linear projects back to
+    ``input_dim`` so the residual addition works without a skip projection.
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, dropout: float = 0.2):
+    def __init__(self, input_dim: int, hidden_dim: int, dropout: float = 0.0):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.act = nn.GELU()
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.dropout = nn.Dropout(dropout)
-        self.norm = nn.LayerNorm(hidden_dim)
-
-        # Skip projection when dimensions differ
-        self.skip = (
-            nn.Linear(input_dim, hidden_dim, bias=False)
-            if input_dim != hidden_dim
-            else nn.Identity()
-        )
+        self.fc2 = nn.Linear(hidden_dim, input_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = self.skip(x)
         h = self.fc1(x)
         h = self.act(h)
-        h = self.dropout(h)
         h = self.fc2(h)
-        return self.norm(h + residual)
+        return h + x
 
 
 # =============================================================================
@@ -153,15 +148,17 @@ class UnifiedHGCNExpert(AbstractExpert):
             combined_dim = input_dim
 
         # -- Refinement MLP (Linear -> GELU -> Linear + residual) ---------------
+        # On-prem structure: no dropout in refine MLP, output dim == input dim
         self.refine_mlp = RefineMLP(
             input_dim=combined_dim,
             hidden_dim=cfg.hidden_dim,
-            dropout=cfg.dropout,
         )
+        # refine_mlp output dimension is combined_dim (residual preserves dim)
+        refine_out_dim = combined_dim
 
         # -- Output projection ---------------------------------------------------
         self.output_proj = nn.Sequential(
-            nn.Linear(cfg.hidden_dim, self._output_dim),
+            nn.Linear(refine_out_dim, self._output_dim),
             nn.LayerNorm(self._output_dim),
             nn.SiLU(),
         )
@@ -171,7 +168,7 @@ class UnifiedHGCNExpert(AbstractExpert):
         #   - hierarchy_activation_intensity (2D)
         #   - depth_importance (2D)
         #   - cross_level_interaction (2D)
-        self.interpretable_proj = nn.Linear(cfg.hidden_dim, 6)
+        self.interpretable_proj = nn.Linear(refine_out_dim, 6)
         self._interpretable_scores: Optional[torch.Tensor] = None
 
         # Interpretable dimension labels for downstream consumers
@@ -186,9 +183,9 @@ class UnifiedHGCNExpert(AbstractExpert):
 
         # -- Optional brand prediction heads ------------------------------------
         if self.use_brand_heads:
-            self.mcc_level1_head = nn.Linear(cfg.hidden_dim, cfg.mcc_level1_classes)
-            self.mcc_level2_head = nn.Linear(cfg.hidden_dim, cfg.mcc_level2_classes)
-            self.brand_head = nn.Linear(cfg.hidden_dim, cfg.brand_classes)
+            self.mcc_level1_head = nn.Linear(refine_out_dim, cfg.mcc_level1_classes)
+            self.mcc_level2_head = nn.Linear(refine_out_dim, cfg.mcc_level2_classes)
+            self.brand_head = nn.Linear(refine_out_dim, cfg.brand_classes)
 
         logger.info(
             "UnifiedHGCNExpert: input=%d (hyper=%d + merch=%d), "

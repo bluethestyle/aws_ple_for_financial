@@ -306,10 +306,14 @@ class CGCLayer(nn.Module):
             for _ in range(num_tasks)
         ])
 
-        # Per-task gating networks (gate always receives full input_dim)
+        # Per-task gating networks
+        # On-prem design: gate on concatenated expert outputs (post-hoc),
+        # not on raw input.  This lets the gate see the actual expert
+        # representations before deciding how to combine them.
         num_total_experts = num_shared_experts + num_task_experts
+        gate_input_dim = num_total_experts * expert_hidden_dim
         self.gating = nn.ModuleList([
-            nn.Linear(input_dim, num_total_experts)
+            nn.Linear(gate_input_dim, num_total_experts)
             for _ in range(num_tasks)
         ])
 
@@ -365,8 +369,10 @@ class CGCLayer(nn.Module):
             # Combine: (batch, num_total, hidden)
             all_outs = torch.cat([task_outs, shared_outs], dim=1)
 
-            # Gate: (batch, num_total)
-            gate_logits = self.gating[task_idx](task_inputs[task_idx])
+            # Gate on concatenated expert outputs (post-hoc, on-prem design)
+            # all_outs: (batch, num_total, hidden) -> flatten to (batch, num_total * hidden)
+            gate_input = all_outs.reshape(all_outs.size(0), -1)
+            gate_logits = self.gating[task_idx](gate_input)
             gate_weights = F.softmax(gate_logits, dim=-1)
 
             # Weighted sum: (batch, hidden)
@@ -644,7 +650,10 @@ class ExpertBasket:
         base_cfg.update(overrides)
         return base_cfg
 
-    def build_shared_experts(self) -> nn.ModuleList:
+    def build_shared_experts(
+        self,
+        input_dim_overrides: Optional[Dict[str, int]] = None,
+    ) -> nn.ModuleList:
         """Build all shared experts defined in the basket.
 
         All shared experts are forced to use ``self._default_output_dim``
@@ -653,10 +662,20 @@ class ExpertBasket:
         :meth:`CGCLayer.forward` stacks all shared expert outputs with
         ``torch.stack``, which requires identical tensor shapes.
 
+        Args:
+            input_dim_overrides: Optional dict mapping expert name to its
+                actual input dimension.  When provided (e.g. from
+                ``FeatureRouter._expert_input_dims`` or
+                ``PLEConfig.expert_input_dims``), each expert is built
+                with its routed input size instead of the full feature
+                tensor width.  Experts not in the dict fall back to
+                ``self._input_dim``.
+
         Returns:
             ``nn.ModuleList`` of expert modules, one per entry in
             ``ExpertBasketConfig.shared_experts``.
         """
+        overrides = input_dim_overrides or {}
         experts = nn.ModuleList()
         for name in self._config.shared_experts:
             cfg = self._get_expert_config(name)
@@ -664,11 +683,17 @@ class ExpertBasket:
             # does not fail with a shape mismatch (CRITICAL: all shared
             # experts must produce (batch, default_output_dim) tensors).
             cfg["output_dim"] = self._default_output_dim
+            expert_input = overrides.get(name, self._input_dim)
             expert = self._pool_registry.create(
                 name,
-                input_dim=self._input_dim,
+                input_dim=expert_input,
                 config=cfg,
             )
+            if expert_input != self._input_dim:
+                logger.info(
+                    "ExpertBasket: '%s' input_dim=%d (override from %d)",
+                    name, expert_input, self._input_dim,
+                )
             experts.append(expert)
         return experts
 

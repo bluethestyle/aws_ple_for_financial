@@ -335,6 +335,14 @@ class PLEConfig:
     # experts are the same type defined by ``shared_expert``).
     expert_basket: Optional[ExpertBasketConfig] = None
 
+    # -- Per-expert input dimensions -----------------------------------------
+    # Maps expert name -> actual input dimension.  Used by ExpertBasket to
+    # build each expert with its correct input size (e.g. LightGCN: 64,
+    # HGCN: 47, PersLay: 70) instead of the full concatenated feature dim.
+    # When empty, all experts receive input_dim.  Set from pipeline.yaml
+    # ``model.expert_input_dims`` or computed from FeatureRouter at runtime.
+    expert_input_dims: Dict[str, int] = field(default_factory=dict)
+
     # -- GroupEncoder + ClusterEmbedding + TaskHead (v3.2 architecture) ------
     group_task_expert: GroupTaskExpertConfig = field(
         default_factory=GroupTaskExpertConfig,
@@ -352,6 +360,12 @@ class PLEConfig:
     # TaskGroupConfig list before model construction.  Used by
     # _build_task_experts() for group-specific expert selection.
     task_group_map: Dict[str, str] = field(default_factory=dict)
+
+    # -- HMM group-to-mode mapping ------------------------------------------
+    # Maps task_group_name -> hmm_mode (journey / lifecycle / behavior).
+    # When empty, falls back to PLEModel._DEFAULT_HMM_GROUP_MODE_MAP.
+    # Set from pipeline.yaml ``model.hmm_group_mode_map``.
+    hmm_group_mode_map: Dict[str, str] = field(default_factory=dict)
 
     # -- Per-task loss configuration -----------------------------------------
     # Maps task_name -> loss type string (e.g. "focal", "ce", "huber", "mse")

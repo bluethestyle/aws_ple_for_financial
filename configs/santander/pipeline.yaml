@@ -428,6 +428,10 @@ task_groups:
     adatt_inter_strength: 0.3
 
 adatt:
+  transfer_lambda: 0.1
+  temperature: 1.0
+  warmup_epochs: 0
+  grad_interval: 1
   inter_group_strength: 0.3
 
 # ---------------------------------------------------------------------------
@@ -461,8 +465,8 @@ task_relationships:
   - source: next_mcc
     target: nba_primary
     type: sequential
-    transfer_method: output_concat
-    description: "다음 업종 → 다음 상품"
+    transfer_method: hidden_concat
+    description: "다음 업종 → 다음 상품 (feature sharing)"
 
 logit_transfer_strength: 0.5
 
@@ -616,11 +620,20 @@ model:
       - optimal_transport
     task: [mlp]
 
+  # Per-expert input dimensions for heterogeneous experts.
+  # Experts with feature routing receive only their designated feature
+  # groups, not the full concatenated feature vector.
+  expert_input_dims:
+    lightgcn: 64          # collaborative_features embedding_dim
+    hgcn: 47              # hyperbolic_dim(20) + merchant_dim(27)
+    perslay: 70           # tda_features (persistence diagrams)
+
   expert_config:
     deepfm:
-      embedding_dim: 8
-      hidden_dims: [256, 128]
-      dropout: 0.1
+      embedding_dim: 16
+      hidden_dims: [256, 128, 64]
+      dropout: 0.2
+      field_dims: auto  # derive from feature_group_ranges
     temporal_ensemble:
       mamba_d_model: 64
       mamba_n_layers: 2
@@ -642,10 +655,10 @@ model:
       n_layers: 3
     optimal_transport:
       hidden_dims: [128, 64]
-      sinkhorn_iterations: 50
+      sinkhorn_iterations: 10
     mlp:
-      hidden_dims: [256, 128]
-      dropout: 0.1
+      hidden_dims: [128, 64]
+      dropout: 0.2
 
   cgc:
     dim_normalize: true
@@ -670,6 +683,25 @@ model:
   loss_weighting:
     strategy: uncertainty
 
+  # GroupEncoder + ClusterEmbedding architecture (v3.2 on-prem design)
+  # 4 group encoders shared across 18 tasks -> 88% param reduction
+  group_task_expert:
+    enabled: true
+    group_hidden: 128
+    group_output: 64
+    cluster_embed_dim: 32
+
+  # HMM triple-mode -> task group routing
+  # Each task group receives its mode-specific HMM features as residual
+  # journey (8D): product adoption stages
+  # lifecycle (8D): customer lifecycle phases
+  # behavior (9D): short-term behavioural patterns
+  hmm_group_mode_map:
+    engagement: behavior
+    lifecycle: lifecycle
+    value: journey
+    consumption: journey
+
   # Multidisciplinary feature routing: 24D -> 4 x 6D per task group
   # chemical_kinetics -> value, epidemic_diffusion -> lifecycle,
   # crime_pattern -> engagement, interference -> consumption
@@ -690,16 +722,17 @@ training:
   experiment_name: santander_ple
   batch_size: 2048             # 941K users / 2048 = ~460 steps/epoch
   epochs: 50
-  learning_rate: 0.001
+  learning_rate: 0.0005
   weight_decay: 0.01
+  gradient_clip_norm: 5.0
   seed: 42
   phase1:
-    epochs: 30
-    description: "Joint training of all tasks"
+    epochs: 15
+    description: "shared expert learning"
   phase2:
-    epochs: 20
-    freeze_extraction: true
-    description: "Fine-tune towers with frozen extraction"
+    epochs: 8
+    freeze_shared: true
+    description: "task head fine-tuning"
   early_stopping:
     patience: 7
     metric: val_loss
@@ -811,7 +844,7 @@ ablation:
     batch_size: 4096
     learning_rate: 0.008
     amp: true
-    gradient_accumulation_steps: 2
+    gradient_accumulation_steps: 4
     early_stopping_patience: 3
     seed: 42
 
