@@ -144,8 +144,14 @@ generator_params:
 - 서브에이전트 결과를 반드시 검수한 후 커밋한다.
 - **병렬 에이전트 작업 후에는 반드시 인터페이스 계약 검증 에이전트를 추가로 실행한다.**
 
+### 5.1 개발 환경 정책
+- **코드 개발/디버깅은 로컬 GPU PC**(64GB RAM + RTX 4070)에서 수행한다.
+- **SageMaker는 코드 디버깅에 사용하지 않는다** — 로컬에서 전체 데이터 테스트 통과 후 제출만 한다.
+- 개발 순서: 로컬 테스트 → 전체 데이터 검증 → SageMaker 제출 (ablation 실행)
+- SageMaker 제출 전에 로컬에서 최소 1 epoch end-to-end 성공을 확인한다.
+
 ## 6. 금지사항
-- 로컬에서 pip install이나 패키지 실행 금지 (SageMaker에서만 테스트)
+- **SageMaker에서 코드 디버깅 금지** — 제출당 $0.50+ 비용 발생, 로컬에서 먼저 검증
 - train.py에 전처리 코드를 넣지 않는다
 - adapter에 generator 호출을 하드코딩하지 않는다
 - FEATURE_GROUP_COLUMN_PREFIXES 같은 하드코딩 매핑을 만들지 않는다
