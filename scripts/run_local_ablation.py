@@ -94,28 +94,49 @@ STRUCTURES = {
 }
 
 
+IMAGE = os.environ.get("ABLATION_IMAGE", "model_training:v3.3")
+
+
 def run_scenario(name: str, extra_hp: dict) -> dict:
-    """Run a single training scenario and return metrics."""
+    """Run a single training scenario via Docker (SageMaker local mode)."""
     out_dir = RESULTS_DIR / name
     out_dir.mkdir(parents=True, exist_ok=True)
+    model_dir = out_dir / "model"
+    model_dir.mkdir(exist_ok=True)
 
     hp = {**BASE_HP, **extra_hp, "ablation_scenario": name}
-    env = {
-        **os.environ,
-        "SM_CHANNEL_TRAIN": PHASE0_DIR,
-        "SM_OUTPUT_DATA_DIR": str(out_dir),
-        "SM_MODEL_DIR": str(out_dir / "model"),
-        "SM_HPS": json.dumps(hp),
-        "PYTHONPATH": str(ROOT),
-    }
+
+    env_args = [
+        "-e", f"SM_CHANNEL_TRAIN=/opt/ml/input/data/train",
+        "-e", f"SM_OUTPUT_DATA_DIR=/opt/ml/output/data",
+        "-e", f"SM_MODEL_DIR=/opt/ml/model",
+        "-e", f"SM_HPS={json.dumps(hp)}",
+        "-e", "PYTHONPATH=/opt/ml/code",
+    ]
+
+    phase0 = str(PHASE0_DIR).replace("\\", "/")
+    output = str(out_dir).replace("\\", "/")
+    model = str(model_dir).replace("\\", "/")
+    code = str(ROOT).replace("\\", "/")
+
+    cmd = [
+        "docker", "run", "--rm", "--gpus", "all",
+        "-v", f"{phase0}:/opt/ml/input/data/train",
+        "-v", f"{output}:/opt/ml/output/data",
+        "-v", f"{model}:/opt/ml/model",
+        "-v", f"{code}:/opt/ml/code",
+        *env_args,
+        IMAGE,
+        "python", "/opt/ml/code/containers/training/train.py",
+    ]
 
     t0 = time.time()
     result = subprocess.run(
-        [sys.executable, TRAIN_SCRIPT],
-        env=env,
+        cmd,
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=600,
+        errors="replace",
     )
     elapsed = time.time() - t0
 
