@@ -1015,8 +1015,8 @@ if __name__ == "__main__":
     # --- Save via DuckDB COPY TO (no pandas/Arrow intermediary) ---
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, "santander_final.parquet")
-    # Use forward slashes for DuckDB path compatibility
     _out_path_ddb = out_path.replace("\\", "/")
+    con.execute("SET memory_limit='32GB'")
     con.execute(
         f"COPY {_TBL} TO '{_out_path_ddb}' (FORMAT PARQUET, COMPRESSION ZSTD)"
     )
