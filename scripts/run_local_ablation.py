@@ -108,12 +108,13 @@ def run_scenario(name: str, extra_hp: dict) -> dict:
     )
     elapsed = time.time() - t0
 
-    # Read eval_metrics.json
+    # Read eval_metrics.json (metrics may be nested under final_metrics)
     metrics_path = out_dir / "eval_metrics.json"
     metrics = {}
     if metrics_path.exists():
         with open(metrics_path) as f:
-            metrics = json.load(f)
+            raw = json.load(f)
+        metrics = raw.get("final_metrics", raw)
 
     status = "OK" if result.returncode == 0 else "FAIL"
     auc = metrics.get("auc", "N/A")
