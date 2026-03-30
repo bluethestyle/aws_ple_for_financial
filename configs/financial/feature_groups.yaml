@@ -387,13 +387,13 @@ feature_groups:
 
   # -------------------------------------------------------------------------
   # 12. Model-derived features (27D) -- generate
-  #     HMM summary(5) + Bandit/MAB(4) + LNN(18)
+  #     GMM soft probabilities(5) + Bandit/MAB(4) + LNN(18)
   # -------------------------------------------------------------------------
   - name: model_derived
     group_type: generate
     generator: model_features
     generator_params:
-      hmm_dim: 5
+      gmm_dim: 5
       bandit_dim: 4
       lnn_dim: 18
     output_dim: 27

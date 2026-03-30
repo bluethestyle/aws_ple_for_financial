@@ -737,32 +737,37 @@ sources:
       snapshot_date:
         type: date
         nullable: false
-      # -- HMM summary (5D) --
-      hmm_dominant_state:
-        type: float64
-        nullable: true
-        description: "Dominant HMM state ID"
-      hmm_state_duration:
-        type: float64
-        nullable: true
-        min: 0.0
-        description: "Current HMM state duration"
-      hmm_transition_stability:
+      # -- GMM soft probabilities (5D) --
+      gmm_prob_0:
         type: float64
         nullable: true
         min: 0.0
         max: 1.0
-        description: "HMM state transition stability"
-      hmm_transition_entropy:
+        description: "GMM cluster 0 membership probability"
+      gmm_prob_1:
         type: float64
         nullable: true
         min: 0.0
-        description: "HMM state transition entropy"
-      hmm_state_change_rate:
+        max: 1.0
+        description: "GMM cluster 1 membership probability"
+      gmm_prob_2:
         type: float64
         nullable: true
         min: 0.0
-        description: "HMM state change frequency"
+        max: 1.0
+        description: "GMM cluster 2 membership probability"
+      gmm_prob_3:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "GMM cluster 3 membership probability"
+      gmm_prob_4:
+        type: float64
+        nullable: true
+        min: 0.0
+        max: 1.0
+        description: "GMM cluster 4 membership probability"
       # -- Bandit/MAB (4D) --
       bandit_model_001:
         type: float64

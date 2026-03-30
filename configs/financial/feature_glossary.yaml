@@ -479,14 +479,14 @@ feature_groups:
   #     hmm(5) + bandit(4) + lnn(18)
   # ---------------------------------------------------------------------------
   model_derived:
-    description: "모델 파생 피처 (HMM, Bandit, LNN)"
+    description: "모델 파생 피처 (GMM, Bandit, LNN)"
     features:
-      # HMM summary (5D)
-      hmm_dominant_state: {name: "주요행동상태", template: "현재 주요 행동 상태: {value}", unit: ""}
-      hmm_state_entropy: {name: "행동다양성", template: "행동 다양성 지수 {value}", unit: ""}
-      hmm_transition_intensity: {name: "상태전환_강도", template: "행동 상태 전환 강도 {value}", unit: ""}
-      hmm_state_stability: {name: "상태안정성", template: "행동 상태 안정성 {value}", unit: "", direction: higher_is_better}
-      hmm_regime_duration: {name: "체제지속기간", template: "현재 행동 체제 지속 기간 {value}", unit: ""}
+      # GMM soft probabilities (5D)
+      gmm_prob_0: {name: "GMM군집0확률", template: "GMM 군집 0 소속 확률: {value}", unit: ""}
+      gmm_prob_1: {name: "GMM군집1확률", template: "GMM 군집 1 소속 확률: {value}", unit: ""}
+      gmm_prob_2: {name: "GMM군집2확률", template: "GMM 군집 2 소속 확률: {value}", unit: ""}
+      gmm_prob_3: {name: "GMM군집3확률", template: "GMM 군집 3 소속 확률: {value}", unit: ""}
+      gmm_prob_4: {name: "GMM군집4확률", template: "GMM 군집 4 소속 확률: {value}", unit: ""}
       # Bandit/MAB (4D)
       bandit_model_001: {name: "탐색성향", template: "상품 탐색 성향 {value}", unit: ""}
       bandit_model_002: {name: "활용성향", template: "기존 상품 활용 성향 {value}", unit: ""}

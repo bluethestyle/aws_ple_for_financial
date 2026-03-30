@@ -3,8 +3,9 @@ Model-Derived Feature Generator (27D output).
 
 Combines three families of model-inspired features into a single generator:
 
-1. **HMM Summary Features (5D)** -- lightweight behavioural state summaries
-   approximated via K-means clustering on rolling windows (no full HMM fit).
+1. **GMM Cluster Probabilities (5D)** -- soft cluster membership probabilities
+   from a Gaussian Mixture Model.  Each column is the probability that the
+   sample belongs to the k-th component (continuous 0-1, sums to 1).
 2. **Bandit / MAB Features (4D)** -- multi-armed bandit style exploration and
    exploitation metrics derived from transaction / engagement patterns.
 3. **LNN (Liquid Neural Network) Features (18D)** -- temporal dynamics features
@@ -17,7 +18,8 @@ Total output: 5 + 4 + 18 = 27 dimensions.
 Hardware acceleration
 ---------------------
 GPU acceleration is **not** used by this generator.  All computations are
-numpy / sklearn (KMeans only) based.
+numpy / sklearn (GaussianMixture) based.  cuDF may be used for fast
+numeric extraction when available.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ import pandas as pd
 
 from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
-from .gpu_utils import has_cudf, has_cuml
+from .gpu_utils import has_cudf
 
 # ---------------------------------------------------------------------------
 # Lazy import cuDF (optional GPU acceleration)
@@ -53,14 +55,13 @@ logger = logging.getLogger(__name__)
 class ModelFeaturesConfig:
     """Hyper-parameters for the model-derived feature generator."""
 
-    hmm_dim: int = 5
+    gmm_dim: int = 5
     bandit_dim: int = 4
     lnn_dim: int = 18
 
-    # HMM approximation
-    hmm_n_states: int = 5
-    hmm_window_size: int = 10
-    hmm_random_state: int = 42
+    # GMM clustering
+    gmm_n_components: int = 5
+    gmm_random_state: int = 42
 
     # LNN temporal scales
     lnn_velocity_windows: List[int] = field(default_factory=lambda: [1, 7, 30])
@@ -76,10 +77,10 @@ class ModelFeaturesConfig:
 @FeatureGeneratorRegistry.register(
     "model_features",
     description=(
-        "Model-derived features: HMM summary (5D) + Bandit/MAB (4D) "
+        "Model-derived features: GMM soft probabilities (5D) + Bandit/MAB (4D) "
         "+ LNN temporal dynamics (18D)."
     ),
-    tags=["hmm", "bandit", "lnn", "temporal", "model"],
+    tags=["gmm", "bandit", "lnn", "temporal", "model"],
 )
 class ModelFeaturesGenerator(AbstractFeatureGenerator):
     """Model-derived feature generator (27D).
@@ -87,8 +88,8 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
     Produces three families of features without requiring heavy model
     training at inference time:
 
-    * **HMM summary (5D)** -- K-means approximation of hidden states
-      on rolling numeric windows.
+    * **GMM probabilities (5D)** -- soft cluster membership probabilities
+      from a Gaussian Mixture Model (one column per component, sums to 1).
     * **Bandit/MAB (4D)** -- exploration / exploitation metrics from
       transaction and engagement columns.
     * **LNN (18D)** -- multi-scale temporal derivatives, exponential
@@ -99,7 +100,7 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
     config : ModelFeaturesConfig, optional
         Generator hyper-parameters.
     feature_columns : list[str], optional
-        Columns to use for HMM / general numeric features.
+        Columns to use for GMM / general numeric features.
         Defaults to all numeric columns.
     engagement_columns : list[str], optional
         Columns to use for bandit metrics (e.g. product/channel usage).
@@ -111,9 +112,9 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
         Column-name prefix (default ``""`` -- each sub-family has its own).
     """
 
-    supports_gpu: bool = True
+    supports_gpu: bool = False
     required_libraries: List[str] = ["sklearn"]
-    optional_libraries: List[str] = ["cuml", "cudf"]
+    optional_libraries: List[str] = ["cudf"]
 
     def __init__(
         self,
@@ -132,7 +133,7 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
         self.prefix = prefix
 
         # Fitted state
-        self._kmeans_model: Any = None
+        self._gmm_model: Any = None
         self._col_means: Optional[np.ndarray] = None
         self._col_stds: Optional[np.ndarray] = None
         self._temporal_means: Optional[np.ndarray] = None
@@ -142,18 +143,15 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
 
     @property
     def output_dim(self) -> int:
-        return self.config.hmm_dim + self.config.bandit_dim + self.config.lnn_dim
+        return self.config.gmm_dim + self.config.bandit_dim + self.config.lnn_dim
 
     @property
     def output_columns(self) -> List[str]:
         p = f"{self.prefix}_" if self.prefix else ""
         cols: List[str] = []
-        # HMM summary (5D)
-        cols.append(f"{p}hmm_dominant_state")
-        cols.append(f"{p}hmm_state_entropy")
-        cols.append(f"{p}hmm_transition_rate")
-        cols.append(f"{p}hmm_stability")
-        cols.append(f"{p}hmm_state_trend")
+        # GMM soft probabilities (K columns)
+        for k in range(self.config.gmm_n_components):
+            cols.append(f"{p}gmm_prob_{k}")
         # Bandit/MAB (4D)
         cols.append(f"{p}bandit_exploration_rate")
         cols.append(f"{p}bandit_exploitation_score")
@@ -174,15 +172,15 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
 
     @classmethod
     def estimated_output_dim(cls, config: Dict[str, Any]) -> int:
-        hmm = config.get("hmm_dim", 5)
+        gmm = config.get("gmm_dim", 5)
         bandit = config.get("bandit_dim", 4)
         lnn = config.get("lnn_dim", 18)
-        return hmm + bandit + lnn
+        return gmm + bandit + lnn
 
     # -- Core API ----------------------------------------------------------
 
     def fit(self, df: Any, **context: Any) -> "ModelFeaturesGenerator":
-        """Fit KMeans for HMM state approximation and cache normalisation stats."""
+        """Fit GMM for soft cluster probabilities and cache normalisation stats."""
         num_cols = self._resolve_numeric_columns(df, self.feature_columns)
 
         if len(num_cols) > 0:
@@ -198,9 +196,9 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
             self._col_stds = X.std(axis=0)
             self._col_stds[self._col_stds < 1e-10] = 1.0
 
-            # Fit KMeans for HMM state approximation
+            # Fit GMM for soft cluster probabilities
             X_norm = (X - self._col_means) / self._col_stds
-            self._fit_kmeans(X_norm)
+            self._fit_gmm(X_norm)
 
         # Cache temporal normalisation stats
         temp_cols = self._resolve_temporal_columns(df)
@@ -213,54 +211,37 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
         self._fitted = True
         return self
 
-    def _fit_kmeans(self, X_norm: np.ndarray) -> None:
-        """Fit KMeans using cuML (GPU) when available, else sklearn (CPU)."""
-        if has_cuml():
-            try:
-                from cuml.cluster import KMeans as cuKMeans
-                self._kmeans_model = cuKMeans(
-                    n_clusters=self.config.hmm_n_states,
-                    random_state=self.config.hmm_random_state,
-                    n_init=3,
-                    max_iter=100,
-                )
-                self._kmeans_model.fit(X_norm)
-                logger.info(
-                    "ModelFeaturesGenerator KMeans fitted (cuML): K=%d, "
-                    "n_samples=%d, n_features=%d",
-                    self.config.hmm_n_states,
-                    X_norm.shape[0],
-                    X_norm.shape[1],
-                )
-                return
-            except Exception as exc:
-                logger.warning(
-                    "cuML KMeans failed (%s), falling back to sklearn.", exc
-                )
+    def _fit_gmm(self, X_norm: np.ndarray) -> None:
+        """Fit sklearn GaussianMixture for soft cluster probabilities.
 
+        cuML does not provide GMM, so we always use sklearn.  Input data
+        may have been extracted via CuPy -> numpy for speed.
+        """
         try:
-            from sklearn.cluster import KMeans
-            self._kmeans_model = KMeans(
-                n_clusters=self.config.hmm_n_states,
-                random_state=self.config.hmm_random_state,
-                n_init=3,
+            from sklearn.mixture import GaussianMixture
+
+            self._gmm_model = GaussianMixture(
+                n_components=self.config.gmm_n_components,
+                random_state=self.config.gmm_random_state,
+                covariance_type="full",
                 max_iter=100,
+                n_init=3,
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                self._kmeans_model.fit(X_norm)
+                self._gmm_model.fit(X_norm)
             logger.info(
-                "ModelFeaturesGenerator KMeans fitted (sklearn): K=%d, "
+                "ModelFeaturesGenerator GMM fitted (sklearn): K=%d, "
                 "n_samples=%d, n_features=%d",
-                self.config.hmm_n_states,
+                self.config.gmm_n_components,
                 X_norm.shape[0],
                 X_norm.shape[1],
             )
         except ImportError:
             logger.warning(
-                "Neither cuML nor sklearn available; HMM features will use fallback."
+                "sklearn not available; GMM features will use fallback."
             )
-            self._kmeans_model = None
+            self._gmm_model = None
 
     def generate(self, df: Any, **context: Any) -> Any:
         """Generate model-derived features (27D)."""
@@ -277,8 +258,8 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
 
         p = f"{self.prefix}_" if self.prefix else ""
 
-        # ---- HMM Summary Features (5D) ----------------------------------
-        self._generate_hmm_features(pdf, n_rows, p, results)
+        # ---- GMM Soft Probabilities (K-D) --------------------------------
+        self._generate_gmm_features(pdf, n_rows, p, results)
 
         # ---- Bandit / MAB Features (4D) ---------------------------------
         self._generate_bandit_features(pdf, n_rows, p, results)
@@ -291,25 +272,24 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
             return _cudf.DataFrame(results)
         return pd.DataFrame(results)
 
-    # -- HMM Summary (5D) -------------------------------------------------
+    # -- GMM Soft Probabilities (K-D) -------------------------------------
 
-    def _generate_hmm_features(
+    def _generate_gmm_features(
         self,
         pdf: pd.DataFrame,
         n_rows: int,
         p: str,
         results: Dict[str, np.ndarray],
     ) -> None:
-        """Approximate HMM state features via KMeans on rolling windows."""
+        """Generate soft cluster membership probabilities via GMM predict_proba."""
+        K = self.config.gmm_n_components
         num_cols = self._resolve_numeric_columns(pdf, self.feature_columns)
 
-        if len(num_cols) == 0 or self._kmeans_model is None:
-            # Fallback: zeros
-            results[f"{p}hmm_dominant_state"] = np.zeros(n_rows, dtype=np.float32)
-            results[f"{p}hmm_state_entropy"] = np.zeros(n_rows, dtype=np.float32)
-            results[f"{p}hmm_transition_rate"] = np.zeros(n_rows, dtype=np.float32)
-            results[f"{p}hmm_stability"] = np.ones(n_rows, dtype=np.float32)
-            results[f"{p}hmm_state_trend"] = np.zeros(n_rows, dtype=np.float32)
+        if len(num_cols) == 0 or self._gmm_model is None:
+            # Fallback: uniform probabilities
+            uniform = np.full(n_rows, 1.0 / K, dtype=np.float32)
+            for k in range(K):
+                results[f"{p}gmm_prob_{k}"] = uniform.copy()
             return
 
         X = self._extract_numeric(pdf, num_cols)
@@ -326,70 +306,12 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
         if self._col_means is not None and self._col_stds is not None:
             X = (X - self._col_means) / self._col_stds
 
-        # Assign states via KMeans (cuML may return cupy arrays)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            states = self._kmeans_model.predict(X)  # (n_rows,)
-            if hasattr(states, 'get'):
-                states = states.get()  # cupy -> numpy
-            states = np.asarray(states)
+        # Predict soft probabilities -- shape (n_rows, K)
+        proba = self._gmm_model.predict_proba(X)
+        proba = np.asarray(proba, dtype=np.float32)
 
-        K = self.config.hmm_n_states
-        window = self.config.hmm_window_size
-
-        dominant_state = np.zeros(n_rows, dtype=np.float32)
-        state_entropy = np.zeros(n_rows, dtype=np.float32)
-        transition_rate = np.zeros(n_rows, dtype=np.float32)
-        stability = np.ones(n_rows, dtype=np.float32)
-        state_trend = np.zeros(n_rows, dtype=np.float32)
-
-        for i in range(n_rows):
-            start = max(0, i - window + 1)
-            win_states = states[start : i + 1]
-            win_len = len(win_states)
-
-            # Dominant state: most frequent in window
-            counts = np.bincount(win_states, minlength=K)
-            dominant_state[i] = float(np.argmax(counts))
-
-            # State entropy
-            probs = counts / counts.sum() if counts.sum() > 0 else np.ones(K) / K
-            probs = probs[probs > 0]
-            state_entropy[i] = float(-np.sum(probs * np.log(probs + 1e-300)))
-
-            # Transition rate: number of state changes / (window - 1)
-            if win_len > 1:
-                changes = np.sum(win_states[1:] != win_states[:-1])
-                transition_rate[i] = float(changes) / (win_len - 1)
-
-            # Stability: longest consecutive run / window length
-            if win_len > 0:
-                max_run = 1
-                current_run = 1
-                for j in range(1, win_len):
-                    if win_states[j] == win_states[j - 1]:
-                        current_run += 1
-                        max_run = max(max_run, current_run)
-                    else:
-                        current_run = 1
-                stability[i] = float(max_run) / win_len
-
-            # State trend: linear regression slope of state values in window
-            if win_len > 1:
-                x_vals = np.arange(win_len, dtype=np.float64)
-                y_vals = win_states.astype(np.float64)
-                x_mean = x_vals.mean()
-                y_mean = y_vals.mean()
-                denom = np.sum((x_vals - x_mean) ** 2)
-                if denom > 1e-10:
-                    slope = np.sum((x_vals - x_mean) * (y_vals - y_mean)) / denom
-                    state_trend[i] = float(slope)
-
-        results[f"{p}hmm_dominant_state"] = dominant_state
-        results[f"{p}hmm_state_entropy"] = state_entropy
-        results[f"{p}hmm_transition_rate"] = transition_rate
-        results[f"{p}hmm_stability"] = stability
-        results[f"{p}hmm_state_trend"] = state_trend
+        for k in range(K):
+            results[f"{p}gmm_prob_{k}"] = proba[:, k]
 
     # -- Bandit / MAB (4D) -------------------------------------------------
 

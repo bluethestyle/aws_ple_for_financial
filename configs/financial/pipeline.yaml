@@ -444,12 +444,12 @@ features:
     - interference_008
     - crime_pattern_001
     - crime_pattern_005
-    # Model-derived (27D = HMM 5 + Bandit 4 + LNN 18)
-    - hmm_dominant_state
-    - hmm_state_duration
-    - hmm_transition_stability
-    - hmm_transition_entropy
-    - hmm_state_change_rate
+    # Model-derived (27D = GMM 5 + Bandit 4 + LNN 18)
+    - gmm_prob_0
+    - gmm_prob_1
+    - gmm_prob_2
+    - gmm_prob_3
+    - gmm_prob_4
     - bandit_model_001
     - bandit_model_004
     - lnn_dist_amount_skewness

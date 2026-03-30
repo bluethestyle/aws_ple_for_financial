@@ -110,10 +110,10 @@ drift:
     - gmm_cluster_001
     - gmm_cluster_010
     - gmm_cluster_021
-    # Model-derived
-    - hmm_dominant_state
-    - hmm_transition_stability
-    - hmm_state_change_rate
+    # Model-derived (GMM soft probabilities)
+    - gmm_prob_0
+    - gmm_prob_2
+    - gmm_prob_4
 
   # Consecutive drift tracking -- faster retrain trigger for financial
   consecutive_tracker:
