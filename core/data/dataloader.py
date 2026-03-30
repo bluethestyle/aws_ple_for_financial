@@ -174,22 +174,41 @@ def _df_to_tensor_cpu(df: Any, columns: List[str], dtype: str = "float32") -> An
     arr = df[columns].values
     if not isinstance(arr, np.ndarray):
         arr = np.asarray(arr)
-    return torch.from_numpy(arr.astype(getattr(np, dtype)))
+    arr = np.nan_to_num(arr.astype(np.float64), nan=0.0).astype(getattr(np, dtype))
+    return torch.from_numpy(arr)
 
 
-def _df_to_tensor_gpu(gdf: Any, columns: List[str]) -> Any:
-    """Convert cuDF DataFrame columns to a GPU torch.Tensor via DLPack."""
+def _df_to_tensor_gpu(gdf: Any, columns: List[str], dtype: str = "float32") -> Any:
+    """Convert cuDF DataFrame columns → CuPy → torch tensor (zero-copy on GPU).
+
+    Pipeline: cuDF.fillna(0) → .to_cupy() → torch.as_tensor (no host↔device copy).
+    Falls back to DLPack if CuPy is unavailable, then to numpy as last resort.
+    """
     import torch
 
-    subset = gdf[columns]
+    subset = gdf[columns].fillna(0)
+
+    # Path 1: cuDF → CuPy → torch (preferred zero-copy)
+    try:
+        import cupy as cp
+        arr = subset.to_cupy().astype(getattr(cp, dtype))
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        return torch.as_tensor(arr, device="cuda")
+    except (ImportError, Exception):
+        pass
+
+    # Path 2: DLPack (older cuDF versions)
     try:
         capsule = subset.to_dlpack()
         return torch.from_dlpack(capsule)
     except Exception:
-        # Fallback: go through numpy
-        import numpy as np
-        arr = subset.to_pandas().values.astype(np.float32)
-        return torch.tensor(arr, dtype=torch.float32).cuda()
+        pass
+
+    # Path 3: fallback through numpy (host round-trip — avoid if possible)
+    import numpy as np
+    arr = subset.to_pandas().values.astype(np.float32)
+    return torch.tensor(arr, dtype=torch.float32, device="cuda")
 
 
 # ---------------------------------------------------------------------------
@@ -199,9 +218,9 @@ def _df_to_tensor_gpu(gdf: Any, columns: List[str]) -> Any:
 class PLEDataset:
     """Dataset that produces PLEInput-compatible dicts.
 
-    For CPU training the dataset stores pre-converted tensors (one row per
-    sample).  For GPU loading (``use_gpu=True`` with cuDF), it stores the
-    cuDF DataFrame directly and converts slices on-the-fly via DLPack.
+    Pre-converts all data to tensors at init time:
+      - cuDF input → CuPy → torch CUDA tensors (zero-copy on GPU)
+      - pandas/Arrow input → numpy → torch CPU tensors
 
     Parameters
     ----------
@@ -296,51 +315,58 @@ class PLEDataset:
             task: col for task, col in label_columns.items() if col in available
         }
 
-        # ---- Pre-convert to tensors (CPU path) ----
-        if not self._use_gpu:
-            self._tensors: Dict[str, torch.Tensor] = {}
-            for key, cols in self._col_groups.items():
-                self._tensors[key] = _df_to_tensor_cpu(df, cols)
+        # ---- Detect cuDF input ----
+        _is_cudf = False
+        try:
+            import cudf as _cudf_mod
+            _is_cudf = isinstance(df, _cudf_mod.DataFrame)
+        except ImportError:
+            pass
 
-            # Sequences -> reshape to 3D
-            if self._event_seq_cols:
-                raw = _df_to_tensor_cpu(df, self._event_seq_cols)
-                self._tensors["event_sequences"] = raw.view(
-                    self._n_samples,
-                    self._seq_cfg.event_seq_len,
-                    self._seq_cfg.event_feat_dim,
-                )
-            if self._session_seq_cols:
-                raw = _df_to_tensor_cpu(df, self._session_seq_cols)
-                self._tensors["session_sequences"] = raw.view(
-                    self._n_samples,
-                    self._seq_cfg.session_seq_len,
-                    self._seq_cfg.session_feat_dim,
-                )
+        # ---- Pre-convert to tensors ----
+        # GPU path: cuDF → CuPy → torch (zero-copy, all tensors on CUDA)
+        # CPU path: pandas/Arrow → numpy → torch (tensors on CPU)
+        _to_tensor = _df_to_tensor_gpu if _is_cudf else _df_to_tensor_cpu
 
-            # Time deltas
-            if self._event_td_cols:
-                self._tensors["event_time_delta"] = _df_to_tensor_cpu(
-                    df, self._event_td_cols
-                )
-            if self._session_td_cols:
-                self._tensors["session_time_delta"] = _df_to_tensor_cpu(
-                    df, self._session_td_cols
-                )
+        self._tensors: Dict[str, torch.Tensor] = {}
+        for key, cols in self._col_groups.items():
+            self._tensors[key] = _to_tensor(df, cols)
 
-            # Labels
-            self._label_tensors: Dict[str, torch.Tensor] = {}
-            for task, col in self._label_cols_present.items():
-                self._label_tensors[task] = _df_to_tensor_cpu(
-                    df, [col]
-                ).squeeze(-1)
-        else:
-            # GPU path: keep the cuDF DataFrame for lazy DLPack conversion
-            import cudf
-            if not isinstance(df, cudf.DataFrame):
-                self._gdf = cudf.DataFrame(df)
-            else:
-                self._gdf = df
+        # Sequences -> reshape to 3D
+        if self._event_seq_cols:
+            raw = _to_tensor(df, self._event_seq_cols)
+            self._tensors["event_sequences"] = raw.view(
+                self._n_samples,
+                self._seq_cfg.event_seq_len,
+                self._seq_cfg.event_feat_dim,
+            )
+        if self._session_seq_cols:
+            raw = _to_tensor(df, self._session_seq_cols)
+            self._tensors["session_sequences"] = raw.view(
+                self._n_samples,
+                self._seq_cfg.session_seq_len,
+                self._seq_cfg.session_feat_dim,
+            )
+
+        # Time deltas
+        if self._event_td_cols:
+            self._tensors["event_time_delta"] = _to_tensor(
+                df, self._event_td_cols
+            )
+        if self._session_td_cols:
+            self._tensors["session_time_delta"] = _to_tensor(
+                df, self._session_td_cols
+            )
+
+        # Labels
+        self._label_tensors: Dict[str, torch.Tensor] = {}
+        for task, col in self._label_cols_present.items():
+            self._label_tensors[task] = _to_tensor(
+                df, [col]
+            ).squeeze(-1)
+
+        if _is_cudf:
+            logger.info("PLEDataset: used cuDF → CuPy → torch GPU zero-copy path")
 
         logger.debug(
             "PLEDataset: %d samples, %d col groups, gpu=%s",
@@ -355,55 +381,16 @@ class PLEDataset:
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """Return a dict whose keys align with :class:`PLEInput` fields.
 
-        For the CPU path, all values are already tensors.
-        For the GPU path, tensors are created from cuDF slices.
+        All tensors are pre-converted (both CPU and GPU paths), so indexing
+        is a simple tensor slice regardless of the original DataFrame type.
         """
-        import torch
-
-        if not self._use_gpu:
-            item: Dict[str, Any] = {}
-            for key, tensor in self._tensors.items():
-                item[key] = tensor[idx]
-            if self._label_tensors:
-                item["targets"] = {
-                    task: t[idx] for task, t in self._label_tensors.items()
-                }
-            return item
-
-        # GPU (cuDF) path -- slice a single row
-        row = self._gdf.iloc[idx: idx + 1]
-        item = {}
-        for key, cols in self._col_groups.items():
-            item[key] = _df_to_tensor_gpu(row, cols).squeeze(0)
-
-        # Sequences
-        if self._event_seq_cols:
-            raw = _df_to_tensor_gpu(row, self._event_seq_cols).squeeze(0)
-            item["event_sequences"] = raw.view(
-                self._seq_cfg.event_seq_len, self._seq_cfg.event_feat_dim
-            )
-        if self._session_seq_cols:
-            raw = _df_to_tensor_gpu(row, self._session_seq_cols).squeeze(0)
-            item["session_sequences"] = raw.view(
-                self._seq_cfg.session_seq_len, self._seq_cfg.session_feat_dim
-            )
-        if self._event_td_cols:
-            item["event_time_delta"] = _df_to_tensor_gpu(
-                row, self._event_td_cols
-            ).squeeze(0)
-        if self._session_td_cols:
-            item["session_time_delta"] = _df_to_tensor_gpu(
-                row, self._session_td_cols
-            ).squeeze(0)
-
-        # Labels
-        if self._label_cols_present:
-            item["targets"] = {}
-            for task, col in self._label_cols_present.items():
-                item["targets"][task] = _df_to_tensor_gpu(
-                    row, [col]
-                ).squeeze()
-
+        item: Dict[str, Any] = {}
+        for key, tensor in self._tensors.items():
+            item[key] = tensor[idx]
+        if self._label_tensors:
+            item["targets"] = {
+                task: t[idx] for task, t in self._label_tensors.items()
+            }
         return item
 
 
@@ -562,9 +549,17 @@ def build_ple_dataloader(
     else:
         collate_fn = _ple_collate
 
-    # When using GPU loading with cuDF, workers must be 0 (CUDA context
-    # cannot be forked) and pin_memory is unnecessary.
-    if use_gpu_loading and _check_cudf():
+    # Auto-detect cuDF input and force GPU-compatible DataLoader settings.
+    # CUDA context cannot be forked, so workers must be 0 and pin_memory is
+    # unnecessary when tensors are already on GPU.
+    _is_cudf_input = False
+    try:
+        import cudf as _cudf_check
+        _is_cudf_input = isinstance(df, _cudf_check.DataFrame)
+    except ImportError:
+        pass
+
+    if _is_cudf_input or (use_gpu_loading and _check_cudf()):
         num_workers = 0
         pin_memory = False
 

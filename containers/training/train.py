@@ -107,17 +107,40 @@ def _parse_hp_value(v: str) -> Any:
 # Data loading — training-ready artifacts from Phase 0
 # ---------------------------------------------------------------------------
 
+def _detect_scalar_cols_duckdb(con, parquet_uri: str) -> list:
+    """Use DuckDB DESCRIBE to find scalar (non-list/struct/string) columns."""
+    schema_df = con.execute(
+        f"DESCRIBE SELECT * FROM '{parquet_uri}'"
+    ).fetchall()
+    return [
+        row[0] for row in schema_df
+        if not row[1].endswith("[]")
+        and "STRUCT" not in row[1].upper()
+        and row[1].upper() not in ("VARCHAR", "DATE", "TIMESTAMP")
+    ]
+
+
+def _try_cudf_available() -> bool:
+    """Check if cuDF is importable and a CUDA GPU is accessible."""
+    try:
+        import cudf  # noqa: F401
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+
 def load_ready_data(channel_dir: str) -> dict:
     """Load training-ready artifacts produced by Phase 0.
 
-    Uses DuckDB for all parquet reads to minimise peak memory.
-    Converts to pandas DataFrame only after column filtering is done.
+    Loading priority: cuDF GPU direct read → DuckDB CPU fallback.
+    cuDF reads parquet directly onto the GPU, avoiding any host DataFrame.
 
     Returns
     -------
     dict with keys:
-        features : pd.DataFrame — normalized numeric features
-        labels : pd.DataFrame — derived labels
+        features : cudf.DataFrame or pd.DataFrame — normalized numeric features
+        labels : cudf.DataFrame or pd.DataFrame — derived labels
         sequences : np.ndarray or None — padded 3D tensor
         seq_lengths : np.ndarray or None — sequence lengths
         feature_schema : dict — column names, group ranges, expert routing
@@ -127,79 +150,95 @@ def load_ready_data(channel_dir: str) -> dict:
     import duckdb
 
     channel_path = Path(channel_dir)
+    use_cudf = _try_cudf_available()
+    if use_cudf:
+        import cudf
+        logger.info("cuDF available — using GPU-direct parquet loading")
+    else:
+        logger.info("cuDF not available — falling back to DuckDB → pandas")
+
     con = duckdb.connect()
 
     # -- Features --
     features_path = channel_path / "features.parquet"
     if features_path.exists():
         parquet_uri = str(features_path).replace("\\", "/")
-        # Identify scalar columns (skip list/struct to prevent OOM on 16GB)
-        schema_df = con.execute(
-            f"DESCRIBE SELECT * FROM '{parquet_uri}'"
-        ).df()
-        scalar_cols = [
-            row["column_name"] for _, row in schema_df.iterrows()
-            if not row["column_type"].endswith("[]")
-            and "STRUCT" not in row["column_type"].upper()
-            and row["column_type"].upper() not in ("VARCHAR", "DATE", "TIMESTAMP")
-        ]
-        col_list = ", ".join(f'"{c}"' for c in scalar_cols)
-        features = con.execute(
-            f"SELECT {col_list} FROM '{parquet_uri}'"
-        ).df()
-        logger.info("Loaded features via DuckDB: %d rows, %d columns", len(features), len(features.columns))
+        # Identify scalar columns via DuckDB DESCRIBE (lightweight, no data load)
+        scalar_cols = _detect_scalar_cols_duckdb(con, parquet_uri)
+
+        if use_cudf:
+            features = cudf.read_parquet(str(features_path), columns=scalar_cols)
+            logger.info("Loaded features via cuDF: %d rows, %d columns",
+                        len(features), len(features.columns))
+        else:
+            col_list = ", ".join(f'"{c}"' for c in scalar_cols)
+            features = con.execute(
+                f"SELECT {col_list} FROM '{parquet_uri}'"
+            ).df()
+            logger.info("Loaded features via DuckDB: %d rows, %d columns",
+                        len(features), len(features.columns))
     else:
         # Fallback: load from generic parquet files (backward compat)
         parquet_files = sorted(channel_path.glob("**/*.parquet"))
         if not parquet_files:
             raise FileNotFoundError(f"No features.parquet or .parquet files in {channel_dir}")
-        # Only load scalar columns (skip list/struct to prevent OOM on 16GB)
         first_uri = str(parquet_files[0]).replace("\\", "/")
-        schema_df = con.execute(
-            f"DESCRIBE SELECT * FROM '{first_uri}'"
-        ).df()
-        scalar_cols = [
-            row["column_name"] for _, row in schema_df.iterrows()
-            if not row["column_type"].endswith("[]")
-            and "STRUCT" not in row["column_type"].upper()
-            and row["column_type"].upper() not in ("VARCHAR", "DATE", "TIMESTAMP")
-        ]
+        scalar_cols = _detect_scalar_cols_duckdb(con, first_uri)
         logger.info("Selecting %d scalar columns (skipping list/struct)", len(scalar_cols))
-        col_list = ", ".join(f'"{c}"' for c in scalar_cols)
-        # Build UNION ALL across all parquet files via DuckDB glob or explicit union
-        if len(parquet_files) == 1:
-            features = con.execute(
-                f"SELECT {col_list} FROM '{first_uri}'"
-            ).df()
-        else:
-            # Use DuckDB read_parquet with glob/list for multi-file load
-            file_list = ", ".join(
-                f"'{str(f).replace(chr(92), '/')}'" for f in parquet_files
-            )
-            features = con.execute(
-                f"SELECT {col_list} FROM read_parquet([{file_list}])"
-            ).df()
-        logger.info("Loaded %d parquet files via DuckDB (fallback): %d rows, %d columns",
-                     len(parquet_files), len(features), len(features.columns))
 
-    # Data loading diagnostics
-    logger.info("Features: %d rows x %d cols, memory=%.1f MB",
-                 len(features), len(features.columns), features.memory_usage(deep=True).sum() / 1e6)
-    logger.info("Dtypes: %s", dict(features.dtypes.value_counts()))
-    nan_count = features.isna().sum().sum()
+        if use_cudf:
+            dfs = [cudf.read_parquet(str(f), columns=scalar_cols) for f in parquet_files]
+            features = cudf.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
+            logger.info("Loaded %d parquet files via cuDF (fallback): %d rows, %d columns",
+                        len(parquet_files), len(features), len(features.columns))
+        else:
+            col_list = ", ".join(f'"{c}"' for c in scalar_cols)
+            if len(parquet_files) == 1:
+                features = con.execute(
+                    f"SELECT {col_list} FROM '{first_uri}'"
+                ).df()
+            else:
+                file_list = ", ".join(
+                    f"'{str(f).replace(chr(92), '/')}'" for f in parquet_files
+                )
+                features = con.execute(
+                    f"SELECT {col_list} FROM read_parquet([{file_list}])"
+                ).df()
+            logger.info("Loaded %d parquet files via DuckDB (fallback): %d rows, %d columns",
+                        len(parquet_files), len(features), len(features.columns))
+
+    # Data loading diagnostics (works for both cuDF and pandas)
+    n_rows, n_cols = len(features), len(features.columns)
+    if use_cudf:
+        # cuDF memory info
+        mem_mb = features.memory_usage(deep=True).sum() / 1e6
+        logger.info("Features: %d rows x %d cols, GPU memory=%.1f MB", n_rows, n_cols, mem_mb)
+        logger.info("Dtypes: %s", dict(features.dtypes.value_counts()))
+        nan_count = int(features.isna().sum().sum())
+    else:
+        mem_mb = features.memory_usage(deep=True).sum() / 1e6
+        logger.info("Features: %d rows x %d cols, memory=%.1f MB", n_rows, n_cols, mem_mb)
+        logger.info("Dtypes: %s", dict(features.dtypes.value_counts()))
+        nan_count = int(features.isna().sum().sum())
     if nan_count > 0:
+        nan_cols = int(features.isna().any().sum())
         logger.warning("Features contain %d NaN values across %d columns",
-                        nan_count, features.isna().any().sum())
+                        nan_count, nan_cols)
 
     # -- Labels --
     labels_path = channel_path / "labels.parquet"
     if labels_path.exists():
-        labels_uri = str(labels_path).replace("\\", "/")
-        labels = con.execute(f"SELECT * FROM '{labels_uri}'").df()
+        if use_cudf:
+            labels = cudf.read_parquet(str(labels_path))
+        else:
+            labels_uri = str(labels_path).replace("\\", "/")
+            labels = con.execute(f"SELECT * FROM '{labels_uri}'").df()
     else:
         labels = None
     if labels is not None:
-        logger.info("Loaded labels via DuckDB: %d rows, %d columns", len(labels), len(labels.columns))
+        logger.info("Loaded labels via %s: %d rows, %d columns",
+                     "cuDF" if use_cudf else "DuckDB",
+                     len(labels), len(labels.columns))
 
     # -- Sequences (optional) --
     sequences = None
@@ -253,7 +292,7 @@ def load_ready_data(channel_dir: str) -> dict:
         logger.info("Loaded split_indices: %s",
                      {k: len(v) for k, v in split_indices.items()})
 
-    # Close DuckDB connection — all data is now in pandas/numpy
+    # Close DuckDB connection — all data is now in cuDF (GPU) or pandas (CPU)
     con.close()
 
     return {
@@ -404,23 +443,41 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
     # Capture feature column names before merge (needed for FeatureColumnSpec)
     _feature_col_names = list(features.columns)
 
-    # Use DuckDB to concatenate columns without a full pandas copy
-    import duckdb as _ddb
-    import pyarrow as pa
-    _con = _ddb.connect()
-    _feat_arrow = pa.Table.from_pandas(features, preserve_index=False)
-    _con.register("_feat", _feat_arrow)
-    if labels is not None and len(labels.columns) > 0:
-        _lbl_arrow = pa.Table.from_pandas(labels, preserve_index=False)
-        _con.register("_lbl", _lbl_arrow)
-        _feat_cols = ", ".join(f'_feat."{c}"' for c in features.columns)
-        _lbl_cols = ", ".join(f'_lbl."{c}"' for c in labels.columns)
-        df = _con.execute(
-            f"SELECT {_feat_cols}, {_lbl_cols} FROM _feat POSITIONAL JOIN _lbl"
-        ).df()
+    # Detect if we are working with cuDF DataFrames
+    _is_cudf_df = False
+    try:
+        import cudf as _cudf_merge
+        _is_cudf_df = isinstance(features, _cudf_merge.DataFrame)
+    except ImportError:
+        pass
+
+    if _is_cudf_df:
+        # cuDF path: column-concatenate on GPU (zero-copy concat)
+        if labels is not None and len(labels.columns) > 0:
+            df = _cudf_merge.concat([features.reset_index(drop=True),
+                                     labels.reset_index(drop=True)], axis=1)
+        else:
+            df = features
+        logger.info("Merged features+labels via cuDF: %d rows, %d columns",
+                     len(df), len(df.columns))
     else:
-        df = _con.execute("SELECT * FROM _feat").df()
-    _con.close()
+        # CPU path: DuckDB POSITIONAL JOIN (avoids full pandas copy)
+        import duckdb as _ddb
+        import pyarrow as pa
+        _con = _ddb.connect()
+        _feat_arrow = pa.Table.from_pandas(features, preserve_index=False)
+        _con.register("_feat", _feat_arrow)
+        if labels is not None and len(labels.columns) > 0:
+            _lbl_arrow = pa.Table.from_pandas(labels, preserve_index=False)
+            _con.register("_lbl", _lbl_arrow)
+            _feat_cols = ", ".join(f'_feat."{c}"' for c in features.columns)
+            _lbl_cols = ", ".join(f'_lbl."{c}"' for c in labels.columns)
+            df = _con.execute(
+                f"SELECT {_feat_cols}, {_lbl_cols} FROM _feat POSITIONAL JOIN _lbl"
+            ).df()
+        else:
+            df = _con.execute("SELECT * FROM _feat").df()
+        _con.close()
     # Release original DataFrames to free memory
     del features
 
@@ -458,7 +515,11 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
                 }
 
     # -- Split into train/val --
-    use_gpu_loading = hp.get("use_gpu_loading", False) and int(os.environ.get("SM_NUM_GPUS", "0")) > 0
+    # Auto-enable GPU loading when the merged DataFrame is already on GPU (cuDF)
+    use_gpu_loading = _is_cudf_df or (
+        hp.get("use_gpu_loading", False)
+        and int(os.environ.get("SM_NUM_GPUS", "0")) > 0
+    )
 
     if split_indices:
         train_idx = split_indices.get("train", [])
