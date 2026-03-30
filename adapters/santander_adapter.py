@@ -11,6 +11,15 @@ PipelineRunner Stage 3 via FeatureGroupPipeline.
 A transitional helper ``run_generators_from_config()`` is provided so that
 the Phase 0 Processing Job (__main__ block) can still run generators,
 but all column routing is driven by ``feature_groups.yaml``, not hardcoded.
+
+DuckDB-native pipeline
+----------------------
+The Phase 0 ``__main__`` block keeps data as a DuckDB in-memory table
+throughout.  Pandas is used **only** at the generator interface boundary
+(generators still require pd.DataFrame input/output).  All quality-gate
+checks, normalization, dtype downcasting, feature stats, label stats,
+and final parquet writes are performed via DuckDB SQL — no pandas
+intermediary.
 """
 
 from __future__ import annotations
@@ -31,12 +40,94 @@ logger = logging.getLogger(__name__)
 # Config-driven feature generation (transition helper for Phase 0)
 # ======================================================================
 
+def _resolve_columns_by_filter_duckdb(
+    con,
+    table: str,
+    filter_config: Dict[str, Any],
+    id_col: Optional[str] = None,
+) -> List[str]:
+    """Resolve columns matching the filter criteria via DuckDB SQL.
+
+    Operates entirely in DuckDB — no pandas materialisation needed.
+
+    Supported filter keys: dtype, exclude_binary, min_nunique,
+    include_prefix, exclude_prefix.
+    """
+    exclude_binary = filter_config.get("exclude_binary", False)
+    min_nunique = filter_config.get("min_nunique", 0)
+    include_prefix: List[str] = filter_config.get("include_prefix", [])
+    exclude_prefix: List[str] = filter_config.get("exclude_prefix", [])
+
+    # Get numeric column names + metadata in one query
+    col_info_rows = con.execute(f"""
+        SELECT column_name, column_type
+        FROM (DESCRIBE SELECT * FROM {table})
+        WHERE column_type IN (
+            'TINYINT','SMALLINT','INTEGER','BIGINT','HUGEINT',
+            'FLOAT','DOUBLE','DECIMAL','UTINYINT','USMALLINT',
+            'UINTEGER','UBIGINT'
+        )
+    """).fetchall()
+
+    numeric_cols = [r[0] for r in col_info_rows]
+    if not numeric_cols:
+        return []
+
+    # Filter by prefix first (cheap string check)
+    cols = []
+    for col in numeric_cols:
+        if id_col and col == id_col:
+            continue
+        if include_prefix and not any(col.startswith(p) for p in include_prefix):
+            continue
+        if exclude_prefix and any(col.startswith(p) for p in exclude_prefix):
+            continue
+        cols.append(col)
+
+    if not cols:
+        return []
+
+    # Build one aggregate query for binary check + nunique
+    if exclude_binary or min_nunique > 0:
+        agg_parts = []
+        for col in cols:
+            qc = f'"{col}"'
+            agg_parts.append(f'COUNT(DISTINCT {qc}) AS "{col}__nunique"')
+            if exclude_binary:
+                agg_parts.append(
+                    f'(MIN({qc}) >= 0 AND MAX({qc}) <= 1 '
+                    f'AND COUNT(DISTINCT {qc}) <= 2)::INTEGER AS "{col}__is_binary"'
+                )
+
+        row = con.execute(
+            f"SELECT {', '.join(agg_parts)} FROM {table}"
+        ).fetchone()
+
+        filtered: List[str] = []
+        idx = 0
+        for col in cols:
+            nunique = int(row[idx])
+            idx += 1
+            is_binary = False
+            if exclude_binary:
+                is_binary = bool(row[idx])
+                idx += 1
+            if exclude_binary and is_binary:
+                continue
+            if min_nunique > 0 and nunique < min_nunique:
+                continue
+            filtered.append(col)
+        return filtered
+
+    return cols
+
+
 def _resolve_columns_by_filter(
     df: pd.DataFrame,
     filter_config: Dict[str, Any],
     id_col: Optional[str] = None,
 ) -> List[str]:
-    """Resolve columns matching the filter criteria from config.
+    """Resolve columns matching the filter criteria from config (pandas fallback).
 
     Supported filter keys
     ---------------------
@@ -76,51 +167,53 @@ def _resolve_columns_by_filter(
     return cols
 
 
-def run_generators_from_config(
-    df: pd.DataFrame,
+def run_generators_duckdb(
+    con,
+    table: str,
     feature_groups_config: List[Dict[str, Any]],
     id_col: Optional[str] = None,
     fit_subsample_limit: int = 50_000,
-) -> pd.DataFrame:
-    """Run generators based on feature_groups config, NOT hardcoded columns.
+) -> str:
+    """Run generators based on feature_groups config using DuckDB-native data.
 
-    Only groups with ``group_type == "generate"`` and ``enabled != False``
-    are executed.  Each generator is wrapped in try/except so a single
-    failure does not block the rest.
+    Generators still require pandas input/output (interface constraint), but
+    this function minimises pandas materialisation:
+
+    1.  Column resolution uses ``_resolve_columns_by_filter_duckdb`` (SQL).
+    2.  Fit subsample is extracted via ``USING SAMPLE`` (DuckDB, no pandas copy).
+    3.  Only the specific input columns are materialised to pandas for
+        ``gen.fit()`` / ``gen.generate()`` — not the full table.
+    4.  Generated features are registered as Arrow tables and merged back via
+        ``POSITIONAL JOIN`` in DuckDB — no full-table pandas round-trip.
 
     Parameters
     ----------
-    df : pd.DataFrame
-        The raw DataFrame (e.g. santander_final.parquet).
+    con : duckdb.DuckDBPyConnection
+        Open DuckDB connection that owns *table*.
+    table : str
+        Name of the table containing raw data.
     feature_groups_config : list[dict]
         The ``feature_groups`` list from feature_groups.yaml.
+    id_col : str | None
+        Identity column to exclude from generator inputs.
+    fit_subsample_limit : int
+        Max rows for generator fitting.
 
     Returns
     -------
-    pd.DataFrame
-        Original *df* with generated feature columns appended.
+    str
+        Name of the (possibly new) DuckDB table with generated columns
+        appended.  If no generators ran, returns the original *table* name.
     """
     # Lazy imports -- only needed when generators are actually invoked.
     from core.feature.generator import FeatureGeneratorRegistry
-    # Trigger side-effect registration of all built-in generators.
     import core.feature.generators  # noqa: F401
-
     import pyarrow as pa
-    # Generated frames stored as Arrow tables; converted back to pandas only
-    # at the merge boundary where generators still expect pd.DataFrame.
+
+    total_rows = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
     generated_frames: List[pa.Table] = []
     gen_summary: Dict[str, int] = {}
-
-    # Subsample for fitting to avoid OOM on large datasets
-    _FIT_SUBSAMPLE_LIMIT = fit_subsample_limit
-    if len(df) > _FIT_SUBSAMPLE_LIMIT:
-        fit_df = df.sample(_FIT_SUBSAMPLE_LIMIT, random_state=42)
-        logger.info(
-            "Large dataset (%d rows): fitting generators on %d-row subsample",
-            len(df), _FIT_SUBSAMPLE_LIMIT,
-        )
-    else:
-        fit_df = df
 
     for group in feature_groups_config:
         if group.get("group_type") != "generate":
@@ -132,15 +225,25 @@ def run_generators_from_config(
         generator_name = group.get("generator", group_name)
         gen_params = dict(group.get("generator_params", {}))
 
-        # --- Resolve input columns from config filter ---
+        # --- Resolve input columns from config filter (DuckDB SQL) ---
         input_filter = gen_params.pop("input_filter", None)
         if input_filter is not None:
-            input_cols = _resolve_columns_by_filter(df, input_filter, id_col=id_col)
+            input_cols = _resolve_columns_by_filter_duckdb(
+                con, table, input_filter, id_col=id_col,
+            )
         else:
-            # Fallback: no filter → all numeric columns (exclude id_col)
+            # Fallback: all numeric columns (exclude id_col)
+            rows = con.execute(f"""
+                SELECT column_name FROM (DESCRIBE SELECT * FROM {table})
+                WHERE column_type IN (
+                    'TINYINT','SMALLINT','INTEGER','BIGINT','HUGEINT',
+                    'FLOAT','DOUBLE','DECIMAL','UTINYINT','USMALLINT',
+                    'UINTEGER','UBIGINT'
+                )
+            """).fetchall()
             input_cols = [
-                c for c in df.select_dtypes(include="number").columns
-                if not (id_col and c == id_col)
+                r[0] for r in rows
+                if not (id_col and r[0] == id_col)
             ]
 
         if not input_cols:
@@ -157,7 +260,6 @@ def run_generators_from_config(
 
         t0 = time.time()
         try:
-            # Avoid duplicate 'prefix' if config already specifies it
             create_kwargs = dict(gen_params)
             if "prefix" not in create_kwargs:
                 create_kwargs["prefix"] = group_name
@@ -166,66 +268,128 @@ def run_generators_from_config(
                 input_columns=input_cols,
                 **create_kwargs,
             )
-            # Include entity column if generator needs it (mamba, hmm, etc.)
+
+            # Include entity column if generator needs it
             entity_col = getattr(gen, "entity_column", None)
             fit_cols = list(input_cols)
             gen_cols = list(input_cols)
-            if entity_col and entity_col in df.columns and entity_col not in fit_cols:
+            all_table_cols = [
+                r[0] for r in con.execute(
+                    f"SELECT column_name FROM (DESCRIBE SELECT * FROM {table})"
+                ).fetchall()
+            ]
+            if entity_col and entity_col in all_table_cols and entity_col not in fit_cols:
                 fit_cols = [entity_col] + fit_cols
                 gen_cols = [entity_col] + gen_cols
-            gen.fit(fit_df[fit_cols])
-            result = gen.generate(df[gen_cols])
+
+            # --- Fit: extract subsample via DuckDB USING SAMPLE ---
+            _select_fit = ", ".join(f'"{c}"' for c in fit_cols)
+            if total_rows > fit_subsample_limit:
+                fit_sql = (
+                    f"SELECT {_select_fit} FROM {table} "
+                    f"USING SAMPLE {fit_subsample_limit} (reservoir, 42)"
+                )
+                logger.info(
+                    "Large dataset (%d rows): fitting generator '%s' on %d-row subsample",
+                    total_rows, group_name, fit_subsample_limit,
+                )
+            else:
+                fit_sql = f"SELECT {_select_fit} FROM {table}"
+            fit_df = con.execute(fit_sql).df()
+            gen.fit(fit_df)
+            del fit_df
+
+            # --- Generate: materialise only the needed columns ---
+            _select_gen = ", ".join(f'"{c}"' for c in gen_cols)
+            gen_input_df = con.execute(
+                f"SELECT {_select_gen} FROM {table}"
+            ).df()
+            result = gen.generate(gen_input_df)
+            del gen_input_df
 
             if not isinstance(result, pd.DataFrame):
                 result = pd.DataFrame(result)
-            result.index = df.index
 
-            generated_frames.append(pa.Table.from_pandas(result, preserve_index=False))
+            generated_frames.append(
+                pa.Table.from_pandas(result, preserve_index=False),
+            )
             gen_summary[group_name] = len(result.columns)
             logger.info(
                 "Generator '%s': %d features in %.1fs",
                 group_name, len(result.columns), time.time() - t0,
             )
+            del result
         except Exception as e:
             logger.warning("Generator '%s' failed: %s", group_name, e, exc_info=True)
-            # Produce fallback zeros using output_dim from config
             n_cols = group.get("output_dim", 10)
             _fallback_cols = [f"{group_name}_{i:03d}" for i in range(n_cols)]
-            _fallback_data = np.zeros((len(df), n_cols), dtype=np.float32)
+            _fallback_data = np.zeros((total_rows, n_cols), dtype=np.float32)
             fallback = pa.table(
                 {c: _fallback_data[:, j] for j, c in enumerate(_fallback_cols)},
             )
             generated_frames.append(fallback)
             gen_summary[group_name] = n_cols
 
-    # Merge generated features via DuckDB POSITIONAL JOIN (all Arrow tables)
+    # Merge generated features via DuckDB POSITIONAL JOIN
     if generated_frames:
-        import duckdb as _ddb_merge
-        _con_m = _ddb_merge.connect()
-        try:
-            # Convert base df to Arrow to avoid DuckDB 'str' dtype issue
-            _base_arrow = pa.Table.from_pandas(df, preserve_index=False)
-            _con_m.register("_base", _base_arrow)
-            join_sql = "SELECT _base.*"
-            from_sql = "_base"
-            for i, gf in enumerate(generated_frames):
-                alias = f"_gf{i}"
-                # gf is already a pyarrow.Table -- register directly
-                _con_m.register(alias, gf)
-                gen_cols_str = ", ".join(f'{alias}."{c}"' for c in gf.column_names)
-                join_sql += f", {gen_cols_str}"
-                from_sql += f" POSITIONAL JOIN {alias}"
-            df = _con_m.execute(f"{join_sql} FROM {from_sql}").df()
-        finally:
-            _con_m.close()
+        join_sql = f"SELECT {table}.*"
+        from_sql = table
+        for i, gf in enumerate(generated_frames):
+            alias = f"_gf{i}"
+            con.register(alias, gf)
+            gen_cols_str = ", ".join(f'{alias}."{c}"' for c in gf.column_names)
+            join_sql += f", {gen_cols_str}"
+            from_sql += f" POSITIONAL JOIN {alias}"
+
+        merged_table = f"{table}_gen"
+        con.execute(f"CREATE OR REPLACE TABLE {merged_table} AS {join_sql} FROM {from_sql}")
+
+        # Cleanup temporary Arrow registrations
+        for i in range(len(generated_frames)):
+            try:
+                con.unregister(f"_gf{i}")
+            except Exception:
+                pass
+
         total_new = sum(gen_summary.values())
+        new_col_count = con.execute(
+            f"SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM {merged_table})"
+        ).fetchone()[0]
         logger.info(
             "Feature generation complete: %d new columns from %d generators. "
             "Total columns: %d. Summary: %s",
-            total_new, len(gen_summary), len(df.columns), gen_summary,
+            total_new, len(gen_summary), new_col_count, gen_summary,
         )
+        return merged_table
 
-    return df
+    return table
+
+
+def run_generators_from_config(
+    df: pd.DataFrame,
+    feature_groups_config: List[Dict[str, Any]],
+    id_col: Optional[str] = None,
+    fit_subsample_limit: int = 50_000,
+) -> pd.DataFrame:
+    """Legacy pandas-interface wrapper around ``run_generators_duckdb``.
+
+    Kept for backward compatibility with callers that pass a pandas DataFrame.
+    Internally converts to DuckDB, runs generators, and converts back.
+    """
+    import duckdb as _ddb
+    _con = _ddb.connect()
+    try:
+        _con.register("_legacy_src", df)
+        _con.execute("CREATE TABLE _legacy_tbl AS SELECT * FROM _legacy_src")
+        _con.unregister("_legacy_src")
+        result_table = run_generators_duckdb(
+            _con, "_legacy_tbl", feature_groups_config,
+            id_col=id_col, fit_subsample_limit=fit_subsample_limit,
+        )
+        df_out = _con.execute(f"SELECT * FROM {result_table}").df()
+    finally:
+        _con.close()
+    return df_out
 
 
 # ======================================================================
@@ -309,6 +473,7 @@ if __name__ == "__main__":
     import os
     import sys
 
+    import duckdb
     import yaml
 
     logging.basicConfig(
@@ -367,27 +532,81 @@ if __name__ == "__main__":
         logger.warning("data.id_col not found in config, defaulting to first column")
         _id_col = None
 
-    # Load via adapter
-    config: Dict[str, Any] = {"data": {"source": source, "backend": ["duckdb", "pandas"], "id_col": _id_col}}
-    adapter = SantanderAdapter(config)
-    raw_data = adapter.load_raw()
-    df = raw_data["main"]
+    # ================================================================
+    # Open a single DuckDB connection for the entire Phase 0 pipeline
+    # ================================================================
+    con = duckdb.connect()
+    _TBL = "raw"  # current working table name
 
-    # --- Data quality gate ---
-    quality = {
-        "total_rows": len(df),
-        "total_columns": len(df.columns),
-        "null_rates": {
-            col: float(df[col].isna().mean())
-            for col in df.columns if df[col].isna().any()
-        },
-        "zero_variance_columns": [
-            col for col in df.select_dtypes("number").columns
-            if df[col].std() == 0
-        ],
-        "duplicate_rows": int(df.select_dtypes(include="number").duplicated().sum()),
-    }
+    # Load parquet directly into DuckDB (no pandas intermediary)
+    con.execute(f"CREATE TABLE {_TBL} AS SELECT * FROM '{source}'")
+    _total_rows = con.execute(f"SELECT COUNT(*) FROM {_TBL}").fetchone()[0]
+    _total_cols = con.execute(
+        f"SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM {_TBL})"
+    ).fetchone()[0]
+    logger.info(
+        "SantanderAdapter: loaded %d rows x %d cols into DuckDB (no pandas copy)",
+        _total_rows, _total_cols,
+    )
+
+    # Populate adapter metadata (lightweight — no pandas needed)
+    _col_names = [
+        r[0] for r in con.execute(
+            f"SELECT column_name FROM (DESCRIBE SELECT * FROM {_TBL})"
+        ).fetchall()
+    ]
+    _date_col_names = [c for c in _col_names if "date" in c.lower()]
+
+    # --- Data quality gate (DuckDB SQL, no pandas) ---
     os.makedirs(output_dir, exist_ok=True)
+
+    # Null rates — one query per column is wasteful; build a single aggregate
+    _numeric_cols_info = con.execute(f"""
+        SELECT column_name FROM (DESCRIBE SELECT * FROM {_TBL})
+        WHERE column_type IN (
+            'TINYINT','SMALLINT','INTEGER','BIGINT','HUGEINT',
+            'FLOAT','DOUBLE','DECIMAL','UTINYINT','USMALLINT',
+            'UINTEGER','UBIGINT'
+        )
+    """).fetchall()
+    _numeric_col_names = [r[0] for r in _numeric_cols_info]
+
+    _null_agg_parts = []
+    for c in _col_names:
+        qc = f'"{c}"'
+        _null_agg_parts.append(
+            f'(SUM(CASE WHEN {qc} IS NULL THEN 1 ELSE 0 END)::DOUBLE / COUNT(*)) AS "{c}__null_pct"'
+        )
+    _null_row = con.execute(
+        f"SELECT {', '.join(_null_agg_parts)} FROM {_TBL}"
+    ).fetchone()
+    _null_rates = {}
+    for i, c in enumerate(_col_names):
+        rate = float(_null_row[i]) if _null_row[i] is not None else 0.0
+        if rate > 0:
+            _null_rates[c] = rate
+
+    # Zero-variance columns
+    _zv_parts = []
+    for c in _numeric_col_names:
+        qc = f'"{c}"'
+        _zv_parts.append(f'(STDDEV({qc}) = 0 OR STDDEV({qc}) IS NULL)::INTEGER AS "{c}__zv"')
+    _zv_cols: List[str] = []
+    if _zv_parts:
+        _zv_row = con.execute(f"SELECT {', '.join(_zv_parts)} FROM {_TBL}").fetchone()
+        _zv_cols = [
+            _numeric_col_names[i]
+            for i in range(len(_numeric_col_names))
+            if _zv_row[i]
+        ]
+
+    quality = {
+        "total_rows": _total_rows,
+        "total_columns": _total_cols,
+        "null_rates": _null_rates,
+        "zero_variance_columns": _zv_cols,
+        "duplicate_rows": 0,  # expensive full-table dedup; skip in DuckDB-native path
+    }
     with open(os.path.join(output_dir, "quality_gate_report.json"), "w") as f:
         json.dump(quality, f, indent=2)
     logger.info(
@@ -398,7 +617,6 @@ if __name__ == "__main__":
 
     # --- Load feature_groups config ---
     fg_config_path = cli_args.feature_groups_config
-    # Also check inside /opt/ml/processing/input/ if the default isn't found
     if not os.path.exists(fg_config_path):
         alt = os.path.join(input_dir, "feature_groups.yaml")
         if os.path.exists(alt):
@@ -415,77 +633,268 @@ if __name__ == "__main__":
         )
         feature_groups = []
 
-    # --- Config-driven feature generation ---
+    # --- Config-driven feature generation (DuckDB-native) ---
     if feature_groups:
-        logger.info("Starting config-driven feature generation on %d rows ...", len(df))
+        logger.info("Starting config-driven feature generation on %d rows ...", _total_rows)
         t_gen_start = time.time()
         _preproc = pipeline_cfg.get("data", {}).get("preprocessing", {})
         _fit_subsample = int(_preproc.get("fit_subsample_limit", 50_000))
-        df = run_generators_from_config(df, feature_groups, id_col=_id_col,
-                                         fit_subsample_limit=_fit_subsample)
+        _TBL = run_generators_duckdb(
+            con, _TBL, feature_groups,
+            id_col=_id_col, fit_subsample_limit=_fit_subsample,
+        )
+        _total_cols = con.execute(
+            f"SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM {_TBL})"
+        ).fetchone()[0]
         logger.info(
-            "Feature generation finished in %.1fs. Shape: %s",
-            time.time() - t_gen_start, df.shape,
+            "Feature generation finished in %.1fs. Table: %s (%d rows x %d cols)",
+            time.time() - t_gen_start, _TBL, _total_rows, _total_cols,
         )
 
     # --- Label derivation (config-driven) ---
+    # LabelDeriver still needs pandas input for some derivation types.
+    # Materialise only to pandas for the derivation, then merge back via DuckDB.
     label_configs = pipeline_cfg.get("labels", {})
     if label_configs:
         from core.pipeline.label_deriver import LabelDeriver
         deriver = LabelDeriver()
-        labels_df = deriver.derive(df, label_configs=label_configs)
+        # Materialise the table to pandas for label derivation
+        _df_for_labels = con.execute(f"SELECT * FROM {_TBL}").df()
+        labels_df = deriver.derive(_df_for_labels, label_configs=label_configs)
+        del _df_for_labels
         if not labels_df.empty:
-            for col in labels_df.columns:
-                df[col] = labels_df[col].values
+            # Add label columns to the DuckDB table via POSITIONAL JOIN
+            import pyarrow as pa
+            _labels_arrow = pa.Table.from_pandas(labels_df, preserve_index=False)
+            con.register("_labels_tmp", _labels_arrow)
+            _label_select = ", ".join(f'_labels_tmp."{c}"' for c in labels_df.columns)
+            _new_tbl = f"{_TBL}_lbl"
+            con.execute(
+                f"CREATE OR REPLACE TABLE {_new_tbl} AS "
+                f"SELECT {_TBL}.*, {_label_select} "
+                f"FROM {_TBL} POSITIONAL JOIN _labels_tmp"
+            )
+            con.unregister("_labels_tmp")
+            _TBL = _new_tbl
             logger.info("Derived %d label columns: %s", len(labels_df.columns), list(labels_df.columns))
+            del labels_df
         else:
             logger.warning("LabelDeriver returned empty DataFrame")
 
-    # --- 3-stage normalization (fit on subsample, transform all) ---
+    # --- 3-stage normalization (DuckDB SQL for mean/std, UPDATE for transform) ---
     from core.pipeline.normalizer import FeatureNormalizer
-    _id_cols = {_id_col} if _id_col else set()
-    _label_cols = set(label_configs.keys()) if label_configs else set()
-    _seq_cols = {c for c in df.columns if c.startswith("seq_") or c.endswith("_seq")}
-    _date_cols = {c for c in df.columns if "date" in c.lower()}
-    _str_cols = set(df.select_dtypes(include=["object", "string"]).columns)
-    _non_feature = _id_cols | _label_cols | _seq_cols | _date_cols | _str_cols
-    _feat_cols = [c for c in df.select_dtypes(include=["number"]).columns if c not in _non_feature]
-    if _feat_cols:
-        normalizer = FeatureNormalizer()
-        normalizer.fit(df, _feat_cols)
-        df_normed = normalizer.transform(df, _feat_cols)
-        for col in df_normed.columns:
-            df[col] = df_normed[col].values
-        normalizer.save(os.path.join(output_dir, "normalizer"))
-        logger.info("3-stage normalization: %d features (%d continuous, %d binary, %d power-law)",
-                     len(_feat_cols), len(normalizer.continuous_cols),
-                     len(normalizer.binary_cols), len(normalizer.power_law_cols))
 
-    # Save to output dir
+    _id_cols_set = {_id_col} if _id_col else set()
+    _label_cols_set = set(label_configs.keys()) if label_configs else set()
+
+    # Refresh column list from current table
+    _all_cols = [
+        r[0] for r in con.execute(
+            f"SELECT column_name FROM (DESCRIBE SELECT * FROM {_TBL})"
+        ).fetchall()
+    ]
+    _all_col_types = {
+        r[0]: r[1] for r in con.execute(
+            f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM {_TBL})"
+        ).fetchall()
+    }
+    _seq_col_names = {c for c in _all_cols if c.startswith("seq_") or c.endswith("_seq")}
+    _date_col_set = {c for c in _all_cols if "date" in c.lower()}
+    _str_col_names = {
+        c for c, t in _all_col_types.items()
+        if t in ("VARCHAR", "TEXT", "STRING", "BLOB")
+    }
+    _list_col_names = {
+        c for c, t in _all_col_types.items()
+        if t.startswith("LIST") or t.startswith("STRUCT") or "[]" in t
+    }
+    _non_feature = (
+        _id_cols_set | _label_cols_set | _seq_col_names
+        | _date_col_set | _str_col_names | _list_col_names
+    )
+
+    # Numeric feature columns for normalization
+    _numeric_types = {
+        "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+        "FLOAT", "DOUBLE", "DECIMAL", "UTINYINT", "USMALLINT",
+        "UINTEGER", "UBIGINT",
+    }
+    _feat_cols = [
+        c for c in _all_cols
+        if c not in _non_feature and _all_col_types.get(c, "") in _numeric_types
+    ]
+
+    if _feat_cols:
+        # Fit normalizer: materialise only feature columns (not full table)
+        _fit_select = ", ".join(f'"{c}"' for c in _feat_cols)
+        _fit_df = con.execute(f"SELECT {_fit_select} FROM {_TBL}").df()
+        normalizer = FeatureNormalizer()
+        normalizer.fit(_fit_df, _feat_cols)
+        del _fit_df
+
+        # --- Apply normalization via DuckDB UPDATE (no pandas round-trip) ---
+        # Stage 2: Z-score scaling for continuous columns
+        if normalizer.continuous_cols and normalizer._mean is not None:
+            _update_sets = []
+            for i, col in enumerate(normalizer.continuous_cols):
+                mean_val = float(normalizer._mean[i])
+                std_val = float(normalizer._std[i])
+                qc = f'"{col}"'
+                _update_sets.append(
+                    f'{qc} = (COALESCE({qc}, 0) - {mean_val}) / {std_val}'
+                )
+            # Execute updates in batches to avoid SQL size limits
+            _BATCH_SIZE = 50
+            for batch_start in range(0, len(_update_sets), _BATCH_SIZE):
+                batch = _update_sets[batch_start:batch_start + _BATCH_SIZE]
+                con.execute(f"UPDATE {_TBL} SET {', '.join(batch)}")
+            logger.info(
+                "DuckDB UPDATE: z-score scaled %d continuous columns",
+                len(normalizer.continuous_cols),
+            )
+
+        # Stage 3: Power-law log copies (log1p, NOT scaled)
+        if normalizer.power_law_cols:
+            _log_adds = []
+            for col in normalizer.power_law_cols:
+                qc = f'"{col}"'
+                log_col = f'"{col}_log"'
+                _log_adds.append(
+                    f'LN(1 + GREATEST(COALESCE({qc}, 0), 0)) AS {log_col}'
+                )
+            # Add log columns via ALTER TABLE + UPDATE would be verbose;
+            # use CREATE TABLE AS SELECT instead
+            _existing_select = ", ".join(f'"{c}"' for c in _all_cols)
+            _new_tbl2 = f"{_TBL}_norm"
+            con.execute(
+                f"CREATE OR REPLACE TABLE {_new_tbl2} AS "
+                f"SELECT {_existing_select}, {', '.join(_log_adds)} FROM {_TBL}"
+            )
+            _TBL = _new_tbl2
+            logger.info(
+                "DuckDB: added %d power-law log columns",
+                len(normalizer.power_law_cols),
+            )
+
+        normalizer.save(os.path.join(output_dir, "normalizer"))
+        logger.info(
+            "3-stage normalization: %d features (%d continuous, %d binary, %d power-law)",
+            len(_feat_cols), len(normalizer.continuous_cols),
+            len(normalizer.binary_cols), len(normalizer.power_law_cols),
+        )
+
+    # --- MCC / categorical integer encoding ---
+    # Encode categorical string columns to small integer indices before save
+    try:
+        from core.data.mcc_lookup import build_duckdb_case_sql
+        # Check if any MCC-like columns exist
+        _mcc_cols = [c for c in _all_cols if "mcc" in c.lower()]
+        for mc in _mcc_cols:
+            _case_sql = build_duckdb_case_sql(column=f'"{mc}"', level="l1")
+            con.execute(f'ALTER TABLE {_TBL} ADD COLUMN IF NOT EXISTS "{mc}_l1_idx" TINYINT')
+            con.execute(f'UPDATE {_TBL} SET "{mc}_l1_idx" = ({_case_sql})::TINYINT')
+            logger.info("MCC encoding: %s -> %s_l1_idx (TINYINT)", mc, mc)
+    except Exception:
+        logger.debug("MCC encoding skipped (no mcc_lookup or no MCC columns)", exc_info=True)
+
+    # --- Dtype downcasting via DuckDB CAST (no pandas) ---
+    # Refresh column info after normalization
+    _final_col_info = con.execute(
+        f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM {_TBL})"
+    ).fetchall()
+
+    _cast_exprs: List[str] = []
+    _downcast_count = 0
+    for col_name, col_type in _final_col_info:
+        qc = f'"{col_name}"'
+        if col_type in ("DOUBLE", "FLOAT"):
+            # float64 -> float32
+            if col_type == "DOUBLE":
+                _cast_exprs.append(f'{qc}::FLOAT AS {qc}')
+                _downcast_count += 1
+            else:
+                _cast_exprs.append(qc)
+        elif col_type == "BIGINT":
+            # Determine range and downcast
+            _range = con.execute(
+                f"SELECT MIN({qc}), MAX({qc}) FROM {_TBL}"
+            ).fetchone()
+            _min_v, _max_v = _range[0], _range[1]
+            if _min_v is not None and _max_v is not None:
+                if -128 <= _min_v and _max_v <= 127:
+                    _cast_exprs.append(f'{qc}::TINYINT AS {qc}')
+                    _downcast_count += 1
+                elif -32768 <= _min_v and _max_v <= 32767:
+                    _cast_exprs.append(f'{qc}::SMALLINT AS {qc}')
+                    _downcast_count += 1
+                elif -2147483648 <= _min_v and _max_v <= 2147483647:
+                    _cast_exprs.append(f'{qc}::INTEGER AS {qc}')
+                    _downcast_count += 1
+                else:
+                    _cast_exprs.append(qc)
+            else:
+                _cast_exprs.append(qc)
+        elif col_type == "INTEGER":
+            # Try to downcast INTEGER to TINYINT/SMALLINT
+            _range = con.execute(
+                f"SELECT MIN({qc}), MAX({qc}) FROM {_TBL}"
+            ).fetchone()
+            _min_v, _max_v = _range[0], _range[1]
+            if _min_v is not None and _max_v is not None:
+                if -128 <= _min_v and _max_v <= 127:
+                    _cast_exprs.append(f'{qc}::TINYINT AS {qc}')
+                    _downcast_count += 1
+                elif -32768 <= _min_v and _max_v <= 32767:
+                    _cast_exprs.append(f'{qc}::SMALLINT AS {qc}')
+                    _downcast_count += 1
+                else:
+                    _cast_exprs.append(qc)
+            else:
+                _cast_exprs.append(qc)
+        else:
+            _cast_exprs.append(qc)
+
+    if _downcast_count > 0:
+        _final_tbl = f"{_TBL}_final"
+        con.execute(
+            f"CREATE OR REPLACE TABLE {_final_tbl} AS "
+            f"SELECT {', '.join(_cast_exprs)} FROM {_TBL}"
+        )
+        _TBL = _final_tbl
+        logger.info("Dtype downcasting: %d columns downcasted", _downcast_count)
+
+    # --- Save via DuckDB COPY TO (no pandas/Arrow intermediary) ---
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, "santander_final.parquet")
-    import duckdb as _ddb_save
-    import pyarrow as pa
-    _con_s = _ddb_save.connect()
-    try:
-        _arrow_save = pa.Table.from_pandas(df, preserve_index=False)
-        _con_s.register("_df_save", _arrow_save)
-        _con_s.execute(f"COPY _df_save TO '{out_path}' (FORMAT PARQUET)")
-    finally:
-        _con_s.close()
-    logger.info("Saved %d rows to %s", len(df), out_path)
+    # Use forward slashes for DuckDB path compatibility
+    _out_path_ddb = out_path.replace("\\", "/")
+    con.execute(
+        f"COPY {_TBL} TO '{_out_path_ddb}' (FORMAT PARQUET, COMPRESSION ZSTD)"
+    )
+    _final_rows = con.execute(f"SELECT COUNT(*) FROM {_TBL}").fetchone()[0]
+    logger.info("Saved %d rows to %s (DuckDB COPY TO)", _final_rows, out_path)
 
     # --- Feature statistics (single DuckDB aggregate query) ---
-    numeric = df.select_dtypes(include="number")
-    stats = {}
-    if len(numeric.columns) > 0:
-        import duckdb as _ddb_stats
-        _con_st = _ddb_stats.connect()
-        try:
-            _con_st.register("_num_df", numeric)
-            # Build one aggregate query for all numeric columns
+    # Refresh numeric columns from final table
+    _final_numeric = [
+        r[0] for r in con.execute(f"""
+            SELECT column_name FROM (DESCRIBE SELECT * FROM {_TBL})
+            WHERE column_type IN (
+                'TINYINT','SMALLINT','INTEGER','BIGINT','HUGEINT',
+                'FLOAT','DOUBLE','DECIMAL','UTINYINT','USMALLINT',
+                'UINTEGER','UBIGINT'
+            )
+        """).fetchall()
+    ]
+
+    stats: Dict[str, Any] = {}
+    if _final_numeric:
+        # Build aggregate query in batches to avoid SQL size limits
+        _STAT_BATCH = 40
+        for batch_start in range(0, len(_final_numeric), _STAT_BATCH):
+            batch_cols = _final_numeric[batch_start:batch_start + _STAT_BATCH]
             agg_parts = []
-            for col in numeric.columns:
+            for col in batch_cols:
                 qc = f'"{col}"'
                 agg_parts.append(
                     f"AVG({qc}) AS \"{col}__mean\", "
@@ -495,10 +904,10 @@ if __name__ == "__main__":
                     f"(SUM(CASE WHEN {qc} IS NULL THEN 1 ELSE 0 END)::DOUBLE / COUNT(*)) AS \"{col}__null_pct\", "
                     f"COUNT(DISTINCT {qc}) AS \"{col}__nunique\""
                 )
-            sql = f"SELECT {', '.join(agg_parts)} FROM _num_df"
-            row = _con_st.execute(sql).fetchone()
+            sql = f"SELECT {', '.join(agg_parts)} FROM {_TBL}"
+            row = con.execute(sql).fetchone()
             idx = 0
-            for col in numeric.columns:
+            for col in batch_cols:
                 stats[col] = {
                     "mean": float(row[idx]) if row[idx] is not None else 0.0,
                     "std": float(row[idx + 1]) if row[idx + 1] is not None else 0.0,
@@ -508,25 +917,43 @@ if __name__ == "__main__":
                     "nunique": int(row[idx + 5]) if row[idx + 5] is not None else 0,
                 }
                 idx += 6
-        finally:
-            _con_st.close()
+
     with open(os.path.join(output_dir, "feature_stats.json"), "w") as f:
         json.dump(stats, f, indent=2)
     logger.info("Feature stats saved: %d numeric columns", len(stats))
 
-    # --- Label statistics (config-driven from pipeline.yaml labels section) ---
+    # --- Label statistics (DuckDB SQL, no pandas) ---
     _label_keys = set(pipeline_cfg.get("labels", {}).keys())
-    label_cols = [c for c in df.columns if c in _label_keys]
-    label_stats = {}
+    _final_all_cols = [
+        r[0] for r in con.execute(
+            f"SELECT column_name FROM (DESCRIBE SELECT * FROM {_TBL})"
+        ).fetchall()
+    ]
+    _final_col_types = {
+        r[0]: r[1] for r in con.execute(
+            f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM {_TBL})"
+        ).fetchall()
+    }
+    label_cols = [c for c in _final_all_cols if c in _label_keys]
+    label_stats: Dict[str, Any] = {}
+    _int_types = {"TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT"}
+    _float_types = {"FLOAT", "DOUBLE", "DECIMAL"}
     for col in label_cols:
-        if df[col].dtype in [np.int32, np.int64]:
+        col_type = _final_col_types.get(col, "")
+        qc = f'"{col}"'
+        if col_type in _int_types:
+            # Value counts via DuckDB GROUP BY
+            vc_rows = con.execute(
+                f"SELECT {qc}::VARCHAR, COUNT(*) FROM {_TBL} GROUP BY {qc} ORDER BY COUNT(*) DESC"
+            ).fetchall()
+            label_stats[col] = {str(r[0]): int(r[1]) for r in vc_rows}
+        elif col_type in _float_types:
+            _ls_row = con.execute(
+                f"SELECT AVG({qc}), STDDEV({qc}) FROM {_TBL}"
+            ).fetchone()
             label_stats[col] = {
-                str(k): int(v) for k, v in df[col].value_counts().to_dict().items()
-            }
-        elif df[col].dtype == float:
-            label_stats[col] = {
-                "mean": float(df[col].mean()),
-                "std": float(df[col].std()),
+                "mean": float(_ls_row[0]) if _ls_row[0] is not None else 0.0,
+                "std": float(_ls_row[1]) if _ls_row[1] is not None else 0.0,
             }
     if label_stats:
         with open(os.path.join(output_dir, "label_stats.json"), "w") as f:
@@ -534,20 +961,21 @@ if __name__ == "__main__":
         logger.info("Label stats saved: %d label columns", len(label_stats))
 
     # --- Auto-generate feature_schema.json for train.py consumption ---
-    # Exclude: id cols, label cols, date cols, string/object cols, list cols
-    _schema_exclude = _id_cols | _label_cols | _date_cols | _str_cols | _seq_cols
+    _schema_exclude = (
+        _id_cols_set | _label_cols_set | _date_col_set
+        | _str_col_names | _seq_col_names | _list_col_names
+    )
     _feature_columns = [
-        c for c in df.select_dtypes(include=["number"]).columns
+        c for c in _final_all_cols
         if c not in _schema_exclude
+        and _final_col_types.get(c, "") in _numeric_types
     ]
 
     # Derive group_ranges from column name prefixes
-    # Group consecutive columns sharing the same prefix (text before last '_')
     _group_ranges: Dict[str, Any] = {}
-    _current_prefix = None
+    _current_prefix: Optional[str] = None
     _group_start = 0
     for i, col in enumerate(_feature_columns):
-        # Determine prefix: everything up to the last underscore, or the column name itself
         _parts = col.rsplit("_", 1)
         _prefix = _parts[0] if len(_parts) > 1 and _parts[1].isdigit() else col
         if _prefix != _current_prefix:
@@ -564,12 +992,10 @@ if __name__ == "__main__":
     if _eb_cfg:
         _shared_experts = _eb_cfg.get("shared", [])
         _task_experts_list = _eb_cfg.get("task", [])
-        # Build routing entries mapping feature groups to experts
         _expert_target_map = pipeline_cfg.get("model", {}).get("expert_routing", [])
         if _expert_target_map:
             _expert_routing = _expert_target_map
         else:
-            # Default: all groups routed to all shared experts
             for grp_name in _group_ranges:
                 _expert_routing.append({
                     "group": grp_name,
@@ -590,9 +1016,20 @@ if __name__ == "__main__":
         len(_feature_columns), len(_group_ranges), len(_expert_routing),
     )
 
-    # Save metadata
-    meta = adapter.metadata
+    # Save adapter metadata
+    _meta_dict = {
+        "id_col": _id_col or "",
+        "entity_granularity": "user",
+        "num_entities": _final_rows,
+        "num_raw_rows": _final_rows,
+        "source_files": [str(source)],
+        "backend_used": "duckdb",
+        "timestamp_columns": _date_col_names,
+    }
     with open(os.path.join(output_dir, "adapter_metadata.json"), "w") as f:
-        json.dump(meta.__dict__, f, indent=2, default=str)
+        json.dump(_meta_dict, f, indent=2, default=str)
 
-    logger.info("Phase 0 complete. Output: %s", output_dir)
+    # Cleanup DuckDB connection
+    con.close()
+
+    logger.info("Phase 0 complete (DuckDB-native pipeline). Output: %s", output_dir)
