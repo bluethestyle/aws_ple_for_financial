@@ -63,17 +63,34 @@ FEATURE_SCENARIOS = {
 }
 
 # ============================================================
-# Phase 2: Expert Ablation (8 key scenarios, reduced from 16)
+# Phase 2: Expert Ablation (16 scenarios — full design)
 # ============================================================
+_ALL_EXPERTS = ["deepfm", "temporal_ensemble", "hgcn", "perslay", "causal", "lightgcn", "optimal_transport"]
+
+def _experts_without(*remove):
+    return json.dumps([e for e in _ALL_EXPERTS if e not in remove])
+
 EXPERT_SCENARIOS = {
+    # Bottom-up: deepfm + one expert
     "deepfm_only": {"shared_experts": '["deepfm"]'},
     "deepfm+temporal": {"shared_experts": '["deepfm","temporal_ensemble"]'},
+    "deepfm+hgcn": {"shared_experts": '["deepfm","hgcn"]'},
     "deepfm+perslay": {"shared_experts": '["deepfm","perslay"]'},
+    "deepfm+causal": {"shared_experts": '["deepfm","causal"]'},
     "deepfm+lightgcn": {"shared_experts": '["deepfm","lightgcn"]'},
-    "full_basket": {},  # all experts (same as full baseline)
-    "full-temporal": {"shared_experts": '["deepfm","hgcn","perslay","causal","lightgcn","optimal_transport"]'},
-    "full-perslay": {"shared_experts": '["deepfm","temporal_ensemble","hgcn","causal","lightgcn","optimal_transport"]'},
-    "full-lightgcn": {"shared_experts": '["deepfm","temporal_ensemble","hgcn","perslay","causal","optimal_transport"]'},
+    "deepfm+ot": {"shared_experts": '["deepfm","optimal_transport"]'},
+    # Full basket
+    "full_basket": {},
+    # Top-down: full minus one expert
+    "full-deepfm": {"shared_experts": _experts_without("deepfm")},
+    "full-temporal": {"shared_experts": _experts_without("temporal_ensemble")},
+    "full-hgcn": {"shared_experts": _experts_without("hgcn")},
+    "full-perslay": {"shared_experts": _experts_without("perslay")},
+    "full-causal": {"shared_experts": _experts_without("causal")},
+    "full-lightgcn": {"shared_experts": _experts_without("lightgcn")},
+    "full-ot": {"shared_experts": _experts_without("optimal_transport")},
+    # Minimal baseline
+    "mlp_only": {"shared_experts": '["mlp"]'},
 }
 
 # ============================================================
