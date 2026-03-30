@@ -34,6 +34,9 @@ except ImportError:
     import duckdb  # noqa: F401
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pyarrow.compute as pc
 
 # Enable synchronous CUDA error reporting for debugging
 os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
@@ -133,14 +136,13 @@ def _try_cudf_available() -> bool:
 def load_ready_data(channel_dir: str) -> dict:
     """Load training-ready artifacts produced by Phase 0.
 
-    Loading priority: cuDF GPU direct read → DuckDB CPU fallback.
-    cuDF reads parquet directly onto the GPU, avoiding any host DataFrame.
+    Returns PyArrow Tables (zero-copy from parquet). No pandas in the hot path.
 
     Returns
     -------
     dict with keys:
-        features : cudf.DataFrame or pd.DataFrame — normalized numeric features
-        labels : cudf.DataFrame or pd.DataFrame — derived labels
+        features : pyarrow.Table — normalized numeric features
+        labels : pyarrow.Table or None — derived labels
         sequences : np.ndarray or None — padded 3D tensor
         seq_lengths : np.ndarray or None — sequence lengths
         feature_schema : dict — column names, group ranges, expert routing
@@ -150,12 +152,7 @@ def load_ready_data(channel_dir: str) -> dict:
     import duckdb
 
     channel_path = Path(channel_dir)
-    use_cudf = _try_cudf_available()
-    if use_cudf:
-        import cudf
-        logger.info("cuDF available — using GPU-direct parquet loading")
-    else:
-        logger.info("cuDF not available — falling back to DuckDB → pandas")
+    logger.info("Using PyArrow for training data loading (zero-copy parquet)")
 
     con = duckdb.connect()
 
@@ -166,17 +163,10 @@ def load_ready_data(channel_dir: str) -> dict:
         # Identify scalar columns via DuckDB DESCRIBE (lightweight, no data load)
         scalar_cols = _detect_scalar_cols_duckdb(con, parquet_uri)
 
-        if use_cudf:
-            features = cudf.read_parquet(str(features_path), columns=scalar_cols)
-            logger.info("Loaded features via cuDF: %d rows, %d columns",
-                        len(features), len(features.columns))
-        else:
-            col_list = ", ".join(f'"{c}"' for c in scalar_cols)
-            features = con.execute(
-                f"SELECT {col_list} FROM '{parquet_uri}'"
-            ).df()
-            logger.info("Loaded features via DuckDB: %d rows, %d columns",
-                        len(features), len(features.columns))
+        # PyArrow native parquet read (no pandas, no DuckDB data copy)
+        features = pq.read_table(str(features_path), columns=scalar_cols)
+        logger.info("Loaded features via PyArrow: %d rows, %d columns",
+                    features.num_rows, features.num_columns)
     else:
         # Fallback: load from generic parquet files (backward compat)
         parquet_files = sorted(channel_path.glob("**/*.parquet"))
@@ -186,59 +176,44 @@ def load_ready_data(channel_dir: str) -> dict:
         scalar_cols = _detect_scalar_cols_duckdb(con, first_uri)
         logger.info("Selecting %d scalar columns (skipping list/struct)", len(scalar_cols))
 
-        if use_cudf:
-            dfs = [cudf.read_parquet(str(f), columns=scalar_cols) for f in parquet_files]
-            features = cudf.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
-            logger.info("Loaded %d parquet files via cuDF (fallback): %d rows, %d columns",
-                        len(parquet_files), len(features), len(features.columns))
-        else:
-            col_list = ", ".join(f'"{c}"' for c in scalar_cols)
-            if len(parquet_files) == 1:
-                features = con.execute(
-                    f"SELECT {col_list} FROM '{first_uri}'"
-                ).df()
-            else:
-                file_list = ", ".join(
-                    f"'{str(f).replace(chr(92), '/')}'" for f in parquet_files
-                )
-                features = con.execute(
-                    f"SELECT {col_list} FROM read_parquet([{file_list}])"
-                ).df()
-            logger.info("Loaded %d parquet files via DuckDB (fallback): %d rows, %d columns",
-                        len(parquet_files), len(features), len(features.columns))
+        tables = [pq.read_table(str(f), columns=scalar_cols) for f in parquet_files]
+        features = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
+        logger.info("Loaded %d parquet files via PyArrow (fallback): %d rows, %d columns",
+                    len(parquet_files), features.num_rows, features.num_columns)
 
-    # Data loading diagnostics (works for both cuDF and pandas)
-    n_rows, n_cols = len(features), len(features.columns)
-    if use_cudf:
-        # cuDF memory info
-        mem_mb = features.memory_usage(deep=True).sum() / 1e6
-        logger.info("Features: %d rows x %d cols, GPU memory=%.1f MB", n_rows, n_cols, mem_mb)
-        logger.info("Dtypes: %s", dict(features.dtypes.value_counts()))
-        nan_count = int(features.isna().sum().sum())
-    else:
-        mem_mb = features.memory_usage(deep=True).sum() / 1e6
-        logger.info("Features: %d rows x %d cols, memory=%.1f MB", n_rows, n_cols, mem_mb)
-        logger.info("Dtypes: %s", dict(features.dtypes.value_counts()))
-        nan_count = int(features.isna().sum().sum())
+    # Data loading diagnostics (Arrow Table)
+    n_rows, n_cols = features.num_rows, features.num_columns
+    mem_bytes = sum(
+        features.column(i).nbytes for i in range(features.num_columns)
+    )
+    logger.info("Features: %d rows x %d cols, memory=%.1f MB", n_rows, n_cols, mem_bytes / 1e6)
+    # Dtype summary
+    dtype_counts: Dict[str, int] = {}
+    for i in range(features.num_columns):
+        dt = str(features.schema.field(i).type)
+        dtype_counts[dt] = dtype_counts.get(dt, 0) + 1
+    logger.info("Dtypes: %s", dtype_counts)
+    # NaN diagnostics
+    nan_count = 0
+    nan_cols_count = 0
+    for i in range(features.num_columns):
+        col_nulls = features.column(i).null_count
+        if col_nulls > 0:
+            nan_count += col_nulls
+            nan_cols_count += 1
     if nan_count > 0:
-        nan_cols = int(features.isna().any().sum())
         logger.warning("Features contain %d NaN values across %d columns",
-                        nan_count, nan_cols)
+                        nan_count, nan_cols_count)
 
     # -- Labels --
     labels_path = channel_path / "labels.parquet"
     if labels_path.exists():
-        if use_cudf:
-            labels = cudf.read_parquet(str(labels_path))
-        else:
-            labels_uri = str(labels_path).replace("\\", "/")
-            labels = con.execute(f"SELECT * FROM '{labels_uri}'").df()
+        labels = pq.read_table(str(labels_path))
     else:
         labels = None
     if labels is not None:
-        logger.info("Loaded labels via %s: %d rows, %d columns",
-                     "cuDF" if use_cudf else "DuckDB",
-                     len(labels), len(labels.columns))
+        logger.info("Loaded labels via PyArrow: %d rows, %d columns",
+                     labels.num_rows, labels.num_columns)
 
     # -- Sequences (optional) --
     sequences = None
@@ -265,13 +240,13 @@ def load_ready_data(channel_dir: str) -> dict:
             for name, (start, end) in sorted(group_ranges.items(), key=lambda x: x[1][0]):
                 logger.info("  %s: cols %d-%d (%d dims)", name, start, end, end - start)
     else:
-        # Auto-generate minimal schema from DataFrame columns
+        # Auto-generate minimal schema from Arrow Table column names
         feature_schema = {
-            "columns": list(features.columns),
+            "columns": features.column_names,
             "group_ranges": {},
             "expert_routing": {},
         }
-        logger.warning("No feature_schema.json found -- auto-generated from DataFrame columns")
+        logger.warning("No feature_schema.json found -- auto-generated from Arrow Table columns")
 
     # -- Label schema --
     label_schema_path = channel_path / "label_schema.json"
@@ -292,7 +267,7 @@ def load_ready_data(channel_dir: str) -> dict:
         logger.info("Loaded split_indices: %s",
                      {k: len(v) for k, v in split_indices.items()})
 
-    # Close DuckDB connection — all data is now in cuDF (GPU) or pandas (CPU)
+    # Close DuckDB connection — all data is now in PyArrow Tables
     con.close()
 
     return {
@@ -312,6 +287,8 @@ def load_ready_data(channel_dir: str) -> dict:
 
 def apply_ablation(features, labels, feature_schema, label_schema, hp):
     """Apply ablation filters using schema-driven column/task selection.
+
+    Accepts PyArrow Tables for features and labels.
 
     Modifies features and schemas in-place based on hyperparameters:
       - removed_feature_groups: drop columns by group using schema["group_ranges"]
@@ -335,7 +312,7 @@ def apply_ablation(features, labels, feature_schema, label_schema, hp):
         removed = []
 
     group_ranges = feature_schema.get("group_ranges", {})
-    columns = feature_schema.get("columns", list(features.columns))
+    columns = feature_schema.get("columns", features.column_names)
 
     if removed:
         cols_to_drop = set()
@@ -346,11 +323,11 @@ def apply_ablation(features, labels, feature_schema, label_schema, hp):
             else:
                 logger.warning("Ablation: group '%s' not in schema group_ranges", group_name)
         if cols_to_drop:
-            # Filter columns via list selection instead of .drop() to avoid copy
-            remaining_cols = [c for c in features.columns if c not in cols_to_drop]
-            features = features[remaining_cols]
+            # Arrow Table: drop columns
+            remaining_cols = [c for c in features.column_names if c not in cols_to_drop]
+            features = features.select(remaining_cols)
             logger.info("Ablation: removed %d columns from groups %s. Remaining: %d",
-                         len(cols_to_drop), removed, len(features.columns))
+                         len(cols_to_drop), removed, features.num_columns)
         else:
             logger.warning("Ablation: no columns matched for groups %s", removed)
 
@@ -379,10 +356,10 @@ def apply_ablation(features, labels, feature_schema, label_schema, hp):
             if tr["source"] in active_set and tr["target"] in active_set
         ]
 
-    # -- Filter labels DataFrame to only active task label columns --
+    # -- Filter labels Table to only active task label columns --
     if labels is not None and tasks:
-        label_cols = [t["label_col"] for t in tasks if t["label_col"] in labels.columns]
-        labels = labels[label_cols]
+        label_cols = [t["label_col"] for t in tasks if t["label_col"] in labels.column_names]
+        labels = labels.select(label_cols)
 
     return features, labels, feature_schema, label_schema
 
@@ -406,14 +383,14 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
 
     # Subsample if max_rows HP is set (for fast testing)
     max_rows = int(hp.get("max_rows", 0))
-    if max_rows and max_rows > 0 and len(features) > max_rows:
-        # Use numpy random choice for index-based subsampling (avoids pandas .sample() copy)
+    if max_rows and max_rows > 0 and features.num_rows > max_rows:
+        # Use numpy random choice for index-based subsampling
         rng = np.random.RandomState(42)
-        idx = rng.choice(len(features), size=max_rows, replace=False)
+        idx = rng.choice(features.num_rows, size=max_rows, replace=False)
         idx.sort()
-        features = features.iloc[idx].reset_index(drop=True)
+        features = features.take(idx)
         if labels is not None:
-            labels = labels.iloc[idx].reset_index(drop=True)
+            labels = labels.take(idx)
         if sequences is not None:
             sequences = sequences[idx]
         if seq_lengths is not None:
@@ -422,7 +399,7 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
 
     # Validate tasks against available label columns
     if labels is not None:
-        available_labels = set(labels.columns)
+        available_labels = set(labels.column_names)
         valid_tasks = []
         for t in tasks:
             lc = t["label_col"]
@@ -439,84 +416,59 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
     task_type_map = {t["name"]: t.get("type", "binary") for t in tasks}
     label_map = {t["name"]: t["label_col"] for t in tasks}
 
-    # -- Merge features + labels into a single DataFrame for PLEDataset --
+    # -- Merge features + labels into a single Arrow Table for PLEDataset --
     # Capture feature column names before merge (needed for FeatureColumnSpec)
-    _feature_col_names = list(features.columns)
+    _feature_col_names = features.column_names
 
-    # Detect if we are working with cuDF DataFrames
-    _is_cudf_df = False
-    try:
-        import cudf as _cudf_merge
-        _is_cudf_df = isinstance(features, _cudf_merge.DataFrame)
-    except ImportError:
-        pass
+    # Append label columns to features Arrow Table (zero-copy column concat)
+    merged = features
+    if labels is not None and labels.num_columns > 0:
+        for col_name in labels.column_names:
+            merged = merged.append_column(col_name, labels.column(col_name))
+        logger.info("Merged features+labels via PyArrow: %d rows, %d columns",
+                     merged.num_rows, merged.num_columns)
 
-    if _is_cudf_df:
-        # cuDF path: column-concatenate on GPU (zero-copy concat)
-        if labels is not None and len(labels.columns) > 0:
-            df = _cudf_merge.concat([features.reset_index(drop=True),
-                                     labels.reset_index(drop=True)], axis=1)
-        else:
-            df = features
-        logger.info("Merged features+labels via cuDF: %d rows, %d columns",
-                     len(df), len(df.columns))
-    else:
-        # CPU path: DuckDB POSITIONAL JOIN (avoids full pandas copy)
-        import duckdb as _ddb
-        import pyarrow as pa
-        _con = _ddb.connect()
-        _feat_arrow = pa.Table.from_pandas(features, preserve_index=False)
-        _con.register("_feat", _feat_arrow)
-        if labels is not None and len(labels.columns) > 0:
-            _lbl_arrow = pa.Table.from_pandas(labels, preserve_index=False)
-            _con.register("_lbl", _lbl_arrow)
-            _feat_cols = ", ".join(f'_feat."{c}"' for c in features.columns)
-            _lbl_cols = ", ".join(f'_lbl."{c}"' for c in labels.columns)
-            df = _con.execute(
-                f"SELECT {_feat_cols}, {_lbl_cols} FROM _feat POSITIONAL JOIN _lbl"
-            ).df()
-        else:
-            df = _con.execute("SELECT * FROM _feat").df()
-        _con.close()
-    # Release original DataFrames to free memory
+    # Release original tables to free memory
     del features
 
     # -- Build FeatureColumnSpec from schema --
     feature_columns = feature_schema.get("columns", _feature_col_names)
-    # Only include columns actually present in the DataFrame (post-ablation)
-    static_features = [c for c in feature_columns if c in df.columns]
+    # Only include columns actually present in the Table (post-ablation)
+    merged_cols_set = set(merged.column_names)
+    static_features = [c for c in feature_columns if c in merged_cols_set]
 
     feature_spec = FeatureColumnSpec(static_features=static_features)
     logger.info("FeatureColumnSpec: %d static features", len(static_features))
 
-    # -- Pre-compute label statistics --
+    # -- Pre-compute label statistics (Arrow compute, no pandas) --
     label_stats = {}
     for t in tasks:
         lc = t["label_col"]
-        if lc in df.columns:
-            col = df[lc]
+        if lc in merged_cols_set:
+            col_arr = merged.column(lc)
+            n_total = merged.num_rows
             if t.get("type") == "binary":
-                n_pos = int((col > 0.5).sum())
+                # Count values > 0.5
+                n_pos = int(pc.sum(pc.greater(col_arr, 0.5)).as_py())
                 label_stats[t["name"]] = {
                     "positive_count": n_pos,
-                    "positive_rate": round(n_pos / len(col), 4),
-                    "total": len(col),
+                    "positive_rate": round(n_pos / n_total, 4),
+                    "total": n_total,
                 }
             elif t.get("type") == "regression":
                 label_stats[t["name"]] = {
-                    "mean": round(float(col.mean()), 4),
-                    "std": round(float(col.std()), 4),
-                    "total": len(col),
+                    "mean": round(float(pc.mean(col_arr).as_py()), 4),
+                    "std": round(float(pc.stddev(col_arr).as_py()), 4),
+                    "total": n_total,
                 }
             elif t.get("type") == "multiclass":
                 label_stats[t["name"]] = {
-                    "num_classes": int(col.nunique()),
-                    "total": len(col),
+                    "num_classes": int(pc.count_distinct(col_arr).as_py()),
+                    "total": n_total,
                 }
 
     # -- Split into train/val --
-    # Auto-enable GPU loading when the merged DataFrame is already on GPU (cuDF)
-    use_gpu_loading = _is_cudf_df or (
+    use_gpu_loading = (
         hp.get("use_gpu_loading", False)
         and int(os.environ.get("SM_NUM_GPUS", "0")) > 0
     )
@@ -525,18 +477,18 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
         train_idx = split_indices.get("train", [])
         val_idx = split_indices.get("val", split_indices.get("validation", []))
 
-        df_train = df.iloc[train_idx].reset_index(drop=True)
-        df_val = df.iloc[val_idx].reset_index(drop=True) if val_idx else None
+        tbl_train = merged.take(train_idx)
+        tbl_val = merged.take(val_idx) if val_idx else None
 
         train_loader = build_ple_dataloader(
-            df=df_train, feature_spec=feature_spec, label_columns=label_map,
+            df=tbl_train, feature_spec=feature_spec, label_columns=label_map,
             batch_size=batch_size, shuffle=True, use_gpu_loading=use_gpu_loading,
         )
 
         val_loader = None
-        if df_val is not None and len(df_val) > 0:
+        if tbl_val is not None and tbl_val.num_rows > 0:
             val_loader = build_ple_dataloader(
-                df=df_val, feature_spec=feature_spec, label_columns=label_map,
+                df=tbl_val, feature_spec=feature_spec, label_columns=label_map,
                 batch_size=batch_size, shuffle=False, use_gpu_loading=use_gpu_loading,
             )
 
@@ -551,11 +503,11 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
                 _inject_sequences_into_ple_dataset(val_loader.dataset, val_seqs, val_lens)
 
         logger.info("Train: %d samples, Val: %d samples (from split_indices)",
-                     len(df_train), len(df_val) if df_val is not None else 0)
+                     tbl_train.num_rows, tbl_val.num_rows if tbl_val is not None else 0)
     else:
         # No split indices — build single loader then split
         full_loader = build_ple_dataloader(
-            df=df, feature_spec=feature_spec, label_columns=label_map,
+            df=merged, feature_spec=feature_spec, label_columns=label_map,
             batch_size=batch_size, shuffle=True, use_gpu_loading=use_gpu_loading,
         )
 
@@ -1050,8 +1002,8 @@ def _build_task_val_masks(
 
     # Try to get the date values for val rows
     _val_dates = None
-    if date_col in features.columns:
-        _val_dates = features.iloc[val_idx][date_col].values
+    if date_col in features.column_names:
+        _val_dates = features.column(date_col).take(val_idx).to_numpy(zero_copy_only=False)
     else:
         # Try loading from parquet via DuckDB (date may have been separated)
         try:
@@ -1062,9 +1014,10 @@ def _build_task_val_masks(
                 _uri = str(_parquet_paths[0]).replace("\\", "/")
                 _con_vm = _ddb_vm.connect()
                 try:
-                    _all_dates = _con_vm.execute(
+                    _all_dates_arrow = _con_vm.execute(
                         f'SELECT "{date_col}" FROM \'{_uri}\''
-                    ).df()[date_col].values
+                    ).arrow()
+                    _all_dates = _all_dates_arrow.column(0).to_numpy(zero_copy_only=False)
                     _val_dates = _all_dates[val_idx]
                 except Exception:
                     pass
@@ -1080,11 +1033,10 @@ def _build_task_val_masks(
         )
         return None
 
-    # Find latest date in val set
-    import pandas as pd
-    _val_dates_pd = pd.to_datetime(pd.Series(_val_dates))
-    _latest_date = _val_dates_pd.max()
-    _latest_mask = (_val_dates_pd == _latest_date).values  # bool array, len = len(val_idx)
+    # Find latest date in val set (numpy datetime ops, no pandas)
+    _val_dates_np = np.asarray(_val_dates, dtype="datetime64[ns]")
+    _latest_date = np.max(_val_dates_np)
+    _latest_mask = (_val_dates_np == _latest_date)  # bool array, len = len(val_idx)
 
     n_latest = int(_latest_mask.sum())
     n_val = len(val_idx)
@@ -1672,32 +1624,34 @@ def main() -> None:
         features, labels, feature_schema, label_schema, hp,
     )
 
-    # If labels is None, try to extract label columns from features DataFrame
+    # If labels is None, try to extract label columns from features Arrow Table
     if labels is None:
         tasks = label_schema.get("tasks", [])
-        label_cols_present = [t["label_col"] for t in tasks if t["label_col"] in features.columns]
+        _feat_cols_set = set(features.column_names)
+        label_cols_present = [t["label_col"] for t in tasks if t["label_col"] in _feat_cols_set]
         if label_cols_present:
-            labels = features[label_cols_present]
-            remaining_cols = [c for c in features.columns if c not in set(label_cols_present)]
-            features = features[remaining_cols]
-            logger.info("Extracted %d label columns from features DataFrame", len(label_cols_present))
+            labels = features.select(label_cols_present)
+            remaining_cols = [c for c in features.column_names if c not in set(label_cols_present)]
+            features = features.select(remaining_cols)
+            logger.info("Extracted %d label columns from features Arrow Table", len(label_cols_present))
 
 
     # ---- 3b. Split strategy: temporal (if multi-date) or random (cross-sectional) ----
     if split_indices is None or not split_indices:
         date_col = config.get("data", {}).get("date_col", "snapshot_date")
-        _date_series = None
+        _date_arr = None  # numpy array of dates
         _use_temporal = False
 
         # Try to load date column from parquet
-        if date_col not in features.columns:
+        if date_col not in features.column_names:
             import duckdb as _ddb_date
             _parquet_path = list(Path(train_dir).glob("**/*.parquet"))
             if _parquet_path:
                 _uri = str(_parquet_path[0]).replace("\\", "/")
                 _con_d = _ddb_date.connect()
                 try:
-                    _date_series = _con_d.execute(f'SELECT "{date_col}" FROM \'{_uri}\'').df()[date_col]
+                    _date_arrow = _con_d.execute(f'SELECT "{date_col}" FROM \'{_uri}\'').arrow()
+                    _date_arr = _date_arrow.column(0).to_numpy(zero_copy_only=False)
                 except Exception:
                     pass
                 finally:
@@ -1705,9 +1659,16 @@ def main() -> None:
 
         # Detect if temporal split is appropriate:
         # If >80% of rows share the same date, it's cross-sectional → random split
-        if date_col in features.columns or _date_series is not None:
-            _dates = features[date_col] if date_col in features.columns else _date_series
-            _top_date_ratio = _dates.value_counts().iloc[0] / len(_dates) if len(_dates) > 0 else 1.0
+        _has_dates = date_col in features.column_names or _date_arr is not None
+        if _has_dates:
+            if date_col in features.column_names:
+                _dates_col = features.column(date_col)
+            else:
+                _dates_col = pa.array(_date_arr)
+            # Compute value_counts via Arrow
+            _vc = pc.value_counts(_dates_col)
+            _max_count = max(entry["count"].as_py() for entry in _vc) if len(_vc) > 0 else len(_dates_col)
+            _top_date_ratio = _max_count / len(_dates_col) if len(_dates_col) > 0 else 1.0
             if _top_date_ratio < 0.8:
                 _use_temporal = True
                 logger.info("Multi-date data (top date=%.1f%%) → temporal split", _top_date_ratio * 100)
@@ -1716,7 +1677,6 @@ def main() -> None:
 
         if _use_temporal:
             import duckdb as _ddb_split
-            import pandas as pd
 
             _ts_cfg = config.get("data", {}).get("temporal_split", {})
             gap_days = int(_ts_cfg.get("gap_days", 1))
@@ -1724,20 +1684,20 @@ def main() -> None:
             val_ratio = 0.15
 
             # Build a date array aligned to feature rows
-            if date_col in features.columns:
-                _dates_arr = features[date_col].values
+            if date_col in features.column_names:
+                _dates_np = features.column(date_col).to_numpy(zero_copy_only=False)
             else:
-                _dates_arr = _date_series.values
+                _dates_np = _date_arr
 
-            # Create a minimal DataFrame with original row index and date
-            _idx_df = pd.DataFrame({
-                "_orig_idx": range(len(features)),
-                "_split_date": pd.to_datetime(_dates_arr),
+            # Create a minimal Arrow Table with original row index and date
+            _idx_table = pa.table({
+                "_orig_idx": pa.array(range(features.num_rows), type=pa.int64()),
+                "_split_date": pa.array(np.asarray(_dates_np, dtype="datetime64[ns]")),
             })
 
             _con_s = _ddb_split.connect()
             try:
-                _con_s.register("idx_df", _idx_df)
+                _con_s.register("idx_df", _idx_table)
 
                 # Compute min/max date and total span via DuckDB
                 _bounds = _con_s.execute("""
@@ -1756,7 +1716,7 @@ def main() -> None:
 
                     # Query DuckDB for train and val original indices,
                     # sorted by date so the output is temporally ordered.
-                    _split_result = _con_s.execute(f"""
+                    _split_arrow = _con_s.execute(f"""
                         WITH cutoffs AS (
                             SELECT
                                 CAST('{_min_dt}' AS TIMESTAMP) + INTERVAL '{_train_end_days} days'
@@ -1784,20 +1744,21 @@ def main() -> None:
                            OR (_split_date >= (SELECT val_start FROM cutoffs)
                                AND _split_date <= (SELECT val_end FROM cutoffs))
                         ORDER BY _split_date, _orig_idx
-                    """).df()
+                    """).arrow()
 
-                    _train_orig = _split_result.loc[
-                        _split_result["_split_label"] == "train", "_orig_idx"
-                    ].tolist()
-                    _val_orig = _split_result.loc[
-                        _split_result["_split_label"] == "val", "_orig_idx"
-                    ].tolist()
+                    # Extract train/val indices from Arrow result (no pandas)
+                    _orig_idx_arr = _split_arrow.column("_orig_idx").to_numpy(zero_copy_only=False)
+                    _label_arr = _split_arrow.column("_split_label")
+                    _train_mask = pc.equal(_label_arr, "train").to_numpy(zero_copy_only=False)
+                    _val_mask = pc.equal(_label_arr, "val").to_numpy(zero_copy_only=False)
+                    _train_orig = _orig_idx_arr[_train_mask].tolist()
+                    _val_orig = _orig_idx_arr[_val_mask].tolist()
 
                     # Reorder features (and labels) by the temporal sort order
                     _ordered_idx = _train_orig + _val_orig
-                    features = features.iloc[_ordered_idx].reset_index(drop=True)
+                    features = features.take(_ordered_idx)
                     if labels is not None:
-                        labels = labels.iloc[_ordered_idx].reset_index(drop=True)
+                        labels = labels.take(_ordered_idx)
 
                     train_idx = list(range(len(_train_orig)))
                     val_idx = list(range(len(_train_orig), len(_train_orig) + len(_val_orig)))
@@ -1807,7 +1768,7 @@ def main() -> None:
                         "Temporal split (DuckDB): train=%d, val=%d (gap_days=%d, "
                         "discarded=%d rows in gaps)",
                         len(train_idx), len(val_idx), gap_days,
-                        len(_idx_df) - len(_train_orig) - len(_val_orig),
+                        _idx_table.num_rows - len(_train_orig) - len(_val_orig),
                     )
                 else:
                     logger.warning(
@@ -1817,16 +1778,21 @@ def main() -> None:
                 _con_s.close()
 
             # Clean up temporaries
-            del _idx_df
+            del _idx_table
         else:
             logger.warning("No date column '%s' found -- falling back to random split", date_col)
 
     # ---- 3c. Leakage validation ----
+    # LeakageValidator expects pandas DataFrames — convert at boundary only
     if labels is not None:
         try:
             from core.pipeline.leakage_validator import LeakageValidator
             validator = LeakageValidator(correlation_threshold=0.95)
-            result = validator.validate(features, labels, config)
+            # Temporary pandas conversion for validator API (not hot path)
+            _feat_pd = features.to_pandas()
+            _lbl_pd = labels.to_pandas()
+            result = validator.validate(_feat_pd, _lbl_pd, config)
+            del _feat_pd, _lbl_pd
             if not result.passed:
                 for w in result.warnings[:5]:
                     logger.warning("LEAKAGE: %s", w)
@@ -1838,14 +1804,14 @@ def main() -> None:
                     if _m:
                         drop_cols.append(_m.group(1))
                 if drop_cols and features is not None:
-                    _before = features.shape[1]
-                    features = features.drop(
-                        columns=[c for c in drop_cols if c in features.columns],
-                        errors='ignore',
-                    )
+                    _before = features.num_columns
+                    _existing_drop = [c for c in drop_cols if c in features.column_names]
+                    if _existing_drop:
+                        remaining = [c for c in features.column_names if c not in set(_existing_drop)]
+                        features = features.select(remaining)
                     logger.warning(
                         "Auto-dropped %d leaking features: %s (cols %d->%d)",
-                        len(drop_cols), drop_cols, _before, features.shape[1],
+                        len(drop_cols), drop_cols, _before, features.num_columns,
                     )
             else:
                 logger.info("LeakageValidator: PASSED (no leakage detected)")
@@ -1864,23 +1830,33 @@ def main() -> None:
     )
     task_names = [t["name"] for t in tasks]
 
-    # ---- Label distribution ----
+    # ---- Label distribution (Arrow compute, no pandas) ----
     logger.info("=== Label Distribution ===")
     for task in tasks:
         col = task["label_col"]
-        if labels is not None and col in labels.columns:
-            vals = labels[col]
+        if labels is not None and col in labels.column_names:
+            col_arr = labels.column(col)
+            n_total = labels.num_rows
             if task["type"] == "binary":
-                pos_rate = (vals > 0).mean()
+                n_pos = int(pc.sum(pc.greater(col_arr, 0)).as_py())
+                pos_rate = n_pos / n_total if n_total > 0 else 0.0
                 logger.info("  %s [binary]: positive=%.2f%% (%d/%d)",
-                            task["name"], pos_rate * 100, (vals > 0).sum(), len(vals))
+                            task["name"], pos_rate * 100, n_pos, n_total)
             elif task["type"] == "multiclass":
+                _vc = pc.value_counts(col_arr)
+                # Sort by count descending, take top 5
+                _vc_list = sorted(
+                    [(entry["values"].as_py(), entry["counts"].as_py()) for entry in _vc],
+                    key=lambda x: -x[1],
+                )[:5]
+                _vc_dict = {str(k): v for k, v in _vc_list}
                 logger.info("  %s [multi-%s]: top classes=%s",
-                            task["name"], task.get("num_classes", "?"),
-                            str(vals.value_counts().head(5).to_dict() if hasattr(vals.value_counts(), 'to_dict') else vals.value_counts().head(5)))
+                            task["name"], task.get("num_classes", "?"), _vc_dict)
             else:
+                _np_arr = col_arr.to_numpy(zero_copy_only=False).astype(np.float64)
                 logger.info("  %s [regression]: mean=%.4f, std=%.4f, range=[%.4f, %.4f]",
-                            task["name"], vals.mean(), vals.std(), vals.min(), vals.max())
+                            task["name"], float(np.nanmean(_np_arr)), float(np.nanstd(_np_arr)),
+                            float(np.nanmin(_np_arr)), float(np.nanmax(_np_arr)))
 
     # ---- Label sanity check ----
     try:

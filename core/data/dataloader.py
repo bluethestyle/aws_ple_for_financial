@@ -152,7 +152,8 @@ def _arrow_table_to_tensor(table: Any, columns: List[str], dtype: str = "float32
     # Arrow -> numpy via .to_pydict() is slow; prefer chunked array path
     arrays = [subset.column(c).to_numpy(zero_copy_only=False) for c in range(subset.num_columns)]
     arr = np.column_stack(arrays) if len(arrays) > 1 else arrays[0].reshape(-1, 1)
-    return torch.from_numpy(arr.astype(getattr(np, dtype)))
+    arr = np.nan_to_num(arr.astype(np.float64), nan=0.0).astype(getattr(np, dtype))
+    return torch.from_numpy(arr)
 
 
 def _df_to_tensor_cpu(df: Any, columns: List[str], dtype: str = "float32") -> Any:
@@ -171,15 +172,19 @@ def _df_to_tensor_cpu(df: Any, columns: List[str], dtype: str = "float32") -> An
     except ImportError:
         pass
 
-    # cuDF: explicit .to_numpy() (implicit .values raises TypeError)
+    # DuckDB relation: fetchnumpy (no pandas)
     try:
-        import cudf as _cudf_check
-        if isinstance(df, _cudf_check.DataFrame):
-            arr = df[columns].fillna(0).to_numpy(dtype=np.float64, na_value=0.0)
-            return torch.from_numpy(arr.astype(getattr(np, dtype)))
-    except (ImportError, Exception):
+        import duckdb
+        if hasattr(df, 'fetchnumpy') or hasattr(df, 'sql'):
+            # df is a DuckDB relation
+            arrays = [np.asarray(df[c], dtype=np.float64) for c in columns]
+            arr = np.column_stack(arrays) if len(arrays) > 1 else arrays[0].reshape(-1, 1)
+            arr = np.nan_to_num(arr, nan=0.0).astype(getattr(np, dtype))
+            return torch.from_numpy(arr)
+    except Exception:
         pass
 
+    # pandas / generic fallback
     arr = df[columns].values
     if not isinstance(arr, np.ndarray):
         arr = np.asarray(arr)
@@ -357,18 +362,18 @@ class PLEDataset:
 
         # Time deltas
         if self._event_td_cols:
-            self._tensors["event_time_delta"] = _to_tensor(
+            self._tensors["event_time_delta"] = _df_to_tensor_cpu(
                 df, self._event_td_cols
             )
         if self._session_td_cols:
-            self._tensors["session_time_delta"] = _to_tensor(
+            self._tensors["session_time_delta"] = _df_to_tensor_cpu(
                 df, self._session_td_cols
             )
 
         # Labels
         self._label_tensors: Dict[str, torch.Tensor] = {}
         for task, col in self._label_cols_present.items():
-            self._label_tensors[task] = _to_tensor(
+            self._label_tensors[task] = _df_to_tensor_cpu(
                 df, [col]
             ).squeeze(-1)
 
