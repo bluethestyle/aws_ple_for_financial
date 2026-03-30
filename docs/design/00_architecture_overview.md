@@ -71,16 +71,16 @@ Store (RAG)        Reason Orchestrator
 
 | Stage | 이름 | 설명 | 구현 위치 | GPU 가속 |
 |-------|------|------|-----------|----------|
-| **1** | DataAdapter | S3 Parquet 로드, AdapterRegistry 기반 데이터셋별 원시 로딩 | `core/pipeline/adapter.py` | - |
-| **1.5** | TemporalPrep | 시퀀스 절단 (drop last month), prod_* 재계산 (month 16) | `core/pipeline/temporal_split.py` | - |
+| **1** | DataAdapter | DuckDB-native raw data load, AdapterRegistry 기반 데이터셋별 원시 로딩 | `core/pipeline/adapter.py` | - |
+| **1.5** | TemporalPrep | 시퀀스 절단 (drop last month), prod_* 재계산 (month 16), cold start 고객 처리 | `core/pipeline/temporal_split.py` | - |
 | **2** | SchemaClassifier (5-axis) | 모든 컬럼을 State/Snapshot/Timeseries/Hierarchy/Item 축으로 분류 | `core/pipeline/schema_classifier.py` | - |
 | **3** | EncryptionPipeline | PII 컬럼 → SHA256 domain-specific salt → INT32 global index | `core/security/pipeline.py` | - |
-| **4** | FeatureGroupPipeline + Normalization | 5축 각각에 대응하는 Generator 실행 + PowerLawAwareScaler | `core/feature/` | cuPY for TDA/scaler |
+| **4** | FeatureGroupPipeline + Normalization | 8개 Generator 실행 (cuDF primary, pandas fallback) + PowerLawAwareScaler | `core/feature/` | cuDF/cuPY |
 | **5** | LabelDeriver (18 tasks) | Config-driven 레이블 생성 — direct/bucket/weighted_sum/product_group 등 | `core/pipeline/label_deriver.py` | - |
-| **5.5** | LeakageValidator | 시퀀스/상관관계/제품/시간 4중 누수 검증 | `core/pipeline/leakage_validator.py` | - |
-| **6** | SequenceBuilder | Flat DataFrame → 3D 텐서 (event_sequences.npy, session_sequences.npy) | `core/pipeline/sequence_builder.py` | - |
-| **7** | DataLoader | Temporal split (gap_days=30) → PLEDataset → DataLoader | `core/pipeline/temporal_split.py` | - |
-| **8** | PLETrainer (2-phase) | PLE + adaTT + Evidential + SAE, uncertainty weighting | `core/training/trainer.py` | GPU required |
+| **5.5** | LeakageValidator + auto-drop | 시퀀스/상관관계/제품/시간 4중 누수 검증, >0.95 상관 피처 자동 제거 | `core/pipeline/leakage_validator.py` | - |
+| **6** | SequenceBuilder | Time-based + sliding window → 3D 텐서 (txn_day_offset_seq 기반) | `core/pipeline/sequence_builder.py` | - |
+| **7** | DataLoader | Cross-sectional auto-detect → random split / temporal split, PyArrow 로딩 | `containers/training/train.py` | - |
+| **8** | PLETrainer (2-phase) | PLE + adaTT + 7 heterogeneous experts, AMP FP32 loss, VRAM diagnostics | `core/training/trainer.py` | GPU required |
 | **8.5** | Model Analysis | IG, CCA, Gate Analysis, HGCN Interpretable, Multi Interpreter, Template Engine, XAI Quality, Model Card | `core/analysis/` | GPU partial |
 | **9** | StudentTrainer (Distillation) | PLE teacher → LGBM students (soft label + fidelity validation) | `core/distillation/` | - |
 | **9.5** | Context Vector Store | 추천 사유 임베딩 저장소 (RAG retrieval) | `core/serving/context_store.py` | - |
@@ -273,7 +273,7 @@ EncryptionPipeline.process_source()
 |-------|---------|------|
 | Feature | `features.parquet` | Parquet |
 | Label | `labels.parquet` | Parquet |
-| Sequence | `event_sequences.npy`, `session_sequences.npy` | NumPy |
+| Sequence | `sequences.npy`, `seq_lengths.npy` | NumPy |
 
 ### Audit Artifacts
 ```
@@ -309,37 +309,42 @@ serving/
 
 ---
 
-## cuDF/cuPY GPU 가속 포인트
+## cuDF/cuPY/DuckDB GPU+CPU 가속 체계
 
 | Stage | 대상 | CPU 경로 | GPU 경로 | 가속 효과 |
 |-------|------|---------|---------|----------|
-| 3 | Preprocessing (대규모 DataFrame) | DuckDB | cuDF (DuckDB fallback) | 10-50x on sort/groupby |
-| 4 | TDA persistence diagram 계산 | ripser (NumPy) | cuPY + ripser | 5-10x |
+| 1 | 데이터 로딩/집계 | DuckDB (primary) | cuDF (선택적) | DuckDB native adapter, pandas 없음 |
+| 4 | Generator 실행 (TDA/HMM/GMM 등) | pandas fallback | cuDF primary (cuML for GMM) | Generator output: cuDF or pandas DataFrame |
+| 4 | TDA persistence diagram | ripser (NumPy) | cuPY + ripser | 5-10x |
 | 4 | StandardScaler (mean/std) | NumPy | cuPY | 3-5x on 100M+ rows |
-| 8 | Model training | PyTorch CPU | PyTorch CUDA | Required |
+| 7 | Training 데이터 로딩 | PyArrow (zero-copy parquet) | - | pandas 완전 제거 (hot path) |
+| 8 | Model training | PyTorch CPU | PyTorch CUDA + AMP | Required, FP32 loss computation |
 
 GPU 가속은 선택적이며, cuDF/cuPY 미설치 시 CPU 경로로 자동 폴백한다.
+Phase 0 Generator는 cuDF primary → pandas fallback 패턴을 따른다.
 
 ---
 
 ## Santander 4-Dimension Ablation Framework
 
-`scripts/run_santander_ablation.py`가 6-Phase 36 SageMaker Job ablation을 오케스트레이션:
+`scripts/run_santander_ablation.py`가 6-Phase 48 시나리오 ablation을 오케스��레이션한다. 모든 시나리오는 config에서 동적 생성된다 (bottom-up + top-down 학계 표준 설계):
 
 | Phase | 내용 | Job 수 |
 |-------|------|--------|
-| **0** | Data Preparation | 1 Processing |
-| **1** | Feature Group Ablation (TDA/Temporal/Graph/HMM/Demographics 등) | 10 |
-| **2** | Expert Ablation (개별/커플링 제거) | 7 |
-| **3** | Task x Structure Cross (태스크 수 × PLE/adaTT 변형) | 16 |
+| **0** | Data Preparation (Processing Job) | 1 |
+| **1** | Feature Group Ablation (full + base_only + bottom-up + top-down) | 16 |
+| **2** | Expert Ablation (deepfm baseline + bottom-up + top-down + mlp_only) | 16 |
+| **3** | Task x Structure Cross (4 tiers x 4 structures) | 16 |
 | **4** | Best-Config Teacher + Distillation | 2 |
 | **5** | Analysis + HTML Report | 1 |
 
 4개 Ablation 차원:
-1. **Feature** — 5-Axis별 피처 그룹 제거 → 축 기여도 측정
-2. **Expert** — 개별/그룹 Expert 제거 (피처-전문가 연동)
-3. **Task Scaling** — 태스크 수 4→8→18, 구조 변형 (PLE/adaTT/baseline)
+1. **Feature** — Bottom-up (base+X) + Top-down (full-X) → 독립 기여 vs irreplaceability 측정
+2. **Expert** — DeepFM baseline + pairwise 추가/제거 (피처-전문가 연동)
+3. **Task Scaling** — 태스크 수 4→8→15→18, 구조 변형 (shared_bottom/ple_only/adatt_only/full)
 4. **PLE-adaTT Structure** — Loss weighting, PLE depth, adaTT strength
+
+Docker-based ablation runner가 SageMaker local mode를 지원한다 (`containers/training/Dockerfile`).
 
 ---
 
@@ -408,17 +413,29 @@ class DataAdapter(ABC):
 
 | 이름 | 파일 | 데이터 | 집계 방식 |
 |------|------|--------|----------|
-| `ealtman2019` | `adapters/ealtman2019_adapter.py` | 24M 신용카드 거래 | DuckDB → 2,000 user |
-| `santander` | `adapters/santander_adapter.py` | 941K 사용자 × 89 컬럼 | User-level (pre-aggregated) |
+| `ealtman2019` | `adapters/ealtman2019_adapter.py` | 24M 신용카드 거래 (2K users, 6,146 cards) | DuckDB → ~469D features + 16 labels |
+| `santander` | `adapters/santander_adapter.py` | 941K 사용자 × 89 컬럼 | DuckDB-native pipeline (pandas only at generator boundary), cold start 처리 포함 |
 
-### Training 이중 진입점
+**Santander Adapter 특징:**
+- Phase 0 `__main__` 블록이 전체 데이터를 DuckDB in-memory 테이블로 유지
+- Generator 호출 시에만 pandas 변환 (generator interface boundary)
+- Quality-gate, normalization, dtype downcasting, feature stats, label stats, final parquet writes 모두 DuckDB SQL
+- Cold start 고객 처리: `is_cold_start` 플래그 + sequence-derived feature zeroing
 
-`containers/training/train.py`는 두 가지 경로를 지원한다:
+### Training 진입점
 
-| 경로 | 진입점 | 용도 |
-|------|--------|------|
-| Legacy | `main()` | SageMaker Training Job 직접 호출 (기존 호환) |
-| Pipeline | `main_pipeline(config)` | `--pipeline config.yaml` 플래그로 PipelineRunner 경유 |
+`containers/training/train.py`는 SageMaker Training Job의 단일 진입점이다:
+
+| 기능 | 설명 |
+|------|------|
+| **데이터 로딩** | PyArrow (zero-copy parquet), pandas 없음 (hot path) |
+| **Split 전략** | Cross-sectional auto-detect (>80% 동일 date → random split) 또는 temporal split |
+| **LeakageValidator** | 학습 전 자동 호출, >0.95 상관 피처 auto-drop |
+| **VRAM 진단** | 학습 시작 전 GPU name/VRAM/compute capability 로깅, epoch별 VRAM 추적 |
+| **AMP** | FP16 forward + FP32 loss computation (overflow 방지) |
+| **Per-task val mask** | `data.split_strategy`에서 task별 val_method (temporal_latest/random) 지원 |
+
+**Docker SageMaker Local Mode:** `containers/training/Dockerfile`로 로컬 GPU PC에서 SageMaker 환경 동일하게 실행 가능.
 
 ---
 
@@ -429,7 +446,7 @@ class DataAdapter(ABC):
 | 쿼리 엔진 | DuckDB 단일 (Athena는 옵션) | 단일 머신 최강, 수백 GB까지 충분 |
 | 피처 분류 | 5-Axis (State/Snapshot/Timeseries/Hierarchy/Item) | Expert 라우팅의 명시적 기반 |
 | 태스크 아키텍처 | 18 tasks in 4 semantic groups | adaTT intra/inter transfer 기반 |
-| 데이터 분할 | Temporal split + gap_days=30 | 누수 방지 (random split 제거) |
+| 데이터 분할 | Cross-sectional auto-detect → random split / Temporal split + gap_days | 자동 감지 (>80% 동일 date → random) |
 | 누수 방지 | 시퀀스절단 + prod재계산 + LeakageValidator | 4중 검증 |
 | 모델 구조 | PLE + adaTT + Evidential + SAE | 불확실성 정량화 + 해석 가능성 |
 | Loss 전략 | Per-task dispatch (focal_alpha calibrated) + Uncertainty weighting | config 선언적, 자동 밸런싱 |
@@ -437,7 +454,7 @@ class DataAdapter(ABC):
 | Logit Transfer | 3-method dispatch (output_concat/hidden_concat/residual) | 태스크 관계별 최적 방법 |
 | 서빙 | FD-TVS scoring + DNA modifier + constraint engine | 규제 준수 추천 |
 | 해석 가능성 | 3-stage (A: 분석, B: 사유생성, C: 서빙) | 감사 가능한 추천 |
-| Ablation | 4-Dimension (Feature/Expert/Task/Structure) × 36 jobs | 체계적 실험 |
+| Ablation | 4-Dimension (Feature/Expert/Task/Structure) × 48 scenarios | 체계적 실험 (bottom-up + top-down) |
 
 ---
 

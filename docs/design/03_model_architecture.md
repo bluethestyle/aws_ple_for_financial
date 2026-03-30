@@ -99,21 +99,23 @@ class FeatureRouter:
         """전체 피처 텐서에서 해당 Expert의 서브셋 추출."""
 ```
 
-### Expert Pool — 11종 등록
+### Expert Pool — 11종 등록 (7종 Basket 활성)
 
-| # | 등록 이름 | 파일 | 주요 Axis | 설명 |
-|---|-----------|------|-----------|------|
-| 1 | `mlp` | `core/model/experts/mlp.py` | State | 기본 MLP 베이스라인 |
-| 2 | `deepfm` | `core/model/experts/deepfm.py` | State | FM + Deep 피처 상호작용 |
-| 3 | `mamba` | `core/model/experts/mamba.py` | Timeseries | Selective SSM (S6, O(n)) |
-| 4 | `temporal_ensemble` | `core/model/experts/temporal.py` | Timeseries | Mamba + PatchTST + LNN 앙상블 |
-| 5 | `causal` | `core/model/experts/causal.py` | Snapshot | NOTEARS DAG 인과 구조 |
-| 6 | `optimal_transport` | `core/model/experts/ot.py` | Snapshot | Sinkhorn 최적 수송 |
-| 7 | `hgcn` | `core/model/experts/hgcn.py` | Hierarchy | 쌍곡 그래프 합성곱 |
-| 8 | `perslay` | `core/model/experts/perslay.py` | Snapshot | 위상 데이터 분석 (TDA global) |
-| 9 | `lightgcn` | `core/model/experts/lightgcn.py` | Item | 경량 그래프 합성곱 |
-| 10 | `autoint` | `core/model/experts/autoint.py` | State | Self-Attention 상호작용 |
-| 11 | `xdeepfm` | `core/model/experts/xdeepfm.py` | State | CIN + Deep |
+Pool에 11종이 등록되어 있으며, Santander Basket에는 **7 heterogeneous experts**가 활성화된다:
+
+| # | 등록 이름 | 파일 | 주요 Axis | Basket | 설명 |
+|---|-----------|------|-----------|--------|------|
+| 1 | `deepfm` | `core/model/experts/deepfm.py` | State | **O** | FM + Deep 피처 상호작용 |
+| 2 | `temporal_ensemble` | `core/model/experts/temporal.py` | Timeseries | **O** | Mamba + PatchTST + LNN 앙상블 |
+| 3 | `hgcn` | `core/model/experts/hgcn.py` | Hierarchy | **O** | 쌍곡 그래프 합성곱 |
+| 4 | `perslay` | `core/model/experts/perslay.py` | Snapshot | **O** | 위상 데이터 분석 (TDA global) |
+| 5 | `causal` | `core/model/experts/causal.py` | Snapshot | **O** | NOTEARS DAG 인과 구조 |
+| 6 | `lightgcn` | `core/model/experts/lightgcn.py` | Item | **O** | 경량 그래프 합성곱 |
+| 7 | `optimal_transport` | `core/model/experts/ot.py` | Snapshot | **O** | Sinkhorn 최적 수송 |
+| 8 | `mlp` | `core/model/experts/mlp.py` | State | - | 기본 MLP (task expert용) |
+| 9 | `mamba` | `core/model/experts/mamba.py` | Timeseries | - | Selective SSM (S6, O(n)) |
+| 10 | `autoint` | `core/model/experts/autoint.py` | State | - | Self-Attention 상호작용 |
+| 11 | `xdeepfm` | `core/model/experts/xdeepfm.py` | State | - | CIN + Deep |
 
 ### Dual-Registry 아키텍처
 
@@ -334,6 +336,19 @@ sae:
 | `ce` | CrossEntropyLoss(weight) | 다중 클래스 (auto class_weights) | multiclass |
 | `infonce` | InfoNCELoss(temperature) | 대조 학습 | contrastive |
 
+### AMP FP32 Loss Computation
+
+AMP (Mixed Precision) 환경에서 loss 안정성을 보장하기 위해, tower output을 FP32로 cast한 후 loss를 계산한다:
+
+```python
+# core/model/ple/model.py
+with torch.cuda.amp.autocast(enabled=False):
+    predictions_f32 = {k: v.float() for k, v in predictions.items()}
+    task_losses = self._compute_task_losses(predictions_f32, inputs.targets)
+```
+
+FP16 tower outputs는 +/-65504 범위를 초과할 수 있으므로, loss 계산은 항상 FP32에서 수행된다.
+
 ### Per-Task Focal Alpha Calibration
 
 Binary 태스크의 focal_alpha는 양성 비율(positive rate)에 기반하여 calibrated:
@@ -346,6 +361,14 @@ Binary 태스크의 focal_alpha는 양성 비율(positive rate)에 기반하여 
     alpha: 0.90    # 높은 alpha → 양성 샘플 가중치 증가
     gamma: 2.0
 ```
+
+### GMM Soft Labels (not KMeans)
+
+클러스터링에 GMM을 사용하여 **soft posterior probabilities**를 생성한다 (KMeans의 hard assignment 대신):
+- `cluster_probs`: (batch, K) — 각 클러스터에 대한 posterior probability
+- `cluster_id`: argmax of cluster_probs
+- `entropy`: Shannon entropy — 클러스터 소속 불확실성
+- BIC-based model selection으로 최적 K 검증
 
 ---
 
@@ -504,7 +527,7 @@ class PLEInput:
 
 | 항목 | 현재 (On-Prem) | AWS (설계) | 변경 이유 |
 |------|---------------|-----------|----------|
-| Expert 종류 | 8종 하드코딩 | ExpertRegistry 11종 (동적) | 도메인별 Expert 선택적 활성화 |
+| Expert 종류 | 8종 하드코딩 | ExpertRegistry 11종 Pool, 7종 Basket 활성 | 도메인별 Expert 선택적 활성화 |
 | Expert 라우팅 | 암묵적 (코드 내 분기) | **5-Axis FeatureRouter** (명시적) | 피처→Expert 매핑 투명화 |
 | Expert 선택 | 전체 사용 | **Pool→Basket→CGC 3계층** | Config-driven subset selection |
 | CGC | 기본 | **dim_normalize=True** + entropy regularization | Expert 출력 균형 + collapse 방지 |

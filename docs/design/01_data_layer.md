@@ -63,8 +63,34 @@ class AdapterRegistry:
 
 | 이름 | 파일 | 데이터 | 특성 |
 |------|------|--------|------|
-| `ealtman2019` | `adapters/ealtman2019_adapter.py` | 24M 신용카드 거래 | DuckDB → 2,000 user 집계 |
-| `santander` | `adapters/santander_adapter.py` | 941K 사용자 × 89 컬럼 | User-level pre-aggregated |
+| `ealtman2019` | `adapters/ealtman2019_adapter.py` | 24M 신용카드 거래 (2K users, 6,146 cards) | DuckDB → ~469D features + 16 labels, 180-step sequence tensor |
+| `santander` | `adapters/santander_adapter.py` | 941K 사용자 × 89 컬럼 + real txn data | DuckDB-native pipeline, cold start 처리 |
+
+### Real Transaction Data 통합
+
+`scripts/augment_santander_with_real_txns.py`가 segment-based pooling으로 실거래 데이터를 Santander 고객에 매칭한다:
+
+| 항목 | 값 |
+|------|------|
+| Real 데이터 | ealtman2019: 2,000 users, 24.4M transactions |
+| 매칭 기준 | (age_group, income_group, activity_level) segment pooling |
+| Augmented 결과 | 941K 고객 x augmented txn sequences |
+| Noise 파라미터 | amount +/-15%, MCC swap 10%, gap +/-20% (config-driven) |
+| 처리 엔진 | 전체 DuckDB SQL (pandas 없음) |
+
+### MCC Hierarchy (configs/mcc_hierarchy.yaml)
+
+ISO 18245 기반 3-level 계층 구조:
+- **L1**: 10개 Major category (travel_entertainment, food_beverage, retail, ...)
+- **L2**: ~30개 Sub-category (airlines, grocery, restaurants, ...)
+- **L3**: 109개 Individual MCC code (데이터셋 내 고유 코드)
+
+### Cold Start 고객 처리
+
+`santander_adapter.py`의 Phase 0 `__main__`에서:
+1. `is_cold_start` 플래그 컬럼 추가 (NULL sequence or length <= min_txn_count)
+2. Cold start 고객의 sequence-derived feature를 0으로 zeroing (synth_*, temporal 접두사)
+3. Config-driven: `pipeline.yaml > cold_start > min_txn_count, zero_prefixes`
 
 ---
 
@@ -248,11 +274,21 @@ if not result.passed:
 
 ---
 
-## Stage 7: DataLoader (Temporal Split)
+## Stage 7: DataLoader (Auto-detect Split Strategy)
 
-`core/pipeline/temporal_split.py`의 `TemporalSplitter`가 시간 기반 분할을 수행한다.
+`containers/training/train.py`의 `main()`이 데이터 특성에 따라 자동으로 split 전략을 결정한다.
 
-### Temporal Split Config
+### Cross-sectional Auto-detect
+
+```python
+# train.py: split strategy selection
+if >80% of rows share the same date:
+    → Cross-sectional data → random split (seeded)
+else:
+    → Multi-date data → temporal split (DuckDB SQL)
+```
+
+### Temporal Split Config (multi-date 데이터일 경우)
 
 ```yaml
 temporal_split:
@@ -263,19 +299,26 @@ temporal_split:
   val_ratio: 0.15       # test = 1 - 0.7 - 0.15 = 0.15
 ```
 
-### Random Split 제거
-
-기존 random split은 temporal leakage를 유발하므로 **완전 제거**:
-
-```
-[Before] Random split → 미래 데이터가 train에 섞임 → 과적합
-[After]  Temporal split → train < val < test (시간순) + 30일 갭
-```
-
 ```
 Time ──────────────────────────────────────────────────▶
      │ Train (70%)  │ gap │ Val (15%) │ gap │ Test (15%) │
                      30d                 30d
+```
+
+### Per-task Validation Split Strategy
+
+`data.split_strategy`에서 task group별 val_method를 지정할 수 있다:
+- `random`: 전체 val set 사용 (기본)
+- `temporal_latest`: val set 중 최신 snapshot_date 행만 평가
+
+```yaml
+data:
+  split_strategy:
+    lifecycle:
+      val_method: temporal_latest
+      tasks: [churn_signal, product_stability]
+    engagement:
+      val_method: random
 ```
 
 ---
@@ -298,6 +341,28 @@ DuckDB는 단일 머신에서 **수백 GB까지 처리 가능**하다. Pandas fa
 
 `core/pipeline/sequence_builder.py`가 flat DataFrame을 3D 텐서로 변환한다.
 
+### SequenceBuilder 모드
+
+| 모드 | 설명 | 설정 |
+|------|------|------|
+| **count_based** (legacy) | 마지막 `max_len` 항목 슬라이싱 | `mode: count_based` |
+| **time_based** | date-range window 필터링 (sliding window 지원) | `mode: time_based, window_days: 90` |
+
+Time-based 모드는 `timestamp_col`이 데이터에 존재하면 auto-detect된다.
+
+### Sliding Window Bootstrapping
+
+`stride_days > 0` 설정 시 entity당 여러 overlapping window sample 생성:
+
+```yaml
+txn_sequences:
+  mode: time_based
+  window_days: 90
+  stride_days: 30        # 30일 간격 sliding window
+  max_len: 200           # safety cap
+  timestamp_col: txn_date
+```
+
 ### 거래 시퀀스 (ealtman 기반)
 
 ```yaml
@@ -306,8 +371,10 @@ txn_sequences:
   columns:
     txn_amount_seq: {feat_dim: 1, dtype: float}
     txn_mcc_seq: {feat_dim: 1, dtype: int}
-    txn_hour_seq: {feat_dim: 1, dtype: int}
+    txn_day_offset_seq: {feat_dim: 1, dtype: int}   # 날짜 대신 일수 오프셋 (snap_date 기준)
 ```
+
+**txn_day_offset_seq**: YYYYMMDD 절대 날짜 대신 `snap_date` 기준 상대 일수 오프셋을 사용한다 (augment 스크립트에서 생성). 이로써 시계열 모델이 절대 날짜가 아닌 시간 간격 패턴을 학습한다.
 
 ### 상품 보유 시퀀스 (Santander 17개월)
 
@@ -321,7 +388,7 @@ product_sequences:
     # ... 24개 상품 + num_products + acquisitions + churns = 27 seq cols
 ```
 
-출력: `event_sequences.npy`, `session_sequences.npy` (3D: batch × seq_len × feat_dim)
+출력: `sequences.npy` (3D: batch x seq_len x feat_dim), `seq_lengths.npy` (1D: 실제 시퀀스 길이)
 
 ---
 
@@ -439,8 +506,11 @@ Features → [LeakageValidator] → [Temporal Split] → Training
 |------|---------------|-----------|----------|
 | 스키마 관리 | 4개 YAML 분산 | 단일 schema.yaml + Registry | 일관성, 자동 검증 |
 | 데이터 그룹 | G1-G10 하드코딩 | 5-Axis 분류 (State/Snapshot/Timeseries/Hierarchy/Item) | Expert 라우팅 명시적 기반 |
-| 쿼리 엔진 | DuckDB + Pandas fallback | **DuckDB-only** (cuDF 선택적 가속) | 단일 경로, GPU 가속 옵션 |
-| 데이터 분할 | Random split | **Temporal split + gap_days=30** | 누수 방지 |
+| 쿼리 엔진 | DuckDB + Pandas fallback | **DuckDB-native** (cuDF 선택적 가속, pandas only at generator boundary) | 단일 경로, GPU 가속 옵션 |
+| 데이터 분할 | Random split | **Auto-detect** (cross-sectional → random / multi-date → temporal split + gap_days) | 자동 감지 + 누수 방지 |
+| 시퀀스 빌드 | Count-based 고정 | **Time-based + sliding window bootstrapping** (stride_days) | 가변 길이, data augmentation |
+| Training 로딩 | pd.read_parquet | **PyArrow zero-copy parquet** (pandas 없음 hot path) | 메모리 효율, 속도 |
+| Cold Start | 없음 | **is_cold_start flag + sequence-derived feature zeroing** | cold start 고객 대응 |
 | 시퀀스 처리 | 전체 시퀀스 사용 | **Truncate last month + prod recompute** | 레이블 누수 제거 |
 | 누수 검증 | 없음 | **LeakageValidator 4-check** | 자동 누수 감지 |
 | 레이블 생성 | 코드 내 하드코딩 | **LabelDeriver (config-driven, 18 tasks)** | 선언적, 재현 가능 |

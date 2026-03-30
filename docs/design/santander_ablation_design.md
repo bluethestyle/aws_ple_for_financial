@@ -2,7 +2,7 @@
 
 > **프로젝트**: AIOps PLE Financial — Santander Customer Product Recommendation
 > **데이터셋**: 941,132 users x 89 columns x 18 tasks x 7 shared experts
-> **최종 갱신**: 2026-03-25
+> **최종 갱신**: 2026-03-30
 > **Config 경로**: `configs/santander/pipeline.yaml`, `configs/santander/feature_groups.yaml`, `configs/santander/item_universe.yaml`
 > **Orchestrator**: `scripts/run_santander_ablation.py`
 
@@ -36,7 +36,7 @@ Stage 3    PII 암호화        (선택적) 개인식별정보 암호화
 Stage 4    피처 엔지니어링    FeatureGroupPipeline: 12개 그룹 -> ~500D
 Stage 5    레이블 파생        LabelDeriver: 18개 태스크 레이블 생성
 Stage 5.5  리키지 검증        LeakageValidator: 상관/시퀀스/시간/prod 4개 검증
-Stage 6    시퀀스 빌드        list -> 3D tensor (txn_seq max_len=60, prod_seq max_len=16)
+Stage 6    시퀀스 빌드        Time-based + sliding window → 3D tensor (txn_day_offset_seq, prod_seq)
 Stage 7    DataLoader 구성    PLEDataset -> train_loader / val_loader
 Stage 8    학습 (Teacher)     PLE 모델 학습 (Phase 1 joint + Phase 2 freeze)
 Stage 8.5  모델 분석          IG attribution + Expert Redundancy CCA + CGC Gate
@@ -108,10 +108,15 @@ raw_data["main"] (941K x 89)
 | 항목 | 값 |
 |---|---|
 | 총 사용자 수 | 941,132 |
-| 총 컬럼 수 | 89 |
-| 데이터 형식 | Parquet (`data/synthetic/santander_final.parquet`) |
+| 총 컬럼 수 | 89 (원본) + augmented txn sequences |
+| 데이터 형식 | Parquet |
+| Real txn 소스 | ealtman2019: 2,000 users, 24.4M transactions |
+| Augmentation | Segment pooling: (age_group, income_group, activity_level) 매칭 |
+| MCC Hierarchy | 109 L3 codes, ~30 L2 subcategories, 10 L1 groups (ISO 18245) |
+| 시퀀스 시간 | txn_day_offset_seq (상대 일수 오프셋, YYYYMMDD 아님) |
 | S3 경로 | `s3://aiops-ple-financial/data/santander/` |
 | 백엔드 우선순위 | cudf -> duckdb -> pandas |
+| Cold start | `is_cold_start` flag + sequence-derived feature zeroing |
 
 ### 2.2 5개 컬럼 그룹
 
@@ -120,7 +125,7 @@ raw_data["main"] (941K x 89)
 | **Profile** (인구통계) | 11 | age, income, tenure_months, gender, segment, country, channel, age_group, income_group, is_active, num_products |
 | **Product** (상품 보유) | 24 | prod_saving, prod_checking, ..., prod_auto_debit (binary 0/1) |
 | **Synth** (거래 합성) | 14 | synth_monthly_txns, synth_avg_amount, synth_monthly_spend, synth_unique_mcc, synth_*_ratio, synth_recency/frequency/monetary, synth_stability, synth_fraud_ratio |
-| **Txn Sequence** | 3 | txn_amount_seq (float[]), txn_mcc_seq (int[]), txn_hour_seq (int[]) — max_len=60 |
+| **Txn Sequence** | 3 | txn_amount_seq (float[]), txn_mcc_seq (int[]), txn_day_offset_seq (int[], snap_date 기준 상대 일수) — max_len=60 |
 | **Product Sequence** | 27 | seq_saving, ..., seq_auto_debit, seq_num_products, seq_acquisitions, seq_churns — max_len=17 (truncate to 16) |
 
 ### 2.3 데이터 전처리 규칙
@@ -316,12 +321,20 @@ sae:
 - Expert 출력을 expansion_factor=4로 확장 후 L1 sparsity 적용
 - SAE loss가 전체 loss에 weight=0.01로 추가됨
 
-### 4.5 Logit Transfer 3-Method Dispatch
+### 4.5 AMP FP32 Loss Computation
+
+AMP (Mixed Precision) 환경에서 loss 안정성:
+- Tower output은 FP16으로 계산
+- Loss 계산 시 FP32로 cast (`torch.cuda.amp.autocast(enabled=False)`)
+- FP16 range (+/-65504) overflow 방지
+
+### 4.6 Logit Transfer 3-Method Dispatch
 
 `task_relationships`에 정의된 5개 관계에 대해 `output_concat` 방식으로 소스 태스크의 logit을 타겟 태스크 tower 입력에 연결(concatenate)한다.
 
 - `output_concat`: 소스 태스크 예측값을 타겟 tower 입력에 concat
-- 이외에 `gate_modulation`, `loss_transfer` 방식도 지원 가능 (현재 미사용)
+- `hidden_concat`: 소스 pre-tower hidden과 tower input concat
+- `residual`: 소스 output → Linear → tower_dim, 잔차 합산
 - 전이 강도: logit_transfer_strength = 0.5
 
 ### 4.6 Multidisciplinary Per-Task Routing
@@ -353,16 +366,18 @@ consumption: [18,19,20,21,22,23] # interference 관점
 
 ### 5.1 개요
 
-`scripts/run_santander_ablation.py`가 6-Phase ablation study를 오케스트레이션한다:
+`scripts/run_santander_ablation.py`가 6-Phase, **48 시나리오** ablation study를 오케스트레이션한다. 모든 시나리오는 config에서 동적 생성된다 (`ablation.feature_scenarios: auto`, `ablation.expert_scenarios: auto`).
 
 ```
 Phase 0   데이터 준비          Processing Job (Stage 1-6)
-Phase 1   Feature Group Ablation   16 Training Jobs (full + base_only + 7 bottom-up + 7 top-down)
-Phase 2   Expert Ablation         16 Training Jobs (deepfm baseline + 7 bottom-up + 7 top-down + mlp_only)
-Phase 3   Task x Structure Cross   15 Training Jobs (4 tiers x 4 structures - 1 중복)
+Phase 1   Feature Group Ablation   16 시나리오 (full + base_only + 7 bottom-up + 7 top-down)
+Phase 2   Expert Ablation         16 시나리오 (deepfm baseline + 7 bottom-up + 7 top-down + mlp_only)
+Phase 3   Task x Structure Cross   16 시나리오 (4 tiers x 4 structures)
 Phase 4   Best Config Teacher + Distillation
 Phase 5   Analysis + HTML Report
 ```
+
+Docker-based 실행: `containers/training/Dockerfile`로 로컬 GPU에서도 동일 환경 재현 가능.
 
 ### 5.2 Dimension 1: Feature Group Ablation (16 시나리오)
 
@@ -422,9 +437,9 @@ DeepFM을 기준선으로 한 bottom-up + top-down 설계:
 
 > Phase 1의 `full` 결과를 Phase 2의 `full_basket` baseline으로 재사용 (-1 job)
 
-### 5.4 Dimension 3: Task x Structure Cross (15 시나리오)
+### 5.4 Dimension 3: Task x Structure Cross (16 시나리오)
 
-4개 태스크 티어 x 4개 구조 변형 = 16 조합에서 `tasks_18 x full`은 Phase 1 baseline과 동일하므로 제외 = **15 시나리오**.
+4개 태스크 티어 x 4개 구조 변형 = **16 시나리오**.
 
 **태스크 티어**:
 
@@ -494,8 +509,8 @@ Ablation 시나리오별 학습 설정 (Phase 1-3):
 |---|---|
 | **ProfilerReport 비활성화** | ~$1.50/job 절감 (Processing Job 제거) |
 | **Spot instance 활용** | `use_spot: true`, 최대 70% 비용 절감 |
-| **max_parallel=8** | 8대 spot 인스턴스 동시 실행 |
-| **Spot/On-demand 교대** | `i % max_parallel != max_parallel-1` 로 마지막 슬롯은 on-demand fallback |
+| **max_parallel=4** | 4대 spot 인스턴스 동시 실행 (같은 AZ 경쟁 방지) |
+| **Spot/On-demand 교대** | spot 인스턴스 기본, capacity 부족 시 on-demand fallback |
 | **S3 Resume** | 완료된 시나리오 자동 감지 (`eval_metrics.json` 존재 여부 확인) |
 | **Checkpoint S3 sync** | `/opt/ml/checkpoints/` -> S3 자동 동기화, spot 중단 시 resume |
 | **Phase 1 full 재사용** | Phase 2/3에서 full baseline을 Phase 1 결과로 재사용 (-2 jobs, ~3시간 절감) |
@@ -649,35 +664,40 @@ top_k:
 
 ## 9. 알려진 이슈 및 향후 과제
 
-### 9.1 범주형 인코딩 ad-hoc 처리
+### 9.1 범주형 인코딩 (해결됨)
 
-- **현황**: `containers/training/train.py`에서 범주형 컬럼을 LabelEncoder로 직접 인코딩
-- **문제**: `feature_groups.yaml`에 정의된 categorical_columns와 train.py의 인코딩 로직이 이원화
-- **개선 방향**: Stage 4 (FeatureGroupPipeline) 내부에서 categorical encoding을 통합 처리
+- **현황**: PipelineRunner Stage 2에서 LabelEncoder 기반 categorical encoding 처리
+- **train.py**: PyArrow로 로드하므로 이미 numeric encoding된 상태로 전달
+- **상태**: 해결됨 (Phase 0에서 encoding → train.py는 ZERO preprocessing)
 
-### 9.2 LabelDeriver 위치
+### 9.2 LabelDeriver 위치 (해결됨)
 
-- **현황**: Label 파생 로직이 `train.py` 내부에서 일부 실행됨
-- **문제**: PipelineRunner Stage 5에서 파생해야 하는 레이블이 train.py에서도 중복 파생
-- **개선 방향**: 모든 레이블 파생을 Phase 0 Processing Job (Stage 1-6)으로 완전 이관
+- **현황**: 모든 label 파생이 Phase 0 (PipelineRunner Stage 5)에서 완료됨
+- **train.py**: labels.parquet를 PyArrow로 그대로 로드 (label derivation 없음)
+- **Label dedup**: features와 labels에 중복 컬럼이 있으면 features에서 DROP before merge
+- **상태**: 해결됨
 
-### 9.3 PipelineRunner vs SageMaker Training Job Gap
+### 9.3 Phase 0 → Training Job 데이터 흐름 (확립됨)
 
-- **현황**: `PipelineRunner`는 로컬/단일 머신 실행 가정, SageMaker Training Job은 `train.py` 진입점
-- **문제**: PipelineRunner의 Stage 1-7 결과를 SageMaker에서 활용할 때 데이터 직렬화/역직렬화 gap
-- **개선 방향**: Phase 0에서 Stage 1-6 결과를 S3에 저장하고, Training Job이 S3에서 직접 로드하는 2-phase 구조 확립
+- **현황**: Phase 0 artifacts → S3 → train.py `load_ready_data()` (PyArrow zero-copy)
+- **구조**: features.parquet, labels.parquet, feature_schema.json, label_schema.json, split_indices.json
+- **LeakageValidator**: train.py에서 학습 전 자동 호출, >0.95 상관 피처 auto-drop
+- **상태**: 확립됨
 
 ### 9.4 피처 그룹 생성기 구현 상태
 
-| Generator | 상태 | 비고 |
-|---|---|---|
-| `tda` (global/local) | 구현됨 | ripser + giotto-ph 의존 |
-| `hmm` | 구현됨 | hmmlearn 의존 |
-| `mamba` | 구현됨 | mamba-ssm 의존 (GPU only) |
-| `hyperbolic_embedding` | 구현됨 | Poincare ball model |
-| `lightgcn` | 구현됨 | sparse bipartite graph |
-| `gmm` | 구현됨 | sklearn 의존 |
-| `model_features` | 구현됨 | KMeans + Bandit + LNN |
+8개 핵심 Generator 모두 구현 완료. cuDF primary / pandas fallback 패턴:
+
+| Generator | 파일 | 상태 | GPU 가속 | 비고 |
+|---|---|---|---|---|
+| `tda` (global/local) | `core/feature/generators/tda.py` | 구현됨 | cuPY + ripser | Persistence Diagram |
+| `hmm` | `core/feature/generators/hmm.py` | 구현됨 | - | hmmlearn Triple-Mode |
+| `mamba` | `core/feature/generators/mamba.py` | 구현됨 | GPU (mamba-ssm) | Selective SSM |
+| `graph` | `core/feature/generators/graph.py` | 구현됨 | - | Poincare ball model |
+| `gmm` | `core/feature/generators/gmm.py` | 구현됨 | cuML (optional) | **GMM soft labels** (not KMeans) |
+| `model_derived` | `core/feature/generators/model_features.py` | 구현됨 | - | GMM soft probs(5D) + Bandit(4D) + LNN(18D) |
+| `economics` | `core/feature/generators/economics.py` | 구현됨 | - | Income decomp(8D) + Fin behavior(9D) |
+| `merchant_hierarchy` | `core/feature/generators/merchant_hierarchy.py` | 구현됨 | - | MCC L1/L2/L3 + Brand SVD |
 
 ### 9.5 평가 메트릭 체계
 
@@ -740,7 +760,7 @@ top_k:
 | # | 그룹명 | 유형 | 출력 차원 | 대상 Expert | Distill |
 |---|---|---|---|---|---|
 | 11 | gmm_clustering | generate | 22D | deepfm, mlp | O (0.8) |
-| 12 | model_derived | generate | 27D | temporal_ensemble, deepfm | X |
+| 12 | model_derived | generate | 27D | temporal_ensemble, deepfm | X | GMM soft probs(5D) + Bandit(4D) + LNN(18D) |
 
 **합계**: ~383D (transform 80D + generate ~303D) + categorical embeddings -> ~500D
 

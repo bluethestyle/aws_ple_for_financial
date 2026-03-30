@@ -14,28 +14,52 @@ Stage 10:  CPE + Agentic Reason Orchestrator
 
 ---
 
-## PipelineRunner 통합 진입점
+## Training 진입점
 
-`containers/training/train.py`에 두 가지 진입 경로가 존재한다:
+`containers/training/train.py`의 `main()`이 SageMaker Training Job의 단일 진입점이다.
 
-### 1. Legacy 경로 — `main()`
-기존 SageMaker Training Job에서 직접 호출하는 경로. Parquet 로드 → PLETrainer 실행.
+### 데이터 로딩: PyArrow (no pandas in hot path)
 
-### 2. Pipeline 경로 — `main_pipeline(config_path)`
-`--pipeline config.yaml` 플래그로 활성화. PipelineRunner가 Stage 1~10 전체를 오케스트레이션.
-
-```bash
-# Legacy (기존 호환)
-python train.py
-
-# Pipeline (PipelineRunner 경유)
-python train.py --pipeline configs/santander/pipeline.yaml
+```python
+def load_ready_data(channel_dir: str) -> dict:
+    """Load training-ready artifacts produced by Phase 0.
+    Returns PyArrow Tables (zero-copy from parquet). No pandas in the hot path.
+    """
+    # DuckDB DESCRIBE로 scalar column 탐지 (list/struct 자동 제외)
+    # PyArrow native pq.read_table (no pandas intermediary)
+    # NaN diagnostics, dtype summary 자동 로깅
 ```
 
-`main_pipeline()`은 다음을 수행한다:
-1. `load_config(config_path)` — YAML 로드
-2. SageMaker HP 오버라이드 적용 (`SM_HPS` 환경변수)
-3. `PipelineRunner(config).run(output_dir=SM_MODEL_DIR)` — 전체 파이프라인 실행
+반환 구조:
+| Key | Type | 설명 |
+|-----|------|------|
+| `features` | `pyarrow.Table` | normalized numeric features |
+| `labels` | `pyarrow.Table` | derived labels |
+| `sequences` | `np.ndarray` | padded 3D tensor |
+| `feature_schema` | `dict` | column names, group_ranges, expert_routing |
+| `label_schema` | `dict` | task definitions |
+| `split_indices` | `dict` | train/val/test row indices |
+
+### Split Strategy: Cross-sectional Auto-detect
+
+```python
+# If >80% of rows share the same date → cross-sectional → random split
+# Otherwise → temporal split (DuckDB SQL, gap_days from config)
+```
+
+- **Cross-sectional** (Santander): 단일 snapshot_date → seeded random split
+- **Multi-date**: DuckDB SQL로 temporal split 수행 (gap_days 적용)
+
+### Label Deduplication
+
+Label columns이 features Arrow Table에도 포함된 경우, features에서 label columns을 **DROP before merge**하여 중복 방지:
+
+```python
+if labels is None:
+    label_cols_present = [t["label_col"] for t in tasks if t["label_col"] in features.column_names]
+    labels = features.select(label_cols_present)
+    features = features.select([c for c in features.column_names if c not in label_cols_present])
+```
 
 ---
 
@@ -100,14 +124,40 @@ class PLETrainer:
     1. Phase 1/2 자동 전환 (freeze/unfreeze 관리)
     2. Per-task loss dispatch (build_loss 팩토리)
     3. Uncertainty weighting (Kendall et al.) — learnable log_var
-    4. Mixed Precision (fp16 AMP) + Dynamic loss scaling
+    4. Mixed Precision (fp16 AMP) + FP32 loss computation (overflow 방지)
     5. Gradient clipping + accumulation
     6. Expert별 learning rate override
     7. S3 체크포인트 (Spot 중단 자동 대비)
     8. SageMaker Experiments 메트릭 로깅
     9. Callback system (EarlyStopping, LRScheduler, Checkpoint, MetricLogger)
     10. Per-task metric computation (AUC, MAE, F1, Recall@K)
+    11. VRAM diagnostics per epoch (alloc/reserved/peak MB)
+    12. Per-task validation masks (temporal_latest / random)
     """
+```
+
+### VRAM Diagnostics per Epoch
+
+매 epoch 종료 시 GPU 메모리 사용량을 로깅한다:
+
+```python
+# core/training/trainer.py
+_alloc = torch.cuda.memory_allocated() / 1e6
+_reserved = torch.cuda.memory_reserved() / 1e6
+_peak = torch.cuda.max_memory_allocated() / 1e6
+# epoch_record에 gpu_memory_allocated_mb, gpu_memory_reserved_mb, gpu_memory_peak_mb 기록
+```
+
+### LeakageValidator + Auto-drop
+
+`train.py`에서 학습 전 LeakageValidator를 호출하고, >0.95 상관 피처를 자동 제거한다:
+
+```python
+validator = LeakageValidator(correlation_threshold=0.95)
+result = validator.validate(features_pd, labels_pd, config)
+if not result.passed:
+    # regex로 leaking feature name 추출 → Arrow Table에서 제거
+    features = features.select([c for c in features.column_names if c not in drop_cols])
 ```
 
 ### Per-Task Loss 계산 흐름
@@ -240,27 +290,28 @@ LGBM Students (CPU, per-task)
 
 ### 개요 — Santander 4-Dimension Ablation
 
-`scripts/run_santander_ablation.py`가 6-Phase, 36 SageMaker Job 체계적 ablation을 실행한다.
+`scripts/run_santander_ablation.py`가 6-Phase, 48 시나리오 ablation을 오케스트레이션한다. 모든 시나리오는 `pipeline.yaml` + `feature_groups.yaml`에서 동적 생성된다 (하드코딩 없음).
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                    4-Dimension Ablation Framework                │
+│                    (학계 표준 Bottom-up + Top-down)              │
 │                                                                  │
-│  Dim 1: Feature Ablation                                        │
-│    5-Axis별 피처 그룹 제거 → 축 기여도 측정                        │
-│    full / no_tda / no_temporal / no_graph / no_hmm /            │
-│    no_demographics / base_only                                   │
+│  Dim 1: Feature Group Ablation (16 scenarios)                   │
+│    Bottom-up: base_only, base+X (각 advanced 그룹 하나씩 추가)   │
+│    Top-down: full-X (각 그룹 하나씩 제거 → irreplaceability)     │
+│    해석: bottom-up 기여 vs top-down irreplaceability 비교        │
 │                                                                  │
-│  Dim 2: Expert Ablation                                         │
-│    개별/그룹 Expert 제거 (피처-전문가 연동)                        │
-│    full_basket / no_deepfm / no_temporal / no_hgcn /            │
-│    no_perslay / no_causal / no_lightgcn / no_ot                 │
+│  Dim 2: Expert Ablation (16 scenarios)                          │
+│    DeepFM baseline + bottom-up (deepfm+X pairwise 추가)         │
+│    Top-down: full-X (각 expert 하나씩 제거)                      │
+│    mlp_only (minimal baseline)                                   │
 │                                                                  │
-│  Dim 3: Task x Structure Cross                                  │
-│    태스크 수 스케일링 (4 → 8 → 18) + PLE/adaTT 변형             │
-│    PLE+adaTT / PLE only / adaTT only / baseline                 │
+│  Dim 3: Task x Structure Cross (16 scenarios)                   │
+│    태스크 수 스케일링 (4 → 8 → 15 → 18)                         │
+│    구조 변���: shared_bottom / ple_only / adatt_only / full       │
 │                                                                  │
-│  Dim 4: Structure Ablation                                      │
+│  Dim 4: Structure Ablation (Phase 3에 포함)                     │
 │    Loss weighting: Uncertainty vs GradNorm vs DWA vs Fixed      │
 │    PLE stacking depth: 1 → 2 → 3 layers                        │
 │    adaTT intra/inter strength 변형                               │
@@ -269,68 +320,84 @@ LGBM Students (CPU, per-task)
 
 ### 6-Phase 실행 계획
 
-| Phase | 내용 | Job 수 | Instance |
-|-------|------|--------|----------|
-| **0** | Data Preparation (Processing Job) | 1 | CPU |
-| **1** | Feature Group Ablation | 10 | GPU (g4dn.xlarge) |
-| **2** | Expert Ablation | 7 | GPU |
-| **3** | Task x Structure Cross (핵심 실험) | 16 | GPU |
+| Phase | 내용 | Scenario 수 | Instance |
+|-------|------|------------|----------|
+| **0** | Data Preparation (Processing Job) | 1 | CPU (ml.m5.xlarge) |
+| **1** | Feature Group Ablation (bottom-up + top-down) | 16 | GPU (g4dn.xlarge) |
+| **2** | Expert Ablation (bottom-up + top-down) | 16 | GPU |
+| **3** | Task x Structure Cross (4 tiers x 4 variants) | 16 | GPU |
 | **4** | Best-Config Teacher + Distillation | 2 | GPU + CPU |
 | **5** | Analysis + HTML Report | 1 | CPU |
-| **합계** | | **36+** | |
+| **합계** | | **48+** | |
 
-### Dim 1: Feature Ablation
+### Dim 1: Feature Ablation (동적 생성)
 
-```yaml
-ablation:
-  feature_groups:
-    - name: full
-      remove: []
-    - name: no_tda
-      remove: [tda_global, tda_local]
-    - name: no_temporal
-      remove: [mamba_temporal]
-    - name: no_graph
-      remove: [graph_collaborative, product_hierarchy]
-    - name: no_hmm
-      remove: [hmm_states]
-    - name: no_demographics
-      remove: [demographics]
-    - name: base_only
-      remove: [tda_global, tda_local, mamba_temporal, hmm_states,
-               graph_collaborative, product_hierarchy, gmm_clustering, model_derived]
+Config에서 `ablation.feature_scenarios: auto`로 설정하면 `feature_groups.yaml`에서 자동 생성:
+
+```python
+# scripts/run_santander_ablation.py
+# base_groups: [demographics, product_holdings]  (항상 포함)
+# advanced_groups: 나머지 모든 enabled feature groups
+
+scenarios = [
+    {"name": "full", "remove": []},
+    {"name": "base_only", "remove": advanced_groups},
+    # Bottom-up: base + 하나씩
+    {"name": "base+txn_behavior", "remove": [all advanced except txn_behavior]},
+    {"name": "base+tda_global", "remove": [all advanced except tda_global]},
+    # ...
+    # Top-down: full - 하나씩
+    {"name": "full-txn_behavior", "remove": ["txn_behavior"]},
+    {"name": "full-tda_global", "remove": ["tda_global"]},
+    # ...
+]
 ```
 
-### Dim 2: Expert Ablation (피처-전문가 연동)
+**해석 프레임워크:**
+- Bottom-up 기여 = `base+X` 성능 - `base_only` 성능 (독립 기여)
+- Top-down irreplaceability = `full` 성능 - `full-X` 성능 (대체 불가 정보)
 
-```yaml
-ablation:
-  experts:
-    - name: full_basket
-      shared: [deepfm, temporal_ensemble, hgcn, perslay, causal, lightgcn, optimal_transport]
-    - name: no_deepfm
-      shared: [temporal_ensemble, hgcn, perslay, causal, lightgcn, optimal_transport]
-    - name: no_temporal
-      shared: [deepfm, hgcn, perslay, causal, lightgcn, optimal_transport]
-    # ... 개별 Expert 제거
+### Dim 2: Expert Ablation (동적 생성)
+
+Config에서 `ablation.expert_scenarios: auto`로 설정하면 `model.expert_basket.shared`에서 자동 생성:
+
+```python
+# base_expert: deepfm (ablation.base_expert)
+# minimal_expert: mlp (ablation.minimal_expert)
+
+scenarios = [
+    {"name": "deepfm_only", "experts": ["deepfm"]},
+    {"name": "deepfm+temporal", "experts": ["deepfm", "temporal_ensemble"]},
+    # ... (각 expert pairwise 추가)
+    {"name": "full-deepfm", "experts": [7 experts minus deepfm]},
+    # ... (각 expert 제거)
+    {"name": "mlp_only", "experts": ["mlp"]},
+]
 ```
+
+Feature-expert 연동: 피처 그룹이 제거될 때 해당 expert만 받는 expert도 자동 비활성화.
 
 ### Dim 3: Task x Structure Cross
 
-```yaml
-# 태스크 수 x 구조 변형 = 4 x 4 = 16 실험
-task_subsets:
-  4_tasks: [has_nba, churn_signal, product_stability, nba_primary]
-  8_tasks: [has_nba, churn_signal, product_stability, nba_primary,
-            spend_level, cross_sell_count, engagement_score, next_mcc]
-  18_tasks: all
+4개 태스크 티어 x 4개 구조 변형 = 16 시나리오 (full 중복 제거 시 15):
 
-structure_variants:
-  - name: ple_adatt         # PLE(stacked CGC) + adaTT — full
-  - name: ple_only          # PLE만 (adaTT 없음)
-  - name: adatt_only        # adaTT만 (단일 MLP shared)
-  - name: baseline          # 단순 멀티태스크 MLP
+```yaml
+task_tiers:            # ablation.task_tiers
+  tasks_4: [has_nba, churn_signal, product_stability, nba_primary]
+  tasks_8: [+spend_level, cross_sell_count, engagement_score, next_mcc]
+  tasks_15: [+Tier 3 Product Group + Segmentation]
+  tasks_18: all
+
+structure_variants:    # ablation.structure_variants
+  shared_bottom: {use_ple: false, use_adatt: false}
+  ple_only: {use_ple: true, use_adatt: false}
+  adatt_only: {use_ple: false, use_adatt: true}
+  full: {use_ple: true, use_adatt: true}
 ```
+
+### Docker-based Ablation Runner
+
+`containers/training/Dockerfile`로 로컬 GPU PC에서 SageMaker 환경을 동일하게 재현할 수 있다. 로컬에서 end-to-end 검증 후 SageMaker에 제출하는 워크플로우를 따른다.
 
 ### Ablation HP (Hyperparameters)
 
@@ -451,15 +518,15 @@ Santander 학습 기준 (50 epochs, ~4시간):
 |------|---------------|-----------|----------|
 | 실행 환경 | 고정 GPU 서버 | SageMaker Spot (필요 시만) | 비용 70% 절감 |
 | 2-Phase | trainer.py 내부 로직 | SageMaker Job 2개 분리 | 각 Phase 독립 재실행 가능 |
-| 데이터 로딩 | TensorDataset + PLEDataset 이중 | **PLEDataset 단일** + temporal split | 레거시 제거, 누수 방지 |
+| 데이터 로딩 | TensorDataset + PLEDataset 이중 | **PyArrow zero-copy** + cross-sectional auto-detect split | pandas 없음, 자동 split 감지 |
 | 학습 루프 | 인라인 루프 + PLETrainer 이중 | **PLETrainer 단일** (AMP/callbacks/체크포인트) | 일관성 |
 | 태스크 수 | 16개 | **18개** (Tier 5 txn-based NBA 추가) | 거래 시퀀스 활용 |
 | Loss 함수 | 코드 내 하드코딩 | **build_loss() + focal_alpha calibrated** | positive rate 반영 |
 | Loss 가중치 | 불확실성 (미활성화) | **Uncertainty weighting 활성화** | 자동 밸런싱 |
-| 모델 구조 | PLE + adaTT | **+ Evidential + SAE + HMM routing + MD routing** | 불확실성 + 해석 가능성 |
+| 모델 구조 | PLE + adaTT | **+ 7 heterogeneous experts + Evidential + SAE + AMP FP32 loss** | 불확실성 + 해석 가능성 |
 | Logit Transfer | 단일 방법 | **3-method dispatch (5 edges)** | 관계 유형별 최적화 |
 | 해석 가능성 | 없음 | **3-stage (A:분석, B:사유, C:서빙)** | 감사 가능한 추천 |
 | 증류 | distillation.py 단일 | **config 기반 + fidelity gate** | 품질 보증 |
-| Ablation | 없음 | **4-Dimension × 36 SageMaker jobs** | 체계적 실험 |
+| Ablation | 없음 | **4-Dimension × 48 scenarios** (bottom-up + top-down) | 체계적 실험, Docker local mode |
 | 파이프라인 추적 | 없음 | **pipeline_state.json + resume** | 재현성, 장애 복구 |
 | 재현성 | 느슨 (코드+데이터 별도) | YAML config + S3 + temporal split | 완전 재현 |

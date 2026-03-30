@@ -8,7 +8,7 @@ Feature Engineering은 Stage 4 ~ Stage 6을 담당한다:
 Stage 4:   FeatureGroupPipeline + Normalization (per axis generators + PowerLawAwareScaler)
 Stage 5:   LabelDeriver (18 tasks, config-driven derivation)
 Stage 5.5: LeakageValidator (sequence/correlation/product/temporal)
-Stage 6:   SequenceBuilder (flat → 3D tensors: event_sequences.npy, session_sequences.npy)
+Stage 6:   SequenceBuilder (time-based + sliding window → sequences.npy, seq_lengths.npy)
 ```
 
 ---
@@ -142,6 +142,18 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
   #   journey  → value, consumption groups
   #   lifecycle → lifecycle group
   #   behavior  → engagement group
+
+- name: gmm_clustering
+  axis: snapshot
+  generator: gmm
+  generator_params:
+    n_components: 20       # K=20 clusters
+    covariance_type: full
+    # BIC-based validation: warns if K is suboptimal
+    # Cold-start fallback: uniform distribution for small data
+  output_dim: 22           # K soft probs(20) + entropy(1) + dominant(1)
+  target_experts: [deepfm, mlp]
+  # NOTE: GMM soft labels (not KMeans) — posterior probabilities + Shannon entropy
 ```
 
 ### Timeseries 축 — 단기 시퀀스
@@ -177,6 +189,16 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
     curvature: 1.0
   output_dim: 20
   target_experts: [hgcn]
+
+- name: merchant_hierarchy
+  axis: hierarchy
+  generator: merchant_hierarchy
+  generator_params:
+    mcc_hierarchy_path: configs/mcc_hierarchy.yaml   # ISO 18245, L1/L2/L3
+    n_svd_components: 8       # Brand SVD embedding dim
+  output_dim: 21              # MCC L1(4D) + L2(4D) + Brand SVD(8D) + Stats(4D) + Radius(1D)
+  target_experts: [hgcn]
+  # MCC Hierarchy: 10 L1 groups, ~30 L2 subcategories, 109 L3 codes in dataset
 
 - name: product_hierarchy
   axis: hierarchy
@@ -215,25 +237,36 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
 
 ## Feature Generator Registry
 
-### 현재 등록된 Generator (Pool)
+### 8 구현 완료 Generator
+
+모든 Generator는 `core/feature/generators/` 디렉토리에 구현되어 ���으며, `FeatureGeneratorRegistry`에 ���록된다. cuDF primary / pandas fallback 패턴을 따른다. Generator output은 cuDF DataFrame 또는 pandas DataFrame이다.
+
+| # | 등록 이름 | 파일 | Axis | Output | GPU 가속 | 설명 |
+|---|-----------|------|------|--------|---------|------|
+| 1 | `tda` | `core/feature/generators/tda.py` | Snapshot/Timeseries | 70D | cuPY + ripser | Persistence Diagram (short+long) |
+| 2 | `hmm` | `core/feature/generators/hmm.py` | Snapshot | 48D | hmmlearn | HMM Triple-Mode 상태 |
+| 3 | `mamba` | `core/feature/generators/mamba.py` | Timeseries | 50D | GPU (mamba-ssm) | Mamba SSM 시퀀스 |
+| 4 | `graph` | `core/feature/generators/graph.py` | Hierarchy | 20D | - | Poincare 쌍곡 임베딩 |
+| 5 | `gmm` | `core/feature/generators/gmm.py` | Snapshot | 22D | cuML (optional) | GMM soft labels (K=20, not KMeans) |
+| 6 | `model_derived` | `core/feature/generators/model_features.py` | Snapshot | 27D | - | GMM soft probs(5D) + Bandit(4D) + LNN(18D) |
+| 7 | `economics` | `core/feature/generators/economics.py` | State | 17D | - | Income decomposition(8D) + Financial behavior(9D) |
+| 8 | `merchant_hierarchy` | `core/feature/generators/merchant_hierarchy.py` | Hierarchy | 21D | - | MCC L1(4D) + L2(4D) + Brand SVD(8D) + Stats(4D) + Radius(1D) |
+
+### 추가 Generator (보조)
 
 | # | 등록 이름 | 파일 | Axis | Output | 설명 |
 |---|-----------|------|------|--------|------|
-| 1 | `tda` | `core/feature/generators/tda.py` | Snapshot/Timeseries | 70D | Persistence Diagram (short+long) |
-| 2 | `hmm` | `core/feature/generators/hmm.py` | Snapshot | 48D | HMM Triple-Mode 상태 |
-| 3 | `graph` | `core/feature/generators/graph.py` | Hierarchy | 20D | Poincare 쌍곡 임베딩 |
-| 4 | `temporal_pattern` | `core/feature/generators/temporal.py` | Timeseries | 가변 | 시계열 집계 + 주기 인코딩 |
-| 5 | `multidisciplinary` | `core/feature/generators/multidisciplinary.py` | State | 24D | 화학/전염병/간섭/범죄 |
-| 6 | `mamba` | (등록 예정) | Timeseries | 50D | Mamba SSM |
-| 7 | `economics` | (등록 예정) | State | 17D | MPC, 소득 탄력성 |
-| 8 | `merchant_hierarchy` | (등록 예정) | Hierarchy | 21D | MCC L1/L2 + 브랜드 |
-| 9 | `gmm` | (등록 예정) | Snapshot | 22D | GMM 클러스터링 |
-| 10 | `model_features` | (등록 예정) | Snapshot | 27D | HMM summary + Bandit + LNN |
-| 11 | `product_trend` | (신규) | Snapshot | 48D | 월별 상품 보유 변화 |
-| 12 | `product_hierarchy` | (신규) | Hierarchy | 16D | 상품 카테고리 트리 |
-| 13 | `bipartite_graph` | (신규) | Item | 64D | 고객x상품 bipartite |
-| 14 | `lightgcn` | (신규) | Item | 64D | LightGCN 협업 필터링 |
-| 15 | `patchtst` | (신규, 향후) | Timeseries | 64D | Patch 시계열 트랜스포머 |
+| 9 | `temporal_pattern` | `core/feature/generators/temporal.py` | Timeseries | 가변 | 시계열 집계 + 주기 인코딩 |
+| 10 | `multidisciplinary` | `core/feature/generators/multidisciplinary.py` | State | 24D | 화학/전염병/간섭/범죄 |
+| 11 | `phase_transition` | `core/feature/generators/phase_transition.py` | Snapshot | 10D | Phase transition features |
+
+### GPU Utility Layer
+
+`core/feature/generators/gpu_utils.py`가 모든 Generator에 공통 GPU 유틸리티를 제공:
+- Device detection (`get_device(prefer_gpu=True)`)
+- Adaptive batch sizing
+- OOM-retry decorator (GPU 메모리 부족 시 자동 CPU fallback)
+- `has_cudf()`, `has_cuml()`, `has_cupy()` lazy import 체크
 
 ---
 
@@ -438,4 +471,5 @@ SageMaker Processing Job
 | 레이블 생성 | 코드 하드코딩 | **LabelDeriver** (config-driven 18 tasks) | 선언적, 재현 가능 |
 | 누수 방지 | 없음 | **LeakageValidator** (4-check) + temporal split | 자동 누수 감지 |
 | 피처 버전 | 없음 | features/v{version}/ | 재현성, 롤백 |
-| GPU 가속 | 없음 | cuPY (TDA, scaler), cuDF (preprocessing) | 5-10x 가속 |
+| Cold Start | 없음 | **is_cold_start flag + sequence-derived feature zeroing** | cold start 고객 대응 |
+| GPU 가속 | 없음 | cuDF primary (generators), cuPY (TDA, scaler), cuML (GMM) | 5-10x 가속 |
