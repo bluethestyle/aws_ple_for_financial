@@ -993,12 +993,140 @@ def _batch_to_ple_input(batch, task_names, device):
 
 
 # ---------------------------------------------------------------------------
+# Per-task validation mask builder
+# ---------------------------------------------------------------------------
+
+def _build_task_val_masks(
+    config: dict,
+    features,
+    split_indices: Optional[dict],
+    label_schema: dict,
+) -> Optional[Dict[str, np.ndarray]]:
+    """Build per-task boolean masks for the validation set.
+
+    Reads ``data.split_strategy`` from *config*.  For each task group whose
+    ``val_method`` is ``temporal_latest``, the mask is ``True`` only for
+    rows in the val set whose date equals the latest snapshot_date in that
+    val set.  Tasks with ``val_method == random`` (or not listed) use the
+    full val set (no mask entry needed).
+
+    Returns
+    -------
+    dict or None
+        Mapping ``task_name -> np.ndarray[bool]`` of length ``len(val_idx)``,
+        or ``None`` if no split_strategy is configured.
+    """
+    split_strategy = config.get("data", {}).get("split_strategy")
+    if not split_strategy:
+        return None
+
+    # Identify which tasks need temporal_latest masking
+    temporal_task_names: set = set()
+    for _group_cfg in split_strategy.values():
+        if not isinstance(_group_cfg, dict):
+            continue
+        if _group_cfg.get("val_method") == "temporal_latest":
+            for t in _group_cfg.get("tasks", []):
+                temporal_task_names.add(t)
+
+    if not temporal_task_names:
+        logger.info("split_strategy: all tasks use random val — no masks needed")
+        return None
+
+    # We need val indices and a date column to build masks
+    if not split_indices:
+        logger.info("split_strategy: no split_indices yet — masks deferred to DataLoader")
+        return None
+
+    val_idx = split_indices.get("val", split_indices.get("validation", []))
+    if not val_idx:
+        logger.info("split_strategy: empty val set — no masks needed")
+        return None
+
+    date_col = config.get("data", {}).get("temporal_split", {}).get(
+        "date_col",
+        config.get("data", {}).get("date_col", "snapshot_date"),
+    )
+
+    # Try to get the date values for val rows
+    _val_dates = None
+    if date_col in features.columns:
+        _val_dates = features.iloc[val_idx][date_col].values
+    else:
+        # Try loading from parquet via DuckDB (date may have been separated)
+        try:
+            import duckdb as _ddb_vm
+            from pathlib import Path as _PathVM
+            _parquet_paths = list(_PathVM(os.environ.get("SM_CHANNEL_TRAIN", ".")).glob("**/*.parquet"))
+            if _parquet_paths:
+                _uri = str(_parquet_paths[0]).replace("\\", "/")
+                _con_vm = _ddb_vm.connect()
+                try:
+                    _all_dates = _con_vm.execute(
+                        f'SELECT "{date_col}" FROM \'{_uri}\''
+                    ).df()[date_col].values
+                    _val_dates = _all_dates[val_idx]
+                except Exception:
+                    pass
+                finally:
+                    _con_vm.close()
+        except Exception:
+            pass
+
+    if _val_dates is None:
+        logger.warning(
+            "split_strategy: date column '%s' not available — cannot build temporal masks",
+            date_col,
+        )
+        return None
+
+    # Find latest date in val set
+    import pandas as pd
+    _val_dates_pd = pd.to_datetime(pd.Series(_val_dates))
+    _latest_date = _val_dates_pd.max()
+    _latest_mask = (_val_dates_pd == _latest_date).values  # bool array, len = len(val_idx)
+
+    n_latest = int(_latest_mask.sum())
+    n_val = len(val_idx)
+    logger.info(
+        "split_strategy: temporal_latest mask = %d/%d val rows (date=%s) for %d tasks",
+        n_latest, n_val, _latest_date, len(temporal_task_names),
+    )
+
+    # Build masks dict — only for temporal_latest tasks
+    task_val_masks: Dict[str, np.ndarray] = {}
+    for t_name in temporal_task_names:
+        task_val_masks[t_name] = _latest_mask
+
+    # Log summary of which tasks use which strategy
+    all_task_names = {t["name"] for t in label_schema.get("tasks", [])}
+    random_tasks = all_task_names - temporal_task_names
+    logger.info(
+        "split_strategy: random val (%d tasks): %s",
+        len(random_tasks), sorted(random_tasks),
+    )
+    logger.info(
+        "split_strategy: temporal_latest val (%d tasks): %s",
+        len(temporal_task_names), sorted(temporal_task_names),
+    )
+
+    return task_val_masks
+
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def validate(model, dataloader, device, task_names, task_type_map=None):
+def validate(model, dataloader, device, task_names, task_type_map=None,
+             task_val_masks=None):
     """Run validation and compute per-task metrics.
+
+    Parameters
+    ----------
+    task_val_masks : dict or None
+        Optional mapping of task_name -> np.ndarray (bool) for per-task
+        validation subset filtering.
 
     Returns dict of metrics: loss, per-task AUC/accuracy/F1/MAE.
     """
@@ -1045,6 +1173,18 @@ def validate(model, dataloader, device, task_names, task_type_map=None):
 
         preds = np.concatenate(all_preds[name])
         tgts = np.concatenate(all_targets[name])
+
+        # Apply per-task validation mask if configured
+        if task_val_masks is not None and name in task_val_masks:
+            _mask = task_val_masks[name]
+            _n = min(len(_mask), len(preds))
+            _mask_t = _mask[:_n]
+            preds = preds[_mask_t]
+            tgts = tgts[_mask_t]
+            if len(preds) == 0:
+                logger.debug("task_val_mask[%s]: 0 samples after masking, skipping", name)
+                continue
+
         task_type = task_type_map.get(name)
 
         if task_type == "binary":
@@ -1712,6 +1852,11 @@ def main() -> None:
         except Exception as e:
             logger.warning("LeakageValidator skipped: %s", e)
 
+    # ---- 3d. Per-task validation masks (split_strategy from config) ----
+    task_val_masks = _build_task_val_masks(
+        config, features, split_indices, label_schema,
+    )
+
     # ---- 4. Build DataLoaders ----
     train_loader, val_loader, tasks, task_type_map, label_stats = build_dataloaders(
         features, labels, sequences, seq_lengths,
@@ -1840,6 +1985,10 @@ def main() -> None:
 
     trainer = PLETrainer(model=model, config=training_config, device=device)
 
+    # Inject per-task validation masks into trainer (for epoch-level validation)
+    if task_val_masks:
+        trainer.set_task_val_masks(task_val_masks)
+
     # Resume from checkpoint (Spot restart)
     resume_state = ckpt_mgr.load_latest(
         model, trainer.optimizer, trainer.scheduler, map_location=device,
@@ -1858,7 +2007,10 @@ def main() -> None:
     logger.info("PLETrainer finished: %s", trainer_results)
 
     # ---- 7. Final validation + save ----
-    final_metrics = validate(model, val_loader, device, task_names, task_type_map)
+    final_metrics = validate(
+        model, val_loader, device, task_names, task_type_map,
+        task_val_masks=task_val_masks,
+    )
     report_metrics("final_val", final_metrics, epochs)
 
     # Save model

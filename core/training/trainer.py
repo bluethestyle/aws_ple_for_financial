@@ -127,6 +127,10 @@ class PLETrainer:
         self.best_val_loss = float("inf")
         self.best_val_metrics: Dict[str, float] = {}
 
+        # Per-task validation masks: {task_name: np.ndarray (bool)} over val set
+        # Set via set_task_val_masks() before training begins
+        self.task_val_masks: Optional[Dict[str, "np.ndarray"]] = None
+
         # Epoch-level history for detailed monitoring
         self.epoch_history: List[Dict[str, Any]] = []
 
@@ -175,6 +179,28 @@ class PLETrainer:
             self.device, config.amp.enabled,
             config.phase1.epochs, config.phase2.epochs,
         )
+
+    # ------------------------------------------------------------------
+    # Per-task validation masks
+    # ------------------------------------------------------------------
+
+    def set_task_val_masks(self, masks: Optional[Dict[str, "np.ndarray"]]) -> None:
+        """Set per-task boolean masks for validation subset filtering.
+
+        Parameters
+        ----------
+        masks : dict mapping task_name -> np.ndarray of bool
+            Each array has length == val_set_size.  ``True`` means the
+            sample is included in that task's validation metric computation.
+            Tasks not present in *masks* use the full val set (default).
+        """
+        self.task_val_masks = masks
+        if masks:
+            for tn, m in masks.items():
+                logger.info(
+                    "task_val_mask[%s]: %d/%d samples (%.1f%%)",
+                    tn, int(m.sum()), len(m), m.sum() / max(len(m), 1) * 100,
+                )
 
     # ------------------------------------------------------------------
     # Optimizer creation
@@ -985,6 +1011,19 @@ class PLETrainer:
 
             preds_np = preds_cat.numpy()
             labs_np = labs_cat.numpy()
+
+            # Apply per-task validation mask if configured
+            if self.task_val_masks is not None and task_name in self.task_val_masks:
+                _mask = self.task_val_masks[task_name]
+                # Mask length may differ from concat length if val set size
+                # doesn't match (e.g. drop_last in dataloader).  Truncate mask.
+                _n = min(len(_mask), len(preds_np))
+                _mask_t = _mask[:_n]
+                preds_np = preds_np[_mask_t]
+                labs_np = labs_np[_mask_t]
+                if len(preds_np) == 0:
+                    logger.debug("task_val_mask[%s]: 0 samples after masking, skipping", task_name)
+                    continue
 
             task_type = self.model.config.get_task_type(task_name)
 

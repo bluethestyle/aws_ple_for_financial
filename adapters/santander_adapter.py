@@ -761,7 +761,18 @@ if __name__ == "__main__":
             import pyarrow as pa
             _labels_arrow = pa.Table.from_pandas(labels_df, preserve_index=False)
             con.register("_labels_tmp", _labels_arrow)
-            _label_select = ", ".join(f'_labels_tmp."{c}"' for c in labels_df.columns)
+            _label_cols = list(labels_df.columns)
+            # Drop existing columns that overlap with derived labels to prevent _1 suffix duplicates
+            _existing_cols = [r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {_TBL}").fetchall()]
+            _overlap = [c for c in _label_cols if c in _existing_cols]
+            if _overlap:
+                _exclude = ", ".join(f'"{c}"' for c in _overlap)
+                logger.info("Dropping %d existing label columns before merge: %s", len(_overlap), _overlap)
+                _drop_tbl = f"{_TBL}_nolbl"
+                con.execute(f"CREATE OR REPLACE TABLE {_drop_tbl} AS SELECT * EXCLUDE ({_exclude}) FROM {_TBL}")
+                con.execute(f"DROP TABLE IF EXISTS {_TBL}")
+                con.execute(f"ALTER TABLE {_drop_tbl} RENAME TO {_TBL}")
+            _label_select = ", ".join(f'_labels_tmp."{c}"' for c in _label_cols)
             _new_tbl = f"{_TBL}_lbl"
             con.execute(
                 f"CREATE OR REPLACE TABLE {_new_tbl} AS "

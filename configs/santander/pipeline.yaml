@@ -581,6 +581,25 @@ data:
     train_ratio: 0.7
     val_ratio: 0.15
 
+  # ---- Per-task validation split strategy ----
+  # All tasks share the same training set (random or temporal split).
+  # Validation uses task-appropriate subsets based on temporal characteristics:
+  #   random          — full val set (for cross-sectional/state tasks)
+  #   temporal_latest — only rows from latest snapshot_date in val set
+  #                     (for future-action and sequence-prediction tasks)
+  split_strategy:
+    state_tasks:
+      tasks: [churn_signal, product_stability, tenure_stage, spend_level,
+              segment_prediction, income_tier, engagement_score]
+      val_method: random
+    future_tasks:
+      tasks: [has_nba, nba_primary, will_acquire_deposits, will_acquire_investments,
+              will_acquire_accounts, will_acquire_lending, will_acquire_payments, cross_sell_count]
+      val_method: temporal_latest
+    sequence_tasks:
+      tasks: [next_mcc, mcc_diversity_trend, top_mcc_shift]
+      val_method: temporal_latest
+
   preprocessing:
     fit_subsample_limit: 10000  # ablation: 10K sufficient for encoder fitting (production: 50K)
     # income: 25.4% missing (value=0 means missing) -- impute with median
