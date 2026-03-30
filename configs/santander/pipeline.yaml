@@ -537,6 +537,27 @@ constraints:
     diversity_lambda: 0.5
 
 # ---------------------------------------------------------------------------
+# Cold Start — customers with no/minimal transaction history
+# ---------------------------------------------------------------------------
+# Customers with fewer than min_txn_count transactions are flagged as cold
+# start.  Sequence-derived features (HMM, Mamba, TDA local) are zeroed out
+# because they carry no meaningful signal without history.  Demographic,
+# product, and global-aggregate features are preserved.
+cold_start:
+  seq_col: txn_amount_seq            # LIST column used to measure history depth
+  min_txn_count: 3                   # <= this count → cold start
+  zero_features_prefix:              # generated feature prefixes to zero out
+    - hmm_states
+    - mamba_temporal
+    - tda_local
+  keep_features_prefix:              # preserved for cold start (documentation)
+    - prod_
+    - synth_
+    - tda_global
+    - gmm_
+    - graph_
+
+# ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
 data:

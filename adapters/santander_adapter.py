@@ -658,6 +658,93 @@ if __name__ == "__main__":
             time.time() - t_gen_start, _TBL, _total_rows, _total_cols,
         )
 
+    # --- Cold start flagging + feature zeroing (config-driven, DuckDB SQL) ---
+    _cold_cfg = pipeline_cfg.get("cold_start", {})
+    if _cold_cfg:
+        _cs_seq_col = _cold_cfg.get("seq_col")
+        _cs_min_txn = int(_cold_cfg.get("min_txn_count", 3))
+        _cs_zero_prefixes: List[str] = _cold_cfg.get("zero_features_prefix", [])
+
+        # Check that the sequence column exists in the current table
+        _cs_all_cols = [
+            r[0] for r in con.execute(
+                f"SELECT column_name FROM (DESCRIBE SELECT * FROM {_TBL})"
+            ).fetchall()
+        ]
+
+        if _cs_seq_col and _cs_seq_col in _cs_all_cols:
+            # Add is_cold_start binary column
+            con.execute(
+                f'ALTER TABLE {_TBL} ADD COLUMN IF NOT EXISTS '
+                f'"is_cold_start" TINYINT DEFAULT 0'
+            )
+            # Flag cold start: NULL sequence or length <= min_txn_count
+            con.execute(
+                f'UPDATE {_TBL} SET "is_cold_start" = 1 '
+                f'WHERE "{_cs_seq_col}" IS NULL '
+                f'OR LEN("{_cs_seq_col}") <= {_cs_min_txn}'
+            )
+
+            _cs_count = con.execute(
+                f'SELECT SUM("is_cold_start") FROM {_TBL}'
+            ).fetchone()[0]
+            _cs_count = int(_cs_count) if _cs_count else 0
+            logger.info(
+                "Cold start flagging: %d / %d customers flagged "
+                "(seq_col=%s, min_txn_count=%d)",
+                _cs_count, _total_rows, _cs_seq_col, _cs_min_txn,
+            )
+
+            # Zero out sequence-derived features for cold start customers
+            # Dynamically find columns matching zero_features_prefix
+            if _cs_zero_prefixes and _cs_count > 0:
+                _cs_col_types = {
+                    r[0]: r[1] for r in con.execute(
+                        f"SELECT column_name, column_type FROM "
+                        f"(DESCRIBE SELECT * FROM {_TBL})"
+                    ).fetchall()
+                }
+                _cs_numeric_types = {
+                    "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT",
+                    "FLOAT", "DOUBLE", "DECIMAL", "UTINYINT", "USMALLINT",
+                    "UINTEGER", "UBIGINT",
+                }
+                _cs_zero_cols = [
+                    c for c in _cs_col_types
+                    if _cs_col_types[c] in _cs_numeric_types
+                    and c != "is_cold_start"
+                    and any(c.startswith(pfx) for pfx in _cs_zero_prefixes)
+                ]
+
+                if _cs_zero_cols:
+                    # Batch UPDATE to avoid SQL size limits
+                    _CS_BATCH = 50
+                    for _b_start in range(0, len(_cs_zero_cols), _CS_BATCH):
+                        _b_cols = _cs_zero_cols[_b_start:_b_start + _CS_BATCH]
+                        _set_clauses = [f'"{c}" = 0' for c in _b_cols]
+                        con.execute(
+                            f'UPDATE {_TBL} SET {", ".join(_set_clauses)} '
+                            f'WHERE "is_cold_start" = 1'
+                        )
+                    logger.info(
+                        "Cold start zeroing: %d feature columns zeroed "
+                        "for %d cold start customers (prefixes: %s)",
+                        len(_cs_zero_cols), _cs_count, _cs_zero_prefixes,
+                    )
+                else:
+                    logger.info(
+                        "Cold start: no columns matched zero_features_prefix %s",
+                        _cs_zero_prefixes,
+                    )
+        else:
+            logger.warning(
+                "Cold start: seq_col '%s' not found in table — skipping. "
+                "Available columns (sample): %s",
+                _cs_seq_col, _cs_all_cols[:10],
+            )
+    else:
+        logger.debug("No cold_start config found in pipeline.yaml — skipping")
+
     # --- Label derivation (config-driven) ---
     # LabelDeriver still needs pandas input for some derivation types.
     # Materialise only to pandas for the derivation, then merge back via DuckDB.
