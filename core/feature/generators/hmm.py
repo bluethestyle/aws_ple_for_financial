@@ -538,21 +538,9 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
 
     @staticmethod
     def _extract_numeric(df: Any, cols: List[str]) -> np.ndarray:
-        """Extract columns as a numpy float64 array, using GPU path when available."""
-        if has_cudf() and _cudf is not None:
-            if hasattr(df, "to_cupy"):
-                # Already a cuDF DataFrame
-                data = df[cols].fillna(0).to_cupy().get().astype(np.float64)
-            elif isinstance(df, pd.DataFrame):
-                gdf = _cudf.DataFrame(df[cols].fillna(0))
-                data = gdf.to_cupy().get().astype(np.float64)
-            else:
-                pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-                data = pdf[cols].fillna(0).values.astype(np.float64)
-        else:
-            pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-            data = pdf[cols].fillna(0).values.astype(np.float64)
-        return data
+        """Extract columns as a numpy float64 array from any DataFrame type."""
+        from .gpu_utils import _to_numpy_safe
+        return _to_numpy_safe(df, cols, fill=0.0)
 
     def _resolve_observation_columns(self, df: Any) -> List[str]:
         """Resolve observation columns, falling back to all numeric."""
