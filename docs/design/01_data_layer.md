@@ -410,8 +410,11 @@ s3://aiops-ple-financial/
 │   ├── v1.0/
 │   │   ├── features.parquet
 │   │   ├── labels.parquet
-│   │   ├── event_sequences.npy
-│   │   ├── session_sequences.npy
+│   │   ├── sequences.npy
+│   │   ├── seq_lengths.npy
+│   │   ├── feature_schema.json
+│   │   ├── label_schema.json
+│   │   ├── split_indices.json
 │   │   ├── scaler_params.json
 │   │   ├── label_transforms.json
 │   │   └── item_universe/

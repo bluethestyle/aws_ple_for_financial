@@ -443,8 +443,11 @@ SageMaker Processing Job
     └── 출력: s3://bucket/features/v{version}/
          ├── features.parquet
          ├── labels.parquet
-         ├── event_sequences.npy
-         ├── session_sequences.npy
+         ├── sequences.npy
+         ├── seq_lengths.npy
+         ├── feature_schema.json
+         ├── label_schema.json
+         ├── split_indices.json
          ├── scaler_params.json
          ├── label_transforms.json
          ├── item_universe/
