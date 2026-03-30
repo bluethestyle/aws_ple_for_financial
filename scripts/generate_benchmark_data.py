@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import yaml
 from scipy import stats as sp_stats
+from scipy.stats import norm, truncnorm, lognorm, gamma
 
 logger = logging.getLogger(__name__)
 
@@ -277,8 +278,23 @@ class BenchmarkDataGenerator:
         return z, l
 
     # ==================================================================
-    # Layer 2: Observable Profiles
+    # Layer 2: Observable Profiles (Gaussian Copula)
     # ==================================================================
+    def _get_persona_correlation(self, persona_id: int) -> np.ndarray:
+        """Get per-persona correlation matrix. Default if not calibrated."""
+        calib_corr = self.cal.get('personas', {}).get('correlations', {})
+        if str(persona_id) in calib_corr:
+            return np.array(calib_corr[str(persona_id)])
+        # Default: moderate positive correlations
+        # Dimensions: age, income, tenure, num_products, activity
+        return np.array([
+            [1.0, 0.3, 0.5, 0.2, -0.1],   # age
+            [0.3, 1.0, 0.4, 0.3, 0.2],     # income
+            [0.5, 0.4, 1.0, 0.3, 0.1],     # tenure
+            [0.2, 0.3, 0.3, 1.0, 0.4],     # num_products
+            [-0.1, 0.2, 0.1, 0.4, 1.0],    # activity
+        ])
+
     def _generate_profiles(self, z: np.ndarray, l: np.ndarray) -> dict:
         """Generate demographics + product holdings conditioned on persona."""
         demo = self.cal["demographics"]
@@ -300,10 +316,16 @@ class BenchmarkDataGenerator:
             [base_dates[i] for i in date_indices], dtype="U10"
         )
 
-        # --- Demographics per persona ---
+        # --- Demographics per persona (Gaussian Copula) ---
+        # Copula preserves within-persona correlations between
+        # age, income, tenure, num_products proxy, and activity proxy.
         age = np.empty(n, dtype=np.float64)
         income = np.empty(n, dtype=np.float64)
         tenure_months = np.empty(n, dtype=np.float64)
+        # Copula also yields correlated uniforms for num_products
+        # and activity; stored temporarily for downstream use.
+        copula_u_num_products = np.empty(n, dtype=np.float64)
+        copula_u_activity = np.empty(n, dtype=np.float64)
 
         for k in range(self.n_personas):
             mask = z == k
@@ -313,30 +335,49 @@ class BenchmarkDataGenerator:
             name = self.persona_names[k]
             p = demo[name]
 
-            # Age: truncated normal
+            # Per-persona correlation matrix (5D: age, income, tenure,
+            # num_products, activity)
+            corr = self._get_persona_correlation(k)
+
+            # Generate correlated Gaussians, then map to uniform [0,1]
+            Z_corr = self.rng.multivariate_normal(
+                np.zeros(corr.shape[0]), corr, size=n_k
+            )
+            U = norm.cdf(Z_corr)  # correlated uniforms
+
+            # --- Age: inverse CDF via truncated normal ---
             ap = p["age"]
             a_lo = (ap["lo"] - ap["mu"]) / ap["sigma"]
             a_hi = (ap["hi"] - ap["mu"]) / ap["sigma"]
-            age[mask] = sp_stats.truncnorm.rvs(
-                a_lo, a_hi, loc=ap["mu"], scale=ap["sigma"],
-                size=n_k, random_state=self.rng.integers(2**31),
+            age[mask] = truncnorm.ppf(
+                U[:, 0],
+                a=a_lo, b=a_hi,
+                loc=ap["mu"], scale=ap["sigma"],
             )
 
-            # Income: lognormal with zero_rate (missing)
+            # --- Income: inverse CDF via lognormal ---
             ip = p["income"]
-            raw_income = np.exp(
-                self.rng.normal(ip["mu"], ip["sigma"], size=n_k)
+            raw_income = lognorm.ppf(
+                U[:, 1],
+                s=ip["sigma"],
+                scale=np.exp(ip["mu"]),
             )
-            zero_mask = self.rng.random(n_k) < ip.get("zero_rate", 0.0)
-            raw_income[zero_mask] = 0.0
+            zero_mask_inc = self.rng.random(n_k) < ip.get("zero_rate", 0.0)
+            raw_income[zero_mask_inc] = 0.0
             income[mask] = raw_income
 
-            # Tenure: gamma
+            # --- Tenure: inverse CDF via gamma ---
             tp = p["tenure_months"]
-            tenure_raw = self.rng.gamma(
-                tp["shape"], tp["scale"], size=n_k
+            tenure_raw = gamma.ppf(
+                U[:, 2],
+                a=tp["shape"],
+                scale=tp["scale"],
             )
             tenure_months[mask] = np.clip(tenure_raw, 0, 256).astype(int)
+
+            # Store correlated uniforms for downstream modulation
+            copula_u_num_products[mask] = U[:, 3]
+            copula_u_activity[mask] = U[:, 4]
 
         # Apply income interaction with latent wealth_propensity
         income_nonzero = income > 0
