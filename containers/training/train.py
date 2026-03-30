@@ -1543,11 +1543,13 @@ def main() -> None:
             logger.info("Extracted %d label columns from features DataFrame", len(label_cols_present))
 
 
-    # ---- 3b. Temporal split via DuckDB (if snapshot_date available) ----
+    # ---- 3b. Split strategy: temporal (if multi-date) or random (cross-sectional) ----
     if split_indices is None or not split_indices:
         date_col = config.get("data", {}).get("date_col", "snapshot_date")
-        # Date column may have been filtered out (VARCHAR); reload from parquet
         _date_series = None
+        _use_temporal = False
+
+        # Try to load date column from parquet
         if date_col not in features.columns:
             import duckdb as _ddb_date
             _parquet_path = list(Path(train_dir).glob("**/*.parquet"))
@@ -1555,12 +1557,24 @@ def main() -> None:
                 _uri = str(_parquet_path[0]).replace("\\", "/")
                 _con_d = _ddb_date.connect()
                 try:
-                    _date_series = _con_d.execute(f"SELECT \"{date_col}\" FROM '{_uri}'").df()[date_col]
+                    _date_series = _con_d.execute(f'SELECT "{date_col}" FROM \'{_uri}\'').df()[date_col]
                 except Exception:
                     pass
                 finally:
                     _con_d.close()
+
+        # Detect if temporal split is appropriate:
+        # If >80% of rows share the same date, it's cross-sectional → random split
         if date_col in features.columns or _date_series is not None:
+            _dates = features[date_col] if date_col in features.columns else _date_series
+            _top_date_ratio = _dates.value_counts().iloc[0] / len(_dates) if len(_dates) > 0 else 1.0
+            if _top_date_ratio < 0.8:
+                _use_temporal = True
+                logger.info("Multi-date data (top date=%.1f%%) → temporal split", _top_date_ratio * 100)
+            else:
+                logger.info("Cross-sectional data (top date=%.1f%%) → random split", _top_date_ratio * 100)
+
+        if _use_temporal:
             import duckdb as _ddb_split
             import pandas as pd
 
