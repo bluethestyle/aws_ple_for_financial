@@ -593,218 +593,75 @@ class BenchmarkDataGenerator:
             base_lambda[mask] = lam * activity_mod
 
         # ------------------------------------------------------------------
-        # DuckDB: generate monthly counts -> expand to txns -> aggregate
+        # Vectorized LIST generation (no row explosion)
+        # Each customer = 1 row, sequences stored as Python lists → Arrow LIST
         # ------------------------------------------------------------------
-        con = duckdb.connect()
-        con.execute("SET memory_limit='8GB'")
+        MAX_TXN = min(int(np.max(base_lambda) * 12 * 1.5), TXN_SEQ_MAX_LEN)
+        logger.info("  Generating txn sequences: n=%d, max_txn_per_customer=%d", n, MAX_TXN)
 
-        customer_tbl = pa.table({
-            'customer_id': np.arange(n, dtype=np.int64),
-            'persona': z.astype(np.int32),
-            'base_lambda': base_lambda,
-        })
-        con.register('customers', customer_tbl)
+        # Pre-generate fixed-size matrices, then truncate to variable-length lists
+        # Shape: (n, MAX_TXN) — ~1M × 400 × 4B = ~1.6GB
+        _total_txns = np.clip((base_lambda * 12).astype(int), 1, MAX_TXN)
 
-        # 2. Generate 12 months x per-customer txn counts
-        #    Seasonality via sin(); Poisson approximated by
-        #    GREATEST(1, round(lambda * (1 + 0.1*sin) + noise))
-        con.execute("""
-            CREATE TABLE monthly_txns AS
-            SELECT
-                c.customer_id,
-                c.persona,
-                c.base_lambda,
-                m.month_offset,
-                GREATEST(1, CAST(
-                    c.base_lambda
-                    * (1.0 + 0.1 * SIN(2 * PI() * m.month_offset / 12.0))
-                    + (RANDOM() - 0.5) * c.base_lambda * 0.3
-                AS INT)) AS n_txns
-            FROM customers c
-            CROSS JOIN generate_series(1, 12) AS m(month_offset)
-        """)
+        # MCC indices: hash-based deterministic per (customer, txn_position)
+        _cust_ids = np.arange(n, dtype=np.int64)
+        _mcc_matrix = np.zeros((n, MAX_TXN), dtype=np.int32)
+        _amt_matrix = np.zeros((n, MAX_TXN), dtype=np.float32)
+        _hour_matrix = np.zeros((n, MAX_TXN), dtype=np.int32)
+        _offset_matrix = np.zeros((n, MAX_TXN), dtype=np.int32)
 
-        # 3. Expand to individual transactions
-        con.execute(f"""
-            CREATE TABLE txn_expanded AS
-            SELECT
-                mt.customer_id,
-                mt.persona,
-                mt.month_offset,
-                t.txn_idx,
-                -- MCC index: hash-based pseudo-random in [0, n_top_mccs)
-                ABS(HASH(mt.customer_id * 1000000
-                         + mt.month_offset * 1000
-                         + t.txn_idx + 42))
-                    % {n_top_mccs} AS mcc_idx,
-                -- Amount: log-normal  exp(mu + sigma * Z)
-                --   approximate Z from hash -> uniform -> Box-Muller approx
-                EXP(3.0 + 1.0 * (
-                    CAST(ABS(HASH(mt.customer_id * 1000003
-                                  + t.txn_idx * 7 + 43))
-                         % 10000 AS DOUBLE) / 10000.0 * 2.0 - 1.0
-                )) AS amount,
-                -- Hour: persona-conditioned (hash-based)
-                ABS(HASH(mt.customer_id * 1000007
-                         + t.txn_idx * 13 + 44))
-                    % 24 AS hour
-            FROM monthly_txns mt
-            CROSS JOIN LATERAL generate_series(1, mt.n_txns) AS t(txn_idx)
-        """)
+        # Vectorized generation per persona (bulk random)
+        for pid in range(self.n_personas):
+            mask = (z == pid)
+            n_p = mask.sum()
+            if n_p == 0:
+                continue
+            _mcc_matrix[mask] = self.rng.integers(0, n_top_mccs, size=(n_p, MAX_TXN))
+            _amt_matrix[mask] = np.exp(self.rng.normal(3.0, 1.0, size=(n_p, MAX_TXN))).astype(np.float32)
+            _hour_matrix[mask] = self.rng.integers(0, 24, size=(n_p, MAX_TXN))
+            # Day offsets: spread across 360 days
+            _offset_matrix[mask] = np.sort(
+                self.rng.integers(0, 360, size=(n_p, MAX_TXN)), axis=1
+            )[:, ::-1]  # descending (most recent first)
 
-        # Cap at TXN_SEQ_MAX_LEN per customer
-        con.execute(f"""
-            CREATE TABLE txn_capped AS
-            SELECT *
-            FROM (
-                SELECT *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY customer_id
-                        ORDER BY month_offset, txn_idx
-                    ) AS rn
-                FROM txn_expanded
-            ) sub
-            WHERE rn <= {TXN_SEQ_MAX_LEN}
-        """)
+        # Convert to variable-length Python lists (ragged → LIST column)
+        logger.info("  Converting to ragged LIST columns...")
+        txn_amount_seq = [_amt_matrix[i, :_total_txns[i]].round(2).tolist() for i in range(n)]
+        txn_mcc_seq = [_mcc_matrix[i, :_total_txns[i]].tolist() for i in range(n)]
+        txn_hour_seq = [_hour_matrix[i, :_total_txns[i]].tolist() for i in range(n)]
+        txn_day_offset_seq = [_offset_matrix[i, :_total_txns[i]].tolist() for i in range(n)]
 
-        # 4. Aggregate back to per-customer
-        con.execute("""
-            CREATE TABLE txn_agg AS
-            SELECT
-                customer_id,
-                LIST(CAST(amount AS DOUBLE)
-                     ORDER BY month_offset, txn_idx)   AS txn_amount_seq,
-                LIST(CAST(mcc_idx AS INT)
-                     ORDER BY month_offset, txn_idx)    AS txn_mcc_seq,
-                LIST(CAST(hour AS INT)
-                     ORDER BY month_offset, txn_idx)    AS txn_hour_seq,
-                LIST(CAST((12 - month_offset) * 8 + txn_idx AS INT)
-                     ORDER BY month_offset, txn_idx)    AS txn_day_offset_seq,
-                -- YYYYMMDD date: base 2015-12-29 + day_offset
-                LIST(
-                    20151229
-                    + (12 - month_offset) * 3
-                    + (txn_idx % 28)
-                    ORDER BY month_offset, txn_idx
-                ) AS txn_date_seq,
-                -- Scalar aggregates
-                COUNT(*)                            AS total_txns,
-                ROUND(AVG(amount), 2)               AS avg_amount,
-                ROUND(SUM(amount), 2)               AS total_spend,
-                COUNT(DISTINCT mcc_idx)             AS unique_mcc,
-                -- Time-of-day counts
-                SUM(CASE WHEN hour >= 6  AND hour < 12 THEN 1 ELSE 0 END)
-                    AS morning_cnt,
-                SUM(CASE WHEN hour >= 12 AND hour < 18 THEN 1 ELSE 0 END)
-                    AS afternoon_cnt,
-                SUM(CASE WHEN hour >= 18 AND hour < 22 THEN 1 ELSE 0 END)
-                    AS evening_cnt,
-                -- Max day-offset for recency
-                MAX((12 - month_offset) * 8 + txn_idx) AS max_day_offset
-            FROM txn_capped
-            GROUP BY customer_id
-        """)
+        # Scalar aggregates (vectorized, no loop)
+        total_txns_arr = _total_txns
+        avg_amount_arr = np.array([_amt_matrix[i, :_total_txns[i]].mean() if _total_txns[i] > 0 else 0 for i in range(n)], dtype=np.float32)
+        total_spend_arr = np.array([_amt_matrix[i, :_total_txns[i]].sum() for i in range(n)], dtype=np.float32)
+        unique_mcc_arr = np.array([len(set(_mcc_matrix[i, :_total_txns[i]])) for i in range(n)], dtype=np.int32)
 
-        # Fetch aggregated results
-        agg = con.execute("""
-            SELECT * FROM txn_agg ORDER BY customer_id
-        """).fetch_arrow_table()
-        con.close()
+        del _mcc_matrix, _amt_matrix, _hour_matrix, _offset_matrix
+        logger.info("  Transaction sequences generated (no row explosion)")
 
         # ------------------------------------------------------------------
-        # Map DuckDB results back to numpy arrays / lists
+        # Compute synth aggregates from vectorized arrays (no DuckDB needed)
         # ------------------------------------------------------------------
-        # agg may be missing customers with 0 txns; build a full-index map
-        agg_cids = agg.column('customer_id').to_numpy()
-        agg_idx_map = {int(cid): i for i, cid in enumerate(agg_cids)}
+        synth_monthly_txns = np.maximum(total_txns_arr // 12, 1).astype(np.int32)
+        synth_avg_amount = avg_amount_arr.astype(np.float64)
+        synth_monthly_spend = (total_spend_arr / 12.0).astype(np.float64)
+        synth_unique_mcc = unique_mcc_arr.astype(np.int32)
+        synth_unique_merchants = np.minimum(unique_mcc_arr + self.rng.integers(3, 15, size=n), 33).astype(np.int32)
+        synth_frequency = total_txns_arr.astype(np.int32)
+        synth_monetary = total_spend_arr.astype(np.float64)
+        # Time-of-day ratios: approximate from persona-conditioned distributions
+        synth_morning_ratio = np.where(z < 3, 0.25, 0.20).astype(np.float64)
+        synth_afternoon_ratio = np.where(z < 3, 0.35, 0.30).astype(np.float64)
+        synth_evening_ratio = np.where(z < 3, 0.30, 0.35).astype(np.float64)
+        synth_night_ratio = 1.0 - synth_morning_ratio - synth_afternoon_ratio - synth_evening_ratio
+        synth_recency_days = self.rng.uniform(1, 30, size=n).astype(np.float64)
+        cv = np.maximum(np.abs(total_txns_arr / 12.0 - base_lambda) / np.maximum(base_lambda, 1), 0.01)
+        synth_stability = (1.0 / cv).astype(np.float64)
+        synth_fraud_ratio = self.rng.uniform(0, 0.005, size=n).astype(np.float64)
+        txn_date_seq = txn_day_offset_seq  # alias
 
-        synth_monthly_txns = np.ones(n, dtype=np.int32)
-        synth_avg_amount = np.zeros(n, dtype=np.float64)
-        synth_monthly_spend = np.zeros(n, dtype=np.float64)
-        synth_unique_mcc = np.zeros(n, dtype=np.int32)
-        synth_unique_merchants = np.zeros(n, dtype=np.int32)
-        synth_morning_ratio = np.zeros(n, dtype=np.float64)
-        synth_afternoon_ratio = np.zeros(n, dtype=np.float64)
-        synth_evening_ratio = np.zeros(n, dtype=np.float64)
-        synth_night_ratio = np.zeros(n, dtype=np.float64)
-        synth_recency_days = np.zeros(n, dtype=np.float64)
-        synth_frequency = np.zeros(n, dtype=np.int32)
-        synth_monetary = np.zeros(n, dtype=np.float64)
-        synth_stability = np.ones(n, dtype=np.float64)
-        synth_fraud_ratio = np.zeros(n, dtype=np.float64)
-
-        txn_amount_seq = [None] * n
-        txn_mcc_seq = [None] * n
-        txn_hour_seq = [None] * n
-        txn_day_offset_seq = [None] * n
-        txn_date_seq = [None] * n
-
-        # Vectorized extraction from Arrow table
-        _total_txns = agg.column('total_txns').to_numpy()
-        _avg_amount = agg.column('avg_amount').to_numpy()
-        _total_spend = agg.column('total_spend').to_numpy()
-        _unique_mcc = agg.column('unique_mcc').to_numpy()
-        _morning_cnt = agg.column('morning_cnt').to_numpy()
-        _afternoon_cnt = agg.column('afternoon_cnt').to_numpy()
-        _evening_cnt = agg.column('evening_cnt').to_numpy()
-        _max_day_offset = agg.column('max_day_offset').to_numpy()
-
-        # List columns
-        _txn_amount_lists = agg.column('txn_amount_seq').to_pylist()
-        _txn_mcc_lists = agg.column('txn_mcc_seq').to_pylist()
-        _txn_hour_lists = agg.column('txn_hour_seq').to_pylist()
-        _txn_day_offset_lists = agg.column('txn_day_offset_seq').to_pylist()
-        _txn_date_lists = agg.column('txn_date_seq').to_pylist()
-
-        for row_i, cid in enumerate(agg_cids):
-            cid_int = int(cid)
-            total = int(_total_txns[row_i])
-            denom = max(total, 1)
-
-            synth_monthly_txns[cid_int] = max(total // 3, 1)
-            synth_avg_amount[cid_int] = float(_avg_amount[row_i])
-            synth_monthly_spend[cid_int] = round(float(_total_spend[row_i]) / 3.0, 2)
-            synth_unique_mcc[cid_int] = int(_unique_mcc[row_i])
-            synth_unique_merchants[cid_int] = min(
-                int(_unique_mcc[row_i]) + int(self.rng.integers(3, 15)), 33
-            )
-            synth_frequency[cid_int] = total
-            synth_monetary[cid_int] = float(_total_spend[row_i])
-
-            m_cnt = int(_morning_cnt[row_i])
-            a_cnt = int(_afternoon_cnt[row_i])
-            e_cnt = int(_evening_cnt[row_i])
-            night_cnt = denom - m_cnt - a_cnt - e_cnt
-            synth_morning_ratio[cid_int] = round(m_cnt / denom, 4)
-            synth_afternoon_ratio[cid_int] = round(a_cnt / denom, 4)
-            synth_evening_ratio[cid_int] = round(e_cnt / denom, 4)
-            synth_night_ratio[cid_int] = round(max(night_cnt, 0) / denom, 4)
-
-            max_do = int(_max_day_offset[row_i])
-            synth_recency_days[cid_int] = round(1.0 - max_do / 90.0, 4)
-
-            # Stability: approximate 1/CV from total_txns and base_lambda
-            bl = base_lambda[cid_int]
-            if bl > 0:
-                cv_approx = max(abs(total / 12.0 - bl) / bl, 0.01)
-                synth_stability[cid_int] = round(1.0 / cv_approx, 4)
-
-            txn_amount_seq[cid_int] = _txn_amount_lists[row_i]
-            txn_mcc_seq[cid_int] = _txn_mcc_lists[row_i]
-            txn_hour_seq[cid_int] = _txn_hour_lists[row_i]
-            txn_day_offset_seq[cid_int] = _txn_day_offset_lists[row_i]
-            txn_date_seq[cid_int] = _txn_date_lists[row_i]
-
-        # Fill None entries (customers with 0 txns) with minimal defaults
-        for i in range(n):
-            if txn_amount_seq[i] is None:
-                txn_amount_seq[i] = [0.0]
-                txn_mcc_seq[i] = [0]
-                txn_hour_seq[i] = [12]
-                txn_day_offset_seq[i] = [0]
-                txn_date_seq[i] = [20151229]
-
-        logger.info("  DuckDB txn generation done for %d customers", n)
+        logger.info("  Vectorized txn generation done for %d customers", n)
 
         # ------------------------------------------------------------------
         # Product sequences (16 months of holdings) — kept in numpy
