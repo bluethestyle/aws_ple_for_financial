@@ -323,25 +323,23 @@ class PLEDataset:
         except ImportError:
             pass
 
-        # ---- Pre-convert to tensors ----
-        # GPU path: cuDF → CuPy → torch (zero-copy, all tensors on CUDA)
-        # CPU path: pandas/Arrow → numpy → torch (tensors on CPU)
-        _to_tensor = _df_to_tensor_gpu if _is_cudf else _df_to_tensor_cpu
-
+        # ---- Pre-convert to CPU tensors (batch streaming to GPU at __getitem__) ----
+        # Data stays on CPU. Only the current batch moves to GPU during training.
+        # This prevents VRAM from being filled with the entire dataset.
         self._tensors: Dict[str, torch.Tensor] = {}
         for key, cols in self._col_groups.items():
-            self._tensors[key] = _to_tensor(df, cols)
+            self._tensors[key] = _df_to_tensor_cpu(df, cols)
 
         # Sequences -> reshape to 3D
         if self._event_seq_cols:
-            raw = _to_tensor(df, self._event_seq_cols)
+            raw = _df_to_tensor_cpu(df, self._event_seq_cols)
             self._tensors["event_sequences"] = raw.view(
                 self._n_samples,
                 self._seq_cfg.event_seq_len,
                 self._seq_cfg.event_feat_dim,
             )
         if self._session_seq_cols:
-            raw = _to_tensor(df, self._session_seq_cols)
+            raw = _df_to_tensor_cpu(df, self._session_seq_cols)
             self._tensors["session_sequences"] = raw.view(
                 self._n_samples,
                 self._seq_cfg.session_seq_len,
@@ -549,19 +547,19 @@ def build_ple_dataloader(
     else:
         collate_fn = _ple_collate
 
-    # Auto-detect cuDF input and force GPU-compatible DataLoader settings.
-    # CUDA context cannot be forked, so workers must be 0 and pin_memory is
-    # unnecessary when tensors are already on GPU.
-    _is_cudf_input = False
+    # Data tensors are always on CPU (batch streaming to GPU).
+    # pin_memory=True for fast CPU→GPU transfer via DMA.
+    # num_workers=0 when cuDF was used for loading (CUDA context not forkable).
+    _used_cudf = False
     try:
         import cudf as _cudf_check
-        _is_cudf_input = isinstance(df, _cudf_check.DataFrame)
+        _used_cudf = isinstance(df, _cudf_check.DataFrame)
     except ImportError:
         pass
 
-    if _is_cudf_input or (use_gpu_loading and _check_cudf()):
+    if _used_cudf:
         num_workers = 0
-        pin_memory = False
+        pin_memory = True  # tensors are on CPU, pin for fast GPU transfer
 
     loader = DataLoader(
         dataset,
