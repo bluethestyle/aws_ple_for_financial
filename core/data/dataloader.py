@@ -338,7 +338,7 @@ class PLEDataset:
             # GPU path: keep the cuDF DataFrame for lazy DLPack conversion
             import cudf
             if not isinstance(df, cudf.DataFrame):
-                self._gdf = cudf.from_pandas(df)
+                self._gdf = cudf.DataFrame(df)
             else:
                 self._gdf = df
 

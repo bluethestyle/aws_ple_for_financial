@@ -569,7 +569,7 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
             if hasattr(df, "to_cupy"):
                 data = df[cols].fillna(0).to_cupy().get().astype(np.float64)
             elif isinstance(df, pd.DataFrame):
-                gdf = _cudf.DataFrame.from_pandas(df[cols].fillna(0))
+                gdf = _cudf.DataFrame(df[cols].fillna(0))
                 data = gdf.to_cupy().get().astype(np.float64)
             else:
                 pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df

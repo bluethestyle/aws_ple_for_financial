@@ -401,7 +401,7 @@ class DataFrameBackend:
                 result = conn.execute(sql).fetchdf()
                 if self._backend == self.CUDF:
                     import cudf
-                    return cudf.DataFrame.from_pandas(result)
+                    return cudf.DataFrame(result)
                 return result
             finally:
                 conn.close()
@@ -583,7 +583,7 @@ class DataFrameBackend:
         """
         if self._backend == self.CUDF:
             import cudf
-            return cudf.DataFrame.from_pandas(df)
+            return cudf.DataFrame(df)
         return df
 
     def to_cudf(self, df: Any) -> Any:
@@ -623,7 +623,7 @@ class DataFrameBackend:
                 df = df.fetchdf()
             elif hasattr(df, "to_pandas"):
                 df = df.to_pandas()
-        return cudf.DataFrame.from_pandas(df)
+        return cudf.DataFrame(df)
 
     def to_numpy_dict(
         self,
