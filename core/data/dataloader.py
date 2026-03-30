@@ -171,6 +171,15 @@ def _df_to_tensor_cpu(df: Any, columns: List[str], dtype: str = "float32") -> An
     except ImportError:
         pass
 
+    # cuDF: explicit .to_numpy() (implicit .values raises TypeError)
+    try:
+        import cudf as _cudf_check
+        if isinstance(df, _cudf_check.DataFrame):
+            arr = df[columns].fillna(0).to_numpy(dtype=np.float64, na_value=0.0)
+            return torch.from_numpy(arr.astype(getattr(np, dtype)))
+    except (ImportError, Exception):
+        pass
+
     arr = df[columns].values
     if not isinstance(arr, np.ndarray):
         arr = np.asarray(arr)
