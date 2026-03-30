@@ -905,9 +905,20 @@ class PLETrainer:
 
         elapsed = time.time() - epoch_start
         avg_loss = total_loss / max(num_batches, 1)
+
+        # VRAM diagnostics
+        _vram_info = ""
+        if self.device.type == "cuda":
+            import torch
+            _alloc = torch.cuda.memory_allocated() / 1e6
+            _reserved = torch.cuda.memory_reserved() / 1e6
+            _peak = torch.cuda.max_memory_allocated() / 1e6
+            _vram_info = f", VRAM: alloc={_alloc:.0f}MB reserved={_reserved:.0f}MB peak={_peak:.0f}MB"
+            torch.cuda.reset_peak_memory_stats()
+
         logger.info(
-            "[%s] Epoch %d: avg_loss=%.6f, batches=%d, time=%.1fs",
-            phase_name, self.current_epoch, avg_loss, num_batches, elapsed,
+            "[%s] Epoch %d: avg_loss=%.6f, batches=%d, time=%.1fs%s",
+            phase_name, self.current_epoch, avg_loss, num_batches, elapsed, _vram_info,
         )
         return avg_loss
 
