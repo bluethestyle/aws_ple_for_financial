@@ -597,7 +597,7 @@ if __name__ == "__main__":
     _zv_parts = []
     for c in _numeric_col_names:
         qc = f'"{c}"'
-        _zv_parts.append(f'(STDDEV({qc}) = 0 OR STDDEV({qc}) IS NULL)::INTEGER AS "{c}__zv"')
+        _zv_parts.append(f'(COUNT(DISTINCT {qc}) <= 1)::INTEGER AS "{c}__zv"')
     _zv_cols: List[str] = []
     if _zv_parts:
         _zv_row = con.execute(f"SELECT {', '.join(_zv_parts)} FROM {_TBL}").fetchone()
