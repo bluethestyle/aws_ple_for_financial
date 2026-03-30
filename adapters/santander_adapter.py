@@ -307,12 +307,18 @@ def run_generators_duckdb(
             result = gen.generate(gen_input_df)
             del gen_input_df
 
-            if not isinstance(result, pd.DataFrame):
-                result = pd.DataFrame(result)
+            # Convert generator result to Arrow (handles cuDF, pandas, dict)
+            if hasattr(result, 'to_arrow'):
+                # cuDF DataFrame → Arrow directly (no pandas intermediary)
+                _arrow_result = result.to_arrow()
+            elif isinstance(result, pa.Table):
+                _arrow_result = result
+            elif isinstance(result, pd.DataFrame):
+                _arrow_result = pa.Table.from_pandas(result, preserve_index=False)
+            else:
+                _arrow_result = pa.Table.from_pandas(pd.DataFrame(result), preserve_index=False)
 
-            generated_frames.append(
-                pa.Table.from_pandas(result, preserve_index=False),
-            )
+            generated_frames.append(_arrow_result)
             gen_summary[group_name] = len(result.columns)
             logger.info(
                 "Generator '%s': %d features in %.1fs",
