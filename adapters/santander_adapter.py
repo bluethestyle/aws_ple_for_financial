@@ -1128,10 +1128,13 @@ if __name__ == "__main__":
         if _expert_target_map:
             _expert_routing = _expert_target_map
         else:
-            for grp_name in _group_ranges:
+            # Default: each expert receives all feature groups
+            # Format: {"expert_name": str, "input_groups": [str]}
+            all_groups = list(_group_ranges.keys())
+            for expert_name in _shared_experts:
                 _expert_routing.append({
-                    "group": grp_name,
-                    "target_experts": list(_shared_experts),
+                    "expert_name": expert_name,
+                    "input_groups": all_groups,
                 })
 
     _feature_schema = {

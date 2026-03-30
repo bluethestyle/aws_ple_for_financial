@@ -1718,7 +1718,7 @@ def main() -> None:
             elif task["type"] == "multiclass":
                 logger.info("  %s [multi-%s]: top classes=%s",
                             task["name"], task.get("num_classes", "?"),
-                            dict(vals.value_counts().head(5)))
+                            str(vals.value_counts().head(5).to_dict() if hasattr(vals.value_counts(), 'to_dict') else vals.value_counts().head(5)))
             else:
                 logger.info("  %s [regression]: mean=%.4f, std=%.4f, range=[%.4f, %.4f]",
                             task["name"], vals.mean(), vals.std(), vals.min(), vals.max())
