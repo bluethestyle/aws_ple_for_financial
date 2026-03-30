@@ -1359,7 +1359,24 @@ class PLEModel(nn.Module):
         aux_losses: Dict[str, float] = {}
 
         if compute_loss and inputs.targets is not None:
-            task_losses = self._compute_task_losses(predictions, inputs.targets)
+            # Cast predictions to FP32 for loss stability under AMP
+            # (FP16 tower outputs can overflow ±65504 range)
+            with torch.cuda.amp.autocast(enabled=False):
+                predictions_f32 = {k: v.float() for k, v in predictions.items()}
+                task_losses = self._compute_task_losses(predictions_f32, inputs.targets)
+
+            # Guard: if all tasks skipped loss (e.g. label imbalance), return zero loss
+            if not task_losses:
+                _dev = next(self.parameters()).device
+                total_loss = torch.tensor(0.0, device=_dev, requires_grad=True)
+                logger.debug("All tasks skipped loss computation (empty task_losses)")
+                return PLEOutput(
+                    predictions=predictions,
+                    total_loss=total_loss,
+                    task_losses=task_losses,
+                    transfer_weights=transfer_weights,
+                    aux_losses=aux_losses,
+                )
 
             # Gradient extraction for adaTT — ONCE per epoch only
             # (per-step extraction is prohibitively expensive for large datasets)

@@ -349,6 +349,8 @@ class UncertaintyWeighting(BaseLossWeighting):
         Returns:
             Scalar total weighted loss.
         """
+        if not task_losses:
+            return torch.tensor(0.0, device="cpu", requires_grad=True)
         total = torch.tensor(0.0, device=next(iter(task_losses.values())).device)
         for name in self.task_names:
             if name in task_losses:

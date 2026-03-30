@@ -629,6 +629,50 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
                 },
             )
 
+    # -- Expert ablation: active_experts / removed_experts --
+    # These hyperparameters filter expert_basket.expert_configs before model build.
+    # active_experts: JSON list of expert names to KEEP (remove all others)
+    # removed_experts: JSON list of expert names to REMOVE
+    if expert_basket is not None:
+        _active_raw = hp.get("active_experts")
+        _removed_raw = hp.get("removed_experts")
+
+        _active_experts = None
+        if _active_raw:
+            _active_experts = json.loads(_active_raw) if isinstance(_active_raw, str) else _active_raw
+
+        _removed_experts = None
+        if _removed_raw:
+            _removed_experts = json.loads(_removed_raw) if isinstance(_removed_raw, str) else _removed_raw
+
+        if _active_experts is not None:
+            # Keep only experts in the active list
+            filtered_shared = [e for e in expert_basket.shared_experts if e in _active_experts]
+            filtered_task = [e for e in expert_basket.task_experts if e in _active_experts]
+            filtered_configs = {k: v for k, v in expert_basket.expert_configs.items() if k in _active_experts}
+            expert_basket = ExpertBasketConfig(
+                shared_experts=filtered_shared,
+                task_experts=filtered_task,
+                expert_configs=filtered_configs,
+            )
+            num_shared_experts = len(filtered_shared)
+            logger.info("Expert ablation (active_experts): kept %s, shared=%d, task=%s",
+                        filtered_shared, num_shared_experts, filtered_task)
+
+        elif _removed_experts is not None:
+            # Remove specified experts
+            filtered_shared = [e for e in expert_basket.shared_experts if e not in _removed_experts]
+            filtered_task = [e for e in expert_basket.task_experts if e not in _removed_experts]
+            filtered_configs = {k: v for k, v in expert_basket.expert_configs.items() if k not in _removed_experts}
+            expert_basket = ExpertBasketConfig(
+                shared_experts=filtered_shared,
+                task_experts=filtered_task,
+                expert_configs=filtered_configs,
+            )
+            num_shared_experts = len(filtered_shared)
+            logger.info("Expert ablation (removed_experts): removed %s, remaining shared=%s, task=%s",
+                        _removed_experts, filtered_shared, filtered_task)
+
     # -- Structure ablation: PLE toggle --
     use_ple_raw = hp.get("use_ple")
     if use_ple_raw is not None:
@@ -1571,6 +1615,23 @@ def main() -> None:
             if not result.passed:
                 for w in result.warnings[:5]:
                     logger.warning("LEAKAGE: %s", w)
+                # Auto-drop features with >0.95 correlation to any label
+                import re as _re
+                drop_cols = []
+                for w in result.warnings:
+                    _m = _re.search(r"Feature '([^']+)'", str(w))
+                    if _m:
+                        drop_cols.append(_m.group(1))
+                if drop_cols and features is not None:
+                    _before = features.shape[1]
+                    features = features.drop(
+                        columns=[c for c in drop_cols if c in features.columns],
+                        errors='ignore',
+                    )
+                    logger.warning(
+                        "Auto-dropped %d leaking features: %s (cols %d->%d)",
+                        len(drop_cols), drop_cols, _before, features.shape[1],
+                    )
             else:
                 logger.info("LeakageValidator: PASSED (no leakage detected)")
         except Exception as e:

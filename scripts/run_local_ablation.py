@@ -11,17 +11,28 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parent.parent
 TRAIN_SCRIPT = str(ROOT / "containers" / "training" / "train.py")
 PHASE0_DIR = str(ROOT / "outputs" / "phase0")
 RESULTS_DIR = ROOT / "outputs" / "ablation_results"
 CONFIG = "configs/santander/pipeline.yaml"
 
+# Load batch_size from pipeline.yaml ablation.training_defaults (fallback 4096)
+def _load_batch_size() -> int:
+    try:
+        with open(ROOT / CONFIG, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        return cfg.get("ablation", {}).get("training_defaults", {}).get("batch_size", 4096)
+    except Exception:
+        return 4096
+
 # Base hyperparameters (from pipeline.yaml ablation.training_defaults)
 BASE_HP = {
     "config": CONFIG,
     "epochs": 3,
-    "batch_size": 4096,
+    "batch_size": _load_batch_size(),
     "learning_rate": 0.001,
     "seed": 42,
 }
@@ -55,14 +66,14 @@ FEATURE_SCENARIOS = {
 # Phase 2: Expert Ablation (8 key scenarios, reduced from 16)
 # ============================================================
 EXPERT_SCENARIOS = {
-    "deepfm_only": {"active_experts": '["deepfm"]'},
-    "deepfm+temporal": {"active_experts": '["deepfm","temporal_ensemble"]'},
-    "deepfm+perslay": {"active_experts": '["deepfm","perslay"]'},
-    "deepfm+lightgcn": {"active_experts": '["deepfm","lightgcn"]'},
+    "deepfm_only": {"shared_experts": '["deepfm"]'},
+    "deepfm+temporal": {"shared_experts": '["deepfm","temporal_ensemble"]'},
+    "deepfm+perslay": {"shared_experts": '["deepfm","perslay"]'},
+    "deepfm+lightgcn": {"shared_experts": '["deepfm","lightgcn"]'},
     "full_basket": {},  # all experts (same as full baseline)
-    "full-temporal": {"removed_experts": '["temporal_ensemble"]'},
-    "full-perslay": {"removed_experts": '["perslay"]'},
-    "full-lightgcn": {"removed_experts": '["lightgcn"]'},
+    "full-temporal": {"shared_experts": '["deepfm","hgcn","perslay","causal","lightgcn","optimal_transport"]'},
+    "full-perslay": {"shared_experts": '["deepfm","temporal_ensemble","hgcn","causal","lightgcn","optimal_transport"]'},
+    "full-lightgcn": {"shared_experts": '["deepfm","temporal_ensemble","hgcn","perslay","causal","optimal_transport"]'},
 }
 
 # ============================================================

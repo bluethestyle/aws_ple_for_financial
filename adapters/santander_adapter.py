@@ -533,6 +533,63 @@ if __name__ == "__main__":
             json.dump(label_stats, f, indent=2)
         logger.info("Label stats saved: %d label columns", len(label_stats))
 
+    # --- Auto-generate feature_schema.json for train.py consumption ---
+    # Exclude: id cols, label cols, date cols, string/object cols, list cols
+    _schema_exclude = _id_cols | _label_cols | _date_cols | _str_cols | _seq_cols
+    _feature_columns = [
+        c for c in df.select_dtypes(include=["number"]).columns
+        if c not in _schema_exclude
+    ]
+
+    # Derive group_ranges from column name prefixes
+    # Group consecutive columns sharing the same prefix (text before last '_')
+    _group_ranges: Dict[str, Any] = {}
+    _current_prefix = None
+    _group_start = 0
+    for i, col in enumerate(_feature_columns):
+        # Determine prefix: everything up to the last underscore, or the column name itself
+        _parts = col.rsplit("_", 1)
+        _prefix = _parts[0] if len(_parts) > 1 and _parts[1].isdigit() else col
+        if _prefix != _current_prefix:
+            if _current_prefix is not None:
+                _group_ranges[_current_prefix] = [_group_start, i]
+            _current_prefix = _prefix
+            _group_start = i
+    if _current_prefix is not None:
+        _group_ranges[_current_prefix] = [_group_start, len(_feature_columns)]
+
+    # Expert routing from pipeline.yaml model.expert_basket config
+    _expert_routing: List[Dict[str, Any]] = []
+    _eb_cfg = pipeline_cfg.get("model", {}).get("expert_basket", {})
+    if _eb_cfg:
+        _shared_experts = _eb_cfg.get("shared", [])
+        _task_experts_list = _eb_cfg.get("task", [])
+        # Build routing entries mapping feature groups to experts
+        _expert_target_map = pipeline_cfg.get("model", {}).get("expert_routing", [])
+        if _expert_target_map:
+            _expert_routing = _expert_target_map
+        else:
+            # Default: all groups routed to all shared experts
+            for grp_name in _group_ranges:
+                _expert_routing.append({
+                    "group": grp_name,
+                    "target_experts": list(_shared_experts),
+                })
+
+    _feature_schema = {
+        "columns": _feature_columns,
+        "group_ranges": _group_ranges,
+        "expert_routing": _expert_routing,
+        "num_features": len(_feature_columns),
+        "num_groups": len(_group_ranges),
+    }
+    with open(os.path.join(output_dir, "feature_schema.json"), "w") as f:
+        json.dump(_feature_schema, f, indent=2)
+    logger.info(
+        "feature_schema.json saved: %d features, %d groups, %d routing entries",
+        len(_feature_columns), len(_group_ranges), len(_expert_routing),
+    )
+
     # Save metadata
     meta = adapter.metadata
     with open(os.path.join(output_dir, "adapter_metadata.json"), "w") as f:
