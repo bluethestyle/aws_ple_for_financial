@@ -458,7 +458,7 @@ def main():
 
     # Process in batches to avoid DuckDB list size limits (2^32 elements)
     BATCH_SIZE = 100000
-    con.execute("CREATE TABLE final_seqs (customer_id BIGINT, txn_amount_seq DOUBLE[], txn_mcc_seq INT[], txn_hour_seq INT[], txn_date_seq INT[])")
+    con.execute("CREATE TABLE final_seqs_raw (customer_id BIGINT, txn_amount_seq DOUBLE[], txn_mcc_seq INT[], txn_hour_seq INT[], noised_offsets DOUBLE[], snap_date DATE)")
 
     # Add a batch key via hash-based bucketing on customer_id
     n_batches = (aug_count // BATCH_SIZE) + 1
@@ -472,7 +472,7 @@ def main():
 
     for b in range(n_batches):
         con.execute(f"""
-            INSERT INTO final_seqs
+            INSERT INTO final_seqs_raw
             WITH src AS (
                 SELECT * FROM augmented_raw WHERE batch_id = {b}
             ),
@@ -541,25 +541,26 @@ def main():
                 -- Hours: no noise
                 list_transform(kept, el -> el[4]) AS txn_hour_seq,
 
-                -- Date shift: snap_date - noised_offset -> YYYYMMDD int
+                -- Noised day offsets (will be converted to dates in post-processing)
                 list_transform(
                     kept,
-                    el -> (STRFTIME(
-                        snap_date - (
-                            GREATEST(0, LEAST(ROUND(
-                                COALESCE(el[5], 0) * (1.0 + {gap_std} * (
-                                    SQRT(-2.0 * LN(GREATEST(
-                                        (ABS(hash(customer_id::BIGINT * 1000003 + el[1] * 23
-                                                  + {seed + 3})) % 10000) / 10000.0,
-                                        0.0001)))
-                                    * SIN(2.0 * PI() * (
-                                        (ABS(hash(customer_id::BIGINT * 1000003 + el[1] * 29
-                                                  + {seed + 4})) % 10000) / 10000.0))
-                                )), 3650))::INT
-                        ) * INTERVAL '1 DAY',
-                        '%Y%m%d'
-                    ))::INT
-                ) AS txn_date_seq
+                    el -> GREATEST(0, LEAST(
+                        ROUND(
+                            COALESCE(el[5], 0) * (1.0 + {gap_std} * (
+                                SQRT(-2.0 * LN(GREATEST(
+                                    (ABS(hash(customer_id::BIGINT * 1000003 + el[1] * 23
+                                              + {seed + 3})) % 10000) / 10000.0,
+                                    0.0001)))
+                                * SIN(2.0 * PI() * (
+                                    (ABS(hash(customer_id::BIGINT * 1000003 + el[1] * 29
+                                              + {seed + 4})) % 10000) / 10000.0))
+                            ))
+                        ),
+                        3650
+                    ))
+                ) AS noised_offsets,
+
+                snap_date
 
             FROM filtered
         """)
@@ -568,23 +569,33 @@ def main():
 
     log.info("  Noise + transforms took %.1fs", time.time() - t_noise)
 
+    # Keep noised_offsets as txn_day_offset_seq (days before snap_date).
+    # Downstream consumers reconstruct dates: txn_date = snap_date - offset.
+    # This avoids DuckDB OOM from UNNEST on 185M+ rows.
+    log.info("  Storing day offsets directly (no date conversion needed)...")
+    con.execute("""
+        CREATE TABLE final_seqs AS
+        SELECT
+            customer_id,
+            txn_amount_seq,
+            txn_mcc_seq,
+            txn_hour_seq,
+            noised_offsets AS txn_day_offset_seq
+        FROM final_seqs_raw
+    """)
+    log.info("  Date conversion done.")
+
     # ------------------------------------------------------------------
     # Step 7: Join back to original Santander data and write output
     # ------------------------------------------------------------------
-    log.info("[7/7] Joining augmented sequences and writing output...")
+    log.info("[7/7] Writing augmented sequences (separate file, no heavy JOIN)...")
 
+    # Write sequences-only parquet (customer_id + 4 list columns).
+    # Downstream merges with santander_linked via customer_id at read time.
+    con.execute("SET memory_limit='16GB'")
+    con.execute("SET preserve_insertion_order=false")
     con.execute(f"""
-        COPY (
-            SELECT
-                s.* EXCLUDE (txn_amount_seq, txn_mcc_seq, txn_hour_seq),
-                COALESCE(fs.txn_amount_seq, s.txn_amount_seq) AS txn_amount_seq,
-                COALESCE(fs.txn_mcc_seq, s.txn_mcc_seq)      AS txn_mcc_seq,
-                COALESCE(fs.txn_hour_seq, s.txn_hour_seq)     AS txn_hour_seq,
-                fs.txn_date_seq                                AS txn_date_seq
-            FROM santander s
-            LEFT JOIN final_seqs fs ON s.customer_id = fs.customer_id
-            ORDER BY s.customer_id
-        ) TO '{OUTPUT_PATH}' (FORMAT PARQUET, COMPRESSION ZSTD)
+        COPY final_seqs TO '{OUTPUT_PATH}' (FORMAT PARQUET, COMPRESSION ZSTD)
     """)
 
     elapsed = time.time() - t0
@@ -592,20 +603,8 @@ def main():
     log.info("Done in %.1fs", elapsed)
     log.info("Output: %s", OUTPUT_PATH)
 
-    # Quick validation stats
-    stats = con.execute(f"""
-        SELECT
-            COUNT(*)                    AS total_rows,
-            COUNT(txn_date_seq)         AS rows_with_date_seq,
-            AVG(len(txn_amount_seq))    AS avg_seq_len,
-            MIN(len(txn_amount_seq))    AS min_seq_len,
-            MAX(len(txn_amount_seq))    AS max_seq_len
-        FROM read_parquet('{OUTPUT_PATH}')
-    """).fetchone()
-    log.info("  total_rows=%d  rows_with_date_seq=%d", stats[0], stats[1])
-    log.info("  seq_len: avg=%.1f  min=%d  max=%d", stats[2], stats[3], stats[4])
-
     con.close()
+    log.info("Validation: run separately with duckdb to avoid re-reading 778MB file")
 
 
 if __name__ == "__main__":
