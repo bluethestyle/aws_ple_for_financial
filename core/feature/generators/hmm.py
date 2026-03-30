@@ -32,6 +32,15 @@ import pandas as pd
 
 from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
+from .gpu_utils import has_cudf
+
+# ---------------------------------------------------------------------------
+# Lazy import cuDF (optional GPU acceleration)
+# ---------------------------------------------------------------------------
+try:
+    import cudf as _cudf
+except ImportError:
+    _cudf = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -307,9 +316,9 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
         Column-name prefix.
     """
 
-    supports_gpu: bool = False
+    supports_gpu: bool = True
     required_libraries: List[str] = []
-    optional_libraries: List[str] = ["hmmlearn"]
+    optional_libraries: List[str] = ["hmmlearn", "cudf"]
 
     def __init__(
         self,
@@ -409,8 +418,7 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
 
     def fit(self, df: Any, **context: Any) -> "HMMFeatureGenerator":
         """Fit a Gaussian HMM per mode on the observation matrix."""
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        obs_cols = self._resolve_observation_columns(pdf)
+        obs_cols = self._resolve_observation_columns(df)
 
         if not obs_cols:
             logger.warning(
@@ -418,7 +426,7 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
                 "uniform state assignments."
             )
 
-        X = pdf[obs_cols].values.astype(np.float64) if obs_cols else np.zeros((len(pdf), 1))
+        X = self._extract_numeric(df, obs_cols) if obs_cols else np.zeros((len(df), 1))
         # Replace NaN with column means
         col_means = np.nanmean(X, axis=0)
         nan_mask = np.isnan(X)
@@ -464,10 +472,9 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
                 "HMMFeatureGenerator must be fitted before generate()."
             )
 
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        n_rows = len(pdf)
-        obs_cols = self._resolve_observation_columns(pdf)
-        X = pdf[obs_cols].values.astype(np.float64) if obs_cols else np.zeros((n_rows, 1))
+        n_rows = len(df)
+        obs_cols = self._resolve_observation_columns(df)
+        X = self._extract_numeric(df, obs_cols) if obs_cols else np.zeros((n_rows, 1))
 
         # Fill NaN
         col_means = np.nanmean(X, axis=0)
@@ -522,12 +529,38 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
             results[f"{self.prefix}_{mode}_dwell_time"] = dwell
             results[f"{self.prefix}_{mode}_transition_entropy"] = t_entropy
 
-        return df_backend.from_dict(results, index=pdf.index)
+        # Build output DataFrame via cuDF when available
+        if has_cudf() and _cudf is not None:
+            return _cudf.DataFrame(results)
+        return pd.DataFrame(results)
 
     # -- Helpers -----------------------------------------------------------
 
-    def _resolve_observation_columns(self, df: pd.DataFrame) -> List[str]:
+    @staticmethod
+    def _extract_numeric(df: Any, cols: List[str]) -> np.ndarray:
+        """Extract columns as a numpy float64 array, using GPU path when available."""
+        if has_cudf() and _cudf is not None:
+            if hasattr(df, "to_cupy"):
+                # Already a cuDF DataFrame
+                data = df[cols].fillna(0).to_cupy().get().astype(np.float64)
+            elif isinstance(df, pd.DataFrame):
+                gdf = _cudf.DataFrame.from_pandas(df[cols].fillna(0))
+                data = gdf.to_cupy().get().astype(np.float64)
+            else:
+                pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+                data = pdf[cols].fillna(0).values.astype(np.float64)
+        else:
+            pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+            data = pdf[cols].fillna(0).values.astype(np.float64)
+        return data
+
+    def _resolve_observation_columns(self, df: Any) -> List[str]:
         """Resolve observation columns, falling back to all numeric."""
         if self.sequence_columns:
-            return [c for c in self.sequence_columns if c in df.columns]
-        return df.select_dtypes(include=["number"]).columns.tolist()
+            cols = list(df.columns) if hasattr(df, 'columns') else []
+            return [c for c in self.sequence_columns if c in cols]
+        # cuDF and pandas both support select_dtypes
+        if hasattr(df, 'select_dtypes'):
+            return df.select_dtypes(include=["number"]).columns.tolist()
+        pdf = df_backend.to_pandas(df)
+        return pdf.select_dtypes(include=["number"]).columns.tolist()

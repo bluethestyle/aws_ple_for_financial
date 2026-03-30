@@ -34,7 +34,15 @@ import pandas as pd
 
 from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
-from .gpu_utils import has_cuml
+from .gpu_utils import has_cuml, has_cudf
+
+# ---------------------------------------------------------------------------
+# Lazy import cuDF (optional GPU acceleration)
+# ---------------------------------------------------------------------------
+try:
+    import cudf as _cudf
+except ImportError:
+    _cudf = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -191,8 +199,7 @@ class GMMClusteringGenerator(AbstractFeatureGenerator):
                 "Install with: pip install scikit-learn  (or pip install cuml for GPU)"
             )
 
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        X, _ = self._prepare_features(pdf, fit=True)
+        X, _ = self._prepare_features(df, fit=True)
 
         K = self.config.n_clusters
         min_needed = self.config.min_samples_per_cluster * K
@@ -256,8 +263,7 @@ class GMMClusteringGenerator(AbstractFeatureGenerator):
                 "GMMClusteringGenerator must be fitted before generate()."
             )
 
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        n_rows = len(pdf)
+        n_rows = len(df)
         K = self.config.n_clusters
         results: Dict[str, np.ndarray] = {}
 
@@ -273,7 +279,7 @@ class GMMClusteringGenerator(AbstractFeatureGenerator):
                 n_rows, float(np.log(K)), dtype=np.float32
             )
         else:
-            X, _ = self._prepare_features(pdf, fit=False)
+            X, _ = self._prepare_features(df, fit=False)
 
             # Predict
             probs = self._model.predict_proba(X)  # (N, K)
@@ -295,19 +301,23 @@ class GMMClusteringGenerator(AbstractFeatureGenerator):
             ).astype(np.float32)
             results[f"{self.prefix}_entropy"] = entropy
 
-        return df_backend.from_dict(results, index=pdf.index)
+        # Build output DataFrame via cuDF when available
+        if has_cudf() and _cudf is not None:
+            return _cudf.DataFrame(results)
+        return pd.DataFrame(results)
 
     # -- Helpers -----------------------------------------------------------
 
     def _prepare_features(
-        self, df: pd.DataFrame, fit: bool = False
+        self, df: Any, fit: bool = False
     ) -> tuple:
         """Extract and normalise feature matrix.
 
-        Returns (X, col_names).
+        Uses cuDF/CuPy GPU path when available, falls back to pandas/numpy.
+        Returns (X, col_names) where X is always a numpy float64 array.
         """
         cols = self._resolve_columns(df)
-        X = df[cols].values.astype(np.float64)
+        X = self._extract_numeric(df, cols)
 
         # Replace NaN with column means
         col_means = np.nanmean(X, axis=0)
@@ -327,11 +337,34 @@ class GMMClusteringGenerator(AbstractFeatureGenerator):
 
         return X, cols
 
-    def _resolve_columns(self, df: pd.DataFrame) -> List[str]:
+    @staticmethod
+    def _extract_numeric(df: Any, cols: List[str]) -> np.ndarray:
+        """Extract columns as a numpy float64 array, using GPU path when available."""
+        if has_cudf() and _cudf is not None:
+            if hasattr(df, "to_cupy"):
+                data = df[cols].fillna(0).to_cupy().get().astype(np.float64)
+            elif isinstance(df, pd.DataFrame):
+                gdf = _cudf.DataFrame.from_pandas(df[cols].fillna(0))
+                data = gdf.to_cupy().get().astype(np.float64)
+            else:
+                pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+                data = pdf[cols].fillna(0).values.astype(np.float64)
+        else:
+            pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+            data = pdf[cols].fillna(0).values.astype(np.float64)
+        return data
+
+    def _resolve_columns(self, df: Any) -> List[str]:
         """Resolve feature columns, falling back to all numeric."""
         if self.feature_columns:
-            return [c for c in self.feature_columns if c in df.columns]
-        cols = df.select_dtypes(include=["number"]).columns.tolist()
+            cols = list(df.columns) if hasattr(df, 'columns') else []
+            return [c for c in self.feature_columns if c in cols]
+        # cuDF and pandas both support select_dtypes
+        if hasattr(df, 'select_dtypes'):
+            cols = df.select_dtypes(include=["number"]).columns.tolist()
+            return cols if cols else []
+        pdf = df_backend.to_pandas(df)
+        cols = pdf.select_dtypes(include=["number"]).columns.tolist()
         return cols if cols else []
 
     def _run_bic_check(self, X: np.ndarray, configured_k: int) -> None:

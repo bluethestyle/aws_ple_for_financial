@@ -547,6 +547,10 @@ class DataFrameBackend:
     def to_pandas(self, df: Any) -> Any:
         """Convert a DataFrame to pandas (no-op if already pandas).
 
+        Handles cuDF DataFrames regardless of which backend is active --
+        if the object *is* a cuDF DataFrame it will be converted via
+        ``cudf.DataFrame.to_pandas()``.
+
         Parameters
         ----------
         df : DataFrame
@@ -556,8 +560,12 @@ class DataFrameBackend:
         -------
         pandas.DataFrame
         """
-        if self._backend == self.CUDF:
-            return df.to_pandas()
+        # Check for cuDF object first (may arrive even when the active
+        # backend is not cuDF, e.g. when mixing backends in a pipeline).
+        if _check_cudf():
+            import cudf
+            if isinstance(df, cudf.DataFrame):
+                return df.to_pandas()
         return df
 
     def from_pandas(self, df: Any) -> Any:
@@ -577,6 +585,186 @@ class DataFrameBackend:
             import cudf
             return cudf.DataFrame.from_pandas(df)
         return df
+
+    def to_cudf(self, df: Any) -> Any:
+        """Convert a DataFrame to cuDF.
+
+        Accepts pandas DataFrames, DuckDB relation results, or cuDF
+        DataFrames (returned as-is).
+
+        Parameters
+        ----------
+        df : DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        cudf.DataFrame
+
+        Raises
+        ------
+        RuntimeError
+            If cuDF is not available.
+        """
+        if not _check_cudf():
+            raise RuntimeError(
+                "to_cudf() requires cuDF. Install RAPIDS cuDF."
+            )
+        import cudf
+        if isinstance(df, cudf.DataFrame):
+            return df
+        # DuckDB relations expose .df() / .fetchdf(); pandas is the
+        # common intermediate.  cuDF.from_pandas handles both cases
+        # once the input is a pandas DataFrame.
+        import pandas as pd
+        if not isinstance(df, pd.DataFrame):
+            # Assume DuckDB relation or similar with to_pandas / fetchdf
+            if hasattr(df, "fetchdf"):
+                df = df.fetchdf()
+            elif hasattr(df, "to_pandas"):
+                df = df.to_pandas()
+        return cudf.DataFrame.from_pandas(df)
+
+    def to_numpy_dict(
+        self,
+        df: Any,
+        columns: Optional[List[str]] = None,
+    ) -> Dict[str, np.ndarray]:
+        """Extract columns as a ``{name: np.ndarray}`` dict without pandas.
+
+        Chooses the fastest path based on the input type:
+
+        * **cuDF** -- ``df[col].values.get()`` (GPU -> CPU transfer).
+        * **DuckDB relation** -- ``.fetchnumpy()`` (zero-copy where
+          possible).
+        * **pandas** -- ``df[col].values`` (no copy for numeric cols).
+
+        Parameters
+        ----------
+        df : DataFrame
+            Input DataFrame (cuDF, pandas, or DuckDB relation).
+        columns : list[str], optional
+            Subset of columns.  ``None`` extracts all columns.
+
+        Returns
+        -------
+        dict[str, numpy.ndarray]
+        """
+        # -- cuDF path -------------------------------------------------
+        if _check_cudf():
+            import cudf
+            if isinstance(df, cudf.DataFrame):
+                cols = columns or list(df.columns)
+                return {c: df[c].values.get() for c in cols}
+
+        # -- DuckDB relation path --------------------------------------
+        if hasattr(df, "fetchnumpy"):
+            np_dict = df.fetchnumpy()
+            if columns is not None:
+                np_dict = {c: np_dict[c] for c in columns if c in np_dict}
+            return np_dict
+
+        # -- pandas fallback -------------------------------------------
+        cols = columns or list(df.columns)
+        return {c: np.asarray(df[c].values) for c in cols}
+
+    def from_numpy_dict(
+        self,
+        data: Dict[str, np.ndarray],
+        n_rows: Optional[int] = None,
+    ) -> Any:
+        """Create a DataFrame from a ``{name: np.ndarray}`` dict.
+
+        Returns a cuDF DataFrame when the GPU backend is available;
+        otherwise returns a PyArrow Table (zero-copy from numpy).
+
+        Parameters
+        ----------
+        data : dict[str, numpy.ndarray]
+            Column name -> 1-D array mapping.
+        n_rows : int, optional
+            Expected row count (used for validation only).
+
+        Returns
+        -------
+        cudf.DataFrame or pyarrow.Table
+        """
+        if n_rows is not None:
+            for name, arr in data.items():
+                if len(arr) != n_rows:
+                    raise ValueError(
+                        f"Column '{name}' has {len(arr)} rows, "
+                        f"expected {n_rows}"
+                    )
+
+        if _check_cudf():
+            import cudf
+            return cudf.DataFrame(data)
+
+        import pyarrow as pa
+        arrays = [pa.array(arr) for arr in data.values()]
+        return pa.table(dict(zip(data.keys(), arrays)))
+
+    def numeric_column_names(self, df: Any) -> List[str]:
+        """Return the names of numeric columns without pandas.
+
+        * **cuDF** -- ``select_dtypes(include='number').columns``.
+        * **DuckDB** -- ``DESCRIBE`` query filtering numeric SQL types.
+        * **pandas** -- ``select_dtypes(include='number').columns``.
+
+        Parameters
+        ----------
+        df : DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        list[str]
+        """
+        # -- cuDF path -------------------------------------------------
+        if _check_cudf():
+            import cudf
+            if isinstance(df, cudf.DataFrame):
+                return list(df.select_dtypes(include="number").columns)
+
+        # -- DuckDB relation path --------------------------------------
+        if hasattr(df, "describe"):
+            # DuckDB relation objects expose .describe() that returns
+            # column metadata; however the safest route is to register
+            # and DESCRIBE via SQL when the DuckDB backend is active.
+            pass
+        if self._backend == self.DUCKDB and _check_duckdb():
+            import pandas as pd
+            if isinstance(df, pd.DataFrame):
+                conn = self._get_duckdb_conn()
+                conn.register("_desc_tmp", df)
+                try:
+                    desc = conn.execute(
+                        "DESCRIBE SELECT * FROM _desc_tmp"
+                    ).fetchdf()
+                finally:
+                    conn.unregister("_desc_tmp")
+                _numeric_types = {
+                    "TINYINT", "SMALLINT", "INTEGER", "BIGINT",
+                    "FLOAT", "DOUBLE", "DECIMAL", "HUGEINT",
+                    "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT",
+                }
+                return [
+                    row["column_name"]
+                    for _, row in desc.iterrows()
+                    if row["column_type"].split("(")[0].upper()
+                    in _numeric_types
+                ]
+
+        # -- pandas fallback -------------------------------------------
+        import pandas as pd
+        if isinstance(df, pd.DataFrame):
+            return list(df.select_dtypes(include="number").columns)
+
+        # Unknown type -- try generic approach
+        if hasattr(df, "columns"):
+            return list(df.columns)
+        return []
 
     def to_dlpack(self, df: Any) -> Any:
         """Zero-copy export via DLPack for GPU tensor interop.

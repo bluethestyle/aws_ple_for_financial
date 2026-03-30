@@ -37,15 +37,18 @@ import pandas as pd
 
 from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
-from .gpu_utils import has_cudf
+from .gpu_utils import has_cudf, has_cupy
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Lazy cuDF import
+# Lazy cuDF / CuPy imports
 # ---------------------------------------------------------------------------
 _cudf = None
 _CUDF_AVAILABLE: Optional[bool] = None
+
+_cupy = None
+_CUPY_AVAILABLE: Optional[bool] = None
 
 
 def _get_cudf():
@@ -57,11 +60,71 @@ def _get_cudf():
         import cudf as _c
         _cudf = _c
         _CUDF_AVAILABLE = True
-        logger.info("Temporal: cuDF available for GPU-accelerated rolling windows")
+        logger.info("Temporal: cuDF available for GPU-accelerated operations")
     except (ImportError, Exception):
         _cudf = None
         _CUDF_AVAILABLE = False
     return _cudf
+
+
+def _get_cupy():
+    """Lazy-load CuPy and cache the result."""
+    global _cupy, _CUPY_AVAILABLE
+    if _CUPY_AVAILABLE is not None:
+        return _cupy
+    try:
+        import cupy as _cp
+        _cp.cuda.Device(0).compute_capability
+        _cupy = _cp
+        _CUPY_AVAILABLE = True
+        logger.info("Temporal: CuPy available for GPU-accelerated EWM")
+    except (ImportError, Exception):
+        _cupy = None
+        _CUPY_AVAILABLE = False
+    return _cupy
+
+
+def _ewm_mean_cupy(arr_np: np.ndarray, halflife: float) -> np.ndarray:
+    """Compute exponentially-weighted mean using CuPy on GPU.
+
+    cuDF does not support ``ewm()``, so we implement it manually via CuPy.
+    The recurrence is: result[i] = alpha * arr[i] + (1 - alpha) * result[i-1]
+    where alpha = 1 - exp(-ln(2) / halflife).
+
+    Parameters
+    ----------
+    arr_np : np.ndarray
+        1-D float64 input array (on CPU).
+    halflife : float
+        Half-life in the same units as the time index.
+
+    Returns
+    -------
+    np.ndarray
+        EWM result on CPU as float32.
+    """
+    cp = _get_cupy()
+    if cp is None:
+        raise ImportError("CuPy is not available")
+    alpha = 1.0 - np.exp(-np.log(2.0) / halflife)
+    one_minus_alpha = 1.0 - alpha
+    arr_gpu = cp.asarray(arr_np, dtype=cp.float64)
+    result = cp.empty_like(arr_gpu)
+    n = len(arr_gpu)
+    if n == 0:
+        return np.empty(0, dtype=np.float32)
+    # Sequential scan -- runs on GPU but is inherently serial.
+    # For large arrays (>100k) the GPU memory bandwidth still helps.
+    result[0] = arr_gpu[0]
+    for i in range(1, n):
+        result[i] = alpha * arr_gpu[i] + one_minus_alpha * result[i - 1]
+    return cp.asnumpy(result).astype(np.float32)
+
+
+def _is_cudf_frame(obj: Any) -> bool:
+    """Check if *obj* is a cuDF DataFrame or Series without importing cudf."""
+    type_name = type(obj).__module__
+    return "cudf" in type_name
 
 
 # ---------------------------------------------------------------------------
@@ -201,71 +264,90 @@ class TemporalPatternGenerator(AbstractFeatureGenerator):
 
     def fit(self, df: Any, **context: Any) -> "TemporalPatternGenerator":
         """Learn normalisation statistics from training data."""
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        gdf = self._to_working_frame(df)
 
+        col_list = list(gdf.columns) if hasattr(gdf, "columns") else []
         self._has_time_column = (
-            self.time_column is not None and self.time_column in pdf.columns
+            self.time_column is not None and self.time_column in col_list
         )
 
-        self._resolved_value_cols = self._resolve_value_columns(pdf)
+        self._resolved_value_cols = self._resolve_value_columns(gdf)
 
         self._value_means = {}
         self._value_stds = {}
         for col in self._resolved_value_cols:
-            self._value_means[col] = float(pdf[col].mean())
-            std = float(pdf[col].std())
+            self._value_means[col] = float(gdf[col].mean())
+            std = float(gdf[col].std())
             self._value_stds[col] = std if std > 0 else 1.0
 
         self._fitted = True
         logger.info(
             "TemporalPatternGenerator fitted: %d value columns, "
             "%d windows, %d stats/window, %d cyclical periods, output_dim=%d, "
-            "cudf_available=%s",
+            "cudf_available=%s, cupy_available=%s",
             len(self._resolved_value_cols),
             len(self.config.windows),
             len(self.config.stats),
             len(self.config.cyclical_periods),
             self.output_dim,
             has_cudf(),
+            has_cupy(),
         )
         return self
 
     def generate(self, df: Any, **context: Any) -> Any:
-        """Generate temporal features using real rolling-window computations."""
+        """Generate temporal features using real rolling-window computations.
+
+        When cuDF is available and the DataFrame exceeds ``cudf_min_rows``,
+        all rolling, diff, and sort operations run on the GPU.  EWM is
+        offloaded to CuPy (cuDF lacks ``ewm()`` support).  Falls back to
+        pandas transparently when RAPIDS is unavailable.
+        """
         if not self._fitted:
             raise RuntimeError(
                 "TemporalPatternGenerator must be fitted before generate()."
             )
 
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        n_rows = len(pdf)
+        gdf = self._to_working_frame(df)
+        n_rows = len(gdf)
         results: Dict[str, np.ndarray] = {}
 
-        # -- Cyclical encodings --------------------------------------------
-        self._generate_cyclical(pdf, results)
+        # -- Decide GPU vs CPU path ----------------------------------------
+        cudf_mod = _get_cudf()
+        use_gpu = (
+            cudf_mod is not None
+            and n_rows >= self.config.cudf_min_rows
+        )
+
+        # -- Cyclical encodings (lightweight, always numpy) ----------------
+        self._generate_cyclical(gdf, results)
 
         # -- Ensure data is sorted by time if possible ---------------------
-        working = pdf.copy()
+        working = gdf.copy()
         if self._has_time_column and self.time_column is not None:
             try:
-                working[self.time_column] = pd.to_datetime(working[self.time_column])
+                if use_gpu and _is_cudf_frame(working):
+                    working[self.time_column] = cudf_mod.to_datetime(
+                        working[self.time_column]
+                    )
+                else:
+                    working[self.time_column] = pd.to_datetime(
+                        working[self.time_column]
+                    )
                 working = working.sort_values(self.time_column).reset_index(drop=True)
             except Exception:
                 pass
 
-        # -- Decide whether to use cuDF for rolling windows ----------------
-        # cuDF is beneficial for rolling aggregations on large DataFrames.
-        # For small DataFrames (<10k rows), the CPU-to-GPU transfer overhead
-        # outweighs the GPU computation savings.
-        cudf_mod = _get_cudf()
-        use_cudf = (
-            cudf_mod is not None
-            and n_rows >= self.config.cudf_min_rows
-        )
-        if use_cudf:
+        if use_gpu:
             logger.debug(
-                "Temporal: using cuDF GPU-accelerated rolling windows (%d rows)", n_rows
+                "Temporal: using cuDF GPU-accelerated pipeline (%d rows)", n_rows
             )
+            # Ensure working is a cuDF DataFrame for the GPU path
+            if not _is_cudf_frame(working):
+                try:
+                    working = cudf_mod.DataFrame(working)
+                except Exception:
+                    use_gpu = False
 
         # -- Per-value-column rolling features -----------------------------
         val_cols = self._resolved_value_cols
@@ -274,105 +356,109 @@ class TemporalPatternGenerator(AbstractFeatureGenerator):
             if v in working.columns:
                 series = working[v].astype(np.float64)
             else:
-                series = pd.Series(np.zeros(n_rows), dtype=np.float64)
-
-            # Convert to cuDF Series once per value column if using GPU
-            gpu_series = None
-            if use_cudf:
-                try:
-                    gpu_series = cudf_mod.Series(series.values)
-                except Exception:
-                    gpu_series = None  # fall back to pandas for this column
+                if use_gpu and cudf_mod is not None:
+                    series = cudf_mod.Series(np.zeros(n_rows, dtype=np.float64))
+                else:
+                    series = pd.Series(np.zeros(n_rows), dtype=np.float64)
 
             for w in self.config.windows:
-                # cuDF rolling: supports mean, std, min, max natively on GPU
-                # Trend requires custom apply which cuDF doesn't support, so
-                # it always runs on CPU.
-                if gpu_series is not None:
-                    try:
-                        gpu_rolling = gpu_series.rolling(window=w, min_periods=1)
-                    except Exception:
-                        gpu_rolling = None
-                else:
-                    gpu_rolling = None
-
-                # Pandas rolling as fallback
-                pandas_rolling = series.rolling(window=w, min_periods=1)
+                rolling_obj = series.rolling(window=w, min_periods=1)
 
                 for stat in self.config.stats:
                     col_name = f"{self.prefix}_{v}_roll{w}_{stat}"
 
-                    if stat == "mean":
-                        if gpu_rolling is not None:
-                            try:
-                                results[col_name] = gpu_rolling.mean().to_pandas().values.astype(np.float32)
-                                continue
-                            except Exception:
-                                pass
-                        results[col_name] = pandas_rolling.mean().values.astype(np.float32)
-
-                    elif stat == "std":
-                        if gpu_rolling is not None:
-                            try:
-                                results[col_name] = gpu_rolling.std().fillna(0.0).to_pandas().values.astype(np.float32)
-                                continue
-                            except Exception:
-                                pass
-                        results[col_name] = pandas_rolling.std().fillna(0.0).values.astype(np.float32)
-
-                    elif stat == "min":
-                        if gpu_rolling is not None:
-                            try:
-                                results[col_name] = gpu_rolling.min().to_pandas().values.astype(np.float32)
-                                continue
-                            except Exception:
-                                pass
-                        results[col_name] = pandas_rolling.min().values.astype(np.float32)
-
-                    elif stat == "max":
-                        if gpu_rolling is not None:
-                            try:
-                                results[col_name] = gpu_rolling.max().to_pandas().values.astype(np.float32)
-                                continue
-                            except Exception:
-                                pass
-                        results[col_name] = pandas_rolling.max().values.astype(np.float32)
-
-                    elif stat == "trend":
-                        # Linear regression slope over the rolling window
-                        # cuDF doesn't support custom rolling apply, so this
-                        # always runs on CPU via numpy OLS.
+                    if stat == "trend":
+                        # OLS slope -- cuDF has no custom rolling apply,
+                        # always use CPU numpy.
+                        vals_np = self._series_to_numpy(series)
                         results[col_name] = self._rolling_trend(
-                            series.values, w
+                            vals_np, w
                         ).astype(np.float32)
+
+                    elif stat in ("mean", "std", "min", "max"):
+                        try:
+                            agg = getattr(rolling_obj, stat)()
+                            if stat == "std":
+                                agg = agg.fillna(0.0)
+                            results[col_name] = self._series_to_numpy(
+                                agg
+                            ).astype(np.float32)
+                        except Exception:
+                            # Fallback: convert to pandas and retry
+                            pd_series = self._to_pandas_series(series)
+                            pd_rolling = pd_series.rolling(window=w, min_periods=1)
+                            agg = getattr(pd_rolling, stat)()
+                            if stat == "std":
+                                agg = agg.fillna(0.0)
+                            results[col_name] = agg.values.astype(np.float32)
                     else:
                         logger.warning("Unknown stat '%s', filling with zeros.", stat)
                         results[col_name] = np.zeros(n_rows, dtype=np.float32)
 
-            # Velocity (first difference)
+            # Velocity (first difference) -- cuDF supports .diff()
             if self.config.include_velocity:
-                results[f"{self.prefix}_{v}_velocity"] = (
-                    series.diff().fillna(0.0).values.astype(np.float32)
-                )
+                try:
+                    results[f"{self.prefix}_{v}_velocity"] = (
+                        self._series_to_numpy(
+                            series.diff().fillna(0.0)
+                        ).astype(np.float32)
+                    )
+                except Exception:
+                    pd_s = self._to_pandas_series(series)
+                    results[f"{self.prefix}_{v}_velocity"] = (
+                        pd_s.diff().fillna(0.0).values.astype(np.float32)
+                    )
 
-            # Acceleration (second difference)
+            # Acceleration (second difference) -- cuDF supports chained .diff()
             if self.config.include_acceleration:
-                results[f"{self.prefix}_{v}_acceleration"] = (
-                    series.diff().diff().fillna(0.0).values.astype(np.float32)
-                )
+                try:
+                    results[f"{self.prefix}_{v}_acceleration"] = (
+                        self._series_to_numpy(
+                            series.diff().diff().fillna(0.0)
+                        ).astype(np.float32)
+                    )
+                except Exception:
+                    pd_s = self._to_pandas_series(series)
+                    results[f"{self.prefix}_{v}_acceleration"] = (
+                        pd_s.diff().diff().fillna(0.0).values.astype(np.float32)
+                    )
 
             # Exponential recency weighting
+            # cuDF does NOT support .ewm(), so use CuPy when available.
             if self.config.include_recency:
                 halflife = self.config.recency_halflife
-                results[f"{self.prefix}_{v}_recency"] = (
-                    series.ewm(halflife=halflife, min_periods=1)
-                    .mean()
-                    .values
-                    .astype(np.float32)
-                )
+                recency_key = f"{self.prefix}_{v}_recency"
 
-        # Reindex to match original DataFrame order
-        return df_backend.from_dict(results, index=pdf.index)
+                vals_np = self._series_to_numpy(series)
+                cupy_mod = _get_cupy()
+                if cupy_mod is not None:
+                    try:
+                        results[recency_key] = _ewm_mean_cupy(vals_np, halflife)
+                    except Exception:
+                        # CuPy failed -- fall back to pandas ewm
+                        pd_s = pd.Series(vals_np)
+                        results[recency_key] = (
+                            pd_s.ewm(halflife=halflife, min_periods=1)
+                            .mean()
+                            .values
+                            .astype(np.float32)
+                        )
+                else:
+                    pd_s = pd.Series(vals_np)
+                    results[recency_key] = (
+                        pd_s.ewm(halflife=halflife, min_periods=1)
+                        .mean()
+                        .values
+                        .astype(np.float32)
+                    )
+
+        # Reindex to match original DataFrame order.
+        # df_backend.from_dict expects numpy arrays; results already are.
+        original_index = (
+            gdf.index.to_pandas() if _is_cudf_frame(gdf)
+            else gdf.index
+        )
+        return df_backend.from_dict(results, index=original_index)
 
     # -- Rolling trend (OLS slope) -----------------------------------------
 
@@ -415,16 +501,23 @@ class TemporalPatternGenerator(AbstractFeatureGenerator):
 
     def _generate_cyclical(
         self,
-        df: pd.DataFrame,
+        df: Any,
         results: Dict[str, np.ndarray],
     ) -> None:
-        """Generate sin/cos cyclical encodings from datetime or index."""
+        """Generate sin/cos cyclical encodings from datetime or index.
+
+        Accepts either a pandas or cuDF DataFrame.  Datetime extraction
+        always happens via pandas (lightweight operation) to avoid cuDF
+        datetime accessor edge cases.
+        """
         n_rows = len(df)
         time_values: Optional[pd.Series] = None
 
-        if self._has_time_column and self.time_column is not None and self.time_column in df.columns:
+        col_list = list(df.columns) if hasattr(df, "columns") else []
+        if self._has_time_column and self.time_column is not None and self.time_column in col_list:
             try:
-                time_values = pd.to_datetime(df[self.time_column])
+                raw_col = self._series_to_numpy(df[self.time_column])
+                time_values = pd.to_datetime(pd.Series(raw_col))
             except Exception:
                 pass
 
@@ -469,11 +562,76 @@ class TemporalPatternGenerator(AbstractFeatureGenerator):
 
     # -- Helpers -----------------------------------------------------------
 
-    def _resolve_value_columns(self, df: pd.DataFrame) -> List[str]:
-        """Resolve value columns, falling back to all numeric."""
+    def _to_working_frame(self, df: Any) -> Any:
+        """Convert input to cuDF DataFrame (GPU) or pandas DataFrame (CPU).
+
+        Attempts cuDF first when available.  Falls back to pandas via
+        ``df_backend.to_pandas()`` for non-DataFrame inputs (Arrow tables,
+        DuckDB relations, etc.).
+        """
+        cudf_mod = _get_cudf()
+
+        # Already cuDF
+        if cudf_mod is not None and _is_cudf_frame(df):
+            return df
+
+        # Already pandas
+        if isinstance(df, pd.DataFrame):
+            if cudf_mod is not None:
+                try:
+                    return cudf_mod.DataFrame(df)
+                except Exception:
+                    return df
+            return df
+
+        # Other backend (Arrow, DuckDB, etc.) -- convert to pandas first
+        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        if cudf_mod is not None:
+            try:
+                return cudf_mod.DataFrame(pdf)
+            except Exception:
+                return pdf
+        return pdf
+
+    @staticmethod
+    def _series_to_numpy(series: Any) -> np.ndarray:
+        """Extract a numpy array from a cuDF or pandas Series."""
+        if _is_cudf_frame(series):
+            # cuDF Series: .values_host gives a numpy array on CPU
+            try:
+                return series.values_host
+            except AttributeError:
+                return series.to_pandas().values
+        if hasattr(series, "values"):
+            return series.values
+        return np.asarray(series)
+
+    @staticmethod
+    def _to_pandas_series(series: Any) -> pd.Series:
+        """Convert a cuDF or other Series to pandas."""
+        if _is_cudf_frame(series):
+            return series.to_pandas()
+        if isinstance(series, pd.Series):
+            return series
+        return pd.Series(np.asarray(series))
+
+    def _resolve_value_columns(self, df: Any) -> List[str]:
+        """Resolve value columns, falling back to all numeric.
+
+        Works with both cuDF and pandas DataFrames.  ``select_dtypes()``
+        is supported by both backends with the same API.
+        """
         if self.value_columns:
-            return [c for c in self.value_columns if c in df.columns]
-        numeric = df.select_dtypes(include=["number"]).columns.tolist()
+            col_list = list(df.columns) if hasattr(df, "columns") else []
+            return [c for c in self.value_columns if c in col_list]
+        try:
+            numeric = df.select_dtypes(include=["number"]).columns.tolist()
+        except Exception:
+            # Fallback for unusual backends
+            numeric = [
+                c for c in df.columns
+                if str(df[c].dtype).startswith(("int", "float", "uint"))
+            ]
         if self.time_column and self.time_column in numeric:
             numeric.remove(self.time_column)
         return numeric if numeric else ["signal"]

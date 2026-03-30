@@ -40,7 +40,14 @@ import pandas as pd
 
 from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
-from .gpu_utils import has_cupy, cupy_pairwise_distances
+from .gpu_utils import (
+    has_cupy,
+    cupy_pairwise_distances,
+    _to_numpy_safe,
+    _to_pandas_safe,
+    _columns_list,
+    _select_dtypes_numeric,
+)
 
 try:
     from joblib import Parallel, delayed
@@ -474,9 +481,8 @@ class TDAFeatureGenerator(AbstractFeatureGenerator):
         normalisation, and adaptively sets max_homology_dim if the data
         dimensionality is too low.
         """
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        cols = self._resolve_input_columns(pdf)
-        data = pdf[cols].values.astype(np.float64)
+        cols = self._resolve_input_columns(df)
+        data = _to_numpy_safe(df, cols)
 
         # Learn normalisation parameters
         self._col_means = np.nanmean(data, axis=0)
@@ -523,10 +529,10 @@ class TDAFeatureGenerator(AbstractFeatureGenerator):
                 "TDAFeatureGenerator must be fitted before generate()."
             )
 
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        cols = self._resolve_input_columns(pdf)
-        data = pdf[cols].values.astype(np.float64)
-        n_rows = len(pdf)
+        cols = self._resolve_input_columns(df)
+        data = _to_numpy_safe(df, cols)
+        n_rows = data.shape[0]
+        _index = _to_pandas_safe(df).index
 
         # Normalise
         normed = (data - self._col_means) / self._col_stds
@@ -582,7 +588,7 @@ class TDAFeatureGenerator(AbstractFeatureGenerator):
                     if col_idx < self.output_dim:
                         data_out[f"{self.prefix}_h{h_dim}_{stat_name}"] = result[:, col_idx]
                         col_idx += 1
-            return df_backend.from_dict(data_out, index=pdf.index)
+            return df_backend.from_dict(data_out, index=_index)
 
         for i in range(n_rows):
             row = normed[i]
@@ -635,7 +641,7 @@ class TDAFeatureGenerator(AbstractFeatureGenerator):
 
         return df_backend.from_dict(
             {col: result[:, j] for j, col in enumerate(self.output_columns)},
-            index=pdf.index,
+            index=_index,
         )
 
     # -- Helpers -----------------------------------------------------------
@@ -680,11 +686,12 @@ class TDAFeatureGenerator(AbstractFeatureGenerator):
         np.clip(dist_sq, 0.0, None, out=dist_sq)
         return np.sqrt(dist_sq)
 
-    def _resolve_input_columns(self, df: pd.DataFrame) -> List[str]:
+    def _resolve_input_columns(self, df: Any) -> List[str]:
         """Resolve input columns, falling back to all numeric if unset."""
         if self.input_columns:
-            return [c for c in self.input_columns if c in df.columns]
-        return df.select_dtypes(include=["number"]).columns.tolist()
+            all_cols = _columns_list(df)
+            return [c for c in self.input_columns if c in all_cols]
+        return _select_dtypes_numeric(df)
 
     def get_persistence_diagrams(
         self,
@@ -757,9 +764,9 @@ class TDAGlobalGenerator(TDAFeatureGenerator):
 
     def fit(self, df: Any, **context: Any) -> "TDAGlobalGenerator":
         """Group by entity, compute mean per entity -> population point cloud -> persistence."""
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        cols = self._resolve_input_columns(pdf)
-        data = pdf[cols].values.astype(np.float64)
+        cols = self._resolve_input_columns(df)
+        data = _to_numpy_safe(df, cols)
+        pdf = _to_pandas_safe(df)
 
         # Learn normalisation parameters (reuse parent logic)
         self._col_means = np.nanmean(data, axis=0)
@@ -849,7 +856,7 @@ class TDAGlobalGenerator(TDAFeatureGenerator):
         if not self._fitted:
             raise RuntimeError("TDAGlobalGenerator must be fitted before generate().")
 
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        pdf = _to_pandas_safe(df)
         n_rows = len(pdf)
 
         # Broadcast global features to all rows
@@ -970,9 +977,8 @@ class TDALocalGenerator(TDAFeatureGenerator):
 
     def fit(self, df: Any, **context: Any) -> "TDALocalGenerator":
         """Store normalisation parameters (actual computation is per-entity at generate time)."""
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        cols = self._resolve_input_columns(pdf)
-        data = pdf[cols].values.astype(np.float64)
+        cols = self._resolve_input_columns(df)
+        data = _to_numpy_safe(df, cols)
 
         # Learn normalisation parameters
         self._col_means = np.nanmean(data, axis=0)
@@ -1011,10 +1017,11 @@ class TDALocalGenerator(TDAFeatureGenerator):
         if not self._fitted:
             raise RuntimeError("TDALocalGenerator must be fitted before generate().")
 
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        cols = self._resolve_input_columns(pdf)
-        data = pdf[cols].values.astype(np.float64)
-        n_rows = len(pdf)
+        pdf = _to_pandas_safe(df)
+        cols = self._resolve_input_columns(df)
+        data = _to_numpy_safe(df, cols)
+        n_rows = data.shape[0]
+        _index = pdf.index
 
         # Normalise
         normed = (data - self._col_means) / self._col_stds
@@ -1033,7 +1040,7 @@ class TDALocalGenerator(TDAFeatureGenerator):
                      (h, s) for h in range(self.max_homology_dim + 1)
                      for s in self.stats_to_compute
                  ) if i < self.output_dim},
-                index=pdf.index,
+                index=_index,
             )
 
         # Group rows by entity
@@ -1053,7 +1060,7 @@ class TDALocalGenerator(TDAFeatureGenerator):
                      (h, s) for h in range(self.max_homology_dim + 1)
                      for s in self.stats_to_compute
                  ) if i < self.output_dim},
-                index=pdf.index,
+                index=_index,
             )
         entity_to_rows: Dict[Any, np.ndarray] = {}
         for entity in unique_entities:
@@ -1105,5 +1112,5 @@ class TDALocalGenerator(TDAFeatureGenerator):
 
         return df_backend.from_dict(
             {col: result[:, j] for j, col in enumerate(self.output_columns)},
-            index=pdf.index,
+            index=_index,
         )

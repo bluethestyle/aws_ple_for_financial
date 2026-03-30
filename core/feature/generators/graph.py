@@ -48,6 +48,12 @@ except ImportError:  # pragma: no cover
     nn = None  # type: ignore[assignment]
     F = None  # type: ignore[assignment]
 
+try:
+    import cudf  # GPU-accelerated DataFrame
+    _HAS_CUDF = True
+except ImportError:
+    _HAS_CUDF = False
+
 from .gpu_utils import (
     StepTimer,
     adaptive_batch_size,
@@ -393,25 +399,83 @@ class GraphEmbeddingGenerator(AbstractFeatureGenerator):
     def _extract_entities_features(
         self, pdf: pd.DataFrame
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Return (unique_entities, feature_matrix)."""
+        """Return (unique_entities, feature_matrix).
+
+        Uses cuDF for GPU-accelerated groupby + mean when available,
+        falling back to pandas otherwise.
+        """
+        # Resolve feature columns (schema inspection on pandas)
+        if self.feature_columns:
+            fcols = [c for c in self.feature_columns if c in pdf.columns]
+        else:
+            fcols = pdf.select_dtypes(include=["number"]).columns.tolist()
+            if self.entity_column in fcols:
+                fcols.remove(self.entity_column)
+
+        # ------------------------------------------------------------------
+        # cuDF GPU path
+        # ------------------------------------------------------------------
+        if _HAS_CUDF:
+            try:
+                return self._extract_entities_features_cudf(pdf, fcols)
+            except Exception:
+                logger.debug(
+                    "cuDF entity feature extraction failed, falling back to pandas",
+                    exc_info=True,
+                )
+
+        # ------------------------------------------------------------------
+        # pandas CPU fallback
+        # ------------------------------------------------------------------
+        return self._extract_entities_features_pandas(pdf, fcols)
+
+    def _extract_entities_features_cudf(
+        self, pdf: pd.DataFrame, fcols: List[str]
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """cuDF-accelerated entity feature extraction."""
+        gdf = cudf.DataFrame(pdf) if not isinstance(pdf, cudf.DataFrame) else pdf
+
+        if self.entity_column in gdf.columns:
+            entities_sr = gdf[self.entity_column].unique()
+            entities = entities_sr.to_pandas().values
+
+            # GPU groupby + mean
+            grouped = gdf.groupby(self.entity_column)[fcols].mean()
+            # Align to entity order via merge
+            entity_idx = cudf.DataFrame(
+                {self.entity_column: entities_sr}
+            )
+            aligned = entity_idx.merge(
+                grouped.reset_index(), on=self.entity_column, how="left"
+            )
+            features = (
+                aligned[fcols]
+                .fillna(0.0)
+                .to_pandas()
+                .values.astype(np.float32)
+            )
+        else:
+            entities = gdf.index.unique().to_pandas().values
+            features = gdf[fcols].to_pandas().values.astype(np.float32)
+
+        logger.debug(
+            "Extracted %d entity features via cuDF (%d dims)",
+            len(entities), len(fcols),
+        )
+        return entities, features
+
+    def _extract_entities_features_pandas(
+        self, pdf: pd.DataFrame, fcols: List[str]
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Pandas CPU fallback for entity feature extraction."""
         if self.entity_column in pdf.columns:
             entities = pdf[self.entity_column].unique()
         else:
             entities = pdf.index.unique().values
 
-        # Feature columns for kNN
-        if self.feature_columns:
-            fcols = [c for c in self.feature_columns if c in pdf.columns]
-        else:
-            fcols = pdf.select_dtypes(include=["number"]).columns.tolist()
-            # Exclude entity column if numeric
-            if self.entity_column in fcols:
-                fcols.remove(self.entity_column)
-
         # Build per-entity feature vectors (mean aggregation for duplicates)
         if self.entity_column in pdf.columns:
             grouped = pdf.groupby(self.entity_column)[fcols].mean()
-            # Reorder to match entities
             features = grouped.reindex(entities).fillna(0.0).values.astype(np.float32)
         else:
             features = pdf[fcols].values.astype(np.float32)

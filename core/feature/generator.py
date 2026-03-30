@@ -48,6 +48,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 
@@ -235,6 +237,41 @@ class AbstractFeatureGenerator(ABC):
     def fit_generate(self, df: Any, **context: Any) -> Any:
         """Convenience: ``fit(df).generate(df)``."""
         return self.fit(df, **context).generate(df, **context)
+
+    # -- Input conversion utility --------------------------------------
+
+    def _input_to_numpy(
+        self,
+        df: Any,
+        columns: Optional[List[str]] = None,
+    ) -> Dict[str, np.ndarray]:
+        """Convert any input DataFrame to ``{col: np.ndarray}`` dict.
+
+        Generators often need raw numpy arrays for numerical computation
+        (e.g. GMM, TDA, HMM).  This helper abstracts over the input type
+        so generators don't need to know whether they received a cuDF,
+        DuckDB, or pandas DataFrame.
+
+        Dispatch order (fastest first):
+
+        * **cuDF** -- ``df[col].values.get()`` (GPU -> CPU).
+        * **DuckDB relation** -- ``.fetchnumpy()``.
+        * **pandas** -- ``df[col].values``.
+
+        Parameters
+        ----------
+        df : DataFrame
+            Input data (cuDF, pandas, DuckDB relation, or similar).
+        columns : list[str], optional
+            Subset of columns to extract.  ``None`` extracts all.
+
+        Returns
+        -------
+        dict[str, numpy.ndarray]
+            Column name -> 1-D numpy array mapping.
+        """
+        from core.data.dataframe import df_backend
+        return df_backend.to_numpy_dict(df, columns)
 
     # -- Output description --------------------------------------------
 

@@ -295,15 +295,15 @@ def run_generators_duckdb(
                 )
             else:
                 fit_sql = f"SELECT {_select_fit} FROM {table}"
-            fit_df = con.execute(fit_sql).df()
+            fit_df = con.execute(fit_sql).df().fillna(0).infer_objects()
             gen.fit(fit_df)
             del fit_df
 
             # --- Generate: materialise only the needed columns ---
-            _select_gen = ", ".join(f'"{c}"' for c in gen_cols)
+            _select_gen = ", ".join('"' + c + '"' for c in gen_cols)
             gen_input_df = con.execute(
                 f"SELECT {_select_gen} FROM {table}"
-            ).df()
+            ).df().fillna(0).infer_objects()
             result = gen.generate(gen_input_df)
             del gen_input_df
 

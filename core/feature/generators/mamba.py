@@ -53,6 +53,12 @@ try:
 except ImportError:
     mamba_ssm = None  # type: ignore[assignment]
 
+try:
+    import cudf  # GPU-accelerated DataFrame
+    _HAS_CUDF = True
+except ImportError:
+    _HAS_CUDF = False
+
 from .gpu_utils import (
     StepTimer,
     adaptive_batch_size,
@@ -483,6 +489,9 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
     ) -> Tuple[List[Any], np.ndarray, int]:
         """Build padded sequences per entity.
 
+        Uses cuDF for GPU-accelerated sort and groupby when available,
+        falling back to pandas otherwise.
+
         Returns
         -------
         entities : list
@@ -492,7 +501,7 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
         d_input : int
             Number of feature dimensions per time step.
         """
-        # Resolve feature columns
+        # Resolve feature columns (always on pandas for schema inspection)
         if self.feature_columns:
             fcols = [c for c in self.feature_columns if c in pdf.columns]
         else:
@@ -503,6 +512,86 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
 
         d_input = len(fcols) if fcols else 1
 
+        # ------------------------------------------------------------------
+        # cuDF GPU path: sort + groupby on GPU, extract numpy values
+        # ------------------------------------------------------------------
+        if _HAS_CUDF:
+            try:
+                return self._build_sequences_cudf(pdf, fcols, d_input)
+            except Exception:
+                logger.debug(
+                    "cuDF sequence build failed, falling back to pandas",
+                    exc_info=True,
+                )
+
+        # ------------------------------------------------------------------
+        # pandas CPU fallback
+        # ------------------------------------------------------------------
+        return self._build_sequences_pandas(pdf, fcols, d_input)
+
+    def _build_sequences_cudf(
+        self,
+        pdf: pd.DataFrame,
+        fcols: List[str],
+        d_input: int,
+    ) -> Tuple[List[Any], np.ndarray, int]:
+        """cuDF-accelerated sort + groupby path for sequence construction."""
+        gdf = cudf.DataFrame(pdf) if not isinstance(pdf, cudf.DataFrame) else pdf
+
+        # Sort by entity + time on GPU
+        if self.time_column in gdf.columns:
+            gdf = gdf.sort_values([self.entity_column, self.time_column])
+
+        # Group by entity on GPU
+        if self.entity_column in gdf.columns:
+            groups = gdf.groupby(self.entity_column)
+            entities = list(groups.groups.keys())
+        else:
+            entities = gdf.index.unique().to_pandas().tolist()
+            groups = gdf.groupby(gdf.index)
+
+        n_entities = len(entities)
+        seq_len = self.cfg.seq_len
+        sequences = np.zeros(
+            (n_entities, seq_len, d_input), dtype=np.float32
+        )
+
+        for idx, entity in enumerate(entities):
+            try:
+                group = groups.get_group(entity)
+            except KeyError:
+                continue
+
+            if fcols:
+                # .values.get on cuDF returns cupy array; convert to numpy
+                vals = group[fcols].to_pandas().values.astype(np.float32)
+            else:
+                vals = (
+                    group.select_dtypes(include=["number"])
+                    .to_pandas()
+                    .values.astype(np.float32)
+                )
+                if vals.shape[1] == 0:
+                    vals = np.ones((len(group), 1), dtype=np.float32)
+
+            actual_len = min(vals.shape[0], seq_len)
+            sequences[idx, seq_len - actual_len:, :vals.shape[1]] = vals[
+                -actual_len:
+            ]
+
+        logger.debug(
+            "Built %d sequences via cuDF (seq_len=%d, d_input=%d)",
+            n_entities, seq_len, d_input,
+        )
+        return entities, sequences, d_input
+
+    def _build_sequences_pandas(
+        self,
+        pdf: pd.DataFrame,
+        fcols: List[str],
+        d_input: int,
+    ) -> Tuple[List[Any], np.ndarray, int]:
+        """Pandas CPU fallback for sequence construction."""
         # Sort by time if available
         if self.time_column in pdf.columns:
             pdf = pdf.sort_values([self.entity_column, self.time_column])

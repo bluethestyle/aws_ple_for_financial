@@ -41,6 +41,12 @@ import pandas as pd
 
 from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
+from .gpu_utils import (
+    _to_numpy_safe,
+    _to_pandas_safe,
+    _columns_list,
+    _select_dtypes_numeric,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -222,12 +228,11 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
         - Interference: base frequencies via FFT analysis.
         - Crime pattern: KDE bandwidth and baseline density.
         """
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
         rng = np.random.RandomState(self.random_state)
-        obs_cols = self._resolve_observation_columns(pdf)
+        obs_cols = self._resolve_observation_columns(df)
 
         if obs_cols:
-            data = pdf[obs_cols].values.astype(np.float64)
+            data = _to_numpy_safe(df, obs_cols)
             global_mean = float(np.nanmean(data))
             global_std = float(np.nanstd(data)) + 1e-10
         else:
@@ -263,11 +268,13 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
                 "MultidisciplinaryGenerator must be fitted before generate()."
             )
 
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        n_rows = len(pdf)
+        obs_cols = self._resolve_observation_columns(df)
+        obs_data = _to_numpy_safe(df, obs_cols) if obs_cols else None
+        _pdf_ref = _to_pandas_safe(df)
+        n_rows = obs_data.shape[0] if obs_data is not None else len(_pdf_ref)
+        _index = _pdf_ref.index
+        del _pdf_ref
         results: Dict[str, np.ndarray] = {}
-        obs_cols = self._resolve_observation_columns(pdf)
-        obs_data = pdf[obs_cols].values.astype(np.float64) if obs_cols else None
 
         for sm in self.sub_models:
             params = self._fitted_params[sm]
@@ -281,7 +288,7 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
             elif sm == "crime_pattern":
                 results.update(self._generate_crime_pattern(obs_data, n_rows, params))
 
-        return df_backend.from_dict(results, index=pdf.index)
+        return df_backend.from_dict(results, index=_index)
 
     # -- Fitting helpers ---------------------------------------------------
 
@@ -803,8 +810,9 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
 
     # -- Helpers -----------------------------------------------------------
 
-    def _resolve_observation_columns(self, df: pd.DataFrame) -> List[str]:
+    def _resolve_observation_columns(self, df: Any) -> List[str]:
         """Resolve observation columns, falling back to all numeric."""
         if self.observation_columns:
-            return [c for c in self.observation_columns if c in df.columns]
-        return df.select_dtypes(include=["number"]).columns.tolist()
+            all_cols = _columns_list(df)
+            return [c for c in self.observation_columns if c in all_cols]
+        return _select_dtypes_numeric(df)

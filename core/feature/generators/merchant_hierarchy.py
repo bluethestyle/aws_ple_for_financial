@@ -30,7 +30,14 @@ import pandas as pd
 
 from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
-from .gpu_utils import has_cupy
+from .gpu_utils import (
+    has_cupy,
+    has_cudf,
+    _to_numpy_safe,
+    _to_pandas_safe,
+    _columns_list,
+    _select_dtypes_numeric,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,13 +164,12 @@ class MerchantHierarchyGenerator(AbstractFeatureGenerator):
         Identifies relevant merchant/MCC columns and fits the TruncatedSVD
         model for brand embedding extraction.
         """
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        self._mcc_cols = self._find_mcc_columns(df)
+        self._merchant_cols = self._find_merchant_columns(df)
+        self._numeric_cols = _select_dtypes_numeric(df)
 
-        self._mcc_cols = self._find_mcc_columns(pdf)
-        self._merchant_cols = self._find_merchant_columns(pdf)
-        self._numeric_cols = pdf.select_dtypes(include=["number"]).columns.tolist()
-
-        # Fit SVD on user-merchant interaction matrix
+        # Fit SVD on user-merchant interaction matrix (needs pandas for pd.to_numeric)
+        pdf = _to_pandas_safe(df)
         self._fit_svd(pdf)
 
         self._fitted = True
@@ -184,7 +190,7 @@ class MerchantHierarchyGenerator(AbstractFeatureGenerator):
                 "MerchantHierarchyGenerator must be fitted before generate()."
             )
 
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+        pdf = _to_pandas_safe(df)
         n_rows = len(pdf)
         cfg = self.config
         results: Dict[str, np.ndarray] = {}
@@ -222,22 +228,22 @@ class MerchantHierarchyGenerator(AbstractFeatureGenerator):
     # -- Helpers -----------------------------------------------------------
 
     @staticmethod
-    def _find_mcc_columns(df: pd.DataFrame) -> List[str]:
+    def _find_mcc_columns(df: Any) -> List[str]:
         """Find columns related to merchant category codes."""
         keywords = ["mcc", "merchant", "category"]
         cols = []
-        for c in df.columns:
+        for c in _columns_list(df):
             c_lower = c.lower()
             if any(kw in c_lower for kw in keywords):
                 cols.append(c)
         return cols
 
     @staticmethod
-    def _find_merchant_columns(df: pd.DataFrame) -> List[str]:
+    def _find_merchant_columns(df: Any) -> List[str]:
         """Find columns related to merchants (broader than MCC)."""
         keywords = ["merchant", "brand", "store", "vendor", "seller"]
         cols = []
-        for c in df.columns:
+        for c in _columns_list(df):
             c_lower = c.lower()
             if any(kw in c_lower for kw in keywords):
                 cols.append(c)
@@ -257,7 +263,7 @@ class MerchantHierarchyGenerator(AbstractFeatureGenerator):
         try:
             from sklearn.decomposition import TruncatedSVD
 
-            X = pdf[merchant_cols].apply(pd.to_numeric, errors="coerce").fillna(0).values
+            X = _to_numpy_safe(pdf, merchant_cols)
             n_components = min(self.config.brand_embed_dim, X.shape[1] - 1, X.shape[0] - 1)
             if n_components < 1:
                 self._svd_model = None
@@ -403,7 +409,7 @@ class MerchantHierarchyGenerator(AbstractFeatureGenerator):
             return out
 
         try:
-            X = pdf[merchant_cols].apply(pd.to_numeric, errors="coerce").fillna(0).values
+            X = _to_numpy_safe(pdf, merchant_cols)
             n_components = self._svd_model.n_components
 
             with warnings.catch_warnings():
@@ -520,7 +526,7 @@ class MerchantHierarchyGenerator(AbstractFeatureGenerator):
 
         try:
             col = mcc_cols[0]
-            values = pd.to_numeric(pdf[col], errors="coerce").fillna(0).values.astype(np.float64)
+            values = _to_numpy_safe(pdf, [col]).ravel()
 
             if len(values) > 1:
                 std = np.std(values)

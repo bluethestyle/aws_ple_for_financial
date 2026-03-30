@@ -460,6 +460,120 @@ def get_dataframe_backend() -> str:
     return "pandas"
 
 
+def _to_numpy_safe(df: Any, cols: list, fill: float = 0.0) -> np.ndarray:
+    """Extract numpy float64 array from any DataFrame type.
+
+    Tries the fastest path first (cuDF -> CuPy -> numpy), falling back
+    through pandas.  cuDF and CuPy are **optional** -- when unavailable
+    the function silently degrades to pandas/numpy.
+
+    Parameters
+    ----------
+    df : cudf.DataFrame | pd.DataFrame | Any
+        Source DataFrame.
+    cols : list[str]
+        Columns to extract.
+    fill : float
+        Value used to replace NaN/null entries.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(len(df), len(cols))``, dtype ``float64``.
+    """
+    import pandas as pd
+
+    if has_cudf():
+        try:
+            import cudf as _cudf
+            if isinstance(df, _cudf.DataFrame):
+                return (
+                    df[cols]
+                    .fillna(fill)
+                    .to_cupy()
+                    .get()
+                    .astype(np.float64)
+                )
+        except Exception:
+            pass  # fall through
+
+    if isinstance(df, pd.DataFrame):
+        return np.nan_to_num(
+            df[cols].values.astype(np.float64), nan=fill
+        )
+
+    # Generic backend (e.g. DuckDB relation) -- convert via df_backend
+    try:
+        from core.data.dataframe import df_backend
+        pdf = df_backend.to_pandas(df)
+        return np.nan_to_num(
+            pdf[cols].values.astype(np.float64), nan=fill
+        )
+    except Exception:
+        # Absolute last resort
+        return np.nan_to_num(
+            np.asarray(df[cols], dtype=np.float64), nan=fill
+        )
+
+
+def _columns_list(df: Any) -> list:
+    """Return column names as a plain Python list for any DataFrame type.
+
+    Works with pandas, cuDF, and generic backends that expose a
+    ``.columns`` attribute.
+    """
+    return list(df.columns)
+
+
+def _to_pandas_safe(df: Any) -> Any:
+    """Convert *df* to a pandas DataFrame if it is not already one.
+
+    Handles cuDF, DuckDB relations, and the project's ``df_backend``
+    transparently.  Returns *df* unchanged when it is already pandas.
+    """
+    import pandas as pd
+
+    if isinstance(df, pd.DataFrame):
+        return df
+
+    if has_cudf():
+        try:
+            import cudf as _cudf
+            if isinstance(df, _cudf.DataFrame):
+                return df.to_pandas()
+        except Exception:
+            pass
+
+    try:
+        from core.data.dataframe import df_backend
+        return df_backend.to_pandas(df)
+    except Exception:
+        return pd.DataFrame(df)
+
+
+def _select_dtypes_numeric(df: Any) -> list:
+    """Return numeric column names from any DataFrame type.
+
+    Works with pandas and cuDF DataFrames.
+    """
+    import pandas as pd
+
+    if has_cudf():
+        try:
+            import cudf as _cudf
+            if isinstance(df, _cudf.DataFrame):
+                return df.select_dtypes(include=["number"]).columns.tolist()
+        except Exception:
+            pass
+
+    if isinstance(df, pd.DataFrame):
+        return df.select_dtypes(include=["number"]).columns.tolist()
+
+    # Fallback: convert to pandas
+    pdf = _to_pandas_safe(df)
+    return pdf.select_dtypes(include=["number"]).columns.tolist()
+
+
 def cupy_pairwise_distances(X: np.ndarray) -> np.ndarray:
     """Compute pairwise Euclidean distance matrix on GPU using CuPy.
 

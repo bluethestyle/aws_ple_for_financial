@@ -32,6 +32,15 @@ import pandas as pd
 
 from core.data.dataframe import df_backend
 from ..generator import AbstractFeatureGenerator, FeatureGeneratorRegistry
+from .gpu_utils import has_cudf, has_cuml
+
+# ---------------------------------------------------------------------------
+# Lazy import cuDF (optional GPU acceleration)
+# ---------------------------------------------------------------------------
+try:
+    import cudf as _cudf
+except ImportError:
+    _cudf = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +111,9 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
         Column-name prefix (default ``""`` -- each sub-family has its own).
     """
 
-    supports_gpu: bool = False
+    supports_gpu: bool = True
     required_libraries: List[str] = ["sklearn"]
+    optional_libraries: List[str] = ["cuml", "cudf"]
 
     def __init__(
         self,
@@ -173,11 +183,10 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
 
     def fit(self, df: Any, **context: Any) -> "ModelFeaturesGenerator":
         """Fit KMeans for HMM state approximation and cache normalisation stats."""
-        pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        num_cols = self._resolve_numeric_columns(pdf, self.feature_columns)
+        num_cols = self._resolve_numeric_columns(df, self.feature_columns)
 
         if len(num_cols) > 0:
-            X = pdf[num_cols].values.astype(np.float64)
+            X = self._extract_numeric(df, num_cols)
             col_means = np.nanmean(X, axis=0)
             nan_mask = np.isnan(X)
             if nan_mask.any():
@@ -191,41 +200,67 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
 
             # Fit KMeans for HMM state approximation
             X_norm = (X - self._col_means) / self._col_stds
-            try:
-                from sklearn.cluster import KMeans
-
-                self._kmeans_model = KMeans(
-                    n_clusters=self.config.hmm_n_states,
-                    random_state=self.config.hmm_random_state,
-                    n_init=3,
-                    max_iter=100,
-                )
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    self._kmeans_model.fit(X_norm)
-                logger.info(
-                    "ModelFeaturesGenerator KMeans fitted: K=%d, n_samples=%d, "
-                    "n_features=%d",
-                    self.config.hmm_n_states,
-                    X_norm.shape[0],
-                    X_norm.shape[1],
-                )
-            except ImportError:
-                logger.warning(
-                    "sklearn not available; HMM features will use fallback."
-                )
-                self._kmeans_model = None
+            self._fit_kmeans(X_norm)
 
         # Cache temporal normalisation stats
-        temp_cols = self._resolve_temporal_columns(pdf)
+        temp_cols = self._resolve_temporal_columns(df)
         if len(temp_cols) >= 2:
-            T = pdf[temp_cols[:2]].values.astype(np.float64)
+            T = self._extract_numeric(df, temp_cols[:2])
             self._temporal_means = np.nanmean(T, axis=0)
             self._temporal_stds = np.nanstd(T, axis=0)
             self._temporal_stds[self._temporal_stds < 1e-10] = 1.0
 
         self._fitted = True
         return self
+
+    def _fit_kmeans(self, X_norm: np.ndarray) -> None:
+        """Fit KMeans using cuML (GPU) when available, else sklearn (CPU)."""
+        if has_cuml():
+            try:
+                from cuml.cluster import KMeans as cuKMeans
+                self._kmeans_model = cuKMeans(
+                    n_clusters=self.config.hmm_n_states,
+                    random_state=self.config.hmm_random_state,
+                    n_init=3,
+                    max_iter=100,
+                )
+                self._kmeans_model.fit(X_norm)
+                logger.info(
+                    "ModelFeaturesGenerator KMeans fitted (cuML): K=%d, "
+                    "n_samples=%d, n_features=%d",
+                    self.config.hmm_n_states,
+                    X_norm.shape[0],
+                    X_norm.shape[1],
+                )
+                return
+            except Exception as exc:
+                logger.warning(
+                    "cuML KMeans failed (%s), falling back to sklearn.", exc
+                )
+
+        try:
+            from sklearn.cluster import KMeans
+            self._kmeans_model = KMeans(
+                n_clusters=self.config.hmm_n_states,
+                random_state=self.config.hmm_random_state,
+                n_init=3,
+                max_iter=100,
+            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                self._kmeans_model.fit(X_norm)
+            logger.info(
+                "ModelFeaturesGenerator KMeans fitted (sklearn): K=%d, "
+                "n_samples=%d, n_features=%d",
+                self.config.hmm_n_states,
+                X_norm.shape[0],
+                X_norm.shape[1],
+            )
+        except ImportError:
+            logger.warning(
+                "Neither cuML nor sklearn available; HMM features will use fallback."
+            )
+            self._kmeans_model = None
 
     def generate(self, df: Any, **context: Any) -> Any:
         """Generate model-derived features (27D)."""
@@ -234,6 +269,8 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
                 "ModelFeaturesGenerator must be fitted before generate()."
             )
 
+        # Convert to pandas for sub-generators that do row-level iteration;
+        # the heavy numeric extraction already uses the GPU path.
         pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
         n_rows = len(pdf)
         results: Dict[str, np.ndarray] = {}
@@ -249,7 +286,10 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
         # ---- LNN Features (18D) -----------------------------------------
         self._generate_lnn_features(pdf, n_rows, p, results)
 
-        return df_backend.from_dict(results, index=pdf.index)
+        # Build output DataFrame via cuDF when available
+        if has_cudf() and _cudf is not None:
+            return _cudf.DataFrame(results)
+        return pd.DataFrame(results)
 
     # -- HMM Summary (5D) -------------------------------------------------
 
@@ -272,7 +312,7 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
             results[f"{p}hmm_state_trend"] = np.zeros(n_rows, dtype=np.float32)
             return
 
-        X = pdf[num_cols].values.astype(np.float64)
+        X = self._extract_numeric(pdf, num_cols)
         # Impute NaN
         col_means = np.nanmean(X, axis=0)
         nan_mask = np.isnan(X)
@@ -286,10 +326,13 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
         if self._col_means is not None and self._col_stds is not None:
             X = (X - self._col_means) / self._col_stds
 
-        # Assign states via KMeans
+        # Assign states via KMeans (cuML may return cupy arrays)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             states = self._kmeans_model.predict(X)  # (n_rows,)
+            if hasattr(states, 'get'):
+                states = states.get()  # cupy -> numpy
+            states = np.asarray(states)
 
         K = self.config.hmm_n_states
         window = self.config.hmm_window_size
@@ -367,7 +410,7 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
             results[f"{p}bandit_regret_proxy"] = np.zeros(n_rows, dtype=np.float32)
             return
 
-        X = pdf[eng_cols].values.astype(np.float64)
+        X = self._extract_numeric(pdf, eng_cols)
         # Impute NaN with 0
         X = np.nan_to_num(X, nan=0.0)
 
@@ -436,7 +479,7 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
             return
 
         # Extract two key metrics
-        metrics = pdf[temp_cols[:2]].values.astype(np.float64)
+        metrics = self._extract_numeric(pdf, temp_cols[:2])
         metrics = np.nan_to_num(metrics, nan=0.0)
 
         # --- 6 features: multi-scale temporal derivatives (velocity) ---
@@ -519,21 +562,44 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
 
     # -- Helpers -----------------------------------------------------------
 
+    @staticmethod
+    def _extract_numeric(df: Any, cols: List[str]) -> np.ndarray:
+        """Extract columns as a numpy float64 array, using GPU path when available."""
+        if has_cudf() and _cudf is not None:
+            if hasattr(df, "to_cupy"):
+                data = df[cols].fillna(0).to_cupy().get().astype(np.float64)
+            elif isinstance(df, pd.DataFrame):
+                gdf = _cudf.DataFrame.from_pandas(df[cols].fillna(0))
+                data = gdf.to_cupy().get().astype(np.float64)
+            else:
+                pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+                data = pdf[cols].fillna(0).values.astype(np.float64)
+        else:
+            pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
+            data = pdf[cols].fillna(0).values.astype(np.float64)
+        return data
+
     def _resolve_numeric_columns(
-        self, df: pd.DataFrame, preferred: List[str]
+        self, df: Any, preferred: List[str]
     ) -> List[str]:
         """Resolve columns, falling back to all numeric."""
         if preferred:
-            return [c for c in preferred if c in df.columns]
-        cols = df.select_dtypes(include=["number"]).columns.tolist()
+            cols = list(df.columns) if hasattr(df, 'columns') else []
+            return [c for c in preferred if c in cols]
+        if hasattr(df, 'select_dtypes'):
+            cols = df.select_dtypes(include=["number"]).columns.tolist()
+            return cols if cols else []
+        pdf = df_backend.to_pandas(df)
+        cols = pdf.select_dtypes(include=["number"]).columns.tolist()
         return cols if cols else []
 
-    def _resolve_temporal_columns(self, df: pd.DataFrame) -> List[str]:
+    def _resolve_temporal_columns(self, df: Any) -> List[str]:
         """Resolve temporal columns, falling back to first 2 numeric."""
         if self.temporal_columns:
-            valid = [c for c in self.temporal_columns if c in df.columns]
+            cols = list(df.columns) if hasattr(df, 'columns') else []
+            valid = [c for c in self.temporal_columns if c in cols]
             if len(valid) >= 2:
                 return valid
         # Fallback: first two numeric columns
-        num_cols = df.select_dtypes(include=["number"]).columns.tolist()
+        num_cols = self._resolve_numeric_columns(df, [])
         return num_cols[:2] if len(num_cols) >= 2 else num_cols
