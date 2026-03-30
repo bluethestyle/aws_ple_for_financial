@@ -540,6 +540,13 @@ if __name__ == "__main__":
 
     # Load parquet directly into DuckDB (no pandas intermediary)
     con.execute(f"CREATE TABLE {_TBL} AS SELECT * FROM '{source}'")
+    # Replace sentinel values (-999999 etc.) with NULL
+    _numeric_cols = [r[0] for r in con.execute(
+        f"SELECT column_name FROM (DESCRIBE SELECT * FROM {_TBL}) "
+        f"WHERE column_type IN ('TINYINT','SMALLINT','INTEGER','BIGINT','FLOAT','DOUBLE')"
+    ).fetchall()]
+    for _nc in _numeric_cols:
+        con.execute(f'UPDATE {_TBL} SET "{_nc}" = NULL WHERE "{_nc}" < -99999')
     _total_rows = con.execute(f"SELECT COUNT(*) FROM {_TBL}").fetchone()[0]
     _total_cols = con.execute(
         f"SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM {_TBL})"
@@ -725,12 +732,50 @@ if __name__ == "__main__":
     ]
 
     if _feat_cols:
-        # Fit normalizer: materialise only feature columns (not full table)
-        _fit_select = ", ".join(f'"{c}"' for c in _feat_cols)
-        _fit_df = con.execute(f"SELECT {_fit_select} FROM {_TBL}").df()
+        # Fit normalizer entirely via DuckDB SQL (no pandas materialization)
         normalizer = FeatureNormalizer()
-        normalizer.fit(_fit_df, _feat_cols)
-        del _fit_df
+
+        # Classify columns: binary vs continuous via DuckDB
+        _binary_cols = []
+        _continuous_cols = []
+        for c in _feat_cols:
+            qc = f'"{c}"'
+            r = con.execute(
+                f"SELECT COUNT(DISTINCT {qc}) as nd, MIN({qc}) as mn, MAX({qc}) as mx "
+                f"FROM {_TBL} WHERE {qc} IS NOT NULL"
+            ).fetchone()
+            if r[0] is not None and r[0] <= 2 and r[1] in (0, 0.0) and r[2] in (1, 1.0):
+                _binary_cols.append(c)
+            else:
+                _continuous_cols.append(c)
+        normalizer.binary_cols = _binary_cols
+        normalizer.continuous_cols = _continuous_cols
+
+        # Power-law detection (subsample via DuckDB, compute in numpy)
+        normalizer.power_law_cols = []
+        if _continuous_cols:
+            _pw_cols_sql = ", ".join('"' + c + '"' for c in _continuous_cols)
+            _pw_sample = con.execute(
+                f"SELECT {_pw_cols_sql} FROM {_TBL} USING SAMPLE 5000 (reservoir, 42)"
+            ).fetchnumpy()
+            normalizer._detect_power_law_from_numpy(_pw_sample, _continuous_cols)
+
+        # Compute mean/std via DuckDB SQL (no pandas/CuPy)
+        if normalizer.continuous_cols:
+            _agg_parts = []
+            for c in normalizer.continuous_cols:
+                qc = f'"{c}"'
+                _agg_parts.append(f"AVG(COALESCE({qc}::DOUBLE, 0))")
+                _agg_parts.append(f"STDDEV_SAMP(COALESCE({qc}::DOUBLE, 0))")
+            _agg_row = con.execute(
+                f"SELECT {', '.join(_agg_parts)} FROM {_TBL}"
+            ).fetchone()
+            _means = np.array([_agg_row[i * 2] for i in range(len(normalizer.continuous_cols))], dtype=np.float64)
+            _stds = np.array([_agg_row[i * 2 + 1] for i in range(len(normalizer.continuous_cols))], dtype=np.float64)
+            _stds[_stds < 1e-10] = 1.0
+            normalizer._mean = _means
+            normalizer._std = _stds
+            normalizer._fitted = True
 
         # --- Apply normalization via DuckDB UPDATE (no pandas round-trip) ---
         # Stage 2: Z-score scaling for continuous columns
@@ -741,7 +786,7 @@ if __name__ == "__main__":
                 std_val = float(normalizer._std[i])
                 qc = f'"{col}"'
                 _update_sets.append(
-                    f'{qc} = (COALESCE({qc}, 0) - {mean_val}) / {std_val}'
+                    f'{qc} = (COALESCE({qc}::DOUBLE, 0) - {mean_val}) / {std_val}'
                 )
             # Execute updates in batches to avoid SQL size limits
             _BATCH_SIZE = 50

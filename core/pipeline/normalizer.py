@@ -138,7 +138,7 @@ class FeatureNormalizer:
         self._std = None
         if self.continuous_cols:
             xp = _xp()
-            raw = df[self.continuous_cols].fillna(0).values
+            raw = df[self.continuous_cols].fillna(0).values.astype(np.float64)
             arr = xp.asarray(raw)
             self._mean = _to_numpy(xp.mean(arr, axis=0))
             std = _to_numpy(xp.std(arr, axis=0))
@@ -176,7 +176,7 @@ class FeatureNormalizer:
         # --- Scaled continuous columns ---
         if self.continuous_cols and self._mean is not None:
             xp = _xp()
-            raw = df[self.continuous_cols].fillna(0).values
+            raw = df[self.continuous_cols].fillna(0).values.astype(np.float64)
             arr = xp.asarray(raw)
             mean = xp.asarray(self._mean)
             std = xp.asarray(self._std)
@@ -291,6 +291,53 @@ class FeatureNormalizer:
             return 0.0
         corr = np.corrcoef(log_rank, log_val)[0, 1]
         return corr ** 2
+
+    def _detect_power_law_from_numpy(
+        self, data: dict, continuous_cols: list
+    ) -> None:
+        """Power-law detection from numpy dict (DuckDB fetchnumpy output).
+
+        Sets self.power_law_cols and self.power_law_details.
+        No pandas dependency.
+        """
+        candidates = []
+        for col in continuous_cols:
+            arr = data.get(col)
+            if arr is None:
+                continue
+            arr = arr[~np.isnan(arr)] if np.issubdtype(arr.dtype, np.floating) else arr
+            if len(arr) < self._min_samples:
+                continue
+            skew = float(np.mean(((arr - arr.mean()) / max(arr.std(), 1e-10)) ** 3))
+            kurt = float(np.mean(((arr - arr.mean()) / max(arr.std(), 1e-10)) ** 4) - 3)
+            nunique = len(np.unique(arr))
+            if abs(skew) > self.SKEW_THRESH and kurt > self.KURT_THRESH and arr.min() >= 0 and nunique > self._min_nunique:
+                candidates.append((col, skew, kurt))
+
+        self.power_law_cols = []
+        self.power_law_details = {}
+        for col, skew, kurt in candidates:
+            arr = data[col]
+            arr = arr[~np.isnan(arr)] if np.issubdtype(arr.dtype, np.floating) else arr
+            vals = arr[arr > 0]
+            vals = np.sort(vals)[::-1]
+            n = max(self._min_samples, len(vals) // 2)
+            vals = vals[:n]
+            if len(vals) < self._min_samples:
+                continue
+            log_rank = np.log(1 + np.arange(len(vals)))
+            log_val = np.log(vals.astype(np.float64))
+            if log_val.std() < 1e-10:
+                continue
+            corr = np.corrcoef(log_rank, log_val)[0, 1]
+            r2 = corr ** 2
+            if r2 >= self.R2_THRESH:
+                self.power_law_cols.append(col)
+                self.power_law_details[col] = {"skew": round(skew, 2), "kurt": round(kurt, 2), "loglog_r2": round(r2, 4)}
+
+        if self.power_law_cols:
+            logger.info("Power-law detected: %d columns confirmed (R²>%.1f): %s",
+                        len(self.power_law_cols), self.R2_THRESH, self.power_law_cols)
 
     # ------------------------------------------------------------------
     # Persistence
