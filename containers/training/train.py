@@ -1788,9 +1788,12 @@ def main() -> None:
         try:
             from core.pipeline.leakage_validator import LeakageValidator
             validator = LeakageValidator(correlation_threshold=0.95)
-            # Temporary pandas conversion for validator API (not hot path)
-            _feat_pd = features.to_pandas()
-            _lbl_pd = labels.to_pandas()
+            # Subsample for speed (1M correlation is too slow)
+            _n = features.num_rows if hasattr(features, 'num_rows') else len(features)
+            _sample_n = min(_n, 50_000)
+            _idx = np.random.default_rng(42).choice(_n, _sample_n, replace=False)
+            _feat_pd = features.take(_idx).to_pandas()
+            _lbl_pd = labels.take(_idx).to_pandas()
             result = validator.validate(_feat_pd, _lbl_pd, config)
             del _feat_pd, _lbl_pd
             if not result.passed:
