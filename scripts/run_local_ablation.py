@@ -31,7 +31,7 @@ def _load_batch_size() -> int:
 # Base hyperparameters (from pipeline.yaml ablation.training_defaults)
 BASE_HP = {
     "config": CONFIG,
-    "epochs": 10,
+    "epochs": 3,
     "batch_size": _load_batch_size(),
     "learning_rate": 0.001,
     "seed": 42,

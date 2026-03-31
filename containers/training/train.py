@@ -1783,7 +1783,7 @@ def main() -> None:
             logger.warning("No date column '%s' found -- falling back to random split", date_col)
 
     # ---- 3c. Leakage validation ----
-    # LeakageValidator expects pandas DataFrames — convert at boundary only
+    # LeakageValidator accepts Arrow Tables directly (no pandas conversion)
     if labels is not None:
         try:
             from core.pipeline.leakage_validator import LeakageValidator
@@ -1792,10 +1792,10 @@ def main() -> None:
             _n = features.num_rows if hasattr(features, 'num_rows') else len(features)
             _sample_n = min(_n, 50_000)
             _idx = np.random.default_rng(42).choice(_n, _sample_n, replace=False)
-            _feat_pd = features.take(_idx).to_pandas()
-            _lbl_pd = labels.take(_idx).to_pandas()
-            result = validator.validate(_feat_pd, _lbl_pd, config)
-            del _feat_pd, _lbl_pd
+            _feat_sample = features.take(_idx)
+            _lbl_sample = labels.take(_idx)
+            result = validator.validate(_feat_sample, _lbl_sample, config)
+            del _feat_sample, _lbl_sample
             if not result.passed:
                 for w in result.warnings[:5]:
                     logger.warning("LEAKAGE: %s", w)

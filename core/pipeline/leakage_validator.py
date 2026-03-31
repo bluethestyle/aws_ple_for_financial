@@ -35,10 +35,19 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
-import pandas as pd
+
+try:
+    import pyarrow as pa
+except ImportError:  # pragma: no cover
+    pa = None  # type: ignore[assignment]
+
+try:
+    import pandas as pd
+except ImportError:  # pragma: no cover
+    pd = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +84,53 @@ class ValidationResult:
         self.add_warning(f"[CRITICAL] {msg}", check_name, detail)
 
 
+def _get_column_names(data: Any) -> List[str]:
+    """Extract column names from Arrow Table, pandas DataFrame, or dict."""
+    if pa is not None and isinstance(data, pa.Table):
+        return data.column_names
+    if pd is not None and isinstance(data, pd.DataFrame):
+        return list(data.columns)
+    if isinstance(data, dict):
+        return list(data.keys())
+    raise TypeError(f"Unsupported data type: {type(data)}")
+
+
+def _get_numeric_column_names(data: Any) -> List[str]:
+    """Return names of numeric columns only."""
+    if pa is not None and isinstance(data, pa.Table):
+        numeric_types = (
+            pa.int8, pa.int16, pa.int32, pa.int64,
+            pa.uint8, pa.uint16, pa.uint32, pa.uint64,
+            pa.float16, pa.float32, pa.float64,
+        )
+        return [
+            f.name for f in data.schema
+            if pa.types.is_integer(f.type)
+            or pa.types.is_floating(f.type)
+        ]
+    if pd is not None and isinstance(data, pd.DataFrame):
+        return list(data.select_dtypes(include=[np.number]).columns)
+    if isinstance(data, dict):
+        result = []
+        for k, v in data.items():
+            arr = np.asarray(v)
+            if np.issubdtype(arr.dtype, np.number):
+                result.append(k)
+        return result
+    raise TypeError(f"Unsupported data type: {type(data)}")
+
+
+def _col_to_numpy(data: Any, col: str) -> np.ndarray:
+    """Extract a single column as a 1-D numpy array."""
+    if pa is not None and isinstance(data, pa.Table):
+        return data.column(col).to_numpy(zero_copy_only=False)
+    if pd is not None and isinstance(data, pd.DataFrame):
+        return data[col].values
+    if isinstance(data, dict):
+        return np.asarray(data[col])
+    raise TypeError(f"Unsupported data type: {type(data)}")
+
+
 class LeakageValidator:
     """Validate that features don't contain label information.
 
@@ -106,17 +162,17 @@ class LeakageValidator:
 
     def validate(
         self,
-        feature_df: pd.DataFrame,
-        label_df: pd.DataFrame,
+        features: Any,
+        labels: Any,
         config: Optional[Dict[str, Any]] = None,
     ) -> ValidationResult:
         """Run all leakage checks.
 
         Parameters
         ----------
-        feature_df : pd.DataFrame
+        features : pyarrow.Table | dict[str, ndarray] | pd.DataFrame
             Engineered features (post-transform).
-        label_df : pd.DataFrame
+        labels : pyarrow.Table | dict[str, ndarray] | pd.DataFrame
             Label columns.
         config : dict, optional
             Pipeline config dict for context-aware checks.
@@ -129,10 +185,10 @@ class LeakageValidator:
         config = config or {}
 
         # Check 1: Feature-label correlation
-        self.check_feature_label_correlation(feature_df, label_df, result)
+        self.check_feature_label_correlation(features, labels, result)
 
         # Check 2: Exact column overlap
-        self._check_column_overlap(feature_df, label_df, result)
+        self._check_column_overlap(features, labels, result)
 
         logger.info(
             "LeakageValidator: %s (%d warnings)",
@@ -148,7 +204,7 @@ class LeakageValidator:
 
     def check_sequence_leakage(
         self,
-        df: pd.DataFrame,
+        df: Any,
         seq_cols: List[str],
         label_derivation_config: Optional[Dict[str, Any]] = None,
         result: Optional[ValidationResult] = None,
@@ -160,7 +216,7 @@ class LeakageValidator:
 
         Parameters
         ----------
-        df : pd.DataFrame
+        df : pyarrow.Table | pd.DataFrame | dict[str, ndarray]
             Raw data with list-valued sequence columns.
         seq_cols : list[str]
             Sequence column names to check.
@@ -176,18 +232,30 @@ class LeakageValidator:
         if result is None:
             result = ValidationResult()
 
+        col_names = set(_get_column_names(df))
+
         for col in seq_cols:
-            if col not in df.columns:
+            if col not in col_names:
                 continue
 
-            # Sample sequence lengths
-            sample = df[col].dropna().head(1000)
-            lengths = sample.apply(
-                lambda x: len(x) if isinstance(x, (list, np.ndarray)) else 0
-            )
+            # Extract column as Python list for list-valued inspection
+            col_data = _col_to_numpy(df, col)
+            # Take up to 1000 non-null samples
+            lengths: List[int] = []
+            count = 0
+            for val in col_data:
+                if val is None:
+                    continue
+                if isinstance(val, (list, np.ndarray)):
+                    lengths.append(len(val))
+                else:
+                    lengths.append(0)
+                count += 1
+                if count >= 1000:
+                    break
 
-            max_len = int(lengths.max()) if len(lengths) > 0 else 0
-            mean_len = float(lengths.mean()) if len(lengths) > 0 else 0
+            max_len = int(max(lengths)) if lengths else 0
+            mean_len = float(np.mean(lengths)) if lengths else 0.0
 
             if max_len > self.max_seq_len_expected:
                 result.fail(
@@ -216,8 +284,8 @@ class LeakageValidator:
 
     def check_feature_label_correlation(
         self,
-        features: pd.DataFrame,
-        labels: pd.DataFrame,
+        features: Any,
+        labels: Any,
         result: Optional[ValidationResult] = None,
         threshold: Optional[float] = None,
     ) -> ValidationResult:
@@ -225,9 +293,9 @@ class LeakageValidator:
 
         Parameters
         ----------
-        features : pd.DataFrame
+        features : pyarrow.Table | dict[str, ndarray] | pd.DataFrame
             Feature columns (numeric only are checked).
-        labels : pd.DataFrame
+        labels : pyarrow.Table | dict[str, ndarray] | pd.DataFrame
             Label columns.
         result : ValidationResult, optional
             Existing result to append to.
@@ -244,42 +312,48 @@ class LeakageValidator:
         threshold = threshold or self.correlation_threshold
 
         # Only check numeric columns
-        numeric_features = features.select_dtypes(include=[np.number])
-        numeric_labels = labels.select_dtypes(include=[np.number])
+        feat_num_cols = _get_numeric_column_names(features)
+        label_num_cols = _get_numeric_column_names(labels)
 
-        if numeric_features.empty or numeric_labels.empty:
+        if not feat_num_cols or not label_num_cols:
             logger.debug("LeakageValidator: no numeric features/labels to correlate")
             return result
 
         suspicious_pairs: List[Dict[str, Any]] = []
 
-        for label_col in numeric_labels.columns:
-            label_series = numeric_labels[label_col].dropna()
-            if len(label_series) < 10:
+        for label_col in label_num_cols:
+            label_arr = _col_to_numpy(labels, label_col).astype(np.float64)
+            label_valid = ~np.isnan(label_arr)
+            if label_valid.sum() < 10:
                 continue
 
-            for feat_col in numeric_features.columns:
-                feat_series = numeric_features[feat_col].dropna()
+            for feat_col in feat_num_cols:
+                feat_arr = _col_to_numpy(features, feat_col).astype(np.float64)
+                feat_valid = ~np.isnan(feat_arr)
 
-                # Align indices
-                common_idx = label_series.index.intersection(feat_series.index)
-                if len(common_idx) < 10:
+                # Align: both must be non-NaN at the same index
+                common_mask = label_valid & feat_valid
+                if common_mask.sum() < 10:
                     continue
 
                 try:
-                    corr = abs(
-                        label_series.loc[common_idx].corr(
-                            feat_series.loc[common_idx]
-                        )
-                    )
+                    corr = abs(float(
+                        np.corrcoef(
+                            label_arr[common_mask],
+                            feat_arr[common_mask],
+                        )[0, 1]
+                    ))
                 except Exception:
+                    continue
+
+                if np.isnan(corr):
                     continue
 
                 if corr >= threshold:
                     suspicious_pairs.append({
                         "feature": feat_col,
                         "label": label_col,
-                        "correlation": round(float(corr), 4),
+                        "correlation": round(corr, 4),
                     })
                     result.fail(
                         f"Feature '{feat_col}' has {corr:.4f} correlation "
@@ -287,7 +361,7 @@ class LeakageValidator:
                         f"Possible data leakage.",
                         check_name=f"corr_{feat_col}_{label_col}",
                         detail={"feature": feat_col, "label": label_col,
-                                "correlation": round(float(corr), 4)},
+                                "correlation": round(corr, 4)},
                     )
 
         if suspicious_pairs:
@@ -310,7 +384,7 @@ class LeakageValidator:
 
     def check_product_columns(
         self,
-        df: pd.DataFrame,
+        df: Any,
         prod_cols: List[str],
         seq_cols: List[str],
         seq_col_prefix: str = "seq_",
@@ -325,7 +399,7 @@ class LeakageValidator:
 
         Parameters
         ----------
-        df : pd.DataFrame
+        df : pyarrow.Table | pd.DataFrame | dict[str, ndarray]
             Data with both product and sequence columns.
         prod_cols : list[str]
             Product holding column names.
@@ -345,27 +419,37 @@ class LeakageValidator:
         if result is None:
             result = ValidationResult()
 
+        col_names = set(_get_column_names(df))
+
         for prod_col in prod_cols:
-            if prod_col not in df.columns:
+            if prod_col not in col_names:
                 continue
 
             # Derive corresponding sequence column name
             suffix = prod_col[len(prod_col_prefix):]
             seq_col = seq_col_prefix + suffix
 
-            if seq_col not in df.columns:
+            if seq_col not in col_names:
                 continue
 
+            # Extract columns as numpy arrays
+            prod_arr = _col_to_numpy(df, prod_col)
+            seq_arr = _col_to_numpy(df, seq_col)
+
             # Sample check: does prod_col match last element of seq_col?
-            sample = df[[prod_col, seq_col]].dropna().head(1000)
             mismatches = 0
             matches_last = 0
             matches_second_last = 0
+            n_sample = 0
 
-            for _, row in sample.iterrows():
-                seq = row[seq_col]
-                prod_val = row[prod_col]
+            limit = min(len(prod_arr), 1000)
+            for i in range(limit):
+                prod_val = prod_arr[i]
+                seq = seq_arr[i]
+                if prod_val is None or seq is None:
+                    continue
                 if isinstance(seq, (list, np.ndarray)) and len(seq) >= 2:
+                    n_sample += 1
                     if prod_val == seq[-1]:
                         matches_last += 1
                     if prod_val == seq[-2]:
@@ -373,7 +457,6 @@ class LeakageValidator:
                     if prod_val != seq[-2]:
                         mismatches += 1
 
-            n_sample = len(sample)
             if n_sample > 0 and matches_last / n_sample > 0.9:
                 result.fail(
                     f"Product column '{prod_col}' matches LAST element of "
@@ -399,12 +482,12 @@ class LeakageValidator:
 
     def _check_column_overlap(
         self,
-        features: pd.DataFrame,
-        labels: pd.DataFrame,
+        features: Any,
+        labels: Any,
         result: ValidationResult,
     ) -> None:
         """Check if any label columns leaked into features."""
-        overlap = set(features.columns) & set(labels.columns)
+        overlap = set(_get_column_names(features)) & set(_get_column_names(labels))
         if overlap:
             result.fail(
                 f"Label columns found in features: {overlap}. "
@@ -419,9 +502,9 @@ class LeakageValidator:
 
     def check_temporal_integrity(
         self,
-        train_df: pd.DataFrame,
-        val_df: pd.DataFrame,
-        test_df: pd.DataFrame,
+        train_data: Any,
+        val_data: Any,
+        test_data: Any,
         date_col: str = "snapshot_date",
         result: Optional[ValidationResult] = None,
     ) -> ValidationResult:
@@ -429,8 +512,8 @@ class LeakageValidator:
 
         Parameters
         ----------
-        train_df, val_df, test_df : pd.DataFrame
-            Split DataFrames.
+        train_data, val_data, test_data : pyarrow.Table | pd.DataFrame | dict
+            Split data.
         date_col : str
             Date column name.
         result : ValidationResult, optional
@@ -443,16 +526,21 @@ class LeakageValidator:
         if result is None:
             result = ValidationResult()
 
-        if date_col not in train_df.columns:
+        train_cols = _get_column_names(train_data)
+        if date_col not in train_cols:
             result.add_warning(
                 f"Cannot check temporal integrity: '{date_col}' not found"
             )
             return result
 
-        train_max = pd.to_datetime(train_df[date_col]).max()
-        val_min = pd.to_datetime(val_df[date_col]).min()
-        val_max = pd.to_datetime(val_df[date_col]).max()
-        test_min = pd.to_datetime(test_df[date_col]).min()
+        train_dates = _col_to_numpy(train_data, date_col)
+        val_dates = _col_to_numpy(val_data, date_col)
+        test_dates = _col_to_numpy(test_data, date_col)
+
+        # numpy datetime64 comparison works for dates
+        train_max = np.max(train_dates)
+        val_min = np.min(val_dates)
+        val_max = np.max(val_dates)
 
         if train_max >= val_min:
             result.fail(
@@ -461,19 +549,21 @@ class LeakageValidator:
                 check_name="temporal_overlap_train_val",
             )
 
-        if len(test_df) > 0 and val_max >= test_min:
-            result.fail(
-                f"Temporal overlap: val max date ({val_max}) >= "
-                f"test min date ({test_min})",
-                check_name="temporal_overlap_val_test",
-            )
+        if len(test_dates) > 0:
+            test_min = np.min(test_dates)
+            if val_max >= test_min:
+                result.fail(
+                    f"Temporal overlap: val max date ({val_max}) >= "
+                    f"test min date ({test_min})",
+                    check_name="temporal_overlap_val_test",
+                )
 
         if result.passed:
+            test_min_str = str(np.min(test_dates)) if len(test_dates) > 0 else "N/A"
             logger.info(
                 "LeakageValidator: temporal integrity OK "
                 "(train <= %s, val %s-%s, test >= %s)",
-                train_max.date(), val_min.date(), val_max.date(),
-                test_min.date() if len(test_df) > 0 else "N/A",
+                train_max, val_min, val_max, test_min_str,
             )
 
         return result
