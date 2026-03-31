@@ -573,7 +573,11 @@ def build_ple_dataloader(
 
     if _used_cudf:
         num_workers = 0
-        pin_memory = True  # tensors are on CPU, pin for fast GPU transfer
+        pin_memory = True
+    else:
+        # CPU tensors: use workers for prefetch, pin_memory for fast DMA
+        num_workers = min(num_workers, 4) if num_workers > 0 else 2
+        pin_memory = True
 
     loader = DataLoader(
         dataset,
