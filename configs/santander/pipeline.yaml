@@ -891,7 +891,7 @@ ablation:
   # Default training hyperparameters for all ablation phases (read once by script)
   training_defaults:
     epochs: 10
-    batch_size: 4096
+    batch_size: 6144
     learning_rate: 0.008
     amp: true
     gradient_accumulation_steps: 4
