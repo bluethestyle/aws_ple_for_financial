@@ -909,7 +909,6 @@ class PLETrainer:
         # VRAM diagnostics
         _vram_info = ""
         if self.device.type == "cuda":
-            import torch
             _alloc = torch.cuda.memory_allocated() / 1e6
             _reserved = torch.cuda.memory_reserved() / 1e6
             _peak = torch.cuda.max_memory_allocated() / 1e6

@@ -25,6 +25,7 @@ intermediary.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -469,6 +470,37 @@ class SantanderAdapter(DataAdapter):
 
 
 # ======================================================================
+# Checkpoint helpers for Phase 0 resume support
+# ======================================================================
+
+def _save_checkpoint(con, table_name: str, checkpoint_dir: str, step_name: str) -> None:
+    """Save DuckDB table as checkpoint parquet."""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    path = os.path.join(checkpoint_dir, f"{step_name}.parquet").replace("\\", "/")
+    con.execute("SET memory_limit='32GB'")
+    con.execute(f"COPY {table_name} TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+    logger.info("Checkpoint saved: %s (%s)", step_name, path)
+
+
+def _load_checkpoint(con, table_name: str, checkpoint_dir: str, step_name: str) -> bool:
+    """Load checkpoint if exists. Returns True if loaded."""
+    path = os.path.join(checkpoint_dir, f"{step_name}.parquet").replace("\\", "/")
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        con.execute(f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM '{path}'")
+        logger.info("Checkpoint loaded: %s (skipping step)", step_name)
+        return True
+    return False
+
+
+def _clear_checkpoints(checkpoint_dir: str) -> None:
+    """Remove all checkpoint files."""
+    if os.path.isdir(checkpoint_dir):
+        import shutil
+        shutil.rmtree(checkpoint_dir)
+        logger.info("Cleared checkpoint directory: %s", checkpoint_dir)
+
+
+# ======================================================================
 # Standalone entry point for SageMaker Processing Job (Phase 0)
 # ======================================================================
 
@@ -501,6 +533,10 @@ if __name__ == "__main__":
         help="Path to pipeline.yaml (used for label column discovery)",
     )
     parser.add_argument("--stages", default="1-6", help="(unused, for compat)")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume from last checkpoint instead of restarting",
+    )
     cli_args = parser.parse_args()
 
     input_dir = cli_args.input_dir
