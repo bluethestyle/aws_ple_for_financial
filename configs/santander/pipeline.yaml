@@ -894,9 +894,12 @@ ablation:
     batch_size: 6144
     learning_rate: 0.008
     amp: true
-    gradient_accumulation_steps: 4
+    gradient_accumulation_steps: 1
     early_stopping_patience: 3
     seed: 42
+    num_workers: 2
+    pin_memory: true
+    drop_last: true
 
   hyperparams:
     learning_rate: [0.0001, 0.0005, 0.001, 0.005]

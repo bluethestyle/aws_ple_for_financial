@@ -527,15 +527,19 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
         train_subset, val_subset = torch.utils.data.random_split(
             full_loader.dataset, [train_size, val_size], generator=gen,
         )
+        _dl_cfg = config.get("ablation", {}).get("training_defaults", {})
+        _nw = int(_dl_cfg.get("num_workers", 2))
+        _pm = bool(_dl_cfg.get("pin_memory", True))
+        _dl = bool(_dl_cfg.get("drop_last", True))
         train_loader = DataLoader(
             train_subset, batch_size=batch_size, shuffle=True,
-            collate_fn=full_loader.collate_fn, num_workers=0,
-            pin_memory=not use_gpu_loading, drop_last=True,
+            collate_fn=full_loader.collate_fn, num_workers=_nw,
+            pin_memory=_pm, drop_last=_dl,
         )
         val_loader = DataLoader(
             val_subset, batch_size=batch_size, shuffle=False,
-            collate_fn=full_loader.collate_fn, num_workers=0,
-            pin_memory=not use_gpu_loading,
+            collate_fn=full_loader.collate_fn, num_workers=_nw,
+            pin_memory=_pm,
         )
         logger.info("Train: %d samples, Val: %d samples (random split)",
                      train_size, val_size)
