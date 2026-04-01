@@ -107,7 +107,7 @@ We propose a full-chain solution from prediction to persuasion:
 
 + *3-Agent Reason Generation Pipeline*: Role-separated agents (selection → generation → safety) with independent improvement and audit logging.
 
-+ *Safety Gate for Financial Compliance*: Automated checking for hallucination, inappropriate investment advice, and regulatory violations (금소법, 적합성 원칙).
++ *Safety Gate for Financial Compliance*: Automated checking for hallucination, inappropriate investment advice, and regulatory violations (Financial Consumer Protection Act (금소법), Suitability Principle (적합성 원칙)).
 
 + *Regulatory Compliance Architecture*: Explicit mapping of system components to Korean FSS guidelines, EU AI Act articles, and the Korean AI Basic Act.
 
@@ -429,7 +429,7 @@ Cache hit avoids LLM invocation entirely, reducing latency and cost.
     [Art. 13], [Transparency], [3-agent reason generation + feature attribution],
     [Art. 14], [Human oversight], [Human-in-the-Loop review + kill switch],
     [Art. 15], [Accuracy & robustness], [Ablation-validated degradation + drift monitoring],
-    [Art. 22], [Right to opt-out], [Consent/opt-out audit table + manual override],
+    [GDPR Art. 22], [Right to opt-out], [Consent/opt-out audit table + manual override],
   ),
   caption: [EU AI Act article-level compliance mapping.],
 ) <tab:euai-mapping>

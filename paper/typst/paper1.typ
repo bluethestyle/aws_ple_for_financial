@@ -271,7 +271,7 @@ that each extract a structurally different signal from the same underlying data.
     [Statistics], [GMM soft clustering], [22], [Probabilistic segmentation: multi-modal customer distribution],
   ),
   caption: [Multi-disciplinary feature engineering: 11 academic disciplines applied to financial behavior.
-    Total 261 generated features + 55 base features = 316.],
+    Total 269 generated features + 47 base features = 316.],
 ) <tab:multidisciplinary>
 
 Several of these applications are, to our knowledge, novel in financial recommendation:
@@ -352,18 +352,54 @@ our shared expert basket contains seven structurally distinct networks:
     align: left,
     stroke: 0.5pt,
     [*Expert*], [*Inductive Bias*], [*Captures*],
-    [DeepFM], [Feature interaction], [2nd-order cross features],
+    [DeepFM @guo2017], [Feature interaction], [2nd-order cross features],
     [Temporal Ensemble], [Multi-scale temporal], [Short/long/disrupted series],
-    [HGCN], [Hyperbolic hierarchy], [Product category tree],
-    [PersLay], [Topological persistence], [Behavioral shape patterns],
-    [LightGCN], [Graph convolution], [Collaborative filtering],
+    [HGCN @chami2019], [Hyperbolic hierarchy], [Product category tree],
+    [PersLay @carriere2020], [Topological persistence], [Behavioral shape patterns],
+    [LightGCN @he2020lightgcn], [Graph convolution], [Collaborative filtering],
     [Causal @zheng2018notears], [DAG constraint], [Causal direction between features],
     [Optimal Transport @cuturi2013], [Distribution matching], [Segment distribution shifts],
   ),
   caption: [Seven heterogeneous experts with distinct inductive biases.],
 ) <tab:experts>
 
-The rationale for heterogeneous experts is rooted in a hardware constraint:
+Each expert was selected based on a specific gap
+in financial customer understanding that no other expert type addresses:
+
+- *DeepFM* @guo2017: Financial behavior is driven by feature interactions
+  (e.g., income × product holdings × channel preference).
+  FM's low-rank factorization computes 2nd-order crosses in $O(n k)$
+  vs. $O(n^2)$ for brute-force enumeration,
+  while the Deep component captures higher-order interactions.
+
+- *HGCN* @chami2019: Financial product catalogs (MCC codes: 10 L1 / 30 L2 / 109 leaf)
+  are inherently tree-structured.
+  Hyperbolic space (Poincaré ball, 8D) embeds trees with exponentially less distortion
+  than Euclidean space @nickel2017poincare --- critical for a 550K-node merchant hierarchy.
+
+- *PersLay* @carriere2020: Topological Data Analysis captures _shape_ features
+  (connected components $H_0$, cycles $H_1$, voids $H_2$) of customer spending patterns.
+  $H_1$ loops reveal consumption cycles; $H_2$ voids detect systematic spending avoidance.
+  These features are provably stable under noise (Stability Theorem).
+
+- *Temporal Ensemble*: Financial time series combine regular snapshots, bursty transactions,
+  and multi-month dormancy. Mamba @gu2024 handles long-range trends in $O(n)$;
+  LNN @hasani2021 adapts its time constants to irregular intervals;
+  Transformer captures short-range attention patterns.
+
+- *Causal* @zheng2018notears: The NOTEARS continuous DAG constraint
+  ($"tr"(e^(W circle.tiny W)) - d = 0$) learns causal direction between features,
+  enabling "A causes B" explanations rather than "A correlates with B" @pearl2009causality.
+
+- *LightGCN* @he2020lightgcn: Collaborative filtering via neighborhood aggregation
+  on the customer-product bipartite graph. Stripped to essentials (no feature transform, no activation),
+  which outperforms more complex GCN variants for recommendation.
+
+- *Optimal Transport* @cuturi2013: Sinkhorn-regularized Wasserstein distance
+  measures distributional shift between customer spending profiles and segment prototypes,
+  respecting the metric structure of the feature space (unlike KL divergence).
+
+The rationale for heterogeneous experts is also rooted in a hardware constraint:
 with a single consumer GPU (12GB VRAM), we cannot scale a homogeneous MLP expert
 to sufficient width/depth for high expressiveness.
 Instead, each expert leverages a _structural inductive bias_ to capture patterns
@@ -406,7 +442,7 @@ We organize 18 prediction tasks into four groups based on financial customer DNA
     align: left,
     stroke: 0.5pt,
     [*Group*], [*Financial DNA*], [*Tasks*],
-    [Engagement], [What does the customer do?], [has_nba, engagement_score, next_mcc, top_mcc_shift],
+    [Engagement], [What does the customer do?], [has_nba, engagement_score, next_mcc, top_mcc_shift, mcc_diversity_trend],
     [Lifecycle], [Where is the customer?], [churn_signal, tenure_stage, segment_prediction],
     [Value], [How valuable is the customer?], [income_tier, spend_level, cross_sell_count, product_stability],
     [Consumption], [What will the customer buy?], [will_acquire\_\* (5), nba_primary],
