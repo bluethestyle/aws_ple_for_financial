@@ -183,8 +183,12 @@ class OptimalTransportExpert(AbstractExpert):
         torch.Tensor
             ``[B]`` approximate Wasserstein distance per sample.
         """
-        log_a = torch.log(a.clamp(min=1e-8))
-        log_b = torch.log(b.clamp(min=1e-8))
+        # Cast to FP32 before log-domain Sinkhorn to avoid FP16 underflow
+        a = a.float()
+        b = b.float()
+        cost = cost.float()
+        log_a = torch.log(a.clamp(min=1e-6))
+        log_b = torch.log(b.clamp(min=1e-6))
         log_K = -cost / epsilon  # [D, D]
 
         u = torch.zeros_like(log_a)  # [B, D]

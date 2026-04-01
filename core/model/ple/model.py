@@ -1596,7 +1596,7 @@ class PLEModel(nn.Module):
                 if (_needs_logits
                         and tower is not None
                         and hasattr(tower, "_last_logits")):
-                    pred = tower._last_logits
+                    pred = tower._last_logits.float()
 
                 # Prepare inputs based on task type
                 if task_type in ("binary", "regression"):

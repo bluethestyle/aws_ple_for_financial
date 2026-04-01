@@ -161,17 +161,19 @@ class CausalExpert(AbstractExpert):
         torch.Tensor
             Scalar loss (differentiable).
         """
-        W_sq = self.W * self.W
-        d = self.n_causal_vars
+        with torch.amp.autocast('cuda', enabled=False):
+            W_f32 = self.W.float()
+            W_sq = W_f32 * W_f32
+            d = self.n_causal_vars
 
-        # Taylor expansion for tr(exp(W_sq))
-        h = torch.tensor(0.0, device=self.W.device, dtype=self.W.dtype)
-        M_power = torch.eye(d, device=self.W.device, dtype=self.W.dtype)
-        for i in range(1, 11):
-            M_power = M_power @ W_sq / i
-            h = h + torch.trace(M_power)
+            # Taylor expansion for tr(exp(W_sq)) in FP32 to avoid overflow
+            h = torch.tensor(0.0, device=self.W.device)
+            M_power = torch.eye(d, device=self.W.device)
+            for i in range(1, 11):
+                M_power = M_power @ W_sq / i
+                h = h + torch.trace(M_power)
 
-        return self.dag_lambda * h + self.sparsity_lambda * W_sq.sum()
+            return self.dag_lambda * h + self.sparsity_lambda * W_sq.sum()
 
     def get_causal_graph(self) -> torch.Tensor:
         """

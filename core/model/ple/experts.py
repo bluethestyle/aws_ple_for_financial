@@ -506,8 +506,10 @@ class CGCAttention(nn.Module):
         total = torch.tensor(0.0, device=shared_concat.device)
         for attn in self.attention_modules.values():
             w = attn(shared_concat)  # (batch, n_experts)
-            log_w = torch.log(w.clamp(min=1e-8))
-            entropy = -(w * log_w).sum(dim=-1).mean()
+            with torch.amp.autocast('cuda', enabled=False):
+                w_f32 = w.float()
+                log_w = torch.log(w_f32.clamp(min=1e-6))
+                entropy = -(w_f32 * log_w).sum(dim=-1).mean()
             total = total - entropy
         return total / max(len(self.attention_modules), 1)
 

@@ -799,6 +799,7 @@ class PLETrainer:
         device_type = getattr(self.device, "type", "cuda")
 
         self.optimizer.zero_grad()
+        _scaler_backward_count = 0  # Track backward passes for GradScaler guard
         logger.info("[%s] Starting epoch loop, loader has %d batches", phase_name, len(train_loader))
         import sys; sys.stdout.flush(); sys.stderr.flush()
 
@@ -853,19 +854,25 @@ class PLETrainer:
             # Backward pass
             if self.config.amp.enabled and self.scaler is not None:
                 self.scaler.scale(loss).backward()
+                _scaler_backward_count += 1
 
                 if (batch_idx + 1) % accum_steps == 0:
-                    self.scaler.unscale_(self.optimizer)
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        self.config.gradient.clip_norm,
-                    )
-                    if grad_norm > self.config.gradient.clip_norm * 10:
-                        logger.warning("Gradient explosion: norm=%.2f (clip=%.2f) at batch %d",
-                                        grad_norm, self.config.gradient.clip_norm, batch_idx)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
+                    if _scaler_backward_count > 0:
+                        try:
+                            self.scaler.unscale_(self.optimizer)
+                            grad_norm = torch.nn.utils.clip_grad_norm_(
+                                self.model.parameters(),
+                                self.config.gradient.clip_norm,
+                            )
+                            if grad_norm > self.config.gradient.clip_norm * 10:
+                                logger.warning("Gradient explosion: norm=%.2f (clip=%.2f) at batch %d",
+                                                grad_norm, self.config.gradient.clip_norm, batch_idx)
+                            self.scaler.step(self.optimizer)
+                            self.scaler.update()
+                        except (AssertionError, RuntimeError) as e:
+                            logger.warning("GradScaler step failed: %s. Skipping.", e)
                     self.optimizer.zero_grad()
+                    _scaler_backward_count = 0
             else:
                 loss.backward()
 
@@ -902,6 +909,28 @@ class PLETrainer:
                 aux_losses=outputs.aux_losses,
             )
             self.callbacks.on_step_end(step_state)
+
+        # Flush remaining accumulated gradients (tail batches not aligned to accum_steps)
+        if _scaler_backward_count > 0 and self.config.amp.enabled and self.scaler is not None:
+            try:
+                self.scaler.unscale_(self.optimizer)
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.gradient.clip_norm,
+                )
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            except (AssertionError, RuntimeError) as e:
+                logger.warning("GradScaler tail flush failed: %s. Skipping.", e)
+            self.optimizer.zero_grad()
+        elif _scaler_backward_count == 0 and num_batches == 0 and self.config.amp.enabled and self.scaler is not None:
+            # All batches were NaN-skipped: no backward pass happened.
+            # Do NOT call scaler.step() — it would assert "No inf checks recorded".
+            logger.warning(
+                "[%s] Epoch %d: ALL batches produced NaN/Inf loss. "
+                "Skipping scaler.step() to avoid GradScaler assertion.",
+                phase_name, self.current_epoch,
+            )
 
         elapsed = time.time() - epoch_start
         avg_loss = total_loss / max(num_batches, 1)
