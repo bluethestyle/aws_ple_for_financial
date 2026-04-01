@@ -3,7 +3,7 @@
 // ============================================================================
 
 #set page(paper: "a4", margin: 2cm)
-#set text(font: ("Malgun Gothic",), size: 10pt)
+#set text(font: "New Computer Modern", size: 10pt)
 #set heading(numbering: "1.1.")
 #set par(justify: true, leading: 0.65em)
 #set block(spacing: 0.8em)
@@ -34,6 +34,20 @@
 ]
 
 #pagebreak()
+
+#block(
+  width: 100%,
+  inset: 10pt,
+  stroke: (left: 3pt + rgb("#e53e3e")),
+  fill: rgb("#fff5f5"),
+)[
+  #text(weight: "bold", fill: rgb("#c53030"))[Design vs Implementation Note] \
+  본 문서는 *설계 의도와 목표 아키텍처*를 기술한다.
+  현재 구현체는 설계의 부분 집합일 수 있으며, 아직 구현되지 않은 컴포넌트가 포함되어 있다.
+  구현 현황은 코드베이스와 `pipeline_state.json`을 참조한다.
+]
+
+#v(0.5em)
 
 // Table of contents
 #outline(title: "목차", indent: 1.5em, depth: 3)
@@ -312,7 +326,7 @@ Expert Basket (core.model.ple.experts.ExpertBasket)
   columns: (auto, 1fr, 1fr, auto, auto),
   align: (left, left, left, center, center),
   table.header[*Group*][*금융 DNA*][*포함 태스크*][*intra*][*inter*],
-  [engagement], [고객이 무엇을 하는가], [has\_nba, engagement\_score, next\_mcc, top\_mcc\_shift], [0.8], [0.3],
+  [engagement], [고객이 반응하는가], [has\_nba, engagement\_score, next\_mcc, top\_mcc\_shift], [0.8], [0.3],
   [lifecycle], [고객이 어디에 있는가], [churn\_signal, product\_stability, tenure\_stage, segment\_prediction], [0.7], [0.3],
   [value], [고객이 얼마나 가치있는가], [spend\_level, income\_tier, mcc\_diversity\_trend], [0.6], [0.3],
   [consumption], [고객이 무엇을 살 것인가], [nba\_primary, cross\_sell\_count, will\_acquire\_\* (5개)], [0.7], [0.3],
@@ -340,7 +354,7 @@ Expert Basket (core.model.ple.experts.ExpertBasket)
   [has\_nba], [nba\_primary], [output\_concat], [가입 여부 → 어떤 상품],
   [churn\_signal], [product\_stability], [output\_concat], [이탈 → 상품 안정성],
   [spend\_level], [cross\_sell\_count], [output\_concat], [소비수준 → 교차판매],
-  [next\_mcc], [nba\_primary], [output\_concat], [다음 업종 → 다음 상품],
+  [next\_mcc], [nba\_primary], [hidden\_concat], [다음 업종 → 다음 상품 (feature sharing)],
 )
 
 3가지 전이 방법:

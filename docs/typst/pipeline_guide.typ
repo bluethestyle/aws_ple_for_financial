@@ -4,7 +4,7 @@
 // =============================================================================
 
 #set page(paper: "a4", margin: (top: 2cm, bottom: 2cm, left: 2cm, right: 2cm))
-#set text(font: "Noto Sans KR", size: 10pt, lang: "ko")
+#set text(font: "New Computer Modern", size: 10pt, lang: "ko")
 #set heading(numbering: "1.1.")
 #set par(justify: true, leading: 0.7em)
 #show heading.where(level: 1): it => {
@@ -626,6 +626,33 @@ aws:
   use_spot: true
   max_run_seconds: 43200             # 12시간
 ```
+
+=== cold\_start 섹션
+
+거래 이력이 부족한 고객(cold start)에 대한 처리를 정의한다.
+시퀀스 기반 피처(HMM, Mamba, TDA local)는 이력이 없으면 무의미하므로 0으로 마스킹하고,
+인구통계/상품/글로벌 집계 피처는 보존한다.
+
+```yaml
+cold_start:
+  seq_col: txn_amount_seq            # 이력 깊이 측정 기준 컬럼
+  min_txn_count: 3                   # 이 이하 → cold start 플래그
+  zero_features_prefix:              # cold start 시 0으로 마스킹할 피처 접두사
+    - hmm_states
+    - mamba_temporal
+    - tda_local
+  keep_features_prefix:              # cold start에서도 유지되는 피처 (참고용)
+    - prod_
+    - synth_
+    - tda_global
+    - gmm_
+    - graph_
+```
+
+*동작 원리*:
++ `seq_col` 컬럼(LIST 타입)의 길이가 `min_txn_count` 이하이면 해당 고객을 cold start로 분류한다.
++ `zero_features_prefix`에 해당하는 생성 피처를 0으로 대체한다 --- 이 피처들은 충분한 시퀀스 없이는 노이즈만 생성한다.
++ `keep_features_prefix`의 피처는 cold start 여부와 무관하게 원본 값을 유지한다.
 
 == feature_groups.yaml 핵심 구조
 
