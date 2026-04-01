@@ -185,7 +185,7 @@ def run_scenario(name: str, extra_hp: dict) -> dict:
         env=env,
         capture_output=True,
         text=True,
-        timeout=7200,
+        timeout=14400,
         errors="replace",
     )
     elapsed = time.time() - t0
