@@ -133,6 +133,21 @@ IMAGE = os.environ.get("ABLATION_IMAGE", "model_training:v3.3")
 def run_scenario(name: str, extra_hp: dict) -> dict:
     """Run a single training scenario via Docker (SageMaker local mode)."""
     out_dir = RESULTS_DIR / name
+    metrics_path = out_dir / "eval_metrics.json"
+
+    # Skip if already completed (eval_metrics.json exists with valid AUC)
+    if metrics_path.exists():
+        try:
+            with open(metrics_path) as f:
+                cached = json.load(f)
+            cached_auc = cached.get("auc", cached.get("final_metrics", {}).get("auc"))
+            if cached_auc is not None:
+                print(f"  [SKIP] {name}: AUC={cached_auc} (cached)")
+                return {"scenario": name, "status": "OK", "auc": str(cached_auc),
+                        "f1_macro": "cached", "time_s": 0, "metrics": cached}
+        except (json.JSONDecodeError, KeyError):
+            pass  # corrupted file, re-run
+
     out_dir.mkdir(parents=True, exist_ok=True)
     model_dir = out_dir / "model"
     model_dir.mkdir(exist_ok=True)
