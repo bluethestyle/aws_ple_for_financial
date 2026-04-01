@@ -561,7 +561,7 @@ cold_start:
 # Data
 # ---------------------------------------------------------------------------
 data:
-  source: data/synthetic/santander_final.parquet
+  source: data/benchmark/benchmark_v2.parquet
   s3_path: s3://aiops-ple-financial/data/santander/
   id_col: customer_id
   backend: [cudf, duckdb, pandas]
@@ -890,7 +890,7 @@ ablation:
 
   # Default training hyperparameters for all ablation phases (read once by script)
   training_defaults:
-    epochs: 10
+    epochs: 5
     batch_size: 6144
     learning_rate: 0.008
     amp: true

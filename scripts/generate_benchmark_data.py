@@ -241,6 +241,11 @@ class BenchmarkDataGenerator:
 
         return logit
 
+    def _apply_label_noise(self, labels: np.ndarray, noise_rate: float) -> np.ndarray:
+        """Randomly flip binary labels to cap AUC ceiling."""
+        flip_mask = self.rng.random(len(labels)) < noise_rate
+        return np.where(flip_mask, 1 - labels, labels)
+
     # ==================================================================
     # Layer 1: Latent Personas
     # ==================================================================
@@ -273,6 +278,12 @@ class BenchmarkDataGenerator:
             name = self.persona_names[k]
             mu = np.array(persona_latent_mu[name])
             l[mask] = self.rng.multivariate_normal(mu, persona_latent_cov, size=n_k)
+
+        # Decouple latent from persona: mix 50/50 with independent noise
+        # so that latent factors are partially independent of observables,
+        # genuinely capping model AUC.
+        independent_noise = self.rng.standard_normal(l.shape)
+        l = 0.7 * l + 0.3 * independent_noise
 
         return z, l
 
@@ -894,7 +905,9 @@ class BenchmarkDataGenerator:
             obs_nba, lat_nba, obs_frac=0.04, lat_frac=0.28,
             noise_frac=0.68, intercept=-3.5, target_pos_rate=0.03,
         )
-        labels["has_nba"] = (_sigmoid(logit_nba) > 0.5).astype(np.int64)
+        labels["has_nba"] = self._apply_label_noise(
+            (_sigmoid(logit_nba) > 0.5).astype(np.int64), noise_rate=0.06
+        )
 
         # --- churn_signal (binary, ~5% positive) ---
         obs_churn = (
@@ -920,7 +933,9 @@ class BenchmarkDataGenerator:
             obs_churn, lat_churn, obs_frac=0.04, lat_frac=0.28,
             noise_frac=0.68, intercept=-2.9, target_pos_rate=0.05,
         )
-        labels["churn_signal"] = (_sigmoid(logit_churn) > 0.5).astype(np.int64)
+        labels["churn_signal"] = self._apply_label_noise(
+            (_sigmoid(logit_churn) > 0.5).astype(np.int64), noise_rate=0.06
+        )
 
         # --- product_stability (regression, 0-1, avg ~0.92) ---
         obs_stab = (
@@ -1135,7 +1150,9 @@ class BenchmarkDataGenerator:
                 noise_frac=0.72, intercept=-3.5,
                 target_pos_rate=cfg["target_rate"],
             )
-            labels[col_name] = (_sigmoid(logit) > 0.5).astype(np.int64)
+            labels[col_name] = self._apply_label_noise(
+                (_sigmoid(logit) > 0.5).astype(np.int64), noise_rate=0.08
+            )
 
         # Rebuild nba_label list from the independent acquire labels
         for i in range(n):
@@ -1207,7 +1224,9 @@ class BenchmarkDataGenerator:
                 older_mode = Counter(seq[-30:-15]).most_common(1)[0][0]
                 if recent_mode != older_mode:
                     top_mcc_shift[i] = 1
-        labels["label_top_mcc_shift"] = top_mcc_shift
+        labels["label_top_mcc_shift"] = self._apply_label_noise(
+            top_mcc_shift, noise_rate=0.05
+        )
 
         # --- nba_label as list column ---
         labels["nba_label"] = nba_label_list
