@@ -19,24 +19,38 @@ PHASE0_DIR = str(ROOT / "outputs" / "phase0")
 RESULTS_DIR = ROOT / "outputs" / "ablation_results"
 CONFIG = "configs/santander/pipeline.yaml"
 
-# Load batch_size from pipeline.yaml ablation.training_defaults (fallback 4096)
-def _load_batch_size() -> int:
+# Load training defaults from pipeline.yaml ablation.training_defaults
+def _load_training_defaults() -> dict:
+    """Read ablation.training_defaults from pipeline.yaml (config-driven, no hardcoding)."""
+    defaults = {
+        "epochs": 10,
+        "batch_size": 4096,
+        "learning_rate": 0.008,
+        "amp": True,
+        "early_stopping_patience": 3,
+        "seed": 42,
+    }
     try:
         with open(ROOT / CONFIG, encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
-        return cfg.get("ablation", {}).get("training_defaults", {}).get("batch_size", 4096)
+        td = cfg.get("ablation", {}).get("training_defaults", {})
+        for key in defaults:
+            if key in td:
+                defaults[key] = td[key]
     except Exception:
-        return 4096
+        pass
+    return defaults
 
 # Base hyperparameters (from pipeline.yaml ablation.training_defaults)
+_td = _load_training_defaults()
 BASE_HP = {
     "config": CONFIG,
-    "epochs": 3,
-    "batch_size": _load_batch_size(),
-    "learning_rate": 0.001,
-    "seed": 42,
-    "amp": True,
-    "early_stopping_patience": 3,
+    "epochs": _td["epochs"],
+    "batch_size": _td["batch_size"],
+    "learning_rate": _td["learning_rate"],
+    "seed": _td["seed"],
+    "amp": _td["amp"],
+    "early_stopping_patience": _td["early_stopping_patience"],
 }
 
 # ============================================================
@@ -138,16 +152,32 @@ def run_scenario(name: str, extra_hp: dict) -> dict:
     model = str(model_dir).replace("\\", "/")
     code = str(ROOT).replace("\\", "/")
 
-    # Use local Python with GPU (Docker GPU passthrough unreliable on WSL)
-    env = {
-        **os.environ,
-        "SM_CHANNEL_TRAIN": str(PHASE0_DIR),
-        "SM_OUTPUT_DATA_DIR": str(out_dir),
-        "SM_MODEL_DIR": str(model_dir),
-        "SM_HPS": json.dumps(hp),
-        "PYTHONPATH": str(ROOT),
-    }
-    cmd = [sys.executable, str(ROOT / "containers" / "training" / "train.py")]
+    # Docker SageMaker local mode (GPU passthrough)
+    use_docker = os.environ.get("ABLATION_USE_DOCKER", "1") == "1"
+
+    if use_docker:
+        cmd = [
+            "docker", "run", "--rm", "--gpus", "all",
+            "-v", f"{phase0}:/opt/ml/input/data/train",
+            "-v", f"{output}:/opt/ml/output/data",
+            "-v", f"{model}:/opt/ml/model",
+            "-v", f"{code}:/opt/ml/code",
+            *env_args,
+            IMAGE,
+            "python", "/opt/ml/code/containers/training/train.py",
+        ]
+        env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
+    else:
+        # Fallback: local Python (no Docker)
+        env = {
+            **os.environ,
+            "SM_CHANNEL_TRAIN": str(PHASE0_DIR),
+            "SM_OUTPUT_DATA_DIR": str(out_dir),
+            "SM_MODEL_DIR": str(model_dir),
+            "SM_HPS": json.dumps(hp),
+            "PYTHONPATH": str(ROOT),
+        }
+        cmd = [sys.executable, str(ROOT / "containers" / "training" / "train.py")]
 
     t0 = time.time()
     result = subprocess.run(
@@ -155,7 +185,7 @@ def run_scenario(name: str, extra_hp: dict) -> dict:
         env=env,
         capture_output=True,
         text=True,
-        timeout=3600,
+        timeout=7200,
         errors="replace",
     )
     elapsed = time.time() - t0
@@ -199,16 +229,14 @@ def main():
     print("PHASE 1: Feature Group Ablation (16 scenarios)")
     print("=" * 60)
     for name, extra in FEATURE_SCENARIOS.items():
-        hp = {**extra, "ablation_scenario": name}
-        all_results.append(run_scenario(f"feat_{name}", hp))
+        all_results.append(run_scenario(f"feat_{name}", extra))
 
     # Phase 2: Expert Ablation
     print("\n" + "=" * 60)
     print("PHASE 2: Expert Ablation (8 scenarios)")
     print("=" * 60)
     for name, extra in EXPERT_SCENARIOS.items():
-        hp = {**extra, "ablation_scenario": name}
-        all_results.append(run_scenario(f"expert_{name}", hp))
+        all_results.append(run_scenario(f"expert_{name}", extra))
 
     # Phase 3: Task × Structure
     print("\n" + "=" * 60)
@@ -217,10 +245,10 @@ def main():
     for tier_name, tasks_json in TASK_TIERS.items():
         for struct_name, struct_hp in STRUCTURES.items():
             scenario_name = f"struct_{tier_name}_{struct_name}"
-            hp = {**struct_hp}
+            extra = dict(struct_hp)
             if tasks_json is not None:
-                hp["active_tasks"] = tasks_json
-            all_results.append(run_scenario(scenario_name, hp))
+                extra["active_tasks"] = tasks_json
+            all_results.append(run_scenario(scenario_name, extra))
 
     # Summary
     total_time = time.time() - t_start
