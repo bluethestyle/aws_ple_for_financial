@@ -58,6 +58,7 @@ def _resolve_columns_by_filter_duckdb(
     min_nunique = filter_config.get("min_nunique", 0)
     include_prefix: List[str] = filter_config.get("include_prefix", [])
     exclude_prefix: List[str] = filter_config.get("exclude_prefix", [])
+    exclude_columns: List[str] = filter_config.get("exclude_columns", [])
 
     # Get numeric column names + metadata in one query
     col_info_rows = con.execute(f"""
@@ -74,10 +75,14 @@ def _resolve_columns_by_filter_duckdb(
     if not numeric_cols:
         return []
 
-    # Filter by prefix first (cheap string check)
+    _exclude_set = set(exclude_columns)
+
+    # Filter by prefix and exclude_columns (cheap string check)
     cols = []
     for col in numeric_cols:
         if id_col and col == id_col:
+            continue
+        if col in _exclude_set:
             continue
         if include_prefix and not any(col.startswith(p) for p in include_prefix):
             continue
@@ -150,11 +155,15 @@ def _resolve_columns_by_filter(
     min_nunique = filter_config.get("min_nunique", 0)
     include_prefix: List[str] = filter_config.get("include_prefix", [])
     exclude_prefix: List[str] = filter_config.get("exclude_prefix", [])
+    exclude_columns: List[str] = filter_config.get("exclude_columns", [])
+    _exclude_set = set(exclude_columns)
 
     # Start with numeric columns only
     cols: List[str] = []
     for col in df.select_dtypes(include="number").columns:
         if id_col and col == id_col:
+            continue
+        if col in _exclude_set:
             continue
         if exclude_binary and set(df[col].dropna().unique()).issubset({0, 1}):
             continue
@@ -174,6 +183,7 @@ def run_generators_duckdb(
     feature_groups_config: List[Dict[str, Any]],
     id_col: Optional[str] = None,
     fit_subsample_limit: int = 50_000,
+    label_cols: Optional[List[str]] = None,
 ) -> str:
     """Run generators based on feature_groups config using DuckDB-native data.
 
@@ -246,6 +256,18 @@ def run_generators_duckdb(
                 r[0] for r in rows
                 if not (id_col and r[0] == id_col)
             ]
+
+        # CRITICAL: exclude label columns from generator inputs to prevent leakage
+        if label_cols:
+            _label_set = set(label_cols)
+            _before = len(input_cols)
+            input_cols = [c for c in input_cols if c not in _label_set]
+            _excluded = _before - len(input_cols)
+            if _excluded > 0:
+                logger.info(
+                    "Generator '%s': excluded %d label columns from input",
+                    group_name, _excluded,
+                )
 
         if not input_cols:
             logger.warning(
@@ -377,6 +399,7 @@ def run_generators_from_config(
     feature_groups_config: List[Dict[str, Any]],
     id_col: Optional[str] = None,
     fit_subsample_limit: int = 50_000,
+    label_cols: Optional[List[str]] = None,
 ) -> pd.DataFrame:
     """Legacy pandas-interface wrapper around ``run_generators_duckdb``.
 
@@ -392,6 +415,7 @@ def run_generators_from_config(
         result_table = run_generators_duckdb(
             _con, "_legacy_tbl", feature_groups_config,
             id_col=id_col, fit_subsample_limit=fit_subsample_limit,
+            label_cols=label_cols,
         )
         df_out = _con.execute(f"SELECT * FROM {result_table}").df()
     finally:
@@ -688,9 +712,13 @@ if __name__ == "__main__":
         t_gen_start = time.time()
         _preproc = pipeline_cfg.get("data", {}).get("preprocessing", {})
         _fit_subsample = int(_preproc.get("fit_subsample_limit", 50_000))
+        # Collect label column names to exclude from generator inputs (prevent leakage)
+        _label_cfg = pipeline_cfg.get("labels", {})
+        _label_col_names = list(_label_cfg.keys()) if _label_cfg else []
         _TBL = run_generators_duckdb(
             con, _TBL, feature_groups,
             id_col=_id_col, fit_subsample_limit=_fit_subsample,
+            label_cols=_label_col_names,
         )
         _total_cols = con.execute(
             f"SELECT COUNT(*) FROM (DESCRIBE SELECT * FROM {_TBL})"
@@ -1156,7 +1184,7 @@ if __name__ == "__main__":
         and _final_col_types.get(c, "") in _numeric_types
     ]
 
-    # Derive group_ranges from column name prefixes
+    # Derive per-column group_ranges from column name prefixes (for DeepFM field boundaries)
     _group_ranges: Dict[str, Any] = {}
     _current_prefix: Optional[str] = None
     _group_start = 0
@@ -1170,6 +1198,43 @@ if __name__ == "__main__":
             _group_start = i
     if _current_prefix is not None:
         _group_ranges[_current_prefix] = [_group_start, len(_feature_columns)]
+
+    # Derive feature_group_ranges from feature_groups.yaml (for ablation)
+    # Each group maps to [start_idx, end_idx] spanning all its columns.
+    _feature_group_ranges: Dict[str, Any] = {}
+    _fg_col_set = set(_feature_columns)
+    for _fg in feature_groups:
+        _fg_name = _fg.get("name", "")
+        if not _fg_name:
+            continue
+        _fg_type = _fg.get("group_type", "")
+        _matched_indices: list = []
+        if _fg_type == "transform":
+            # Transform groups: match by explicit column list
+            _explicit_cols = _fg.get("columns", [])
+            _cat_cols = _fg.get("categorical_columns", [])
+            _all_fg_cols = set(_explicit_cols) | set(_cat_cols)
+            for _idx, _col in enumerate(_feature_columns):
+                if _col in _all_fg_cols:
+                    _matched_indices.append(_idx)
+        elif _fg_type == "generate":
+            # Generated groups: match by prefix from generator_params or group name
+            _gp = _fg.get("generator_params", {})
+            _col_prefix = _gp.get("prefix", _fg_name)
+            _prefix_with_underscore = _col_prefix + "_"
+            for _idx, _col in enumerate(_feature_columns):
+                if _col.startswith(_prefix_with_underscore):
+                    _matched_indices.append(_idx)
+        if _matched_indices:
+            _feature_group_ranges[_fg_name] = [
+                min(_matched_indices), max(_matched_indices) + 1,
+            ]
+    if _feature_group_ranges:
+        logger.info(
+            "feature_group_ranges built from feature_groups.yaml: %d groups -> %s",
+            len(_feature_group_ranges),
+            {k: v for k, v in sorted(_feature_group_ranges.items(), key=lambda x: x[1][0])},
+        )
 
     # Expert routing from pipeline.yaml model.expert_basket config
     _expert_routing: List[Dict[str, Any]] = []
@@ -1193,9 +1258,11 @@ if __name__ == "__main__":
     _feature_schema = {
         "columns": _feature_columns,
         "group_ranges": _group_ranges,
+        "feature_group_ranges": _feature_group_ranges,
         "expert_routing": _expert_routing,
         "num_features": len(_feature_columns),
         "num_groups": len(_group_ranges),
+        "num_feature_groups": len(_feature_group_ranges),
     }
     with open(os.path.join(output_dir, "feature_schema.json"), "w") as f:
         json.dump(_feature_schema, f, indent=2)

@@ -299,7 +299,7 @@ def apply_ablation(features, labels, feature_schema, label_schema, hp):
     -------
     features, labels, feature_schema, label_schema (filtered)
     """
-    # -- Feature ablation: drop columns by group using schema["group_ranges"] --
+    # -- Feature ablation: drop columns by group using schema["feature_group_ranges"] --
     removed_raw = hp.get("removed_feature_groups", "[]")
     if isinstance(removed_raw, str):
         try:
@@ -311,7 +311,7 @@ def apply_ablation(features, labels, feature_schema, label_schema, hp):
     else:
         removed = []
 
-    group_ranges = feature_schema.get("group_ranges", {})
+    group_ranges = feature_schema.get("feature_group_ranges", feature_schema.get("group_ranges", {}))
     columns = feature_schema.get("columns", features.column_names)
 
     if removed:
@@ -326,8 +326,20 @@ def apply_ablation(features, labels, feature_schema, label_schema, hp):
             # Arrow Table: drop columns
             remaining_cols = [c for c in features.column_names if c not in cols_to_drop]
             features = features.select(remaining_cols)
-            logger.info("Ablation: removed %d columns from groups %s. Remaining: %d",
-                         len(cols_to_drop), removed, features.num_columns)
+            # Update schema to reflect ablation (critical for model input_dim)
+            feature_schema["columns"] = [c for c in columns if c not in cols_to_drop]
+            feature_schema["num_features"] = len(feature_schema["columns"])
+            # Update group_ranges: remove dropped groups, recompute offsets
+            new_fgr = {}
+            offset = 0
+            for gname, (s, e) in sorted(group_ranges.items(), key=lambda x: x[1][0]):
+                kept = [c for c in columns[s:e] if c not in cols_to_drop]
+                if kept:
+                    new_fgr[gname] = [offset, offset + len(kept)]
+                    offset += len(kept)
+            feature_schema["feature_group_ranges"] = new_fgr
+            logger.info("Ablation: removed %d columns from groups %s. Remaining: %d features, %d groups",
+                         len(cols_to_drop), removed, features.num_columns, len(new_fgr))
         else:
             logger.warning("Ablation: no columns matched for groups %s", removed)
 
@@ -369,7 +381,7 @@ def apply_ablation(features, labels, feature_schema, label_schema, hp):
 # ---------------------------------------------------------------------------
 
 def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
-                      label_schema, split_indices, hp):
+                      label_schema, split_indices, hp, config=None):
     """Build train/val DataLoaders from training-ready data.
 
     Returns
@@ -527,7 +539,7 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
         train_subset, val_subset = torch.utils.data.random_split(
             full_loader.dataset, [train_size, val_size], generator=gen,
         )
-        _dl_cfg = config.get("ablation", {}).get("training_defaults", {})
+        _dl_cfg = (config or {}).get("ablation", {}).get("training_defaults", {})
         _nw = int(_dl_cfg.get("num_workers", 2))
         _pm = bool(_dl_cfg.get("pin_memory", True))
         _dl = bool(_dl_cfg.get("drop_last", True))
@@ -1833,7 +1845,7 @@ def main() -> None:
     # ---- 4. Build DataLoaders ----
     train_loader, val_loader, tasks, task_type_map, label_stats = build_dataloaders(
         features, labels, sequences, seq_lengths,
-        feature_schema, label_schema, split_indices, hp,
+        feature_schema, label_schema, split_indices, hp, config=config,
     )
     task_names = [t["name"] for t in tasks]
 
