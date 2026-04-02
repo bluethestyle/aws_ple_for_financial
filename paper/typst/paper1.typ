@@ -214,9 +214,11 @@ with explanations generated structurally rather than post-hoc.
 
 The architecture emerged from severe real-world constraints
 at a Korean public financial institution.
-A team of three --- one PM with financial risk management (FRM) certification
-and domain expertise spanning credit analysis, regulatory compliance,
-digital product planning, and big data platform operations,
+A team of three --- one data scientist serving as PM,
+with financial risk management (FRM) certification
+and a career spanning credit/market risk analysis, regulatory compliance,
+MyData licensing, big data platform construction and operations,
+data science projects, and recommendation system management,
 plus two engineers --- needed to replace a legacy ALS-based collaborative filtering system
 with a next-generation recommendation model.
 
