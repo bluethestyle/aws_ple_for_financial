@@ -54,59 +54,114 @@ BASE_HP = {
 }
 
 # ============================================================
-# Phase 1: Feature Group Ablation (16 scenarios)
-# ============================================================
-FEATURE_SCENARIOS = {
-    # Baseline
-    "full": {},
-    "base_only": {"removed_feature_groups": '["tda_global","tda_local","hmm_states","mamba_temporal","product_hierarchy","graph_collaborative","gmm_clustering","model_derived"]'},
-    # Bottom-up: base + one group
-    "base+tda": {"removed_feature_groups": '["hmm_states","mamba_temporal","product_hierarchy","graph_collaborative","gmm_clustering","model_derived"]'},
-    "base+hmm": {"removed_feature_groups": '["tda_global","tda_local","mamba_temporal","product_hierarchy","graph_collaborative","gmm_clustering","model_derived"]'},
-    "base+mamba": {"removed_feature_groups": '["tda_global","tda_local","hmm_states","product_hierarchy","graph_collaborative","gmm_clustering","model_derived"]'},
-    "base+graph": {"removed_feature_groups": '["tda_global","tda_local","hmm_states","mamba_temporal","product_hierarchy","gmm_clustering","model_derived"]'},
-    "base+hierarchy": {"removed_feature_groups": '["tda_global","tda_local","hmm_states","mamba_temporal","graph_collaborative","gmm_clustering","model_derived"]'},
-    "base+gmm": {"removed_feature_groups": '["tda_global","tda_local","hmm_states","mamba_temporal","product_hierarchy","graph_collaborative","model_derived"]'},
-    "base+model_derived": {"removed_feature_groups": '["tda_global","tda_local","hmm_states","mamba_temporal","product_hierarchy","graph_collaborative","gmm_clustering"]'},
-    # Top-down: full minus one group
-    "full-tda": {"removed_feature_groups": '["tda_global","tda_local"]'},
-    "full-hmm": {"removed_feature_groups": '["hmm_states"]'},
-    "full-mamba": {"removed_feature_groups": '["mamba_temporal"]'},
-    "full-graph": {"removed_feature_groups": '["graph_collaborative"]'},
-    "full-hierarchy": {"removed_feature_groups": '["product_hierarchy"]'},
-    "full-gmm": {"removed_feature_groups": '["gmm_clustering"]'},
-    "full-model_derived": {"removed_feature_groups": '["model_derived"]'},
-}
-
-# ============================================================
-# Phase 2: Expert Ablation (16 scenarios — full design)
+# Phase 1: Feature + Expert Joint Ablation
+# Baseline = DeepFM only (all features, single expert)
+# Each scenario adds ONE specialized expert + its matching features
 # ============================================================
 _ALL_EXPERTS = ["deepfm", "temporal_ensemble", "hgcn", "perslay", "causal", "lightgcn", "optimal_transport"]
 
 def _experts_without(*remove):
     return json.dumps([e for e in _ALL_EXPERTS if e not in remove])
 
-EXPERT_SCENARIOS = {
-    # Bottom-up: deepfm + one expert
-    "deepfm_only": {"shared_experts": '["deepfm"]'},
-    "deepfm+temporal": {"shared_experts": '["deepfm","temporal_ensemble"]'},
-    "deepfm+hgcn": {"shared_experts": '["deepfm","hgcn"]'},
-    "deepfm+perslay": {"shared_experts": '["deepfm","perslay"]'},
-    "deepfm+causal": {"shared_experts": '["deepfm","causal"]'},
-    "deepfm+lightgcn": {"shared_experts": '["deepfm","lightgcn"]'},
-    "deepfm+ot": {"shared_experts": '["deepfm","optimal_transport"]'},
-    # Full basket
-    "full_basket": {},
-    # Top-down: full minus one expert
-    "full-deepfm": {"shared_experts": _experts_without("deepfm")},
-    "full-temporal": {"shared_experts": _experts_without("temporal_ensemble")},
-    "full-hgcn": {"shared_experts": _experts_without("hgcn")},
-    "full-perslay": {"shared_experts": _experts_without("perslay")},
-    "full-causal": {"shared_experts": _experts_without("causal")},
-    "full-lightgcn": {"shared_experts": _experts_without("lightgcn")},
-    "full-ot": {"shared_experts": _experts_without("optimal_transport")},
-    # Minimal baseline
-    "mlp_only": {"shared_experts": '["mlp"]'},
+# Feature groups that are NOT base (to be removed in base-only scenarios)
+_ALL_GENERATED = ["tda_global", "tda_local", "hmm_states", "mamba_temporal",
+                  "product_hierarchy", "graph_collaborative", "gmm_clustering", "model_derived"]
+
+def _remove_except(*keep):
+    """Return JSON list of feature groups to remove, keeping only specified ones."""
+    return json.dumps([g for g in _ALL_GENERATED if g not in keep])
+
+FEATURE_EXPERT_SCENARIOS = {
+    # === Baselines ===
+    "deepfm_base": {
+        "shared_experts": '["deepfm"]',
+        "removed_feature_groups": json.dumps(_ALL_GENERATED),
+    },
+    "deepfm_all_features": {
+        "shared_experts": '["deepfm"]',
+    },
+    "full": {},  # all experts + all features
+
+    # === DeepFM + one expert (with matching features) ===
+    "deepfm+tda": {
+        "shared_experts": '["deepfm","perslay"]',
+        "removed_feature_groups": _remove_except("tda_global", "tda_local"),
+    },
+    "deepfm+temporal": {
+        "shared_experts": '["deepfm","temporal_ensemble"]',
+        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal"),
+    },
+    "deepfm+hgcn": {
+        "shared_experts": '["deepfm","hgcn"]',
+        "removed_feature_groups": _remove_except("product_hierarchy"),
+    },
+    "deepfm+lightgcn": {
+        "shared_experts": '["deepfm","lightgcn"]',
+        "removed_feature_groups": _remove_except("graph_collaborative"),
+    },
+    "deepfm+causal": {
+        "shared_experts": '["deepfm","causal"]',
+        "removed_feature_groups": _remove_except(),  # causal uses base features
+    },
+    "deepfm+ot": {
+        "shared_experts": '["deepfm","optimal_transport"]',
+        "removed_feature_groups": _remove_except(),  # OT uses base features
+    },
+    "deepfm+gmm": {
+        "shared_experts": '["deepfm"]',  # GMM is feature-only, no dedicated expert
+        "removed_feature_groups": _remove_except("gmm_clustering"),
+    },
+    "deepfm+model_derived": {
+        "shared_experts": '["deepfm"]',
+        "removed_feature_groups": _remove_except("model_derived"),
+    },
+
+    # === Cumulative: progressively adding experts ===
+    "cumul_1_deepfm+temporal": {
+        "shared_experts": '["deepfm","temporal_ensemble"]',
+        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal"),
+    },
+    "cumul_2_+hgcn": {
+        "shared_experts": '["deepfm","temporal_ensemble","hgcn"]',
+        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal", "product_hierarchy"),
+    },
+    "cumul_3_+lightgcn": {
+        "shared_experts": '["deepfm","temporal_ensemble","hgcn","lightgcn"]',
+        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal", "product_hierarchy", "graph_collaborative"),
+    },
+    "cumul_4_+tda": {
+        "shared_experts": '["deepfm","temporal_ensemble","hgcn","lightgcn","perslay"]',
+        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal", "product_hierarchy", "graph_collaborative", "tda_global", "tda_local"),
+    },
+    "cumul_5_+causal_ot": {
+        "shared_experts": '["deepfm","temporal_ensemble","hgcn","lightgcn","perslay","causal","optimal_transport"]',
+        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal", "product_hierarchy", "graph_collaborative", "tda_global", "tda_local"),
+    },
+    "cumul_6_+gmm_model": {},  # = full (all features + all experts)
+
+    # === Top-down: full minus one (expert + matching features together) ===
+    "full-tda_perslay": {
+        "shared_experts": _experts_without("perslay"),
+        "removed_feature_groups": '["tda_global","tda_local"]',
+    },
+    "full-temporal": {
+        "shared_experts": _experts_without("temporal_ensemble"),
+        "removed_feature_groups": '["hmm_states","mamba_temporal"]',
+    },
+    "full-hgcn_hierarchy": {
+        "shared_experts": _experts_without("hgcn"),
+        "removed_feature_groups": '["product_hierarchy"]',
+    },
+    "full-lightgcn_graph": {
+        "shared_experts": _experts_without("lightgcn"),
+        "removed_feature_groups": '["graph_collaborative"]',
+    },
+    "full-causal": {
+        "shared_experts": _experts_without("causal"),
+    },
+    "full-ot": {
+        "shared_experts": _experts_without("optimal_transport"),
+    },
 }
 
 # ============================================================
@@ -195,14 +250,19 @@ def run_scenario(name: str, extra_hp: dict) -> dict:
         cmd = [sys.executable, str(ROOT / "containers" / "training" / "train.py")]
 
     t0 = time.time()
-    result = subprocess.run(
-        cmd,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=14400,
-        errors="replace",
-    )
+    # Write stdout/stderr to files instead of capture_output to avoid pipe deadlock
+    log_dir = out_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stdout_log = log_dir / "stdout.log"
+    stderr_log = log_dir / "stderr.log"
+    with open(stdout_log, "w") as fout, open(stderr_log, "w") as ferr:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            stdout=fout,
+            stderr=ferr,
+            timeout=14400,
+        )
     elapsed = time.time() - t0
 
     # Read eval_metrics.json (metrics may be nested under final_metrics)
@@ -213,16 +273,22 @@ def run_scenario(name: str, extra_hp: dict) -> dict:
             raw = json.load(f)
         metrics = raw.get("final_metrics", raw)
 
-    status = "OK" if result.returncode == 0 else "FAIL"
     auc = metrics.get("auc", "N/A")
     f1 = metrics.get("f1_macro_avg", "N/A")
+    # Consider success if eval_metrics exists with valid AUC, even if returncode != 0
+    # (Docker containers may return non-zero due to FutureWarnings on stderr)
+    status = "OK" if (auc != "N/A" or result.returncode == 0) else "FAIL"
 
     print(f"  [{status}] {name}: AUC={auc}, F1_macro={f1}, time={elapsed:.1f}s")
-    if result.returncode != 0:
+    if result.returncode != 0 and status == "FAIL":
         # Print last 3 lines of stderr for debugging
-        err_lines = result.stderr.strip().split("\n")[-3:]
-        for line in err_lines:
-            print(f"    ERR: {line}")
+        try:
+            err_text = stderr_log.read_text(errors="replace").strip()
+            err_lines = err_text.split("\n")[-3:]
+            for line in err_lines:
+                print(f"    ERR: {line}")
+        except Exception:
+            print(f"    ERR: (see {stderr_log})")
 
     return {
         "scenario": name,
@@ -239,19 +305,14 @@ def main():
     all_results = []
     t_start = time.time()
 
-    # Phase 1: Feature Ablation
+    # Phase 1: Feature + Expert Joint Ablation
     print("=" * 60)
-    print("PHASE 1: Feature Group Ablation (16 scenarios)")
+    n_fe = len(FEATURE_EXPERT_SCENARIOS)
+    print(f"PHASE 1: Feature + Expert Joint Ablation ({n_fe} scenarios)")
+    print("  Baseline: DeepFM only → +expert(+features) → cumulative → top-down")
     print("=" * 60)
-    for name, extra in FEATURE_SCENARIOS.items():
-        all_results.append(run_scenario(f"feat_{name}", extra))
-
-    # Phase 2: Expert Ablation
-    print("\n" + "=" * 60)
-    print("PHASE 2: Expert Ablation (8 scenarios)")
-    print("=" * 60)
-    for name, extra in EXPERT_SCENARIOS.items():
-        all_results.append(run_scenario(f"expert_{name}", extra))
+    for name, extra in FEATURE_EXPERT_SCENARIOS.items():
+        all_results.append(run_scenario(f"joint_{name}", extra))
 
     # Phase 3: Task × Structure
     print("\n" + "=" * 60)
