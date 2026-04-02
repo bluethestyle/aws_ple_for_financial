@@ -517,7 +517,7 @@ class PLETrainer:
 
             for task_name in multiclass_tasks:
                 if task_name in targets:
-                    labels = targets[task_name].cpu().numpy().flatten().astype(int)
+                    labels = targets[task_name].cpu().float().numpy().flatten().astype(int)
                     counters[task_name].update(labels.tolist())
 
         # Compute inverse-frequency weights
@@ -1048,8 +1048,8 @@ class PLETrainer:
                 logger.warning("NaN in %s predictions/labels, skipping.", task_name)
                 continue
 
-            preds_np = preds_cat.numpy()
-            labs_np = labs_cat.numpy()
+            preds_np = preds_cat.float().numpy()
+            labs_np = labs_cat.float().numpy()
 
             # Apply per-task validation mask if configured
             if self.task_val_masks is not None and task_name in self.task_val_masks:
