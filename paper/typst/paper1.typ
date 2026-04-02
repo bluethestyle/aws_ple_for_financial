@@ -33,8 +33,8 @@
   #v(0.3em)
 
   #text(size: 9pt, style: "italic")[
-    #super[1]Organization Name \
-    {author1, author2, author3}\@org.com
+    #super[1]Independent Research \
+    (affiliated with a Korean public financial institution)
   ]
 
   #v(1em)
@@ -212,10 +212,29 @@ with explanations generated structurally rather than post-hoc.
 
 == Design Philosophy
 
-The architecture emerged from a concrete constraint:
-a small team (3 members) at a financial institution needed to replace an ALS-based collaborative filtering system
-with a next-generation recommendation model, under limited GPU resources (single RTX 4070, 12GB VRAM)
+The architecture emerged from severe real-world constraints
+at a Korean public financial institution.
+A team of three --- one PM with financial risk management (FRM) certification
+and domain expertise spanning credit analysis, regulatory compliance,
+digital product planning, and big data platform operations,
+plus two engineers --- needed to replace a legacy ALS-based collaborative filtering system
+with a next-generation recommendation model.
+
+The constraints were formidable:
+no dedicated ML infrastructure budget,
+a single consumer-grade GPU (NVIDIA RTX 4070, 12GB VRAM) as the only training hardware,
+no GPU inference servers for deployment,
 and strict regulatory requirements (Korean FSS AI guidelines, EU AI Act).
+
+Rather than treating these constraints as limitations,
+the team adapted its methodology at every level:
+(1) AI-augmented development using Claude (Anthropic), Gemini (Google), and Cursor,
+with each team member leading a parallel team of AI agents;
+(2) parameter-efficient architecture design where structural inductive biases
+replace the brute-force capacity of large MLPs;
+(3) knowledge distillation to LGBM for GPU-free CPU inference on AWS Lambda;
+(4) config-driven pipeline requiring only two YAML files to control the entire system,
+enabling operation by a minimal team.
 
 Early exploration considered a Black-Litterman-inspired approach,
 treating multiple models' predictions as "expert views" combined via Bayesian updating.
@@ -669,6 +688,17 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
 // TODO: Fill after ablation results
 
 == Practical Implications
+
+*Resource-constrained development.*
+This system was built without dedicated ML infrastructure budget,
+on a single consumer GPU, by a three-person team
+augmented with AI development agents.
+This demonstrates that complex multi-task recommendation systems
+are no longer exclusive to organizations with large ML teams and GPU clusters.
+The key enablers were: (1) config-driven architecture minimizing code changes,
+(2) AI agents handling parallel implementation tasks under human architectural guidance,
+(3) heterogeneous expert design achieving expressiveness through structural bias
+rather than parameter scale, and (4) knowledge distillation eliminating GPU serving costs.
 
 *Infrastructure choice.*
 Financial institutions differ fundamentally from big tech in ML infrastructure needs.
