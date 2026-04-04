@@ -685,6 +685,9 @@ with development conducted on a single consumer GPU in a resource-constrained en
 // Acknowledgments
 #heading(numbering: none)[Acknowledgments]
 
+The authors thank Yeon-Jin Kim for consistently providing valuable insights
+on industry trends and marketing perspectives that informed the system's design direction.
+
 The authors express deep gratitude to Eun-Cheol Sim and Young-Chan Kim,
 who dedicated countless nights and weekends to this project
 with unwavering commitment despite the absence of formal employment or compensation.
