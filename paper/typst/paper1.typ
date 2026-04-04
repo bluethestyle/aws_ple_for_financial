@@ -126,29 +126,12 @@ but a structural necessity for multi-faceted customer understanding.
 
 This perspective aligns with a broader shift in both academia and regulation.
 Pearl's _Ladder of Causation_ @pearl2018book distinguishes three levels:
-association ("customers who bought X also bought Y"),
-intervention ("what happens if we recommend Y?"),
-and counterfactuals ("would this customer have bought Y without the recommendation?").
+association, intervention, and counterfactuals.
 Most recommendation systems operate at level 1 (association);
 our architecture aims for levels 1--2 by incorporating structural causal reasoning.
-
-Regulatory bodies increasingly demand this shift.
-The EU AI Act @euaiact2024 requires that high-risk AI systems
-provide "sufficiently transparent" explanations (Art. 13)
---- a standard that purely correlational explanations may not meet.
-The European Banking Authority (EBA) guidelines on ML in internal models @eba2025ml
-explicitly call for "interpretable" models or "adequate explainability techniques."
-Korea's Financial Services Commission @koreafsc2024 similarly requires
-that AI-driven decisions be "explainable to the affected customer,"
-and Korea's AI Basic Act @koreaaiact2024 (effective 2026)
-classifies financial recommendation as potentially high-risk,
-requiring impact assessments and transparency obligations.
-
-The academic community echoes this:
-Salih et al. @salih2023 demonstrate that SHAP/LIME explanations in finance
-are unstable and can mislead stakeholders,
-while the causal inference community @gao2024causal
-advocates moving beyond correlational attribution toward causal understanding.
+Regulatory frameworks --- the EU AI Act, Korea's FSS guidelines and AI Basic Act ---
+increasingly demand this shift toward structurally transparent explanations
+(detailed regulatory analysis in Section 2.3).
 
 == Contributions
 
@@ -373,66 +356,6 @@ Four principles guide the architecture:
   is controlled by two configuration files (`pipeline.yaml` and `feature_groups.yaml`),
   reducing operational overhead for teams with limited ML engineering resources.
 
-== Multi-disciplinary Feature Engineering
-<multidisciplinary>
-
-A distinguishing aspect of this work is the systematic application of
-methodologies from diverse academic disciplines to financial customer behavior.
-Rather than relying solely on standard statistical features
-(mean, variance, trend), we apply domain-specific mathematical tools
-that each extract a structurally different signal from the same underlying data.
-
-#figure(
-  table(
-    columns: (auto, auto, auto, auto),
-    inset: 5pt,
-    align: left,
-    stroke: 0.5pt,
-    [*Discipline*], [*Method*], [*Dim*], [*Financial Interpretation*],
-    [Topology], [Persistent Homology (TDA)], [32], [Behavioral shape persistence: which consumption patterns are transient vs. structural],
-    [Hyperbolic Geometry], [HGCN embedding], [34], [Product category distance: preserving hierarchy in low dimensions],
-    [Control Theory], [Mamba (State Space)], [50], [Long-range behavioral dependencies: how past habits influence present],
-    [Stochastic Processes], [HMM state transitions], [25], [Latent lifecycle stages: dormant → growing → mature → at-risk],
-    [Chemical Kinetics], [Reaction rate modeling], [6], [Spending activation rate, half-life, dormancy reactivation catalysis],
-    [Epidemiology], [SIR compartment model], [5], [Product adoption as "infection": susceptible → adopted → churned],
-    [Criminology], [Routine Activity Theory], [5], [Transaction regularity: burstiness, circadian variance, routine breakpoints],
-    [Signal Processing], [FFT + Hilbert transform], [8], [Spending periodicity: spectral entropy, harmonic power, phase locking],
-    [Economics], [Friedman Permanent Income], [8], [Income decomposition: permanent vs. transitory income, consumption smoothing],
-    [Graph Theory], [LightGCN], [66], [Collaborative filtering: similar customer behavioral transfer],
-    [Statistics], [GMM soft clustering], [22], [Probabilistic segmentation: multi-modal customer distribution],
-  ),
-  caption: [Multi-disciplinary feature engineering: 11 academic disciplines applied to financial behavior.
-    Total 269 generated features + 47 base features = 316.],
-) <tab:multidisciplinary>
-
-Several of these applications are, to our knowledge, novel in financial recommendation:
-
-*Chemical kinetics* models spending behavior as a reaction system:
-the "activation energy" represents the threshold for a dormant customer to resume spending,
-while "catalysts" (e.g., payroll deposits) lower this threshold.
-The half-life of spending intensity after a peak captures decay dynamics
-that simple moving averages cannot express.
-
-*SIR epidemic model* treats product adoption as a contagion process:
-customers are "susceptible" (not yet adopted), "infected" (recently adopted),
-or "recovered" (churned). The basic reproduction number $R_0$ of a product category
-across a customer's social graph predicts adoption velocity.
-
-*Friedman's Permanent Income Hypothesis* @friedman1957 decomposes observed income into
-permanent (stable, long-term) and transitory (bonus, irregular) components
-using HP filter or Kalman filter.
-This distinction is critical for financial recommendation:
-a customer with high transitory income should not be recommended
-long-term investment products that assume stable cash flow.
-The FD-TVS scoring system (detailed in companion paper) uses this decomposition
-to weight recommendations by income stability type.
-
-These features serve a dual purpose beyond predictive contribution:
-they provide _explanation vocabulary_ that no standard feature can offer.
-"Your spending activation energy has decreased" (chemical kinetics)
-or "Your product adoption follows a growing epidemic curve" (SIR)
-are explanations grounded in established scientific frameworks.
-
 == Data Axis Classification
 
 Financial customer data exhibits inherently multi-modal structure.
@@ -456,7 +379,10 @@ We classify data along multiple axes, each mapped to an optimal feature generato
     [Causality], [behavioral causation], [Causal], [causal features],
   ),
   caption: [Data axis → Expert → Feature generator mapping.
-    Each axis captures a structurally different aspect of customer behavior.],
+    Each axis captures a structurally different aspect of customer behavior.
+    Note: Short-term, Long-term, and Disrupted series map to the three sub-components
+    of the Temporal Ensemble expert (Transformer, Mamba, LNN respectively).
+    GMM is a feature _generator_ that produces soft-clustering inputs; it is not a standalone expert.],
 ) <tab:data-axis>
 
 == Heterogeneous Expert Basket
@@ -466,7 +392,7 @@ We classify data along multiple axes, each mapped to an optimal feature generato
   rect(width: 100%, height: 8cm, stroke: 0.5pt)[
     #align(center + horizon)[
       _Architecture diagram placeholder_ \
-      Input (316 features) → 12 Feature Groups → CGC Gate → 7 Experts → 4 Task Groups → 18 Towers → Output \
+      Input (318 features) → 12 Feature Groups → CGC Gate → 7 Experts → 4 Task Groups → 18 Towers → Output \
       + adaTT inter/intra transfer
     ]
   ],
@@ -474,7 +400,10 @@ We classify data along multiple axes, each mapped to an optimal feature generato
 ) <fig:architecture>
 
 Unlike standard PLE where shared experts are identical MLPs,
-our shared expert basket contains seven structurally distinct networks:
+our shared expert basket contains seven structurally distinct networks.
+Each expert corresponds to one or more modality axes (@tab:modality-axis),
+ensuring that every structurally distinct data type
+is processed by an architecture designed for it:
 
 #figure(
   table(
@@ -494,6 +423,9 @@ our shared expert basket contains seven structurally distinct networks:
   caption: [Seven heterogeneous experts with distinct inductive biases.],
 ) <tab:experts>
 
+Because each expert has a named inductive bias, the gate weights tell the customer
+_why_ in business terms --- not "hidden unit 47 activated" but
+"your spending trend drove this recommendation."
 Each expert was selected based on a specific gap
 in financial customer understanding that no other expert type addresses:
 
@@ -562,9 +494,76 @@ This design is validated in the ablation study (Section 5.4),
 where removing any single temporal component degrades
 performance on different task groups.
 
+== Multi-disciplinary Feature Engineering
+<multidisciplinary>
+
+A distinguishing aspect of this work is the systematic application of
+methodologies from diverse academic disciplines to financial customer behavior.
+Now that the expert basket has been introduced, the rationale becomes clear:
+each discipline's features are designed to feed a _specific expert_
+whose inductive bias can best exploit that signal type.
+Rather than relying solely on standard statistical features
+(mean, variance, trend), we apply domain-specific mathematical tools
+that each extract a structurally different signal from the same underlying data.
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 5pt,
+    align: left,
+    stroke: 0.5pt,
+    [*Discipline*], [*Method*], [*Dim*], [*Financial Interpretation*],
+    [Topology], [Persistent Homology (TDA)], [32], [Behavioral shape persistence: which consumption patterns are transient vs. structural],
+    [Hyperbolic Geometry], [HGCN embedding], [34], [Product category distance: preserving hierarchy in low dimensions],
+    [Control Theory], [Mamba (State Space)], [50], [Long-range behavioral dependencies: how past habits influence present],
+    [Stochastic Processes], [HMM state transitions], [25], [Latent lifecycle stages: dormant → growing → mature → at-risk],
+    [Chemical Kinetics], [Reaction rate modeling], [6], [Spending activation rate, half-life, dormancy reactivation catalysis],
+    [Epidemiology], [SIR compartment model], [5], [Product adoption as "infection": susceptible → adopted → churned],
+    [Criminology], [Routine Activity Theory], [5], [Transaction regularity: burstiness, circadian variance, routine breakpoints],
+    [Signal Processing], [FFT + Hilbert transform], [8], [Spending periodicity: spectral entropy, harmonic power, phase locking],
+    [Economics], [Friedman Permanent Income], [8], [Income decomposition: permanent vs. transitory income, consumption smoothing],
+    [Graph Theory], [LightGCN], [66], [Collaborative filtering: similar customer behavioral transfer],
+    [Statistics], [GMM soft clustering], [22], [Probabilistic segmentation: multi-modal customer distribution],
+  ),
+  caption: [Multi-disciplinary feature engineering: 11 academic disciplines applied to financial behavior.
+    Total 269 generated features + 49 base features = 318.
+    Base features include 47 raw columns plus 2 derived columns (is\_cold\_start, income\_log).],
+) <tab:multidisciplinary>
+
+Several of these applications are, to our knowledge, novel in financial recommendation:
+
+*Chemical kinetics* models spending behavior as a reaction system:
+the "activation energy" represents the threshold for a dormant customer to resume spending,
+while "catalysts" (e.g., payroll deposits) lower this threshold.
+The half-life of spending intensity after a peak captures decay dynamics
+that simple moving averages cannot express.
+
+*SIR epidemic model* treats product adoption as a contagion process:
+customers are "susceptible" (not yet adopted), "infected" (recently adopted),
+or "recovered" (churned). The basic reproduction number $R_0$ of a product category
+across a customer's social graph predicts adoption velocity.
+
+*Friedman's Permanent Income Hypothesis* @friedman1957 decomposes observed income into
+permanent (stable, long-term) and transitory (bonus, irregular) components
+using HP filter or Kalman filter.
+This distinction is critical for financial recommendation:
+a customer with high transitory income should not be recommended
+long-term investment products that assume stable cash flow.
+The FD-TVS scoring system (detailed in companion paper) uses this decomposition
+to weight recommendations by income stability type.
+
+These features serve a dual purpose beyond predictive contribution:
+they provide _explanation vocabulary_ that no standard feature can offer.
+"Your spending activation energy has decreased" (chemical kinetics)
+or "Your product adoption follows a growing epidemic curve" (SIR)
+are explanations grounded in established scientific frameworks.
+
 == Financial DNA Task Grouping
 
-We organize 18 prediction tasks into four groups based on financial customer DNA:
+We organize 18 prediction tasks into four groups based on financial customer DNA.
+Each task group corresponds to one DNA axis (@tab:dna-axis);
+within each group, different modality experts (@tab:modality-axis) contribute differently,
+and the CGC gate learns the optimal mixture per task:
 
 #figure(
   table(
@@ -623,7 +622,9 @@ that reflect the natural sequence of customer experience:
   caption: [Logit transfer relationships reflecting natural customer experience flow.],
 ) <tab:logit-transfer>
 
-These transfer directions are not learned from data but specified based on
+These transfers connect DNA groups (@tab:dna-axis): engagement→engagement (intra-group),
+value→consumption (inter-group), reflecting the natural sequence of customer experience.
+The transfer directions are not learned from data but specified based on
 domain knowledge of the customer journey.
 This is a deliberate design choice: while the _strength_ of transfer
 is learned (via adaTT affinity), the _direction_ is fixed by business logic,
@@ -633,7 +634,8 @@ providing an additional layer of interpretability.
 <inherent-explain>
 
 A central claim of this work is that the heterogeneous expert structure
-provides _inherent_ explainability --- explanations emerge as a natural
+provides _inherent_ explainability --- explanations that _persuade_ customers,
+relationship managers, and regulators emerge as a natural
 byproduct of the forward pass, not as a separate post-hoc computation.
 
 *Mechanism.* The CGC (Customized Gate Control) module computes
@@ -750,7 +752,11 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
 
 == Experimental Setup
 
-- *Data*: 1M customers, 316 features, 18 tasks.
+The ablation validates whether each expert provides a distinct "why" for different task types ---
+confirming that heterogeneous experts are not merely a performance trick
+but a structural requirement for multi-faceted persuasion.
+
+- *Data*: 1M customers, 318 features, 18 tasks.
 - *Hardware*: NVIDIA RTX 4070 (12GB) local; AWS g5.xlarge (A10G 24GB) cloud.
 - *Training*: 5+5 epochs (phase1 + phase2), batch 6144, lr 0.008, AMP, early stopping patience 3.
 - *Metrics*: AUC (binary), F1 macro (classification), MAE/R² (regression).
@@ -765,7 +771,7 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
     align: center,
     stroke: 0.5pt,
     [*Scenario*], [*Features*], [*Avg AUC*], [*Δ vs Full*],
-    [full], [316], [--], [baseline],
+    [full], [318], [--], [baseline],
     [base_only], [49], [--], [--],
     [base+tda], [65], [--], [--],
     [base+hmm], [74], [--], [--],
@@ -895,6 +901,10 @@ and (3) graceful degradation validated through comprehensive ablation.
 
 The key insight is that explanation quality depends not on post-hoc attribution methods
 but on the model's internal structure.
+The two-axis decomposition (Financial DNA $times$ Data Modality)
+ensures that every design decision --- which experts to build,
+which features to engineer, which tasks to group ---
+traces back to a principled analytical framework.
 When each expert carries a named inductive bias ---
 temporal dynamics, product hierarchy, causal pathways ---
 the gating mechanism _is_ the explanation.
