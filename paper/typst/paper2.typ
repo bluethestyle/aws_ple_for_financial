@@ -284,7 +284,7 @@ rather than collapsing to a single dominant feature group.
 
 == Distillation Results
 
-#figure(
+#figure(placement: top, scope: "parent",
   table(
     columns: (auto, auto, auto, auto),
     inset: 5pt,
@@ -319,7 +319,7 @@ improving feature selection does not require rewriting explanation templates, an
 Every feature in the system is registered in an `interpretation_registry`
 with structured business metadata:
 
-#figure(
+#figure(placement: top, scope: "parent",
   table(
     columns: (1fr, 1fr, 1.5fr),
     inset: 5pt,
@@ -408,7 +408,7 @@ Grounding constraints:
 
 Validates the generated reason against:
 
-#figure(
+#figure(placement: top, scope: "parent",
   table(
     columns: (auto, auto),
     inset: 5pt,
@@ -440,7 +440,7 @@ Cache hit avoids LLM invocation entirely, reducing latency and cost.
 
 == Korean FSS Guidelines Mapping
 
-#figure(
+#figure(placement: top, scope: "parent",
   table(
     columns: (1fr, 1.2fr, 1fr),
     inset: 5pt,
@@ -459,7 +459,7 @@ Cache hit avoids LLM invocation entirely, reducing latency and cost.
 
 == EU AI Act Mapping
 
-#figure(
+#figure(placement: top, scope: "parent",
   table(
     columns: (auto, 1fr, 1.5fr),
     inset: 5pt,
@@ -529,7 +529,7 @@ The system implements this at multiple levels:
 - *Comparison*: (A) Template-based, (B) SHAP-based + template, (C) 3-agent pipeline.
 - *Method*: Blind evaluation, each evaluator rates 100 recommendation reasons.
 
-#figure(
+#figure(placement: top, scope: "parent",
   table(
     columns: (auto, auto, auto, auto, auto),
     inset: 5pt,
@@ -545,7 +545,7 @@ The system implements this at multiple levels:
 
 == Safety Gate Evaluation
 
-#figure(
+#figure(placement: top, scope: "parent",
   table(
     columns: (auto, auto, auto, auto),
     inset: 5pt,
@@ -562,7 +562,7 @@ The system implements this at multiple levels:
 
 == Serving Performance
 
-#figure(
+#figure(placement: top, scope: "parent",
   table(
     columns: (1fr, auto, auto, 1fr),
     inset: 5pt,
