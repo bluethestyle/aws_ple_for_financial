@@ -659,11 +659,28 @@ matching the operational reality of financial institutions
 with limited ML engineering resources.
 
 // ============================================================
+// ============================================================
+// Author Contributions
+#heading(numbering: none)[Author Contributions]
+
+Author 1 (PM/Data Scientist): Designed the distillation strategy,
+recommendation reason generation pipeline, and regulatory compliance architecture.
+Led the overall system design based on domain expertise in financial risk management.
+Authors 2 and 3: Implemented the distillation pipeline, serving infrastructure,
+and monitoring components as development supporters.
+
+// ============================================================
+// Funding
+#heading(numbering: none)[Funding]
+
+This research received no external funding or dedicated infrastructure support.
+
+// ============================================================
 // Acknowledgments
 #heading(numbering: none)[Acknowledgments]
 
 The code implementation and manuscript drafting were assisted by
-Claude (Anthropic) as an AI coding and writing tool.
+Claude (Anthropic), Gemini (Google), and Cursor as AI development tools.
 The architectural decisions, domain knowledge, experimental design,
 and research direction were led by the human authors.
 

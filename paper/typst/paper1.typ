@@ -985,13 +985,78 @@ knowledge distillation @hinton2015 to LGBM @ke2017lightgbm, multi-agent recommen
 and regulatory compliance mapping for Korean FSS and EU AI Act requirements.
 
 // ============================================================
+// ============================================================
+// Author Contributions
+#heading(numbering: none)[Author Contributions]
+
+Author 1 (PM/Data Scientist): Conceived the project direction,
+designed the heterogeneous expert architecture and two-axis decomposition framework,
+selected multi-disciplinary feature engineering approaches based on structural isomorphism,
+defined task groups and regulatory compliance mapping,
+led AI-augmented development methodology, and wrote the manuscript.
+Authors 2 and 3: Implemented feature generators, training pipeline,
+and serving infrastructure under architectural guidance from Author 1.
+
+// ============================================================
+// Funding
+#heading(numbering: none)[Funding]
+
+This research received no external funding or dedicated infrastructure support.
+All development was conducted on a single consumer-grade GPU
+(NVIDIA RTX 4070, 12GB VRAM) without cloud computing budget.
+
+// ============================================================
 // Acknowledgments
 #heading(numbering: none)[Acknowledgments]
 
 The code implementation and manuscript drafting were assisted by
-Claude (Anthropic) as an AI coding and writing tool.
+Claude (Anthropic), Gemini (Google), and Cursor as AI development tools.
 The architectural decisions, domain knowledge, experimental design,
 and research direction were led by the human authors.
+
+// ============================================================
+// Appendix
+#heading(numbering: none)[Appendix]
+
+=== A. Configuration Schema
+
+The entire system is controlled by two YAML configuration files:
+ (model architecture, training hyperparameters, task definitions,
+AWS deployment settings) and  (feature group definitions,
+generator parameters, expert routing rules).
+Full configuration files are available in the accompanying repository.
+
+=== B. Ablation Scenario Definitions
+
+The 30 ablation scenarios are organized into two phases:
+
+*Phase 1 --- Feature + Expert Joint Ablation (18 scenarios):*
+Baseline (DeepFM only with base features), DeepFM with all features,
+full model, 8 bottom-up scenarios (DeepFM + one expert with matching features),
+and 6 top-down scenarios (full minus one expert-feature pair).
+
+*Phase 2 --- Task x Structure Cross Ablation (12 scenarios):*
+Three task tiers (4, 8, 18 tasks) crossed with four structural variants
+(shared-bottom, PLE only, adaTT only, PLE + adaTT).
+
+=== C. Benchmark Data Generation
+
+The synthetic benchmark uses a four-layer generative model:
+(1) latent personas via 6-component GMM with 5D continuous latent vector
+(70%% persona-conditioned, 30%% independent noise);
+(2) Gaussian Copula demographics preserving realistic correlations;
+(3) vectorized transaction sequences as LIST columns;
+(4) variance-budget labels with post-hoc noise flipping (6-8%%).
+Seed=42 ensures reproducibility.
+Full generation code: .
+
+=== D. Numerical Stability Fixes
+
+Mixed-precision (FP16) training in Phase 2 required four specific fixes:
+(1) CGC entropy: FP32 cast with clamp(min=1e-6) to prevent log(0);
+(2) OT Sinkhorn: FP32 cast before log-domain computation;
+(3) Causal DAG regularization: FP32 Taylor expansion to prevent overflow;
+(4) last logits: float() cast for stable loss computation.
 
 // ============================================================
 // References
