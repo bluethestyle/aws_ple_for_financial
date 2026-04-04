@@ -1001,9 +1001,12 @@ and serving infrastructure under architectural guidance from Author 1.
 // Funding
 #heading(numbering: none)[Funding]
 
-This research received no external funding or dedicated infrastructure support.
-All development was conducted on a single consumer-grade GPU
-(NVIDIA RTX 4070, 12GB VRAM) without cloud computing budget.
+This research received no external funding, grants, or institutional infrastructure support.
+All costs --- including AI development tools (Claude Code, Gemini, Cursor subscriptions),
+hardware peripherals, and operational expenses ---
+were borne entirely by the first author's personal funds.
+Development was conducted on a single consumer-grade GPU (NVIDIA RTX 4070, 12GB VRAM)
+in a repurposed workspace with no dedicated ML infrastructure budget.
 
 // ============================================================
 // Acknowledgments

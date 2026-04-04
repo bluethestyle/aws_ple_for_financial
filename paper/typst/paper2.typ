@@ -673,7 +673,8 @@ and monitoring components as development supporters.
 // Funding
 #heading(numbering: none)[Funding]
 
-This research received no external funding or dedicated infrastructure support.
+This research received no external funding, grants, or institutional infrastructure support.
+All costs were borne entirely by the first author's personal funds.
 
 // ============================================================
 // Acknowledgments
