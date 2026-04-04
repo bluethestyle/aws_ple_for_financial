@@ -47,8 +47,11 @@
 )[
   #text(weight: "bold")[Abstract.]
   Financial product recommendation systems must explain _why_ a product is recommended ---
-  not merely to satisfy regulatory mandates (Korean FSS, EU AI Act),
-  but because persuasion requires narrative, not probability.
+  first and foremost because persuasion requires narrative, not probability:
+  a customer who asks "Why should I buy this fund?" needs a reason they can accept,
+  not a score they must trust.
+  Regulators (Korean FSS, EU AI Act) are one important audience for such explanations,
+  but the primary driver is the human act of persuasion itself.
   We present a three-stage pipeline that bridges the gap between model prediction and human persuasion:
   (1) IG-guided knowledge distillation from a heterogeneous-expert PLE teacher to per-task LGBM students,
   preserving explanation-relevant features while enabling GPU-free CPU inference;
@@ -93,7 +96,7 @@ Existing explanation approaches are insufficient:
 
 We propose a full-chain solution from prediction to persuasion:
 
-+ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (18 tasks, 7 experts, 316 features; see our companion paper) is distilled into per-task LGBM students using IG-guided feature selection. This enables GPU-free serving while preserving the features that matter for explanation.
++ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (18 tasks, 7 experts, 318 features; organized by the companion paper's reductionist two-axis framework of Financial DNA $times$ Data Modality) is distilled into per-task LGBM students using IG-guided feature selection. This enables GPU-free serving while preserving the features that matter for explanation.
 
 + *Multi-Agent Reason Generation*: Three specialized LLM agents collaborate in a pipeline --- Feature Selector chooses explanation-worthy features, Reason Generator produces natural-language narratives, and Safety Gate validates regulatory compliance.
 
@@ -204,10 +207,14 @@ enabling independent improvement of each component.
   caption: [Teacher-student distillation architecture with differentiated retraining cycles.],
 ) <fig:distillation>
 
-The teacher model (PLE with 7 heterogeneous experts, 18 tasks, 316 features;
+The teacher model (PLE with 7 heterogeneous experts, 18 tasks, 318 features;
 see companion paper for architecture details)
 produces soft probability outputs that serve as training targets
 for per-task LGBM @ke2017lightgbm students.
+The teacher's value as a distillation source stems from its _structural guarantee_
+against _expert collapse_: because the seven experts are architecturally distinct
+(DeepFM, Mamba, HGCN, PersLay, etc.), they cannot converge to the same function,
+ensuring the soft labels encode genuinely multi-faceted customer understanding.
 
 The key design decision is _per-task distillation_:
 rather than a single student model for all 18 tasks,
@@ -231,8 +238,15 @@ This architecture resolves a fundamental tension in financial AI:
 the _model that learns best_ (deep PLE with GPU) is not the _model that serves best_
 (lightweight LGBM on CPU Lambda).
 Knowledge distillation @hinton2015 bridges this gap,
-and the FD-TVS scoring system @friedman1957
+and the FD-TVS (Friedman Decomposition--Transitory Variance Scoring) system @friedman1957
 further weights the student's predictions by income stability type.
+FD-TVS applies Friedman's Permanent Income Hypothesis to decompose
+each customer's observed income into permanent (stable, long-term) and
+transitory (bonus, irregular) components via HP or Kalman filtering.
+Customers whose income is predominantly transitory receive lower
+confidence weights for long-horizon product recommendations,
+preventing the system from recommending products that assume
+stable cash flow to customers with volatile income patterns.
 
 == IG-based Feature Selection
 
@@ -260,8 +274,14 @@ $alpha = 0$ purely for explanation quality.
 We empirically find $alpha = 0.7$ balances both objectives.
 
 The resulting feature set is typically 40--80 features per task
-(down from 316), achieving >95% of teacher AUC
+(down from 318), achieving >95% of teacher AUC
 while providing sufficient explanation vocabulary.
+Critically, the dual-objective selection preserves features across all four
+Financial DNA dimensions (engagement, lifecycle, value, consumption)
+and multiple Data Modalities (temporal, graph, topological, etc.)
+from the companion paper's two-axis decomposition,
+ensuring the student retains multi-faceted understanding
+rather than collapsing to a single dominant feature group.
 
 == Distillation Results
 
@@ -282,6 +302,16 @@ while providing sufficient explanation vocabulary.
 ) <tab:distill-results>
 
 // ============================================================
+
+// Bridge: Distillation → Reason Generation
+The `interpretation_registry` serves as the *data contract* between distillation and reason generation.
+Distillation (Section 3) decides _which_ features to preserve in the student model ---
+optimizing for both predictive accuracy and explanation material via the dual-objective IG score.
+Reason generation (Section 4) decides _how_ to explain those features to humans ---
+mapping each preserved feature to business-interpretable language.
+This separation means the two stages can evolve independently:
+improving feature selection does not require rewriting explanation templates, and vice versa.
+
 = Recommendation Reason Generation
 <reason-generation>
 
@@ -338,11 +368,22 @@ Selects features for explanation based on:
 - IG attribution scores (model-driven relevance)
 - Business reverse-mapping richness (explanation-driven relevance)
 - Customer context (personalization: different features matter for different customer profiles)
+The Feature Selector uses the Financial DNA axis from the companion paper's two-axis framework
+to select features from the relevant customer dimension
+(e.g., lifecycle features for a churn recommendation, value features for an investment recommendation),
+ensuring explanations address the dimension most pertinent to the recommended action.
 
 === Agent 2: Reason Generator
 
 Receives selected features with their business reverse-mappings and generates
-a natural-language recommendation reason. Grounding constraints:
+a natural-language recommendation reason.
+The Reason Generator structures its narrative around Financial DNA groups ---
+opening with the customer's current state (lifecycle), grounding the recommendation
+in observed behavior (engagement/consumption), and framing the value proposition
+in terms the customer recognizes (value dimension) ---
+producing what the companion paper calls _multi-faceted customer understanding_
+rendered as persuasive text.
+Grounding constraints:
 - Must reference only features actually present in the selection.
 - Must use business terminology appropriate for the target audience (customer vs. relationship manager).
 - Must follow financial domain tone and compliance guidelines.
@@ -552,6 +593,11 @@ cannot be generated from any other feature type.
 This reframes feature engineering evaluation:
 the value of a feature is not solely its predictive contribution
 but also its contribution to the explanation vocabulary available to the system.
+As argued in the companion paper, _what to observe_ matters more than _how to model_ ---
+features derived from domain-specific questions
+("Is their income permanent or transitory?", "Is product adoption spreading like contagion?")
+yield richer explanations than any amount of architectural sophistication
+applied to shallow statistical summaries.
 
 == Practical Deployment Considerations
 
