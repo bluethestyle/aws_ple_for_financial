@@ -311,7 +311,7 @@ EU AI Act #cite(<euaiact2024>) 는 금융 추천을 고위험 AI로 분류하여
 == 설계 철학
 
 본 아키텍처는 한국 공공 금융기관의 심각한 현실적 제약에서 탄생하였다.
-3인으로 구성된 팀 --- PM 역할을 겸한 데이터 사이언티스트 1명(금융위험관리사(FRM) 자격,
+3인으로 구성된 팀 --- PM 역할을 겸한 데이터 사이언티스트 1명(GARP 국제금융위험관리사(FRM) 자격,
 신용/시장 리스크 분석, 규제 준수, 마이데이터 인허가, 빅데이터 플랫폼 구축·운영,
 데이터 사이언스 프로젝트, 추천 시스템 관리 경력)과
 엔지니어 2명 --- 이 레거시 ALS 기반 협업 필터링 시스템을
@@ -381,12 +381,15 @@ EU AI Act #cite(<euaiact2024>) 는 금융 추천을 고위험 AI로 분류하여
     [위상], [behavioral shape], [PersLay], [TDA global/local],
     [인과], [behavioral causation], [Causal], [causal features],
   ),
-  caption: [데이터 축 → 전문가 → 피처 생성기 매핑.
-    각 축은 고객 행동의 구조적으로 다른 측면을 포착한다.
-    참고: 단기, 장기, 불연속 시계열은 Temporal Ensemble 전문가의 세 하위 구성요소
-    (각각 Transformer, Mamba, LNN)에 매핑된다.
-    GMM은 소프트 클러스터링 입력을 생성하는 피처 _생성기_이며, 독립 전문가가 아니다.],
+  caption: [데이터 축에서 전문가 및 피처 생성기로의 매핑.],
 ) <tab:data-axis>
+
+#text(size: 8.5pt, fill: gray)[
+  _참고_: 단기/장기/불연속 시계열은 Temporal Ensemble 전문가의 세 하위 구성요소
+  (Transformer, Mamba, LNN)에 대응한다. GMM은 피처 생성기이며 독립 전문가가 아니다.
+]
+
+// dummy
 
 == 이종 전문가 바스켓
 

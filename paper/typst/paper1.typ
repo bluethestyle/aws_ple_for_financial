@@ -312,7 +312,7 @@ that our ablation demonstrates.
 The architecture emerged from severe real-world constraints
 at a Korean public financial institution.
 A team of three --- one data scientist serving as PM,
-with financial risk management (FRM) certification
+with GARP Financial Risk Manager (FRM) certification
 and a career spanning credit/market risk analysis, regulatory compliance,
 MyData licensing, big data platform construction and operations,
 data science projects, and recommendation system management,
@@ -384,12 +384,14 @@ We classify data along multiple axes, each mapped to an optimal feature generato
     [Topology], [behavioral shape], [PersLay], [TDA global/local],
     [Causality], [behavioral causation], [Causal], [causal features],
   ),
-  caption: [Data axis → Expert → Feature generator mapping.
-    Each axis captures a structurally different aspect of customer behavior.
-    Note: Short-term, Long-term, and Disrupted series map to the three sub-components
-    of the Temporal Ensemble expert (Transformer, Mamba, LNN respectively).
-    GMM is a feature _generator_ that produces soft-clustering inputs; it is not a standalone expert.],
+  caption: [Data axis to Expert to Feature generator mapping.],
 ) <tab:data-axis>
+
+#text(size: 8.5pt, fill: gray)[
+  _Note_: Short-term, Long-term, and Disrupted series map to the three sub-components
+  of the Temporal Ensemble expert (Transformer, Mamba, LNN respectively).
+  GMM is a feature generator, not a standalone expert.
+]
 
 == Heterogeneous Expert Basket
 
@@ -540,8 +542,10 @@ that each extract a structurally different signal from the same underlying data.
     [Statistics], [GMM soft clustering], [22], [Probabilistic segmentation: multi-modal customer distribution],
   )
   },
-  caption: [Multi-disciplinary feature engineering: 11 academic disciplines applied to financial behavior.
-    Total 269 generated features + 49 base features = 318.
+  caption: [Multi-disciplinary feature engineering: 11 academic disciplines applied to financial behavior.],
+) 
+
+#text(size: 8.5pt, fill: gray)[_Note_: Total 269 generated features + 49 base features = 318.
     Base features include 47 raw columns plus 2 derived columns (is\_cold\_start, income\_log).],
 ) <tab:multidisciplinary>
 
