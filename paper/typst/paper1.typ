@@ -258,6 +258,68 @@ with explanations generated structurally rather than post-hoc.
 = Architecture
 <architecture>
 
+== Reductionist Framework: Two Axes of Decomposition
+
+Before describing the architecture, we present the analytical framework
+that governs all subsequent design decisions.
+
+The complexity of financial customer understanding is decomposed along two orthogonal axes:
+
+*Axis 1: Who is the customer? (Financial DNA)*
+
+We decompose the question "who is this customer?" into four irreducible dimensions,
+each capturing a fundamentally different aspect of customer identity:
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 5pt,
+    align: left,
+    stroke: 0.5pt,
+    [*DNA*], [*Question*], [*Tasks*],
+    [Engagement], [What do they _do_?], [has_nba, engagement, next_mcc, mcc_trend, top_mcc_shift],
+    [Lifecycle], [Where _are_ they?], [churn, tenure_stage, segment],
+    [Value], [How much are they _worth_?], [income_tier, spend_level, cross_sell, stability],
+    [Consumption], [What _will_ they buy?], [will_acquire\_\* (5), nba_primary],
+  ),
+  caption: [Axis 1: Financial DNA decomposition. Four irreducible dimensions of customer identity.],
+) <tab:dna-axis>
+
+*Axis 2: What form does the information take? (Data Modality)*
+
+Customer data exists in structurally distinct modalities,
+each requiring a different mathematical tool to extract meaningful signals:
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 5pt,
+    align: left,
+    stroke: 0.5pt,
+    [*Modality*], [*Nature*], [*Optimal Tool*],
+    [State], [Binary/categorical, time-invariant], [Feature crosses (DeepFM)],
+    [Snapshot], [Numeric at a point in time], [Clustering (GMM)],
+    [Short-term series], [Recent sequential patterns], [Attention (Transformer)],
+    [Long-term series], [Multi-month trends], [State space (Mamba)],
+    [Disrupted series], [Irregular / dormant gaps], [Adaptive ODE (LNN)],
+    [Hierarchy], [Tree-structured categories], [Hyperbolic embedding (HGCN)],
+    [Relations], [Customer-product graph], [Graph convolution (LightGCN)],
+    [Topology], [Shape of behavioral patterns], [Persistent homology (PersLay)],
+    [Causality], [Directional dependencies], [DAG constraint (NOTEARS)],
+  ),
+  caption: [Axis 2: Data modality decomposition. Each modality demands a structurally different expert.],
+) <tab:modality-axis>
+
+*The cross-product* of these two axes defines the architecture:
+each (DNA $times$ Modality) cell determines which expert processes which features
+for which task group.
+The 7 heterogeneous experts, 12 feature groups, and 4 task groups
+are not arbitrary design choices but necessary consequences of this two-axis decomposition.
+A homogeneous MLP expert basket ignores Axis 2 entirely ---
+it treats hierarchical, temporal, and topological data identically ---
+which is why it cannot achieve the task-type-specific specialization
+that our ablation demonstrates.
+
 == Design Philosophy
 
 The architecture emerged from severe real-world constraints
