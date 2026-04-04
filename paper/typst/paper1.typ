@@ -347,6 +347,38 @@ This led to the selection of PLE @tang2020 with a critical modification:
 replacing homogeneous MLP experts with structurally heterogeneous experts,
 each encoding a different inductive bias.
 
+=== Structural Isomorphism: Why Cross-Disciplinary Methods Work
+
+The multi-disciplinary feature engineering in this work is not arbitrary borrowing
+from unrelated fields.
+It is grounded in _structural isomorphism_ ---
+the observation that mathematically equivalent structures
+recur across different domains, enabling tools developed in one field
+to be rigorously applied to structurally equivalent problems in another.
+
+Consider:
+a dormant customer resuming spending follows the same dynamics
+as a chemical reaction overcoming an activation energy barrier.
+Product adoption spreading through a customer network follows the same
+compartmental dynamics as an SIR epidemic model.
+These are not metaphors --- the governing equations are identical,
+and the solutions transfer with mathematical rigor.
+
+This principle has a distinguished history in science and engineering:
+Shannon's information entropy was directly borrowed from Boltzmann's thermodynamic entropy;
+the Black-Scholes option pricing model is derived from the heat diffusion equation;
+Google's PageRank is an application of Markov chain stationary distributions.
+In each case, recognizing structural isomorphism between two domains
+enabled a breakthrough that neither domain could have achieved alone.
+
+Our contribution is applying this principle _systematically_ to financial customer understanding:
+for each aspect of customer behavior,
+we identify a domain whose mathematical tools are structurally isomorphic
+to the underlying dynamics, and instantiate that domain's methods
+as both features (for prediction) and expert architectures (for interpretation).
+The multi-disciplinary approach is not a collection of ad-hoc features
+but a principled application of analogical reasoning through structural equivalence.
+
 Four principles guide the architecture:
 
 + *Robust Explainability*: Model structure itself generates explanations.
