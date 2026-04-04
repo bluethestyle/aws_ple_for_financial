@@ -750,6 +750,21 @@ The key enablers were: (1) config-driven architecture minimizing code changes,
 (3) heterogeneous expert design achieving expressiveness through structural bias
 rather than parameter scale, and (4) knowledge distillation eliminating GPU serving costs.
 
+*Generalizability beyond finance.*
+While this work targets financial product recommendation,
+the underlying principle --- understanding a single user from multiple perspectives
+simultaneously via heterogeneous experts ---
+applies to any domain where personalization requires multi-faceted user modeling.
+Healthcare (diagnosis + treatment + risk + lifestyle),
+education (knowledge level + learning style + engagement + career path),
+and insurance (risk assessment + product fit + claim prediction + retention)
+all face structurally similar challenges:
+multiple interdependent prediction tasks about the same individual,
+where different analytical lenses capture different aspects.
+We expect the heterogeneous expert PLE pattern to generalize to these domains,
+with domain-specific expert types replacing the financial experts
+while retaining the structural benefits of collapse resistance and inherent explainability.
+
 *Infrastructure choice.*
 Financial institutions differ fundamentally from big tech in ML infrastructure needs.
 Big tech operates hundreds of GPUs across dozens of teams with hourly retraining cycles,
