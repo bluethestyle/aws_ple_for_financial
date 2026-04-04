@@ -1003,10 +1003,15 @@ and serving infrastructure under architectural guidance from Author 1.
 
 This research received no external funding, grants, or institutional infrastructure support.
 All costs --- including AI development tools (Claude Code, Gemini, Cursor subscriptions),
-hardware peripherals, and operational expenses ---
+hardware peripherals, mobile data connectivity, and operational expenses ---
 were borne entirely by the first author's personal funds.
 Development was conducted on a single consumer-grade GPU (NVIDIA RTX 4070, 12GB VRAM)
-in a repurposed workspace with no dedicated ML infrastructure budget.
+in a repurposed, inadequately ventilated workspace
+with no dedicated ML infrastructure budget, no institutional network support,
+and no cloud computing allocation.
+Data collection was constrained to a legacy HIVE environment
+with no access to Spark or Impala,
+requiring custom parallel query logic to overcome I/O bottlenecks.
 
 // ============================================================
 // Acknowledgments

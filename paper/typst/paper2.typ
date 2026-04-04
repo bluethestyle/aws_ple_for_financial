@@ -674,7 +674,9 @@ and monitoring components as development supporters.
 #heading(numbering: none)[Funding]
 
 This research received no external funding, grants, or institutional infrastructure support.
-All costs were borne entirely by the first author's personal funds.
+All costs --- including AI tools, hardware, mobile connectivity, and operational expenses ---
+were borne entirely by the first author's personal funds,
+with development conducted on a single consumer GPU in a resource-constrained environment.
 
 // ============================================================
 // Acknowledgments
