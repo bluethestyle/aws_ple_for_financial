@@ -267,7 +267,7 @@ each capturing a fundamentally different aspect of customer identity:
     [Value], [How much are they _worth_?], [income_tier #linebreak() spend_level #linebreak() cross_sell #linebreak() stability],
     [Consumption], [What _will_ they buy?], [will_acquire\_\* (5), nba_primary],
   ),
-  caption: [Axis 1: Financial DNA decomposition. Four irreducible dimensions of customer identity.],
+  caption: [Financial DNA decomposition (Axis 1). Four irreducible dimensions of customer identity.],
 ) <tab:dna-axis>
 
 *Axis 2: What form does the information take? (Data Modality)*
@@ -294,7 +294,7 @@ each requiring a different mathematical tool to extract meaningful signals:
     [Topology], [Shape of behavioral patterns], [Persistent homology (PersLay)],
     [Causality], [Directional dependencies], [DAG constraint (NOTEARS)],
   ),
-  caption: [Axis 2: Data modality decomposition. Each modality demands a structurally different expert.],
+  caption: [Data modality decomposition (Axis 2). Each modality demands a structurally different expert.],
 ) <tab:modality-axis>
 
 *The cross-product* of these two axes defines the architecture:

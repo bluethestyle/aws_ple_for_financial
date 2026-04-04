@@ -269,7 +269,7 @@ EU AI Act #cite(<euaiact2024>) 는 금융 추천을 고위험 AI로 분류하여
     [가치(Value)], [고객의 _가치_는 얼마인가?], [income_tier #linebreak() spend_level #linebreak() cross_sell #linebreak() stability],
     [소비(Consumption)], [고객이 무엇을 _구매할 것인가_?], [will_acquire\_\* (5), nba_primary],
   ),
-  caption: [축 1: 금융 DNA 분해. 고객 정체성의 4개 환원 불가능한 차원.],
+  caption: [금융 DNA 분해 (축 1). 고객 정체성의 4개 환원 불가능한 차원.],
 ) <tab:dna-axis>
 
 *축 2: 정보는 어떤 형태를 가지는가? (데이터 모달리티)*
@@ -296,7 +296,7 @@ EU AI Act #cite(<euaiact2024>) 는 금융 추천을 고위험 AI로 분류하여
     [위상(Topology)], [행동 패턴의 형태], [지속적 호몰로지(PersLay)],
     [인과(Causality)], [방향성 의존관계], [DAG 제약(NOTEARS)],
   ),
-  caption: [축 2: 데이터 모달리티 분해. 각 모달리티는 구조적으로 다른 전문가를 요구한다.],
+  caption: [데이터 모달리티 분해 (축 2). 각 모달리티는 구조적으로 다른 전문가를 요구한다.],
 ) <tab:modality-axis>
 
 *교차곱(cross-product)*은 아키텍처를 정의한다:
