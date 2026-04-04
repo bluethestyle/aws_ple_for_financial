@@ -542,7 +542,7 @@ that each extract a structurally different signal from the same underlying data.
     [Statistics], [GMM soft clustering], [22], [Probabilistic segmentation: multi-modal customer distribution],
   )
   },
-  caption: [Multi-disciplinary feature engineering: 11 academic disciplines applied to financial behavior.],
+  caption: [Multi-disciplinary feature engineering across 11 academic disciplines.],
 ) 
 
 #text(size: 8.5pt, fill: gray)[_Note_: Total 269 generated features + 49 base features = 318.

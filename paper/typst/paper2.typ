@@ -204,7 +204,7 @@ enabling independent improvement of each component.
       + IG feature selection
     ]
   ],
-  caption: [Teacher-student distillation architecture with differentiated retraining cycles.],
+  caption: [Teacher-student distillation architecture.],
 ) <fig:distillation>
 
 The teacher model (PLE with 7 heterogeneous experts, 18 tasks, 318 features;
@@ -298,7 +298,7 @@ rather than collapsing to a single dominant feature group.
     [will_acquire_investments], [--], [--], [--],
     [...], [...], [...], [...],
   ),
-  caption: [Distillation results per task. TODO: fill after experiments.],
+  caption: [Distillation results per task (TODO).],
 ) <tab:distill-results>
 
 // ============================================================
@@ -333,7 +333,7 @@ with structured business metadata:
     [synth_stability], [Transaction stability], ["You maintain a stable transaction pattern"],
     [gmm_cluster_prob_3], [Segment probability], ["You share characteristics with active investors"],
   ),
-  caption: [Feature reverse-mapping examples. Each feature has a registered business interpretation.],
+  caption: [Feature reverse-mapping examples.],
 ) <tab:reverse-mapping>
 
 This registry serves dual purposes:
@@ -534,7 +534,7 @@ The system implements this at multiple levels:
     [SHAP+Template], [--], [--], [--], [--],
     [3-Agent (ours)], [--], [--], [--], [--],
   ),
-  caption: [Human evaluation results. TODO: fill after evaluation.],
+  caption: [Human evaluation results (TODO).],
 ) <tab:human-eval>
 
 == Safety Gate Evaluation
@@ -551,7 +551,7 @@ The system implements this at multiple levels:
     [Appropriateness], [--], [--], [--],
     [Overall], [--], [--], [--],
   ),
-  caption: [Safety Gate precision/recall. TODO: fill after evaluation.],
+  caption: [Safety Gate precision and recall (TODO).],
 ) <tab:safety-eval>
 
 == Serving Performance
@@ -569,7 +569,7 @@ The system implements this at multiple levels:
     [Safety Gate], [< 50ms], [--], [Rule-based + LLM],
     [*Total*], [< 300ms], [--], [Cache hit: < 100ms],
   ),
-  caption: [Serving latency breakdown. Lambda serverless, no GPU required.],
+  caption: [Serving latency breakdown (Lambda serverless, no GPU).],
 ) <tab:serving>
 
 == Regulatory Compliance Audit
