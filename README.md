@@ -96,6 +96,20 @@ configs/santander/       pipeline.yaml, feature_groups.yaml
 paper/                   Research papers (Typst)
 ```
 
+## AI-Augmented Development
+
+This system was built by a team of 3 (1 data scientist PM + 2 engineers) with no dedicated ML infrastructure budget, on a single consumer GPU (RTX 4070, 12GB).
+
+Each team member led a parallel team of AI agents:
+
+| Tool | Role |
+|------|------|
+| Claude (Opus/Sonnet) | Architecture design, code implementation, debugging |
+| Gemini | Brainstorming, concept exploration, literature review |
+| Cursor + Claude Code | GitHub integration, real-time editing, monitoring |
+
+Our AI collaboration methodology: [AI Collaboration Guide (PDF)](docs/typst/ai_collaboration_guide.pdf)
+
 ---
 
 Built by a team of 3 with AI-augmented development (Claude, Anthropic).
