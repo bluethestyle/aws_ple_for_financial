@@ -857,8 +857,9 @@ about the customer:
 "Is product adoption spreading like contagion?" (SIR epidemiology),
 "Is their income permanent or transitory?" (Friedman PIH @friedman1957).
 The model merely combines answers to these questions.
-If the questions are shallow --- mean, variance, trend ---
-even the most sophisticated architecture produces shallow understanding.
+If the questions are limited to conventional statistics --- mean, variance, trend ---
+even the most sophisticated architecture cannot capture
+the structural complexity of customer behavior.
 This suggests that multi-disciplinary feature engineering,
 often treated as preprocessing, deserves elevation
 to a first-class architectural design decision,
