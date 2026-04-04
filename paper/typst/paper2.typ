@@ -692,10 +692,14 @@ The authors express deep gratitude to Eun-Cheol Sim and Young-Chan Kim,
 who dedicated countless nights and weekends to this project
 with unwavering commitment despite the absence of formal employment or compensation.
 
-The code implementation and manuscript drafting were assisted by
-Claude (Anthropic), Gemini (Google), and Cursor as AI development tools.
-The architectural decisions, domain knowledge, experimental design,
-and research direction were led by the human authors.
+Finally, the authors wish to acknowledge the AI tools
+that made this research possible.
+Gemini for ideation and design brainstorming,
+Claude Opus and Sonnet for architecture, implementation, and writing,
+and Cursor for a seamless development environment.
+What could have remained an unrealized vision
+was brought to life through the collaboration
+of a small team and these tools.
 
 // ============================================================
 #bibliography("references.bib", style: "association-for-computing-machinery")
