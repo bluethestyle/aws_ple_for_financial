@@ -10,7 +10,6 @@
 #set page(
   paper: "us-letter",
   margin: (x: 1.8cm, y: 2cm),
-  columns: 2,
   numbering: "1",
 )
 
@@ -77,7 +76,8 @@
   Financial recommendation, Explainable AI, Ablation study
 ]
 
-#v(1em)
+// Switch to 2-column layout for body
+#show: rest => columns(2, rest)
 
 // ============================================================
 = Introduction
@@ -139,7 +139,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), CGC gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
 
-+ *Multi-disciplinary Feature Engineering*: Features derived from eleven academic disciplines --- including unconventional applications of chemical kinetics (spending activation rate), epidemic modeling (product adoption diffusion), criminological Routine Activity Theory (transaction regularity), and wave interference (spending periodicity) --- serve dual roles as learning signals and explanation material.
++ *Multi-disciplinary Feature Engineering*: Features derived from eleven academic disciplines --- including unconventional applications of chemical kinetics (spending activation rate), epidemic modeling (product adoption diffusion), criminological Routine Activity Theory (transaction regularity), and wave interference (spending periodicity) --- serve dual roles as learning signals and recommendation context that is reverse-mapped to business language for customer-facing explanations.
 
 + *Financial DNA Task Grouping*: Four task groups (engagement, lifecycle, value, consumption) with differentiated adaTT intra/inter transfer strengths and logit transfer for natural experience propagation.
 
@@ -254,8 +254,10 @@ We decompose the question "who is this customer?" into four irreducible dimensio
 each capturing a fundamentally different aspect of customer identity:
 
 #figure(
+  scope: "parent",
+  placement: auto,
   table(
-    columns: (auto, auto, auto),
+    columns: (auto, auto, 1fr),
     inset: 5pt,
     align: left,
     stroke: 0.5pt,
@@ -274,6 +276,8 @@ Customer data exists in structurally distinct modalities,
 each requiring a different mathematical tool to extract meaningful signals:
 
 #figure(
+  scope: "parent",
+  placement: auto,
   table(
     columns: (auto, auto, auto),
     inset: 5pt,
@@ -362,6 +366,8 @@ Financial customer data exhibits inherently multi-modal structure.
 We classify data along multiple axes, each mapped to an optimal feature generator and expert:
 
 #figure(
+  scope: "parent",
+  placement: auto,
   table(
     columns: (auto, auto, auto, auto),
     inset: 6pt,
@@ -388,6 +394,8 @@ We classify data along multiple axes, each mapped to an optimal feature generato
 == Heterogeneous Expert Basket
 
 #figure(
+  scope: "parent",
+  placement: auto,
   // TODO: Replace with actual architecture diagram
   rect(width: 100%, height: 8cm, stroke: 0.5pt)[
     #align(center + horizon)[
@@ -406,6 +414,8 @@ ensuring that every structurally distinct data type
 is processed by an architecture designed for it:
 
 #figure(
+  scope: "parent",
+  placement: auto,
   table(
     columns: (auto, auto, auto),
     inset: 6pt,
@@ -507,8 +517,12 @@ Rather than relying solely on standard statistical features
 that each extract a structurally different signal from the same underlying data.
 
 #figure(
+  scope: "parent",
+  placement: auto,
+  {
+  set text(size: 8.5pt)
   table(
-    columns: (auto, auto, auto, auto),
+    columns: (auto, auto, auto, 1fr),
     inset: 5pt,
     align: left,
     stroke: 0.5pt,
@@ -524,7 +538,8 @@ that each extract a structurally different signal from the same underlying data.
     [Economics], [Friedman Permanent Income], [8], [Income decomposition: permanent vs. transitory income, consumption smoothing],
     [Graph Theory], [LightGCN], [66], [Collaborative filtering: similar customer behavioral transfer],
     [Statistics], [GMM soft clustering], [22], [Probabilistic segmentation: multi-modal customer distribution],
-  ),
+  )
+  },
   caption: [Multi-disciplinary feature engineering: 11 academic disciplines applied to financial behavior.
     Total 269 generated features + 49 base features = 318.
     Base features include 47 raw columns plus 2 derived columns (is\_cold\_start, income\_log).],
@@ -553,10 +568,15 @@ The FD-TVS scoring system (detailed in companion paper) uses this decomposition
 to weight recommendations by income stability type.
 
 These features serve a dual purpose beyond predictive contribution:
-they provide _explanation vocabulary_ that no standard feature can offer.
-"Your spending activation energy has decreased" (chemical kinetics)
-or "Your product adoption follows a growing epidemic curve" (SIR)
-are explanations grounded in established scientific frameworks.
+they enrich the _recommendation context_ that no standard feature can provide.
+Internally, "activation energy decrease" (chemical kinetics) signals rising re-engagement likelihood,
+and "growing SIR infection ratio" (epidemiology) signals accelerating product adoption ---
+but the customer never sees these scientific terms.
+An `interpretation_registry` maps each scientific feature to business-interpretable language,
+and the LLM agent generates natural-language reasons accordingly
+(e.g., "최근 활동 패턴이 회복세를 보이고 있습니다").
+The scientific frameworks ground the model's internal reasoning;
+the customer receives business language.
 
 == Financial DNA Task Grouping
 
@@ -566,8 +586,10 @@ within each group, different modality experts (@tab:modality-axis) contribute di
 and the CGC gate learns the optimal mixture per task:
 
 #figure(
+  scope: "parent",
+  placement: auto,
   table(
-    columns: (auto, auto, auto),
+    columns: (auto, auto, 1fr),
     inset: 6pt,
     align: left,
     stroke: 0.5pt,
@@ -608,6 +630,8 @@ logit transfer captures _directional_ dependencies
 that reflect the natural sequence of customer experience:
 
 #figure(
+  scope: "parent",
+  placement: auto,
   table(
     columns: (auto, auto, auto, auto),
     inset: 5pt,
@@ -670,9 +694,11 @@ and change smoothly with input variation.
 two distinct purposes: (1) predictive contribution to AUC,
 and (2) explanation material for recommendation reasons.
 Even features with marginal predictive contribution (e.g., TDA topological features
-may add only $Delta$AUC $approx$ 0.01) provide irreplaceable explanation vocabulary.
-"Your spending pattern shows a _persistently stable shape_"
-cannot be generated from any other feature type.
+may add only $Delta$AUC $approx$ 0.01) provide irreplaceable context for recommendation reasoning.
+Internally, TDA persistence signals that a customer's spending pattern has a stable topological shape ---
+this is then reverse-mapped via the `interpretation_registry` to business language
+(e.g., "꾸준한 거래 패턴을 유지하고 계십니다") that the customer actually sees.
+The scientific feature enriches the recommendation context; the customer receives an interpretable description.
 This dual role motivates our multi-disciplinary feature engineering
 and is validated in the ablation study.
 
@@ -736,6 +762,8 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
 + *Variance Budget Labels*: Each label's predictability is controlled via $"logit" = sqrt(f_"obs") dot z_"obs" + sqrt(f_"lat") dot z_"lat" + sqrt(f_"noise") dot epsilon$, with post-hoc label noise flipping.
 
 #figure(
+  scope: "parent",
+  placement: auto,
   table(
     columns: (auto, auto, auto, auto, auto),
     inset: 5pt,
@@ -765,6 +793,8 @@ but a structural requirement for multi-faceted persuasion.
 
 // TODO: Fill results table after ablation completes
 #figure(
+  scope: "parent",
+  placement: auto,
   table(
     columns: (auto, auto, auto, auto),
     inset: 5pt,

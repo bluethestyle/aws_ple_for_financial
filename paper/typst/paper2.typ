@@ -586,18 +586,20 @@ The system implements this at multiple levels:
 
 A key insight from this work: features serve dual purposes in financial recommendation.
 Even features with marginal predictive contribution (e.g., TDA topological features
-may add only $Delta$AUC = 0.01) provide irreplaceable explanation material.
-"Your spending pattern shows a _persistent stable shape_" (from TDA)
-cannot be generated from any other feature type.
+may add only $Delta$AUC = 0.01) provide irreplaceable context for recommendation reasoning.
+Internally, TDA persistence captures behavioral shape stability ---
+but the customer never sees "persistent homology" or "Betti numbers."
+Instead, the `interpretation_registry` reverse-maps this to business language
+(e.g., "꾸준한 거래 패턴을 유지하고 계십니다"), and the LLM agent weaves it into a natural-language reason.
 
 This reframes feature engineering evaluation:
 the value of a feature is not solely its predictive contribution
-but also its contribution to the explanation vocabulary available to the system.
+but also its contribution to the recommendation context available to the reason generation pipeline.
 As argued in the companion paper, _what to observe_ matters more than _how to model_ ---
 features derived from domain-specific questions
 ("Is their income permanent or transitory?", "Is product adoption spreading like contagion?")
-yield richer explanations than any amount of architectural sophistication
-applied to shallow statistical summaries.
+enrich the internal reasoning context, enabling more nuanced business-language explanations
+than any amount of architectural sophistication applied to shallow statistical summaries.
 
 == Practical Deployment Considerations
 
