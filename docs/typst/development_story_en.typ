@@ -418,6 +418,37 @@ A conflict arose between the CPU build and CUDA build of torch in the conda envi
 #ornament()
 
 
+= Design Philosophy: Where Is the Science?
+
+== From Economics to Data Science
+
+The design philosophy of this project originates from the PM's intellectual journey. Trained in economics and decision science, then moving through financial engineering to data science, a fundamental question emerged: *"Where is the science in data-driven methodology?"*
+
+Economics has accumulated centuries of scientific methodology --- hypothesis formulation, theoretical frameworks, falsifiability. Friedman's Permanent Income Hypothesis, Arrow-Debreu general equilibrium, Nash equilibrium --- these are scientific theories that _explain_ observable phenomena.
+
+But moving from financial engineering to data science, scientific rigor gradually faded. Machine learning models were at least mathematically transparent --- OLS minimization, SVM margin maximization, decision tree information gain --- one could explain _why_ they work.
+
+Deep learning changed this. "Neural networks" is a metaphorical name rather than a deep study of actual neural architecture, and the answer to "why does this weight have this value?" is merely "the data trained it that way." Science requires explanation. An entire field --- philosophy of science --- emerged to discuss falsifiability, paradigm shifts, and degenerating research programs. Current deep learning approaches felt more like _engineering than science_.
+
+== Structural Isomorphism: Bringing Science Back
+
+The answer to this question was _structural isomorphism_.
+
+Humanity has already discovered powerful scientific methodologies across disciplines over centuries. Chemical kinetics, epidemiology, information theory, topology --- each represents frontier knowledge about what insights and causal relationships can be extracted from given phenomena.
+
+If we properly recognize the structure of our problem (understanding financial customer behavior), we can import solutions from other disciplines that have already solved structurally equivalent problems. Just as Shannon brought Boltzmann's thermodynamic entropy to information theory, and Black-Scholes derived option pricing from the heat diffusion equation.
+
+This is the fundamental motivation behind introducing features from 11 academic disciplines and designing heterogeneous experts specialized in each discipline's mathematical tools. Not "let's create many features," but *"what scientific questions should we ask?"* was the starting point of design.
+
+== The Place of Scientific Methodology in Recommendation
+
+This project demonstrates that recommendation systems can be grounded in _scientific understanding_ rather than mere pattern matching. Not every recommendation needs to end at "similar people bought this" (correlation); it can reach "this customer's consumption dynamics indicate this product is appropriate" (causal explanation).
+
+Pearl's causal inference, Friedman's Permanent Income Hypothesis, Boltzmann's statistical mechanics --- these scientists answered "why?" in their respective fields. Our heterogeneous expert architecture brings their tools to financial recommendation through structural isomorphism, attempting to endow recommendation systems with scientific explainability.
+
+#ornament()
+
+
 = Key Lessons
 
 == "AI Writes the Code, but Design Decisions Remain with Humans"
