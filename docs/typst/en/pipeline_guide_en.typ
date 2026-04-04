@@ -1048,7 +1048,7 @@ Step Functions (AWS): 5 state machines x 2/week -> ~$0.002/month (effectively fr
 
 == Absolute Prohibitions
 
-- No code debugging on SageMaker ($0.50+ per submission)
+- No code debugging on SageMaker (USD 0.50+ per submission)
 - No preprocessing code in `train.py`
 - No hard-coded generator calls in Adapter
 - No hard-coded mappings like `FEATURE_GROUP_COLUMN_PREFIXES`
