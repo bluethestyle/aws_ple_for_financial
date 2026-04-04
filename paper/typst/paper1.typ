@@ -608,7 +608,7 @@ and "growing SIR infection ratio" (epidemiology) signals accelerating product ad
 but the customer never sees these scientific terms.
 An `interpretation_registry` maps each scientific feature to business-interpretable language,
 and the LLM agent generates natural-language reasons accordingly
-(e.g., "최근 활동 패턴이 회복세를 보이고 있습니다").
+(e.g., "Your recent activity pattern shows signs of recovery").
 The scientific frameworks ground the model's internal reasoning;
 the customer receives business language.
 
@@ -731,7 +731,7 @@ Even features with marginal predictive contribution (e.g., TDA topological featu
 may add only $Delta$AUC $approx$ 0.01) provide irreplaceable context for recommendation reasoning.
 Internally, TDA persistence signals that a customer's spending pattern has a stable topological shape ---
 this is then reverse-mapped via the `interpretation_registry` to business language
-(e.g., "꾸준한 거래 패턴을 유지하고 계십니다") that the customer actually sees.
+(e.g., "You maintain a stable transaction pattern") that the customer actually sees.
 The scientific feature enriches the recommendation context; the customer receives an interpretable description.
 This dual role motivates our multi-disciplinary feature engineering
 and is validated in the ablation study.

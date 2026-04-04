@@ -396,12 +396,13 @@ Grounding constraints:
   )[
     #text(size: 9pt)[
       *Example output (customer-facing):* \
-      "고객님은 현재 자산 성장 단계에 있으시고, 최근 3개월간 소비가 증가하는 추세입니다.
-      보유하신 상품 구조상 투자 펀드가 자연스러운 다음 단계이며,
-      안정적인 거래 패턴을 고려할 때 중위험 균형형 펀드를 추천드립니다."
+      "You are currently in an asset growth phase, with spending trending upward
+      over the past three months. Given your product portfolio structure,
+      an investment fund is a natural next step. Considering your stable
+      transaction pattern, we recommend a balanced moderate-risk fund."
     ]
   ],
-  caption: [Generated recommendation reason example (Korean, customer-facing).],
+  caption: [Generated recommendation reason example (translated from Korean).],
 ) <fig:reason-example>
 
 === Agent 3: Safety Gate
@@ -596,7 +597,7 @@ may add only $Delta$AUC = 0.01) provide irreplaceable context for recommendation
 Internally, TDA persistence captures behavioral shape stability ---
 but the customer never sees "persistent homology" or "Betti numbers."
 Instead, the `interpretation_registry` reverse-maps this to business language
-(e.g., "꾸준한 거래 패턴을 유지하고 계십니다"), and the LLM agent weaves it into a natural-language reason.
+(e.g., "You maintain a stable transaction pattern"), and the LLM agent weaves it into a natural-language reason.
 
 This reframes feature engineering evaluation:
 the value of a feature is not solely its predictive contribution
