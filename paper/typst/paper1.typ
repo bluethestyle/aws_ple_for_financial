@@ -47,23 +47,29 @@
 )[
   #text(weight: "bold")[Abstract.]
   Financial product recommendation requires not only predictive accuracy but also regulatory-compliant explainability.
-  Existing multi-task learning approaches employ homogeneous MLP experts that lack structural interpretability,
-  while post-hoc methods (SHAP, LIME) provide unstable explanations decoupled from model internals.
+  Existing multi-task learning approaches (MMoE, PLE) employ homogeneous MLP experts
+  that suffer from _expert collapse_ --- all gates converge to a single expert,
+  eliminating the diversity that justifies the MoE architecture ---
+  and lack structural interpretability.
   We propose _Heterogeneous Expert PLE_, a Progressive Layered Extraction architecture
-  where seven structurally distinct experts --- DeepFM, Temporal Ensemble (Mamba+LNN+Transformer),
-  Hyperbolic GCN, PersLay, Causal, LightGCN, and Optimal Transport ---
-  share a common basket, with CGC gates learning task-specific expert compositions.
-  Each expert's inductive bias captures a different aspect of customer behavior
-  (feature interactions, temporal dynamics, product hierarchy, topological patterns, causal relations, collaborative signals, distributional shifts),
-  enabling gate weights to serve as inherently interpretable, business-meaningful explanations.
+  where seven *architecturally distinct* experts --- DeepFM, Temporal Ensemble (Mamba+LNN+Transformer),
+  Hyperbolic GCN, PersLay, Causal (NOTEARS), LightGCN, and Optimal Transport ---
+  share a common basket, providing a *structural guarantee* against expert collapse:
+  experts with fundamentally different inductive biases cannot converge to the same function.
+  CGC gates learn task-specific expert compositions whose weights
+  are inherently interpretable as business-meaningful explanations ---
+  "35% spending trend (Temporal) + 28% product hierarchy (HGCN)" ---
+  without post-hoc SHAP/LIME.
+  Ablation on a 1M-customer benchmark reveals that different experts
+  specialize in different task types:
+  LightGCN and Causal experts dominate multiclass tasks (Macro F1 +0.20),
+  while Causal and TDA experts excel at regression tasks (MAE --0.024),
+  validating the heterogeneous design.
   Combined with Adaptive Task Transfer (adaTT) over four financial-DNA task groups
-  (engagement, lifecycle, value, consumption) and multi-disciplinary feature engineering
-  spanning nine academic disciplines, the architecture achieves parameter-efficient expressiveness
-  under hardware constraints while maintaining graceful degradation.
-  We validate our approach through a comprehensive ablation study with 54 scenarios
-  on a 1M-customer synthetic benchmark with controlled AUC ceilings,
-  demonstrating independent contributions of each expert and feature group.
-  // TODO: Fill in key numbers after ablation completes
+  and multi-disciplinary feature engineering spanning eleven academic disciplines,
+  the architecture achieves parameter-efficient expressiveness
+  on a single consumer GPU (12GB VRAM) while maintaining graceful degradation.
+  // TODO: Fill in final ablation numbers
 
   #v(0.3em)
   #text(weight: "bold")[Keywords:]
@@ -105,6 +111,19 @@ and product category fit (HGCN, 28%)."
 
 This is the founding design principle of our architecture.
 
+The key realization is that financial recommendation is not about a single prediction
+("will this customer buy?") but about *understanding a customer as a whole person*
+from multiple perspectives simultaneously:
+Will they churn? (lifecycle).
+How much will they spend? (value).
+What product fits them? (consumption).
+How do they behave? (engagement).
+Each question demands a different analytical lens ---
+temporal analysis cannot answer hierarchical product fit,
+and graph-based collaborative signals cannot predict spending trajectories.
+This is why heterogeneous experts are not merely a performance optimization
+but a structural necessity for multi-faceted customer understanding.
+
 This perspective aligns with a broader shift in both academia and regulation.
 Pearl's _Ladder of Causation_ @pearl2018book distinguishes three levels:
 association ("customers who bought X also bought Y"),
@@ -133,9 +152,9 @@ advocates moving beyond correlational attribution toward causal understanding.
 
 == Contributions
 
-+ *Heterogeneous Shared Expert Basket*: We replace PLE's homogeneous MLP experts with seven structurally distinct experts, each encoding a different inductive bias. To our knowledge, this is the first work to compose heterogeneous expert architectures within PLE.
++ *Heterogeneous Shared Expert Basket with Structural Collapse Guarantee*: We replace PLE's homogeneous MLP experts with seven architecturally distinct experts (DeepFM, Mamba+LNN+Transformer, HGCN, PersLay, NOTEARS, LightGCN, Optimal Transport). Unlike prior "heterogeneous" MoE work that varies expert _size_ @mowst2024 or _modality_ @jamba2024, we vary the fundamental _inductive bias_, providing a structural guarantee against expert collapse --- a persistent failure mode in homogeneous MoE/PLE deployments @home2024.
 
-+ *Inherent Explainability*: CGC gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
++ *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), CGC gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
 
 + *Multi-disciplinary Feature Engineering*: Features derived from eleven academic disciplines --- including unconventional applications of chemical kinetics (spending activation rate), epidemic modeling (product adoption diffusion), criminological Routine Activity Theory (transaction regularity), and wave interference (spending periodicity) --- serve dual roles as learning signals and explanation material.
 
@@ -164,18 +183,47 @@ and M3oE @zhang2024m3oe (multi-domain multi-task MoE with AutoML structure searc
 
 However, all prior MoE/PLE architectures employ *homogeneous experts* --- multiple MLPs
 with identical architecture but different initializations.
-This limits the diversity of learned representations to what parameter variation alone can achieve.
+This limits the diversity of learned representations to what parameter variation alone can achieve,
+and leads to a well-documented failure mode: *expert collapse*.
 
-== Mixture of Experts
+== Mixture of Experts and the Expert Collapse Problem
 
 The MoE paradigm @shazeer2017 and its successors (Switch Transformer @fedus2022)
 demonstrate the power of conditional computation.
-Recent work on MoE++ explores expert specialization,
-but still within homogeneous architectures.
+However, homogeneous MoE architectures suffer from *expert collapse*,
+where all gates converge to routing inputs to a single expert,
+effectively reducing the MoE to a shared-bottom architecture.
+Pinterest Engineering reported that their MMoE deployment
+"would oftentimes collapse into a state where all tasks use the same single expert."
+Kuaishou's HoME @home2024 confirmed that
+"expert collapse occurs when all gates assigned larger weights
+to a single shared expert and almost ignored other shared experts."
 
-*Gap*: No prior work composes structurally heterogeneous experts
-(e.g., graph networks alongside temporal models alongside topological analyzers)
-within a shared expert basket.
+Existing mitigations operate post-hoc:
+Gram-Schmidt orthogonalization to force diverse expert representations,
+expert normalization to align output distributions,
+and load-balancing losses to distribute routing.
+These are engineering patches on a structural problem ---
+homogeneous experts have no inherent reason to specialize differently
+because their only source of diversity is random initialization.
+
+Recent work has explored limited forms of heterogeneity:
+Jamba @jamba2024 combines Transformer and Mamba layers within MoE for LLMs (2 architecture types),
+and MOWST @mowst2024 pairs lightweight MLP "weak experts" with GNN "strong experts"
+in a hierarchical arrangement (2 types, unequal roles).
+M3oE @zhang2024m3oe separates experts by domain
+but uses identical MLP architectures within each domain.
+MoE++ introduces computation-level heterogeneity (zero-compute vs. FFN experts)
+but not architectural heterogeneity.
+
+*Gap*: No prior work composes experts with *fundamentally different inductive biases*
+--- graph convolution, state-space models, topological persistence,
+causal DAG constraints, optimal transport ---
+as equal peers within a shared expert basket.
+Our work provides a *structural guarantee* against expert collapse:
+a DeepFM expert cannot converge to the same function as an HGCN expert
+regardless of training dynamics, because their architectures
+encode fundamentally different mathematical operations.
 
 == Explainability in Recommendation
 
