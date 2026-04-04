@@ -33,7 +33,7 @@
 
   #text(size: 9pt, style: "italic")[
     #super[1]Independent Research \
-    (affiliated with a Korean public financial institution)
+    
   ]
 
   #v(1em)
@@ -310,7 +310,7 @@ that our ablation demonstrates.
 == Design Philosophy
 
 The architecture emerged from severe real-world constraints
-at a Korean public financial institution.
+at the Postal Savings & Insurance Development Institute (PSIDI), a Korean public financial institution.
 A team of three --- one data scientist serving as PM,
 with GARP Financial Risk Manager (FRM) certification
 and a career spanning credit/market risk analysis, regulatory compliance,

@@ -33,7 +33,7 @@
 
   #text(size: 9pt, style: "italic")[
     #super[1]독립 연구 \
-    (한국 공공 금융기관 소속)
+    
   ]
 
   #v(1em)

@@ -33,7 +33,7 @@
 
   #text(size: 9pt, style: "italic")[
     #super[1]Independent Research \
-    (affiliated with a Korean public financial institution)
+    
   ]
 
   #v(1em)
