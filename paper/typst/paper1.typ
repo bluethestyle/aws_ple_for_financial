@@ -4,7 +4,7 @@
 
 #set document(
   title: "Heterogeneous Expert PLE: An Explainable Multi-Task Architecture for Financial Product Recommendation",
-  author: ("Author 1", "Author 2", "Author 3"),
+  author: ("Seon-Gyu Jeong", "Eun-Cheol Sim", "Young-Chan Kim"),
 )
 
 #set page(
@@ -26,7 +26,7 @@
   #v(0.8em)
 
   #text(size: 11pt)[
-    Author 1#super[1], Author 2#super[1], Author 3#super[1]
+    Seon-Gyu Jeong#super[1], Eun-Cheol Sim#super[1], Young-Chan Kim#super[1]
   ]
 
   #v(0.3em)
@@ -989,13 +989,17 @@ and regulatory compliance mapping for Korean FSS and EU AI Act requirements.
 // Author Contributions
 #heading(numbering: none)[Author Contributions]
 
-Author 1 (PM/Data Scientist): Conceived the project direction,
+Seon-Gyu Jeong (PM/Lead Architect/Data Scientist): Conceived the project direction,
 designed the heterogeneous expert architecture and two-axis decomposition framework,
 selected multi-disciplinary feature engineering approaches based on structural isomorphism,
 defined task groups and regulatory compliance mapping,
 led AI-augmented development methodology, and wrote the manuscript.
-Authors 2 and 3: Implemented feature generators, training pipeline,
-and serving infrastructure under architectural guidance from Author 1.
+Overall technical leadership and Scrum-based rapid feedback coordination.
+Eun-Cheol Sim: Data ingestion pipeline, feature engineering implementation,
+feature business reverse-mapping, and vector database pipeline management.
+Young-Chan Kim: Model training, mathematical verification,
+and knowledge distillation implementation.
+All authors collaborated through Scrum sprints with rapid feedback cycles.
 
 // ============================================================
 // Funding
@@ -1016,6 +1020,10 @@ requiring custom parallel query logic to overcome I/O bottlenecks.
 // ============================================================
 // Acknowledgments
 #heading(numbering: none)[Acknowledgments]
+
+The authors express deep gratitude to Eun-Cheol Sim and Young-Chan Kim,
+who dedicated countless nights and weekends to this project
+with unwavering commitment despite the absence of formal employment or compensation.
 
 The code implementation and manuscript drafting were assisted by
 Claude (Anthropic), Gemini (Google), and Cursor as AI development tools.

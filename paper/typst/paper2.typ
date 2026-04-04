@@ -4,7 +4,7 @@
 
 #set document(
   title: "From Prediction to Persuasion: Agentic Recommendation Reason Generation for Regulatory-Compliant Financial AI",
-  author: ("Author 1", "Author 2", "Author 3"),
+  author: ("Seon-Gyu Jeong", "Eun-Cheol Sim", "Young-Chan Kim"),
 )
 
 #set page(
@@ -26,7 +26,7 @@
   #v(0.8em)
 
   #text(size: 11pt)[
-    Author 1#super[1], Author 2#super[1], Author 3#super[1]
+    Seon-Gyu Jeong#super[1], Eun-Cheol Sim#super[1], Young-Chan Kim#super[1]
   ]
 
   #v(0.3em)
@@ -663,11 +663,14 @@ with limited ML engineering resources.
 // Author Contributions
 #heading(numbering: none)[Author Contributions]
 
-Author 1 (PM/Data Scientist): Designed the distillation strategy,
+Seon-Gyu Jeong (PM/Lead Architect/Data Scientist): Designed the distillation strategy,
 recommendation reason generation pipeline, and regulatory compliance architecture.
 Led the overall system design based on domain expertise in financial risk management.
-Authors 2 and 3: Implemented the distillation pipeline, serving infrastructure,
-and monitoring components as development supporters.
+Eun-Cheol Sim: Feature reverse-mapping registry, vector database pipeline,
+and data ingestion for the serving layer.
+Young-Chan Kim: Knowledge distillation implementation, model training validation,
+and mathematical verification of distillation quality.
+All authors collaborated through Scrum sprints with rapid feedback cycles.
 
 // ============================================================
 // Funding
@@ -681,6 +684,10 @@ with development conducted on a single consumer GPU in a resource-constrained en
 // ============================================================
 // Acknowledgments
 #heading(numbering: none)[Acknowledgments]
+
+The authors express deep gratitude to Eun-Cheol Sim and Young-Chan Kim,
+who dedicated countless nights and weekends to this project
+with unwavering commitment despite the absence of formal employment or compensation.
 
 The code implementation and manuscript drafting were assisted by
 Claude (Anthropic), Gemini (Google), and Cursor as AI development tools.
