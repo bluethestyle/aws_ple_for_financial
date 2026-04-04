@@ -750,6 +750,22 @@ The key enablers were: (1) config-driven architecture minimizing code changes,
 (3) heterogeneous expert design achieving expressiveness through structural bias
 rather than parameter scale, and (4) knowledge distillation eliminating GPU serving costs.
 
+*Feature engineering philosophy.*
+A deeper lesson from this work is that _what to observe_ matters more than _how to model_.
+The heterogeneous expert architecture is effective not because of architectural novelty alone,
+but because each expert is paired with features that ask a *specific question*
+about the customer:
+"Is their spending decaying with a half-life?" (chemical kinetics),
+"Is product adoption spreading like contagion?" (SIR epidemiology),
+"Is their income permanent or transitory?" (Friedman PIH @friedman1957).
+The model merely combines answers to these questions.
+If the questions are shallow --- mean, variance, trend ---
+even the most sophisticated architecture produces shallow understanding.
+This suggests that multi-disciplinary feature engineering,
+often treated as preprocessing, deserves elevation
+to a first-class architectural design decision,
+co-designed with the expert types that will consume each feature group.
+
 *Generalizability beyond finance.*
 While this work targets financial product recommendation,
 the underlying principle --- understanding a single user from multiple perspectives
