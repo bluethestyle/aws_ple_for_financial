@@ -236,9 +236,33 @@ The project team consisted of three people: one data scientist serving as PM and
   ],
 )
 
+== The Reality of Infrastructure Constraints
+
+Support from the organization was virtually nonexistent. Requests for GPU resources were met with "there is nothing we can do," and all project-related expenses --- AI tool subscriptions (Claude Code, Gemini, Cursor), peripherals, and meals --- were covered personally by the PM.
+
+The data collection environment was equally challenging. Requests to migrate to Spark or Impala were denied, forcing the team to work within a HIVE-based bottleneck environment. To overcome this, parallel query logic was designed from scratch to maximize network bandwidth utilization.
+
+The workspace was an unventilated area adjacent to the server room, without adequate cooling.
+
+The two team members were not formally contracted employees but youth advisory supporters --- recent graduates participating in the project while preparing for employment.
+
+All of these constraints ultimately reinforced the design philosophy: "When available resources are extremely limited, architectural efficiency and tool selection become decisively important."
+
 == Project Objective
 
 The existing financial product recommendation system was based on ALS (Alternating Least Squares) collaborative filtering. The goal was to replace it with a multi-task deep learning recommendation system built on PLE (Progressive Layered Extraction) + adaTT (Adaptive Task Transfer) architecture. The system processes 18 tasks through 7 expert networks, explicitly modeling inter-task relationships.
+
+== Architecture Decision Journey
+
+Arriving at the final architecture required exploring and rejecting several candidates.
+
+The legacy system was ALS-based collaborative filtering. The first alternative considered was the *Black-Litterman model*. Originating from portfolio theory, this model combines expert views with market equilibrium via Bayesian updating. However, it was impossible to decompose "how much each model contributed" from the blended posterior distribution. In financial practice, recommendations must be explained to customers, branch staff, and regulators alike --- Bayesian updating rendered individual model contributions opaque, making business explanation impossible.
+
+The second alternative was a *model ensemble* --- training N independent models and combining their outputs. This introduced N management points, N times the serving cost, and explanations like "MLP \#3 contributed 28%" were meaningless in a business context. Both cost and explainability were problematic.
+
+A critical reframing emerged from this process: rather than combining experts *outside* a model, what if we combined them *inside* a single model? This was the turning point toward PLE's heterogeneous expert architecture.
+
+Task group design also involved trial and error. An initial attempt with *GMM cluster subheads* --- K clusters $times$ T tasks = $K times T$ complexity explosion --- was abandoned in favor of 4 Financial DNA task groups (product holding probability, next product, customer value, churn risk), stabilizing the structure.
 
 #section-break()
 
@@ -339,9 +363,9 @@ Abnormally high performance was observed early in model training. Root cause ana
   inset: (left: 12pt, y: 6pt),
 )[
   #set text(size: 10pt)
-  #strong[Leak 1]: The last timestep in sequence data overlapped with the label period \
-  #strong[Leak 2]: Aggregate features from future time points were included in the input \
-  #strong[Leak 3]: Missing gap_days in the temporal split leaked adjacent-period information
+  #strong[Leak 1 --- Duplicate Column]: A `has_nba_1` column existed as a perfect duplicate of the label (correlation = 1.0). It had to be EXCLUDED before label re-derivation. \
+  #strong[Leak 2 --- File Loading Order]: `ground_truth.parquet` was loaded instead of `benchmark.parquet`. Glob's alphabetical sorting caused the answer file to be selected first. Resolved by moving the file to a subdirectory. \
+  #strong[Leak 3 --- Generator Input Contamination]: Generators such as GMM and model_derived were using label columns as input, producing AUC = 1.0. An auto-exclude mechanism for `label_cols` was added.
 ]
 #set par(first-line-indent: 1.2em)
 
@@ -398,6 +422,22 @@ A conflict arose between the CPU build and CUDA build of torch in the conda envi
 
 
 = Design Philosophy: Where Is the Science?
+
+== "The Audience of Persuasion Is Always a Person"
+
+The end consumers of a financial recommendation system are not algorithms but people. Customers ask "why this product?", branch staff must explain recommendation rationale, and regulators verify the model's decision-making process. A single probability value cannot persuade any of these three groups. Therefore, the criterion for every design decision was: "Can we explain the reason?"
+
+== The 2-Axis Decomposition Framework
+
+The core structure of the architecture is based on a 2-axis decomposition: *Financial DNA* (who is the customer?) $times$ *Data Modality* (what form is the data?). The Financial DNA axis consists of 4 task groups: product holding probability, next product, customer value, and churn risk. The Data Modality axis is composed of heterogeneous experts corresponding to 5 feature types: state, snapshot, time-series, hierarchy, and item. The intersection of these two axes defines the entire model's learning structure.
+
+== The Expert Collapse Problem and the Need for Heterogeneous Experts
+
+When homogeneous MLP experts (e.g., identically structured 3-layer MLPs) are used, *expert collapse* occurs during training --- the gating network selects only one expert while the rest go effectively unused. This problem has been confirmed in large-scale experiments at Pinterest and Kuaishou. Structurally different heterogeneous experts (LightGCN, Causal OT, TDA, GMM, etc.) operate on different input spaces with different computational methods, making it impossible for them to converge to identical representations --- structurally preventing collapse.
+
+== The Dual Role of Features: Prediction Material and Explanation Vocabulary
+
+Features are not merely inputs for prediction performance; they also serve as vocabulary for explaining recommendation rationale. Even a feature with marginal AUC contribution holds irreplaceable value as explanation vocabulary if it enables statements like "this customer's consumption entropy is high, indicating diverse product experience" at the branch level. For this reason, features were never removed solely based on predictive performance criteria.
 
 == From Economics to Data Science
 
@@ -490,7 +530,35 @@ A total of nine technical documents were produced throughout the project: archit
 
 == Papers
 
-Two papers are being prepared for submission to arXiv, covering the experience of building a large-scale multi-task recommendation system under resource constraints, and the development methodology of a small team leveraging AI agents.
+Two papers are being prepared for submission to arXiv, covering the experience of building a large-scale multi-task recommendation system under resource constraints, and the development methodology of a small team leveraging AI agents. This may be the first arXiv publication by a practitioner at a Korean financial institution.
+
+== Expert Specialization Revealed by Ablation
+
+Analysis across 54 ablation scenarios clearly demonstrated task-type-specific expert specialization. LightGCN showed the greatest contribution for multiclass tasks (next product prediction), while the Causal expert excelled at regression tasks (customer value estimation). This empirically validates the heterogeneous expert design.
+
+== Evaluation Metric Framework
+
+Gold standard metrics were established by task type: AUC for binary classification, Macro F1 for multiclass classification, and MAE for regression. This prevents the error of comparing all tasks with a single metric and ensures rigorous evaluation aligned with each task's characteristics.
+
+#section-break()
+
+
+= Future Plans
+
+== Academic and Industry Publications
+
+- *arXiv Paper Submission*: 2 papers (system architecture paper + AI agent development methodology paper)
+- *Anthropic Case Study Submission*: A case study on building a financial AI system using Claude Code
+- *GARP Submission*: A paper combining the FRM credential with an AI risk management perspective
+
+== Regulatory Engagement
+
+- *FSS AI Basic Act Compliance Review Request*: As enforcement decrees and guidelines for the AI Basic Act are being drafted, the team plans to request a review of this system's explainability framework at the appropriate timing.
+
+== Follow-up Work
+
+- *On-premises Production Data Results*: Performance results from actual production data to be added as paper supplements
+- *Public GitHub Repository*: A sanitized version of the codebase with organizational information removed will be published as a public repository
 
 #v(1cm)
 #section-break()
