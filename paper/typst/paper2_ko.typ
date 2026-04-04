@@ -10,7 +10,6 @@
 #set page(
   paper: "us-letter",
   margin: (x: 1.8cm, y: 2cm),
-  columns: 2,
   numbering: "1",
 )
 
@@ -74,6 +73,9 @@
 ]
 
 #v(1em)
+
+// Switch to 2-column layout for body
+#show: rest => columns(2, rest)
 
 // ============================================================
 = 서론
