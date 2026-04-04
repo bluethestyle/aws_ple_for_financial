@@ -3,73 +3,94 @@
 //  AWS PLE for Financial · 2026. 04.
 // ─────────────────────────────────────────────────────────
 
-// ── 컬러 팔레트 ──
-#let navy     = rgb("#003478")
-#let red-acc  = rgb("#E8490F")
-#let blue     = rgb("#1565C0")
-#let teal     = rgb("#00897B")
-#let gray-bg  = rgb("#F4F6F8")
-#let gray-ln  = rgb("#DEE2E6")
-#let txt      = rgb("#212529")
-#let txt-sub  = rgb("#6C757D")
+// ── 컬러 팔레트 (Anthropic Design System) ──
+#let anthropic-bg = rgb("#F0EFEA")
+#let anthropic-text = rgb("#141413")
+#let anthropic-accent = rgb("#CC785C")
+#let anthropic-muted = rgb("#6B7280")
+#let anthropic-rule = rgb("#D1D5DB")
+
+// Legacy aliases for component compatibility
+#let navy     = anthropic-text
+#let red-acc  = anthropic-accent
+#let blue     = anthropic-accent
+#let teal     = anthropic-accent
+#let gray-bg  = anthropic-bg
+#let gray-ln  = anthropic-rule
+#let txt      = anthropic-text
+#let txt-sub  = anthropic-muted
 
 // ── 페이지 & 글꼴 ──
 #set page(
   paper: "a4",
-  margin: (top: 2.5cm, bottom: 2cm, left: 2.2cm, right: 2.2cm),
+  margin: (top: 2.5cm, bottom: 2.5cm, left: 2.5cm, right: 2.5cm),
+  fill: anthropic-bg,
   header: context {
-    if counter(page).get().first() > 1 {
-      set text(size: 8pt, fill: txt-sub)
-      grid(
-        columns: (1fr, auto),
-        [금융 AI 추천 시스템 — 규제 준수 프레임워크],
-        [#counter(page).display()],
-      )
-      v(2pt)
-      line(length: 100%, stroke: 0.4pt + gray-ln)
-    }
+    if counter(page).get().first() > 1 [
+      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #smallcaps[금융 AI 규제 준수 프레임워크]
+      #h(1fr)
+      #smallcaps[AWS PLE for Financial]
+      #v(4pt)
+      #line(length: 100%, stroke: 0.4pt + anthropic-rule)
+    ]
   },
-  footer: none,
+  footer: context {
+    let pg = counter(page).get().first()
+    if pg > 1 [
+      #line(length: 100%, stroke: 0.3pt + anthropic-rule)
+      #v(4pt)
+      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #h(1fr)
+      — #pg —
+      #h(1fr)
+    ]
+  },
 )
 
-#set text(font: ("Noto Sans KR", "Noto Sans"), size: 10pt, fill: txt)
-#set par(justify: true, leading: 0.72em, spacing: 0.85em)
+#set text(font: "New Computer Modern", size: 10pt, fill: anthropic-text, lang: "ko")
+#set par(justify: true, leading: 0.8em, spacing: 1.5em)
 #set heading(numbering: none)
 
 // ── heading 스타일 ──
 #show heading.where(level: 1): it => {
-  v(1.2em)
-  block(
-    width: 100%,
-    below: 0.6em,
-  )[
-    #text(size: 17pt, weight: "bold", fill: navy)[#it.body]
-    #v(-10pt)
-    #line(length: 100%, stroke: 2pt + navy)
+  v(0.6cm)
+  set par(first-line-indent: 0pt)
+  block(width: 100%)[
+    #text(size: 20pt, fill: anthropic-text, weight: "bold")[#it.body]
+    #v(4pt)
+    #line(length: 100%, stroke: 1pt + anthropic-accent)
   ]
+  v(0.4cm)
 }
 
 #show heading.where(level: 2): it => {
-  v(0.8em)
-  text(size: 12.5pt, weight: "bold", fill: blue)[#it.body]
-  v(0.4em)
+  v(0.4cm)
+  set par(first-line-indent: 0pt)
+  block[
+    #text(size: 14pt, fill: anthropic-text, weight: "bold")[#it.body]
+  ]
+  v(0.15cm)
 }
 
 #show heading.where(level: 3): it => {
-  v(0.5em)
-  text(size: 10.5pt, weight: "bold", fill: txt)[#it.body]
-  v(0.3em)
+  v(0.2cm)
+  set par(first-line-indent: 0pt)
+  block[
+    #text(size: 10pt, fill: anthropic-text, weight: "bold")[#it.body]
+  ]
+  v(0.1cm)
 }
 
 // ── 테이블 스타일 ──
 #set table(
   inset: 8pt,
-  stroke: 0.5pt + gray-ln,
-  fill: (_, y) => if y == 0 { navy } else { none },
+  stroke: 0.5pt + anthropic-rule,
+  fill: (_, y) => if y == 0 { anthropic-accent.lighten(88%) } else { none },
 )
 #show table.cell: it => {
   if it.y == 0 {
-    set text(fill: white, weight: "bold", size: 9pt)
+    set text(fill: anthropic-text, weight: "bold", size: 9pt)
     it
   } else {
     set text(size: 9pt)
@@ -78,12 +99,10 @@
 }
 
 // ── 유틸리티 컴포넌트 ──
-#let card(title: none, accent: navy, body) = {
+#let card(title: none, accent: anthropic-accent, body) = {
   block(
-    fill: gray-bg,
-    stroke: (left: 3pt + accent, rest: 0.5pt + gray-ln),
-    inset: 12pt,
-    radius: 4pt,
+    stroke: (left: 2pt + accent),
+    inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
     width: 100%,
     breakable: true,
   )[
@@ -95,7 +114,7 @@
   ]
 }
 
-#let tag(label, color: navy) = {
+#let tag(label, color: anthropic-accent) = {
   box(
     fill: color.lighten(85%),
     stroke: 0.5pt + color.lighten(40%),
@@ -105,9 +124,11 @@
 }
 
 #let divider() = {
-  v(0.6em)
-  line(length: 100%, stroke: (paint: gray-ln, thickness: 0.5pt, dash: "dashed"))
-  v(0.6em)
+  v(0.4cm)
+  align(center)[
+    #line(length: 30%, stroke: 0.5pt + anthropic-rule)
+  ]
+  v(0.4cm)
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -118,50 +139,47 @@
   #v(3cm)
 
   #align(center)[
-    #block(
-      width: 85%,
-    )[
-      #align(left)[
-        #text(size: 11pt, fill: txt-sub)[AWS PLE for Financial]
-        #v(0.6em)
-        #line(length: 60pt, stroke: 3pt + red-acc)
-        #v(0.8em)
-        #text(size: 26pt, weight: "bold", fill: navy)[
-          금융 AI 규제 준수 프레임워크
-        ]
-        #v(0.5em)
-        #text(size: 14pt, fill: blue)[
-          인공지능기본법 · EU AI Act · 금감원 AI RMF 대응#linebreak()컴플라이언스 아키텍처 설계 문서
-        ]
-        #v(1.5em)
-        #line(length: 100%, stroke: 0.5pt + gray-ln)
-        #v(1em)
-        #grid(
-          columns: (auto, 1fr),
-          gutter: 8pt,
-          text(fill: txt-sub, size: 9.5pt)[문서 분류],
-          text(size: 9.5pt, weight: "bold")[기술 문서],
-          text(fill: txt-sub, size: 9.5pt)[작성일],
-          text(size: 9.5pt, weight: "bold")[2026년 4월],
-          text(fill: txt-sub, size: 9.5pt)[버전],
-          text(size: 9.5pt, weight: "bold")[v1.0],
-          text(fill: txt-sub, size: 9.5pt)[관련 법령],
-          text(size: 9.5pt, weight: "bold")[인공지능기본법 (법률 제20676호), EU AI Act, GDPR],
-        )
-      ]
+    #text(
+      size: 10pt,
+      fill: anthropic-muted,
+      tracking: 0.5em,
+      weight: "regular",
+    )[#upper[Regulatory Framework]]
+    #v(0.5cm)
+
+    #text(size: 26pt, fill: anthropic-text, weight: "bold")[
+      금융 AI 규제 준수 프레임워크
     ]
+    #v(0.3cm)
+    #text(size: 14pt, fill: anthropic-muted)[
+      인공지능기본법 · EU AI Act · 금감원 AI RMF 대응#linebreak()컴플라이언스 아키텍처 설계 문서
+    ]
+    #v(0.6cm)
+    #line(length: 30%, stroke: 0.5pt + anthropic-rule)
+    #v(1em)
+    #grid(
+      columns: (auto, 1fr),
+      gutter: 8pt,
+      text(fill: anthropic-muted, size: 9.5pt)[문서 분류],
+      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[기술 문서],
+      text(fill: anthropic-muted, size: 9.5pt)[작성일],
+      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[2026년 4월],
+      text(fill: anthropic-muted, size: 9.5pt)[버전],
+      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[v1.0],
+      text(fill: anthropic-muted, size: 9.5pt)[관련 법령],
+      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[인공지능기본법 (법률 제20676호), EU AI Act, GDPR],
+    )
   ]
 
   #v(1fr)
 
   #align(center)[
     #block(
-      fill: navy,
       width: 85%,
-      inset: 16pt,
-      radius: 4pt,
+      stroke: (left: 2pt + anthropic-accent),
+      inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
     )[
-      #text(fill: white, size: 9.5pt)[
+      #text(fill: anthropic-text, size: 9.5pt)[
         *핵심 요약* — 본 문서는 금융 AI 추천 시스템(PLE 기반)이 준수해야 하는 국내외 규제 요건을 체계적으로 매핑하고, 각 요건에 대한 시스템 레벨 대응 아키텍처를 정의합니다. 한국 인공지능기본법(2026.1.22 시행), 금융위 통합 AI 가이드라인 7대 원칙, 금감원 AI RMF, EU AI Act(Art. 13/14/15), GDPR Art. 22를 대상으로 하며, 감사 추적 · 공정성 모니터링 · 드리프트 감시 · 쏠림 탐지 · 킬스위치 · 옵트아웃 · Human-in-the-Loop · 거버넌스 보고서 자동 생성까지 end-to-end 컴플라이언스 아키텍처를 포함합니다.
       ]
     ]
@@ -175,7 +193,7 @@
 // ═══════════════════════════════════════════════════════════
 
 #outline(
-  title: text(fill: navy, size: 14pt, weight: "bold")[목차],
+  title: text(fill: anthropic-text, size: 14pt, weight: "bold")[목차],
   depth: 2,
   indent: 1.5em,
 )

@@ -1,38 +1,35 @@
 // ─────────────────────────────────────────────
 // Development Story: Building a Next-Generation Recommendation System with AI Agent Teams
-// Typst Web App Compatible
+// Typst Web App Compatible — Anthropic Design System
 // ─────────────────────────────────────────────
 
-#let navy = rgb("#1B2A4A")
-#let burgundy = rgb("#6B2D3E")
-#let gold = rgb("#B8860B")
-#let cream = rgb("#FAF6F0")
-#let dark-cream = rgb("#F0EBE1")
-#let ink = rgb("#2C2C2C")
-#let muted = rgb("#5A5A5A")
-#let light-rule = rgb("#C4B8A8")
+#let anthropic-bg = rgb("#F0EFEA")
+#let anthropic-text = rgb("#141413")
+#let anthropic-accent = rgb("#CC785C")
+#let anthropic-muted = rgb("#6B7280")
+#let anthropic-rule = rgb("#D1D5DB")
 
 // ── Page setup ──
 #set page(
   paper: "a4",
   margin: (top: 2.5cm, bottom: 2.5cm, left: 2.5cm, right: 2.5cm),
-  fill: cream,
+  fill: anthropic-bg,
   header: context {
     if counter(page).get().first() > 1 [
-      #set text(size: 7.5pt, font: "New Computer Modern", fill: muted, tracking: 0.12em)
+      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
       #smallcaps[Development Story]
       #h(1fr)
       #smallcaps[Building a Next-Gen Recommendation System with AI Agent Teams]
       #v(4pt)
-      #line(length: 100%, stroke: 0.4pt + light-rule)
+      #line(length: 100%, stroke: 0.4pt + anthropic-rule)
     ]
   },
   footer: context {
     let pg = counter(page).get().first()
     if pg > 1 [
-      #line(length: 100%, stroke: 0.3pt + light-rule)
+      #line(length: 100%, stroke: 0.3pt + anthropic-rule)
       #v(4pt)
-      #set text(size: 8pt, font: "New Computer Modern", fill: muted)
+      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
       #h(1fr)
       — #pg —
       #h(1fr)
@@ -44,78 +41,69 @@
 #set text(
   font: "New Computer Modern",
   size: 10pt,
-  fill: ink,
+  fill: anthropic-text,
   lang: "en",
 )
 
 #set par(
   justify: true,
-  leading: 0.78em,
+  leading: 0.8em,
   first-line-indent: 1.2em,
+  spacing: 1.5em,
 )
 
 // ── Heading styles ──
 #show heading.where(level: 1): it => {
-  v(0.4cm)
+  v(0.6cm)
   set par(first-line-indent: 0pt)
-  align(center)[
-    #block(width: 100%)[
-      #v(6pt)
-      #line(length: 40%, stroke: 0.8pt + gold)
-      #v(8pt)
-      #text(size: 18pt, fill: navy, weight: "bold")[#it.body]
-      #v(8pt)
-      #line(length: 40%, stroke: 0.8pt + gold)
-      #v(6pt)
-    ]
+  block(width: 100%)[
+    #text(size: 20pt, fill: anthropic-text, weight: "bold")[#it.body]
+    #v(4pt)
+    #line(length: 100%, stroke: 1pt + anthropic-accent)
   ]
   v(0.4cm)
 }
 
 #show heading.where(level: 2): it => {
-  v(0.3cm)
+  v(0.4cm)
   set par(first-line-indent: 0pt)
   block[
-    #text(size: 13pt, fill: navy, weight: "bold")[#it.body]
-    #v(0pt)
-    #line(length: 100%, stroke: (paint: light-rule, thickness: 0.4pt, dash: "loosely-dotted"))
+    #text(size: 14pt, fill: anthropic-text, weight: "bold")[#it.body]
   ]
   v(0.15cm)
 }
 
 #show heading.where(level: 3): it => {
-  v(0.15cm)
+  v(0.2cm)
   set par(first-line-indent: 0pt)
   block[
-    #text(size: 11pt, fill: burgundy, weight: "bold", style: "italic")[#it.body]
+    #text(size: 10pt, fill: anthropic-text, weight: "bold")[#it.body]
   ]
   v(0.1cm)
 }
 
 // ── Custom components ──
-#let ornament() = {
-  v(0.3cm)
+#let section-break() = {
+  v(0.4cm)
   align(center)[
-    #text(size: 11pt, fill: gold)[✦ #h(6pt) ◆ #h(6pt) ✦]
+    #line(length: 30%, stroke: 0.5pt + anthropic-rule)
   ]
-  v(0.3cm)
+  v(0.4cm)
 }
 
 #let info-box(title, body) = {
   set par(first-line-indent: 0pt)
-  v(0.1cm)
+  v(0.15cm)
   block(
     width: 100%,
-    stroke: (left: 2.5pt + burgundy, rest: 0.3pt + light-rule),
-    radius: (right: 3pt),
-    fill: dark-cream,
+    stroke: (left: 2pt + anthropic-accent),
     inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
   )[
-    #text(size: 11pt, fill: navy, weight: "bold")[#title]
+    #text(size: 11pt, fill: anthropic-text, weight: "bold")[#title]
     #v(4pt)
-    #text(size: 10pt, fill: ink)[#body]
+    #text(size: 10pt, fill: anthropic-text)[#body]
   ]
-  v(0.1cm)
+  v(0.15cm)
 }
 
 #let quote-box(body) = {
@@ -123,11 +111,10 @@
   v(0.15cm)
   block(
     width: 100%,
-    inset: (left: 2cm, right: 2cm, top: 0.3cm, bottom: 0.3cm),
+    stroke: (left: 2pt + anthropic-accent),
+    inset: (left: 14pt, right: 14pt, top: 8pt, bottom: 8pt),
   )[
-    #align(center)[
-      #text(size: 11pt, fill: navy, style: "italic")[#body]
-    ]
+    #text(size: 10pt, fill: anthropic-muted, style: "italic")[#body]
   ]
   v(0.15cm)
 }
@@ -142,41 +129,35 @@
 #v(3cm)
 
 #align(center)[
-  #line(length: 50%, stroke: 0.6pt + gold)
-  #v(0.6cm)
-
   #text(
     size: 10pt,
-    fill: gold,
+    fill: anthropic-muted,
     tracking: 0.5em,
     weight: "regular",
   )[#upper[Development Story]]
-  #v(0.4cm)
+  #v(0.5cm)
 
   #text(
     size: 26pt,
-    fill: navy,
+    fill: anthropic-text,
     weight: "bold",
   )[Building a Next-Generation]
   #v(0.1cm)
   #text(
     size: 26pt,
-    fill: navy,
+    fill: anthropic-text,
     weight: "bold",
   )[Recommendation System with AI Agent Teams]
-  #v(0.3cm)
+  #v(0.4cm)
 
-  #line(length: 20%, stroke: 0.5pt + light-rule)
-  #v(0.2cm)
+  #line(length: 40%, stroke: 1pt + anthropic-accent)
+  #v(0.3cm)
 
   #text(
     size: 13pt,
-    fill: burgundy,
+    fill: anthropic-muted,
     style: "italic",
   )[One Consumer GPU, a Team of Three, and the Record of AI Collaboration]
-
-  #v(1cm)
-  #line(length: 50%, stroke: 0.6pt + gold)
 ]
 
 #v(2cm)
@@ -187,11 +168,11 @@
     inset: (x: 1.5cm, y: 1cm),
   )[
     #set par(first-line-indent: 0pt)
-    #text(size: 10pt, fill: ink, style: "italic")[
+    #text(size: 10pt, fill: anthropic-text, style: "italic")[
       "AI writes the code,\ but design decisions remain with humans."
     ]
     #v(0.5cm)
-    #text(size: 9pt, fill: muted)[
+    #text(size: 9pt, fill: anthropic-muted)[
       This document records the journey of building an 18-task, 7-expert\
       PLE+adaTT recommendation system — without infrastructure budget,\
       using a single consumer GPU and a team of AI agents.
@@ -202,9 +183,9 @@
 #v(1fr)
 
 #align(center)[
-  #text(size: 10pt, fill: muted, tracking: 0.15em)[AIOps PLE Platform]
+  #text(size: 10pt, fill: anthropic-muted, tracking: 0.15em)[AIOps PLE Platform]
   #v(0.3cm)
-  #line(length: 30%, stroke: 0.3pt + light-rule)
+  #line(length: 30%, stroke: 0.3pt + anthropic-rule)
 ]
 
 #pagebreak()
@@ -217,20 +198,20 @@
 #set page(
   header: context {
     if counter(page).get().first() > 1 [
-      #set text(size: 7.5pt, font: "New Computer Modern", fill: muted, tracking: 0.12em)
+      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
       #smallcaps[Development Story]
       #h(1fr)
       #smallcaps[Building a Next-Gen Recommendation System with AI Agent Teams]
       #v(4pt)
-      #line(length: 100%, stroke: 0.4pt + light-rule)
+      #line(length: 100%, stroke: 0.4pt + anthropic-rule)
     ]
   },
   footer: context {
     let pg = counter(page).get().first()
     if pg > 1 [
-      #line(length: 100%, stroke: 0.3pt + light-rule)
+      #line(length: 100%, stroke: 0.3pt + anthropic-rule)
       #v(4pt)
-      #set text(size: 8pt, font: "New Computer Modern", fill: muted)
+      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
       #h(1fr)
       — #pg —
       #h(1fr)
@@ -259,7 +240,7 @@ The project team consisted of three people: one data scientist serving as PM and
 
 The existing financial product recommendation system was based on ALS (Alternating Least Squares) collaborative filtering. The goal was to replace it with a multi-task deep learning recommendation system built on PLE (Progressive Layered Extraction) + adaTT (Adaptive Task Transfer) architecture. The system processes 18 tasks through 7 expert networks, explicitly modeling inter-task relationships.
 
-#ornament()
+#section-break()
 
 
 = Organizing AI Agents
@@ -289,22 +270,22 @@ In the full implementation phase, each team member served as the "team lead" for
 #set par(first-line-indent: 0pt)
 #{
   let header-cell(body) = table.cell(
-    fill: navy,
+    fill: anthropic-text,
     inset: (x: 10pt, y: 7pt),
-  )[#align(center)[#text(size: 10pt, fill: cream, weight: "bold")[#body]]]
+  )[#align(center)[#text(size: 10pt, fill: anthropic-bg, weight: "bold")[#body]]]
 
   let body-cell(body) = table.cell(
     inset: (x: 10pt, y: 7pt),
-  )[#text(size: 9pt, fill: ink)[#body]]
+  )[#text(size: 9pt, fill: anthropic-text)[#body]]
 
   let alt-cell(body) = table.cell(
-    fill: dark-cream,
+    fill: white,
     inset: (x: 10pt, y: 7pt),
-  )[#text(size: 9pt, fill: ink)[#body]]
+  )[#text(size: 9pt, fill: anthropic-text)[#body]]
 
   table(
     columns: (0.8fr, 1.2fr, 1.5fr),
-    stroke: 0.4pt + light-rule,
+    stroke: 0.4pt + anthropic-rule,
     align: left + horizon,
     header-cell[Phase], header-cell[AI Tool], header-cell[Role],
     body-cell[A. Ideation], body-cell[Gemini], body-cell[Concept exploration, architecture candidate scanning, brainstorming],
@@ -315,7 +296,7 @@ In the full implementation phase, each team member served as the "team lead" for
 }
 #set par(first-line-indent: 1.2em)
 
-#ornament()
+#section-break()
 
 
 = Quality Management Strategy
@@ -342,7 +323,7 @@ AI agents lose context when a conversation session ends. To address this, a "mem
 
 The greatest risk when parallel agents simultaneously modify different modules is interface mismatch — where the key names saved by File A differ from the key names read by File B. To prevent this, an "interface contract verification" step was mandatory after all parallel work. Cross-file key/field mapping tables were auto-generated to detect inconsistencies before they reached production.
 
-#ornament()
+#section-break()
 
 
 = Technical Challenges and Solutions
@@ -354,7 +335,7 @@ Abnormally high performance was observed early in model training. Root cause ana
 #set par(first-line-indent: 0pt)
 #block(
   width: 100%,
-  stroke: (left: 2pt + burgundy),
+  stroke: (left: 2pt + anthropic-accent),
   inset: (left: 12pt, y: 6pt),
 )[
   #set text(size: 10pt)
@@ -387,14 +368,12 @@ Initial training showed GPU utilization of only 37%. The bottleneck was data loa
 #set par(first-line-indent: 0pt)
 #block(
   width: 100%,
-  fill: dark-cream,
-  stroke: 0.3pt + light-rule,
-  radius: 3pt,
-  inset: (x: 12pt, y: 10pt),
+  stroke: (left: 2pt + anthropic-accent),
+  inset: (left: 12pt, y: 6pt),
 )[
-  #text(size: 10pt, fill: navy, weight: "bold")[Optimization Steps]
+  #text(size: 10pt, fill: anthropic-text, weight: "bold")[Optimization Steps]
   #v(4pt)
-  #text(size: 10pt, fill: ink)[
+  #text(size: 10pt, fill: anthropic-text)[
     • *batch_size increase*: 512 → 4096 (optimized for 941K data) \
     • *DataLoader tuning*: Adjusted num_workers, pin_memory, prefetch_factor \
     • *Preprocessing separation*: Tensors pre-saved in Phase 0, loaded directly during training \
@@ -415,7 +394,7 @@ GPU passthrough via Docker on Windows proved unstable. CUDA version mismatches a
 
 A conflict arose between the CPU build and CUDA build of torch in the conda environment. Tangled package dependencies caused CUDA to go unrecognized. The conda cache was fully purged and the environment was rebuilt with explicitly specified CUDA versions.
 
-#ornament()
+#section-break()
 
 
 = Design Philosophy: Where Is the Science?
@@ -446,7 +425,7 @@ This project demonstrates that recommendation systems can be grounded in _scient
 
 Pearl's causal inference, Friedman's Permanent Income Hypothesis, Boltzmann's statistical mechanics --- these scientists answered "why?" in their respective fields. Our heterogeneous expert architecture brings their tools to financial recommendation through structural isomorphism, attempting to endow recommendation systems with scientific explainability.
 
-#ornament()
+#section-break()
 
 
 = Key Lessons
@@ -465,7 +444,7 @@ When AI is given free rein to code without a CLAUDE.md, hardcoded values prolife
 
 The core philosophy of the PLE architecture — Mixture of Experts — was applied to the development methodology itself. Gemini specialized in broad exploration, Opus in deep analysis, Cursor in rapid environment setup, and Claude Code in implementation. Assigning roles aligned to each tool's strengths proved more effective than having a single AI tool do everything.
 
-#ornament()
+#section-break()
 
 
 = Results
@@ -475,18 +454,15 @@ The core philosophy of the PLE architecture — Mixture of Experts — was appli
 #set par(first-line-indent: 0pt)
 #block(
   width: 100%,
-  fill: dark-cream,
-  stroke: 0.3pt + light-rule,
-  radius: 3pt,
   inset: (x: 14pt, y: 12pt),
 )[
   #grid(
     columns: (1fr, 1fr),
     gutter: 12pt,
     [
-      #text(size: 11pt, fill: navy, weight: "bold")[Recommendation System]
+      #text(size: 11pt, fill: anthropic-text, weight: "bold")[Recommendation System]
       #v(4pt)
-      #text(size: 10pt, fill: ink)[
+      #text(size: 10pt, fill: anthropic-text)[
         • 18-task multi-task learning \
         • 7-expert PLE network \
         • adaTT adaptive inter-task transfer \
@@ -495,9 +471,9 @@ The core philosophy of the PLE architecture — Mixture of Experts — was appli
       ]
     ],
     [
-      #text(size: 11pt, fill: navy, weight: "bold")[Infrastructure and Experimentation]
+      #text(size: 11pt, fill: anthropic-text, weight: "bold")[Infrastructure and Experimentation]
       #v(4pt)
-      #text(size: 10pt, fill: ink)[
+      #text(size: 10pt, fill: anthropic-text)[
         • 54 ablation scenarios \
         • AWS SageMaker spot instances \
         • Phase 0 (CPU) + Phase 1\~2 (GPU) separation \
@@ -517,10 +493,10 @@ A total of nine technical documents were produced throughout the project: archit
 Two papers are being prepared for submission to arXiv, covering the experience of building a large-scale multi-task recommendation system under resource constraints, and the development methodology of a small team leveraging AI agents.
 
 #v(1cm)
-#ornament()
+#section-break()
 
 #align(center)[
-  #text(size: 9pt, fill: muted, style: "italic")[
+  #text(size: 9pt, fill: anthropic-muted, style: "italic")[
     This project was completed not by overcoming a "lack of resources"\ but by "redefining resources."\
     It demonstrates that one consumer GPU combined with AI agents\ can substitute for dedicated infrastructure.
   ]

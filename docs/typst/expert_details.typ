@@ -1,7 +1,14 @@
 // ============================================================
 // Expert Details: 7 Heterogeneous Experts + adaTT + Feature Engineering
 // AIOps PLE for Financial Recommendation
+// Anthropic Design System
 // ============================================================
+
+#let anthropic-bg = rgb("#F0EFEA")
+#let anthropic-text = rgb("#141413")
+#let anthropic-accent = rgb("#CC785C")
+#let anthropic-muted = rgb("#6B7280")
+#let anthropic-rule = rgb("#D1D5DB")
 
 #set document(
   title: "Heterogeneous Expert Architecture: Selection Rationale, Mathematical Formulation, and Financial Application",
@@ -10,71 +17,142 @@
 
 #set page(
   paper: "a4",
-  margin: (x: 2cm, y: 2.5cm),
-  numbering: "1",
+  margin: (top: 2.5cm, bottom: 2.5cm, left: 2.5cm, right: 2.5cm),
+  fill: anthropic-bg,
+  header: context {
+    if counter(page).get().first() > 1 [
+      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #smallcaps[Expert Details]
+      #h(1fr)
+      #smallcaps[Heterogeneous Expert Architecture]
+      #v(4pt)
+      #line(length: 100%, stroke: 0.4pt + anthropic-rule)
+    ]
+  },
+  footer: context {
+    let pg = counter(page).get().first()
+    if pg > 1 [
+      #line(length: 100%, stroke: 0.3pt + anthropic-rule)
+      #v(4pt)
+      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #h(1fr)
+      — #pg —
+      #h(1fr)
+    ]
+  },
 )
 
-#set text(font: "New Computer Modern", size: 10pt)
-#set par(justify: true, leading: 0.6em)
+#set text(font: "New Computer Modern", size: 10pt, fill: anthropic-text)
+#set par(justify: true, leading: 0.8em, spacing: 1.5em)
 #set heading(numbering: "1.1")
 #set math.equation(numbering: "(1)")
 
 #show heading.where(level: 1): it => {
-  v(1.2em)
-  text(size: 14pt, weight: "bold")[#it]
-  v(0.4em)
+  v(0.6cm)
+  set par(first-line-indent: 0pt)
+  block(width: 100%)[
+    #text(size: 20pt, fill: anthropic-text, weight: "bold")[#it.body]
+    #v(4pt)
+    #line(length: 100%, stroke: 1pt + anthropic-accent)
+  ]
+  v(0.4cm)
 }
 
 #show heading.where(level: 2): it => {
-  v(0.8em)
-  text(size: 12pt, weight: "bold")[#it]
-  v(0.3em)
+  v(0.4cm)
+  set par(first-line-indent: 0pt)
+  block[
+    #text(size: 14pt, fill: anthropic-text, weight: "bold")[#it.body]
+  ]
+  v(0.15cm)
 }
 
 #show heading.where(level: 3): it => {
-  v(0.5em)
-  text(size: 10.5pt, weight: "bold")[#it]
-  v(0.2em)
+  v(0.2cm)
+  set par(first-line-indent: 0pt)
+  block[
+    #text(size: 10pt, fill: anthropic-text, weight: "bold")[#it.body]
+  ]
+  v(0.1cm)
 }
 
 // ============================================================
 // Title
 // ============================================================
+#set page(header: none, footer: none)
+
+#v(3cm)
 #align(center)[
-  #text(size: 18pt, weight: "bold")[
+  #text(
+    size: 10pt,
+    fill: anthropic-muted,
+    tracking: 0.5em,
+    weight: "regular",
+  )[#upper[Expert Details]]
+  #v(0.5cm)
+
+  #text(size: 26pt, fill: anthropic-text, weight: "bold")[
     Heterogeneous Expert Architecture
   ]
 
   #v(0.3em)
 
-  #text(size: 14pt)[
+  #text(size: 14pt, fill: anthropic-muted)[
     Selection Rationale, Mathematical Formulation,\
     and Financial Application
   ]
 
   #v(1em)
 
-  #text(size: 11pt)[
+  #text(size: 11pt, fill: anthropic-text)[
     Author 1#super[1], Author 2#super[1]
   ]
 
   #v(0.3em)
 
-  #text(size: 9pt, style: "italic")[
+  #text(size: 9pt, fill: anthropic-muted, style: "italic")[
     #super[1]Organization Name \
     contact\@org.com
   ]
 
-  #v(1.5em)
+  #v(0.6cm)
+  #line(length: 30%, stroke: 0.5pt + anthropic-rule)
 ]
+
+#v(1fr)
+#pagebreak()
+
+#set page(
+  header: context {
+    if counter(page).get().first() > 1 [
+      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #smallcaps[Expert Details]
+      #h(1fr)
+      #smallcaps[Heterogeneous Expert Architecture]
+      #v(4pt)
+      #line(length: 100%, stroke: 0.4pt + anthropic-rule)
+    ]
+  },
+  footer: context {
+    let pg = counter(page).get().first()
+    if pg > 1 [
+      #line(length: 100%, stroke: 0.3pt + anthropic-rule)
+      #v(4pt)
+      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #h(1fr)
+      — #pg —
+      #h(1fr)
+    ]
+  },
+)
 
 // ============================================================
 // Abstract
 // ============================================================
 #block(
   width: 100%,
-  inset: (x: 1em),
-  stroke: (left: 2pt + luma(120)),
+  inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
+  stroke: (left: 2pt + anthropic-accent),
 )[
   #text(weight: "bold")[Abstract.]
   본 문서는 금융 상품 추천을 위한 Progressive Layered Extraction (PLE) 아키텍처에서 사용되는
@@ -96,14 +174,12 @@
 
 #block(
   width: 100%,
-  inset: 12pt,
-  radius: 4pt,
-  fill: rgb("#fef3c7"),
-  stroke: (left: 3pt + rgb("#d97706")),
+  inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
+  stroke: (left: 2pt + anthropic-accent),
 )[
-  #text(weight: "bold")[설계 vs 구현 참고.]
+  #text(weight: "bold", fill: anthropic-accent)[설계 vs 구현 참고.]
   본 문서는 풀뱅크 설계(734D)를 기준으로 작성되었습니다.
-  현재 Santander 벤치마크 구현은 316D (12 feature groups)입니다.
+  현재 Santander 벤치마크 ��현은 316D (12 feature groups)입니다.
 ]
 
 #v(1em)

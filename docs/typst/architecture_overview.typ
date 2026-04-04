@@ -1,47 +1,141 @@
 // ============================================================================
 // AIOps PLE Platform — Architecture Design Document
+// Anthropic Design System
 // ============================================================================
 
-#set page(paper: "a4", margin: 2cm)
-#set text(font: "New Computer Modern", size: 10pt)
+#let anthropic-bg = rgb("#F0EFEA")
+#let anthropic-text = rgb("#141413")
+#let anthropic-accent = rgb("#CC785C")
+#let anthropic-muted = rgb("#6B7280")
+#let anthropic-rule = rgb("#D1D5DB")
+
+#set page(
+  paper: "a4",
+  margin: (top: 2.5cm, bottom: 2.5cm, left: 2.5cm, right: 2.5cm),
+  fill: anthropic-bg,
+  header: context {
+    if counter(page).get().first() > 1 [
+      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #smallcaps[Architecture Design Document]
+      #h(1fr)
+      #smallcaps[AIOps PLE Platform]
+      #v(4pt)
+      #line(length: 100%, stroke: 0.4pt + anthropic-rule)
+    ]
+  },
+  footer: context {
+    let pg = counter(page).get().first()
+    if pg > 1 [
+      #line(length: 100%, stroke: 0.3pt + anthropic-rule)
+      #v(4pt)
+      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #h(1fr)
+      — #pg —
+      #h(1fr)
+    ]
+  },
+)
+
+#set text(font: "New Computer Modern", size: 10pt, fill: anthropic-text, lang: "ko")
 #set heading(numbering: "1.1.")
-#set par(justify: true, leading: 0.65em)
+#set par(justify: true, leading: 0.8em, spacing: 1.5em)
 #set block(spacing: 0.8em)
 
-#show heading.where(level: 1): set text(size: 14pt, weight: "bold")
-#show heading.where(level: 2): set text(size: 12pt, weight: "bold")
-#show heading.where(level: 3): set text(size: 11pt, weight: "bold")
+#show heading.where(level: 1): it => {
+  v(0.6cm)
+  set par(first-line-indent: 0pt)
+  block(width: 100%)[
+    #text(size: 20pt, fill: anthropic-text, weight: "bold")[#it.body]
+    #v(4pt)
+    #line(length: 100%, stroke: 1pt + anthropic-accent)
+  ]
+  v(0.4cm)
+}
+
+#show heading.where(level: 2): it => {
+  v(0.4cm)
+  set par(first-line-indent: 0pt)
+  block[
+    #text(size: 14pt, fill: anthropic-text, weight: "bold")[#it.body]
+  ]
+  v(0.15cm)
+}
+
+#show heading.where(level: 3): it => {
+  v(0.2cm)
+  set par(first-line-indent: 0pt)
+  block[
+    #text(size: 10pt, fill: anthropic-text, weight: "bold")[#it.body]
+  ]
+  v(0.1cm)
+}
+
 #show raw.where(block: true): set text(size: 8.5pt)
 #show table: set text(size: 9pt)
 
 // Title page
+#set page(header: none, footer: none)
+
+#v(3cm)
+
 #align(center)[
-  #v(3cm)
-  #text(size: 24pt, weight: "bold")[AIOps PLE Platform]
+  #text(
+    size: 10pt,
+    fill: anthropic-muted,
+    tracking: 0.5em,
+    weight: "regular",
+  )[#upper[Architecture Design Document]]
   #v(0.5cm)
-  #text(size: 16pt)[Architecture Design Document]
-  #v(1cm)
-  #text(size: 12pt, fill: rgb("#555"))[
+
+  #text(size: 26pt, fill: anthropic-text, weight: "bold")[AIOps PLE Platform]
+  #v(0.3cm)
+  #line(length: 30%, stroke: 0.5pt + anthropic-rule)
+  #v(0.3cm)
+
+  #text(size: 12pt, fill: anthropic-muted)[
     PLE + adaTT 기반 금융 상품 추천 시스템 \
-    기술 설계 문서 (Internal Reference)
+    기술 설계 ��서 (Internal Reference)
   ]
   #v(2cm)
-  #text(size: 10pt, fill: rgb("#888"))[
+  #text(size: 10pt, fill: anthropic-muted)[
     Version 1.0 --- 2026-04-01 \
     대상 독자: 개발자, 아키텍트, 코드 리뷰어
   ]
-  #v(4cm)
 ]
 
+#v(1fr)
 #pagebreak()
+
+#set page(
+  header: context {
+    if counter(page).get().first() > 1 [
+      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #smallcaps[Architecture Design Document]
+      #h(1fr)
+      #smallcaps[AIOps PLE Platform]
+      #v(4pt)
+      #line(length: 100%, stroke: 0.4pt + anthropic-rule)
+    ]
+  },
+  footer: context {
+    let pg = counter(page).get().first()
+    if pg > 1 [
+      #line(length: 100%, stroke: 0.3pt + anthropic-rule)
+      #v(4pt)
+      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #h(1fr)
+      — #pg —
+      #h(1fr)
+    ]
+  },
+)
 
 #block(
   width: 100%,
-  inset: 10pt,
-  stroke: (left: 3pt + rgb("#e53e3e")),
-  fill: rgb("#fff5f5"),
+  inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
+  stroke: (left: 2pt + anthropic-accent),
 )[
-  #text(weight: "bold", fill: rgb("#c53030"))[Design vs Implementation Note] \
+  #text(weight: "bold", fill: anthropic-accent)[Design vs Implementation Note] \
   본 문서는 *설계 의도와 목표 아키텍처*를 기술한다.
   현재 구현체는 설계의 부분 집합일 수 있으며, 아직 구현되지 않은 컴포넌트가 포함되어 있다.
   구현 현황은 코드베이스와 `pipeline_state.json`을 참조한다.

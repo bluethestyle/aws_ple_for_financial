@@ -1,50 +1,128 @@
 // =============================================================================
 // AIOps PLE Platform — Pipeline Operations Guide
 // 대상: ML 엔지니어 (시스템 운영자)
+// Anthropic Design System
 // =============================================================================
 
-#set page(paper: "a4", margin: (top: 2cm, bottom: 2cm, left: 2cm, right: 2cm))
-#set text(font: "New Computer Modern", size: 10pt, lang: "ko")
+#let anthropic-bg = rgb("#F0EFEA")
+#let anthropic-text = rgb("#141413")
+#let anthropic-accent = rgb("#CC785C")
+#let anthropic-muted = rgb("#6B7280")
+#let anthropic-rule = rgb("#D1D5DB")
+
+#set page(
+  paper: "a4",
+  margin: (top: 2.5cm, bottom: 2.5cm, left: 2.5cm, right: 2.5cm),
+  fill: anthropic-bg,
+  header: context {
+    if counter(page).get().first() > 1 [
+      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #smallcaps[Pipeline Operations Guide]
+      #h(1fr)
+      #smallcaps[AIOps PLE Platform]
+      #v(4pt)
+      #line(length: 100%, stroke: 0.4pt + anthropic-rule)
+    ]
+  },
+  footer: context {
+    let pg = counter(page).get().first()
+    if pg > 1 [
+      #line(length: 100%, stroke: 0.3pt + anthropic-rule)
+      #v(4pt)
+      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #h(1fr)
+      — #pg —
+      #h(1fr)
+    ]
+  },
+)
+#set text(font: "New Computer Modern", size: 10pt, fill: anthropic-text, lang: "ko")
 #set heading(numbering: "1.1.")
-#set par(justify: true, leading: 0.7em)
+#set par(justify: true, leading: 0.8em, spacing: 1.5em)
+
 #show heading.where(level: 1): it => {
   pagebreak(weak: true)
-  v(0.5em)
-  text(size: 14pt, weight: "bold", fill: rgb("#1a365d"))[#it]
-  v(0.3em)
+  v(0.6cm)
+  set par(first-line-indent: 0pt)
+  block(width: 100%)[
+    #text(size: 20pt, fill: anthropic-text, weight: "bold")[#it.body]
+    #v(4pt)
+    #line(length: 100%, stroke: 1pt + anthropic-accent)
+  ]
+  v(0.4cm)
 }
 #show heading.where(level: 2): it => {
-  v(0.4em)
-  text(size: 12pt, weight: "bold", fill: rgb("#2b6cb0"))[#it]
-  v(0.2em)
+  v(0.4cm)
+  set par(first-line-indent: 0pt)
+  block[
+    #text(size: 14pt, fill: anthropic-text, weight: "bold")[#it.body]
+  ]
+  v(0.15cm)
 }
 #show heading.where(level: 3): it => {
-  v(0.3em)
-  text(size: 10.5pt, weight: "bold")[#it]
-  v(0.1em)
+  v(0.2cm)
+  set par(first-line-indent: 0pt)
+  block[
+    #text(size: 10pt, fill: anthropic-text, weight: "bold")[#it.body]
+  ]
+  v(0.1cm)
 }
 #show raw.where(block: true): it => {
   set text(size: 8.5pt)
-  block(fill: rgb("#f7fafc"), stroke: 0.5pt + rgb("#e2e8f0"), inset: 8pt, radius: 3pt, width: 100%)[#it]
+  block(fill: rgb("#f7fafc"), stroke: 0.5pt + anthropic-rule, inset: 8pt, radius: 3pt, width: 100%)[#it]
 }
 
 // Title page
+#set page(header: none, footer: none)
+
+#v(3cm)
 #align(center)[
-  #v(3cm)
-  #text(size: 24pt, weight: "bold", fill: rgb("#1a365d"))[AIOps PLE Platform]
+  #text(
+    size: 10pt,
+    fill: anthropic-muted,
+    tracking: 0.5em,
+    weight: "regular",
+  )[#upper[Pipeline Operations Guide]]
+  #v(0.5cm)
+
+  #text(size: 26pt, fill: anthropic-text, weight: "bold")[AIOps PLE Platform]
+  #v(0.3cm)
+  #line(length: 30%, stroke: 0.5pt + anthropic-rule)
+  #v(0.3cm)
+
+  #text(size: 11pt, fill: anthropic-text)[941K Users × 18 Tasks × 7 Shared Experts]
   #v(0.5em)
-  #text(size: 18pt, fill: rgb("#2b6cb0"))[Pipeline Operations Guide]
+  #text(size: 10pt, fill: anthropic-muted)[대상: ML 엔지니어 (운영자)]
   #v(1cm)
-  #text(size: 11pt)[941K Users × 18 Tasks × 7 Shared Experts]
-  #v(0.5em)
-  #text(size: 10pt, fill: rgb("#718096"))[대상: ML 엔지니어 (운영자)]
-  #v(1cm)
-  #line(length: 60%, stroke: 0.5pt + rgb("#cbd5e0"))
-  #v(0.5em)
-  #text(size: 9pt, fill: rgb("#a0aec0"))[2026-04-01 | Config-Driven Architecture]
+  #text(size: 9pt, fill: anthropic-muted)[2026-04-01 | Config-Driven Architecture]
 ]
 
+#v(1fr)
 #pagebreak()
+
+#set page(
+  header: context {
+    if counter(page).get().first() > 1 [
+      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #smallcaps[Pipeline Operations Guide]
+      #h(1fr)
+      #smallcaps[AIOps PLE Platform]
+      #v(4pt)
+      #line(length: 100%, stroke: 0.4pt + anthropic-rule)
+    ]
+  },
+  footer: context {
+    let pg = counter(page).get().first()
+    if pg > 1 [
+      #line(length: 100%, stroke: 0.3pt + anthropic-rule)
+      #v(4pt)
+      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #h(1fr)
+      — #pg —
+      #h(1fr)
+    ]
+  },
+)
 
 #outline(title: "목차", indent: 1.5em, depth: 3)
 
@@ -56,9 +134,9 @@
 
 #table(
   columns: (auto, 1fr, 1fr),
-  stroke: 0.5pt + rgb("#e2e8f0"),
+  stroke: 0.5pt + anthropic-rule,
   inset: 6pt,
-  fill: (x, y) => if y == 0 { rgb("#edf2f7") },
+  fill: (x, y) => if y == 0 { anthropic-accent.lighten(88%) },
   [*구분*], [*로컬 개발*], [*AWS 클라우드*],
   [GPU], [RTX 4070 12GB (또는 동급)], [g4dn.xlarge (T4 16GB)],
   [RAM], [64GB 이상], [ml.m5.2xlarge (32GB) — Phase 0],
@@ -174,9 +252,9 @@ python -m core.pipeline.runner \
 
 #table(
   columns: (auto, 1fr, 1fr),
-  stroke: 0.5pt + rgb("#e2e8f0"),
+  stroke: 0.5pt + anthropic-rule,
   inset: 6pt,
-  fill: (x, y) => if y == 0 { rgb("#edf2f7") },
+  fill: (x, y) => if y == 0 { anthropic-accent.lighten(88%) },
   [*Stage*], [*처리*], [*대상*],
   [1], [멱법칙 감지 (skew+kurt → log-log R²) + `log1p` 복사본 생성], [high-skew 컬럼],
   [2], [StandardScaler (TRAIN fit only)], [continuous 컬럼 (binary 제외)],
@@ -319,9 +397,9 @@ python scripts/submit_training_job.py \
 
 #table(
   columns: (auto, auto, 1fr, auto),
-  stroke: 0.5pt + rgb("#e2e8f0"),
+  stroke: 0.5pt + anthropic-rule,
   inset: 6pt,
-  fill: (x, y) => if y == 0 { rgb("#edf2f7") },
+  fill: (x, y) => if y == 0 { anthropic-accent.lighten(88%) },
   [*Phase*], [*시나리오 수*], [*내용*], [*인스턴스*],
   [0], [1], [Data Preparation], [CPU (ml.m5.2xlarge)],
   [1], [16], [Feature Group Ablation (bottom-up + top-down)], [GPU],
@@ -483,9 +561,9 @@ python scripts/run_ig_selection.py \
 
 #table(
   columns: (auto, 1fr, auto, auto),
-  stroke: 0.5pt + rgb("#e2e8f0"),
+  stroke: 0.5pt + anthropic-rule,
   inset: 6pt,
-  fill: (x, y) => if y == 0 { rgb("#edf2f7") },
+  fill: (x, y) => if y == 0 { anthropic-accent.lighten(88%) },
   [*단계*], [*구성*], [*비용/월*], [*지연*],
   [1단계 (소규모)], [API Gateway → Lambda + 메모리 피처], [\~\$0--1], [\~5ms],
   [2단계 (중규모)], [API Gateway → Lambda + DynamoDB], [\~\$100--400], [\~10ms],
@@ -660,9 +738,9 @@ cold_start:
 
 #table(
   columns: (auto, 1fr, auto),
-  stroke: 0.5pt + rgb("#e2e8f0"),
+  stroke: 0.5pt + anthropic-rule,
   inset: 6pt,
-  fill: (x, y) => if y == 0 { rgb("#edf2f7") },
+  fill: (x, y) => if y == 0 { anthropic-accent.lighten(88%) },
   [*축*], [*설명*], [*예시 그룹*],
   [State], [정적 인구통계/계정 속성], [demographics, product_holdings],
   [Snapshot], [장기 시퀀스 요약], [TDA global, HMM, trends],
@@ -704,9 +782,9 @@ task_groups:
 
 #table(
   columns: (auto, 1fr),
-  stroke: 0.5pt + rgb("#e2e8f0"),
+  stroke: 0.5pt + anthropic-rule,
   inset: 6pt,
-  fill: (x, y) => if y == 0 { rgb("#edf2f7") },
+  fill: (x, y) => if y == 0 { anthropic-accent.lighten(88%) },
   [*방식*], [*설명*],
   [`output_concat`], [source task의 출력을 target tower 입력에 concat],
   [`hidden_concat`], [source task의 hidden representation을 공유],
@@ -901,9 +979,9 @@ grep "gradient.*norm.*exceed" output/training.log
 
 #table(
   columns: (auto, auto, auto),
-  stroke: 0.5pt + rgb("#e2e8f0"),
+  stroke: 0.5pt + anthropic-rule,
   inset: 6pt,
-  fill: (x, y) => if y == 0 { rgb("#edf2f7") },
+  fill: (x, y) => if y == 0 { anthropic-accent.lighten(88%) },
   [*항목*], [*On-Demand*], [*Spot*],
   [g4dn.xlarge 시간당], [\$0.526], [\~\$0.16 (70% 절감)],
   [50 epochs (\~4시간)], [\$2.10], [\~\$0.64],
@@ -948,9 +1026,9 @@ grep "budget_limit" configs/santander/pipeline.yaml
 
 #table(
   columns: (auto, auto, auto),
-  stroke: 0.5pt + rgb("#e2e8f0"),
+  stroke: 0.5pt + anthropic-rule,
   inset: 6pt,
-  fill: (x, y) => if y == 0 { rgb("#edf2f7") },
+  fill: (x, y) => if y == 0 { anthropic-accent.lighten(88%) },
   [*방식*], [*월 비용 (추정)*], [*비고*],
   [K8s 자체 구축 (GPU 4장)], [\$8,000--15,000], [하드웨어 감가 + 인력],
   [SageMaker On-Demand], [\$500--2,000], [주 1회 학습 + 서빙],
@@ -981,9 +1059,9 @@ Step Functions (AWS): 5 상태 머신 × 주 2회 → ~$0.002/월 (사실상 무
 
 #table(
   columns: (auto, 1fr, 1fr),
-  stroke: 0.5pt + rgb("#e2e8f0"),
+  stroke: 0.5pt + anthropic-rule,
   inset: 6pt,
-  fill: (x, y) => if y == 0 { rgb("#edf2f7") },
+  fill: (x, y) => if y == 0 { anthropic-accent.lighten(88%) },
   [*모듈*], [*역할*], [*하면 안 되는 것*],
   [Adapter], [raw data → standardized DataFrame], [전처리, 피처생성, 레이블파생],
   [PipelineRunner], [전처리 → 피처생성 → 정규화 → 텐서 저장], [모델 학습],

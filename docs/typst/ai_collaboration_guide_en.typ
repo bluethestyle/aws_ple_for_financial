@@ -1,38 +1,45 @@
 // ─────────────────────────────────────────────
 // AI Collaboration Guidelines: A Framework for Expanding Knowledge and Solving Problems
-// Typst Web App Compatible
+// Typst Web App Compatible — Anthropic Design System
 // ─────────────────────────────────────────────
 
-#let navy = rgb("#1B2A4A")
-#let burgundy = rgb("#6B2D3E")
-#let gold = rgb("#B8860B")
-#let cream = rgb("#FAF6F0")
-#let dark-cream = rgb("#F0EBE1")
-#let ink = rgb("#2C2C2C")
-#let muted = rgb("#5A5A5A")
-#let light-rule = rgb("#C4B8A8")
+#let anthropic-bg = rgb("#F0EFEA")
+#let anthropic-text = rgb("#141413")
+#let anthropic-accent = rgb("#CC785C")
+#let anthropic-muted = rgb("#6B7280")
+#let anthropic-rule = rgb("#D1D5DB")
+
+// Legacy aliases for component compatibility
+#let navy = anthropic-text
+#let burgundy = anthropic-accent
+#let gold = anthropic-accent
+#let cream = anthropic-bg
+#let dark-cream = rgb("#E8E7E2")
+#let ink = anthropic-text
+#let muted = anthropic-muted
+#let light-rule = anthropic-rule
 
 // ── Page setup ──
 #set page(
   paper: "a4",
-  margin: (top: 2.8cm, bottom: 2.5cm, left: 2.5cm, right: 2.5cm),
-  fill: cream,
+  margin: (top: 2.5cm, bottom: 2.5cm, left: 2.5cm, right: 2.5cm),
+  fill: anthropic-bg,
   header: context {
     if counter(page).get().first() > 1 [
-      #set text(size: 7.5pt, font: "New Computer Modern", fill: muted, tracking: 0.12em)
+      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
       #smallcaps[AI Collaboration Guidelines]
       #h(1fr)
       #smallcaps[A Framework for Expanding Knowledge and Solving Problems]
       #v(4pt)
-      #line(length: 100%, stroke: 0.4pt + light-rule)
+      #line(length: 100%, stroke: 0.4pt + anthropic-rule)
     ]
   },
   footer: context {
     let pg = counter(page).get().first()
     if pg > 1 [
-      #line(length: 100%, stroke: 0.3pt + light-rule)
+      #line(length: 100%, stroke: 0.3pt + anthropic-rule)
       #v(4pt)
-      #set text(size: 8pt, font: "New Computer Modern", fill: muted)
+      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
       #h(1fr)
       — #pg —
       #h(1fr)
@@ -43,89 +50,64 @@
 // ── Base text ──
 #set text(
   font: "New Computer Modern",
-  size: 10.5pt,
-  fill: ink,
+  size: 10pt,
+  fill: anthropic-text,
   lang: "en",
 )
 
 #set par(
   justify: true,
-  leading: 0.78em,
+  leading: 0.8em,
   first-line-indent: 1.2em,
+  spacing: 1.5em,
 )
 
 // ── Heading styles ──
 #show heading.where(level: 1): it => {
-  v(0cm)
-  set par(first-line-indent: 0pt)
-  align(center)[
-    #block(width: 100%)[
-      #v(6pt)
-      #line(length: 40%, stroke: 0.8pt + gold)
-      #v(10pt)
-      #text(
-        size: 10pt,
-        fill: gold,
-        tracking: 0.35em,
-        weight: "regular",
-      )[#upper(smallcaps[Part])]
-      #v(2pt)
-      #text(
-        size: 18pt,
-        fill: navy,
-        weight: "bold",
-      )[#it.body]
-      #v(10pt)
-      #line(length: 40%, stroke: 0.8pt + gold)
-      #v(6pt)
-    ]
-  ]
   v(0.6cm)
+  set par(first-line-indent: 0pt)
+  block(width: 100%)[
+    #text(size: 20pt, fill: anthropic-text, weight: "bold")[#it.body]
+    #v(4pt)
+    #line(length: 100%, stroke: 1pt + anthropic-accent)
+  ]
+  v(0.4cm)
 }
 
 #show heading.where(level: 2): it => {
-  v(0.0cm)
+  v(0.4cm)
   set par(first-line-indent: 0pt)
   block[
-    #text(
-      size: 10pt,
-      fill: burgundy,
-      tracking: 0.25em,
-      weight: "regular",
-    )[#upper(smallcaps[Section])]
-    #v(-2pt)
-    #text(size: 13.5pt, fill: navy, weight: "bold")[#it.body]
-    #v(0pt)
-    #line(length: 100%, stroke: (paint: light-rule, thickness: 0.4pt, dash: "loosely-dotted"))
-  ]
-  v(0.0cm)
-}
-
-#show heading.where(level: 3): it => {
-  v(0.0cm)
-  set par(first-line-indent: 0pt)
-  block[
-    #text(size: 11pt, fill: burgundy, weight: "bold", style: "italic")[#it.body]
+    #text(size: 14pt, fill: anthropic-text, weight: "bold")[#it.body]
   ]
   v(0.15cm)
 }
 
+#show heading.where(level: 3): it => {
+  v(0.2cm)
+  set par(first-line-indent: 0pt)
+  block[
+    #text(size: 10pt, fill: anthropic-text, weight: "bold")[#it.body]
+  ]
+  v(0.1cm)
+}
+
 // ── Custom components ──
 
-// Ornamental divider
+// Section break (replaces ornamental divider)
 #let ornament() = {
   v(0.4cm)
   align(center)[
-    #text(size: 11pt, fill: gold)[✦ #h(6pt) ◆ #h(6pt) ✦]
+    #line(length: 30%, stroke: 0.5pt + anthropic-rule)
   ]
   v(0.4cm)
 }
 
-// Small ornament
+// Small section break
 #let small-ornament() = {
   v(0.2cm)
   align(center)[
-    #text(size: 8pt, fill: light-rule)[— ✦ —]
+    #line(length: 20%, stroke: 0.3pt + anthropic-rule)
   ]
   v(0.2cm)
 }
@@ -136,14 +118,13 @@
   set par(first-line-indent: 0pt)
   block(
     width: 100%,
-    inset: (left: 2cm, right: 2cm, top: 0.4cm, bottom: 0.4cm),
+    stroke: (left: 2pt + anthropic-accent),
+    inset: (left: 14pt, right: 14pt, top: 8pt, bottom: 8pt),
   )[
-    #align(center)[
-      #text(size: 12pt, fill: navy, style: "italic")[#body]
-      #if source != none [
-        #v(4pt)
-        #text(size: 8pt, fill: muted, tracking: 0.1em)[— #source]
-      ]
+    #text(size: 10pt, fill: anthropic-muted, style: "italic")[#body]
+    #if source != none [
+      #v(4pt)
+      #text(size: 8pt, fill: anthropic-muted, tracking: 0.1em)[— #source]
     ]
   ]
   v(0.3cm)
@@ -152,12 +133,10 @@
 // Level indicator box
 #let level-box(level, title, desc, examples) = {
   set par(first-line-indent: 0pt)
-  v(0.0cm)
+  v(0.15cm)
   block(
     width: 100%,
-    stroke: (left: 2.5pt + burgundy, rest: 0.3pt + light-rule),
-    radius: (right: 3pt),
-    fill: dark-cream,
+    stroke: (left: 2pt + anthropic-accent),
     inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
   )[
     #grid(
@@ -168,106 +147,86 @@
           width: 28pt,
           height: 28pt,
           radius: 50%,
-          fill: navy,
-          stroke: 0.5pt + gold,
+          fill: anthropic-accent,
         )[
           #align(center + horizon)[
-            #text(size: 13pt, fill: cream, weight: "bold")[#level]
+            #text(size: 13pt, fill: white, weight: "bold")[#level]
           ]
         ]
       ],
       [
-        #text(size: 12.5pt, fill: navy, weight: "bold")[#title]
+        #text(size: 12pt, fill: anthropic-text, weight: "bold")[#title]
         #v(2pt)
-        #text(size: 10pt, fill: muted, style: "italic")[#desc]
+        #text(size: 10pt, fill: anthropic-muted, style: "italic")[#desc]
         #v(2pt)
         #for ex in examples [
-          #text(size: 10.0pt, fill: ink)[• #ex] #linebreak()
+          #text(size: 10pt, fill: anthropic-text)[• #ex] #linebreak()
         ]
       ],
     )
   ]
-  v(0.0cm)
+  v(0.15cm)
 }
 
 // Scenario flow block
 #let scenario(title, bad-label, bad-flow, good-label, good-flow) = {
   set par(first-line-indent: 0pt)
-  v(0.0cm)
+  v(0.15cm)
   block(
     width: 100%,
-    stroke: 0.4pt + light-rule,
-    radius: 4pt,
-    fill: white,
-    inset: 0pt,
+    stroke: (left: 2pt + anthropic-accent),
+    inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
   )[
-    // Title bar
+    #text(size: 11pt, fill: anthropic-text, weight: "bold")[#title]
+    #v(6pt)
+    // Bad flow
     #block(
       width: 100%,
-      fill: navy,
-      radius: (top: 4pt),
-      inset: (x: 14pt, y: 8pt),
+      stroke: (left: 2pt + rgb("#D4A0A0")),
+      inset: (left: 10pt, right: 10pt, top: 6pt, bottom: 6pt),
     )[
-      #text(size: 12pt, fill: cream, weight: "bold", tracking: 0.05em)[#title]
+      #text(size: 10pt, fill: anthropic-accent, weight: "bold")[#upper[#bad-label]]
+      #v(3pt)
+      #text(size: 10pt, fill: anthropic-text)[#bad-flow]
     ]
-    #v(-0.5cm)
-    // Body
-    #block(inset: (x: 10pt, y: 10pt))[
-      // Bad flow
-      #block(
-        width: 100%,
-        stroke: 0.3pt + rgb("#D4A0A0"),
-        radius: 3pt,
-        fill: rgb("#FFF8F6"),
-        inset: (x: 10pt, y: 8pt),
-      )[
-        #text(size: 11pt, fill: burgundy, weight: "bold", tracking: 0.15em)[#upper[#bad-label]]
-        #v(3pt)
-        #text(size: 10pt, fill: ink)[#bad-flow]
-      ]
-      #v(-4pt)
-      // Good flow
-      #block(
-        width: 100%,
-        stroke: 0.3pt + rgb("#A0B8A0"),
-        radius: 3pt,
-        fill: rgb("#F6FBF6"),
-        inset: (x: 10pt, y: 8pt),
-      )[
-        #text(size: 11pt, fill: rgb("#2D5A2D"), weight: "bold", tracking: 0.15em)[#upper[#good-label]]
-        #v(3pt)
-        #text(size: 10pt, fill: ink)[#good-flow]
-      ]
+    #v(4pt)
+    // Good flow
+    #block(
+      width: 100%,
+      stroke: (left: 2pt + rgb("#6B9E6B")),
+      inset: (left: 10pt, right: 10pt, top: 6pt, bottom: 6pt),
+    )[
+      #text(size: 10pt, fill: rgb("#2D5A2D"), weight: "bold")[#upper[#good-label]]
+      #v(3pt)
+      #text(size: 10pt, fill: anthropic-text)[#good-flow]
     ]
   ]
-  v(0.0cm)
+  v(0.15cm)
 }
 
 // Principle table row
 #let principle-row(name, desc, practice) = {
   (
-    [#text(fill: navy, weight: "bold", size: 9.5pt)[#name]],
+    [#text(fill: anthropic-text, weight: "bold", size: 9.5pt)[#name]],
     [#text(size: 9pt)[#desc]],
-    [#text(size: 8.5pt, fill: muted, style: "italic")[#practice]],
+    [#text(size: 8.5pt, fill: anthropic-muted, style: "italic")[#practice]],
   )
 }
 
 // Template box
 #let template-box(title, body) = {
   set par(first-line-indent: 0pt)
-  v(-0.0cm)
+  v(0.15cm)
   block(
     width: 100%,
-    stroke: (left: 2pt + gold, rest: 0.3pt + light-rule),
-    radius: (right: 2pt),
-    fill: rgb("#FFFDF7"),
-    inset: (x: 12pt, y: 8pt),
+    stroke: (left: 2pt + anthropic-accent),
+    inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
   )[
-    #text(size: 11pt, fill: gold, weight: "bold")[#title]
+    #text(size: 11pt, fill: anthropic-accent, weight: "bold")[#title]
     #v(2pt)
-    #text(size: 10pt, fill: ink)[#body]
+    #text(size: 10pt, fill: anthropic-text)[#body]
   ]
-  v(-0.0cm)
+  v(0.15cm)
 }
 
 // Anti-pattern box
@@ -282,20 +241,20 @@
       columns: (22pt, 1fr),
       gutter: 8pt,
       align(center)[
-        #text(size: 16pt, fill: burgundy, weight: "bold")[#number]
+        #text(size: 16pt, fill: anthropic-accent, weight: "bold")[#number]
       ],
       [
-        #text(size: 11pt, fill: navy, weight: "bold")[#title]
+        #text(size: 11pt, fill: anthropic-text, weight: "bold")[#title]
         #v(2pt)
-        #text(size: 10pt, fill: ink)[#desc]
+        #text(size: 10pt, fill: anthropic-text)[#desc]
         #v(3pt)
-        #text(size: 10pt, fill: muted)[💡 ]
-        #text(size: 10pt, fill: burgundy, style: "italic")[#alternative]
+        #text(size: 10pt, fill: anthropic-muted)[-> ]
+        #text(size: 10pt, fill: anthropic-accent, style: "italic")[#alternative]
       ],
     )
   ]
   v(2pt)
-  line(length: 100%, stroke: 0.2pt + light-rule)
+  line(length: 100%, stroke: 0.2pt + anthropic-rule)
   v(0.1cm)
 }
 
@@ -304,19 +263,17 @@
   set par(first-line-indent: 0pt)
   v(0.15cm)
   block(width: 100%)[
-    #text(size: 10pt, fill: burgundy, style: "italic")[#principle]
+    #text(size: 10pt, fill: anthropic-accent, style: "italic")[#principle]
     #v(6pt)
     #block(
       width: 100%,
-      fill: dark-cream,
-      radius: 3pt,
-      inset: (x: 12pt, y: 10pt),
-      stroke: 0.3pt + light-rule,
+      stroke: (left: 2pt + anthropic-accent),
+      inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
     )[
-      #text(size: 10pt, fill: navy, weight: "bold", tracking: 0.1em)[Practical Examples]
+      #text(size: 10pt, fill: anthropic-text, weight: "bold")[Practical Examples]
       #v(4pt)
       #for ex in examples [
-        #text(size: 10pt, fill: ink)[• #ex]
+        #text(size: 10pt, fill: anthropic-text)[• #ex]
         #v(2pt)
       ]
     ]
@@ -334,38 +291,37 @@
 #v(3cm)
 
 #align(center)[
-  #line(length: 50%, stroke: 0.6pt + gold)
-  #v(0.6cm)
-
   #text(
-    size: 10.0pt,
-    fill: gold,
+    size: 10pt,
+    fill: anthropic-muted,
     tracking: 0.5em,
     weight: "regular",
   )[#upper[A Practical Guide to]]
-  #v(0.4cm)
+  #v(0.5cm)
 
   #text(
-    size: 28pt,
-    fill: navy,
+    size: 26pt,
+    fill: anthropic-text,
     weight: "bold",
   )[AI Collaboration Guidelines]
-  #v(0.2cm)
-
-  #line(length: 20%, stroke: 0.5pt + light-rule)
-  #v(0.2cm)
-
+  #v(0.1cm)
   #text(
-    size: 14pt,
-    fill: burgundy,
-    style: "italic",
-  )[A Framework for Expanding Knowledge and Solving Problems]
+    size: 26pt,
+    fill: anthropic-text,
+    weight: "bold",
+  )[A Framework for Expanding Knowledge]
+  #v(0.1cm)
+  #text(
+    size: 26pt,
+    fill: anthropic-text,
+    weight: "bold",
+  )[and Solving Problems]
 
-  #v(0.5cm)
-  #text(size: 10pt, fill: muted, tracking: 0.2em)[ON THE ART OF INQUIRY\ IN THE AGE OF ARTIFICIAL INTELLIGENCE]
+  #v(0.6cm)
+  #line(length: 30%, stroke: 0.5pt + anthropic-rule)
+  #v(0.6cm)
 
-  #v(1cm)
-  #line(length: 50%, stroke: 0.6pt + gold)
+  #text(size: 10pt, fill: anthropic-muted, tracking: 0.2em)[ON THE ART OF INQUIRY\ IN THE AGE OF ARTIFICIAL INTELLIGENCE]
 ]
 
 #v(2cm)
@@ -373,14 +329,15 @@
 #align(center)[
   #block(
     width: 70%,
-    inset: (x: 1.5cm, y: 1cm),
+    stroke: (left: 2pt + anthropic-accent),
+    inset: (left: 14pt, right: 14pt, top: 8pt, bottom: 8pt),
   )[
     #set par(first-line-indent: 0pt)
-    #text(size: 10pt, fill: ink, style: "italic")[
+    #text(size: 10pt, fill: anthropic-muted, style: "italic")[
       "A good tool extends your hands,\ but a good question extends your thinking."
     ]
     #v(0.5cm)
-    #text(size: 9pt, fill: muted)[
+    #text(size: 9pt, fill: anthropic-muted)[
       This guide addresses principles for leveraging AI\ not merely as an information retrieval tool,\ but as a thinking partner.\ Before prompt techniques, it begins with the fundamental questions:\ "What should I ask?" and "How should I collaborate?"
     ]
   ]
@@ -389,9 +346,9 @@
 #v(1fr)
 
 #align(center)[
-  #text(size: 10pt, fill: muted, tracking: 0.15em)[A Practical Guide for Finance, Marketing, and Business Planning Professionals]
+  #text(size: 10pt, fill: anthropic-muted, tracking: 0.15em)[A Practical Guide for Finance, Marketing, and Business Planning Professionals]
   #v(0.3cm)
-  #line(length: 30%, stroke: 0.3pt + light-rule)
+  #line(length: 30%, stroke: 0.3pt + anthropic-rule)
 ]
 
 #pagebreak()
@@ -426,11 +383,11 @@
 
 #v(1.0cm)
 #align(center)[
-  #text(size: 8pt, fill: gold, tracking: 0.4em)[#upper[Contents]]
+  #text(size: 8pt, fill: anthropic-muted, tracking: 0.4em)[#upper[Contents]]
   #v(0.2cm)
-  #text(size: 16pt, fill: navy, weight: "bold")[Table of Contents]
+  #text(size: 16pt, fill: anthropic-text, weight: "bold")[Table of Contents]
   #v(0.3cm)
-  #line(length: 30%, stroke: 0.5pt + gold)
+  #line(length: 30%, stroke: 0.5pt + anthropic-accent)
 ]
 #v(0.8cm)
 
