@@ -32,8 +32,7 @@
   #v(0.3em)
 
   #text(size: 9pt, style: "italic")[
-    #super[1]Independent Research \
-    
+    #super[1]Independent Research
   ]
 
   #v(1em)
@@ -143,7 +142,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Financial DNA Task Grouping*: Four task groups (engagement, lifecycle, value, consumption) with differentiated adaTT intra/inter transfer strengths and logit transfer for natural experience propagation.
 
-+ *Comprehensive Ablation*: 54 scenarios (feature group / expert / task×structure) on a reproducible 1M-customer benchmark with Gaussian Copula + latent variable variance budget.
++ *Comprehensive Ablation*: 30 scenarios (feature group / expert / task$times$structure) on a reproducible 1M-customer benchmark with Gaussian Copula + latent variable variance budget.
 
 + *Config-driven Pipeline*: End-to-end system (feature engineering → training → distillation → serving) controlled by two YAML files, enabling deployment by teams with 1--2 ML engineers.
 
@@ -575,11 +574,10 @@ that each extract a structurally different signal from the same underlying data.
   )
   },
   caption: [Multi-disciplinary feature engineering across 11 academic disciplines.],
-) 
+) <tab:multidisciplinary>
 
 #text(size: 8.5pt, fill: gray)[_Note_: Total 269 generated features + 49 base features = 318.
-    Base features include 47 raw columns plus 2 derived columns (is\_cold\_start, income\_log).],
-) <tab:multidisciplinary>
+    Base features include 47 raw columns plus 2 derived columns (is\_cold\_start, income\_log).]
 
 Several of these applications are, to our knowledge, novel in financial recommendation:
 
@@ -646,12 +644,12 @@ which transfers at the representation level, our implementation operates at the 
 
 $ cal(L)_i^("adaTT") = cal(L)_i + lambda sum_(j eq.not i) w_(i arrow.r j) dot cal(L)_j $ <eq:adatt>
 
+where $w_(i arrow.r j)$ is the transfer weight from task $j$ to task $i$,
+computed via gradient cosine similarity between task loss gradients.
 The base task losses $cal(L)_i$ are weighted by learned uncertainty @kendall2018,
 and binary classification tasks with severe class imbalance (e.g., has_nba at 3\% positive rate)
 use focal loss @lin2017focal with task-specific $alpha$ and $gamma$ parameters.
 
-where $w_(i arrow.r j)$ is the transfer weight from task $j$ to task $i$,
-computed via gradient cosine similarity between task loss gradients.
 This design choice was motivated by two considerations:
 (1) representation-level transfer requires matching hidden dimensions across heterogeneous experts,
 which is architecturally cumbersome when experts produce outputs of different shapes and semantics;
@@ -846,7 +844,7 @@ but a structural requirement for multi-faceted persuasion.
     [full−hmm], [291], [--], [--],
     [...], [...], [...], [...],
   ),
-  caption: [Feature group ablation results. TODO: fill after ablation.],
+  caption: [Feature group ablation results (to be filled after ablation).],
 ) <tab:feat-ablation>
 
 == Expert Ablation (RQ2)
@@ -989,16 +987,22 @@ and regulatory compliance mapping for Korean FSS and EU AI Act requirements.
 // Author Contributions
 #heading(numbering: none)[Author Contributions]
 
-Seon-Gyu Jeong (PM/Lead Architect/Data Scientist): Conceived the project direction,
+*Seon-Gyu Jeong* (PM / Lead Architect / Data Scientist):
+Conceived the project direction,
 designed the heterogeneous expert architecture and two-axis decomposition framework,
 selected multi-disciplinary feature engineering approaches based on structural isomorphism,
 defined task groups and regulatory compliance mapping,
 led AI-augmented development methodology, and wrote the manuscript.
 Overall technical leadership and Scrum-based rapid feedback coordination.
-Eun-Cheol Sim: Data ingestion pipeline, feature engineering implementation,
+
+*Eun-Cheol Sim*:
+Data ingestion pipeline, feature engineering implementation,
 feature business reverse-mapping, and vector database pipeline management.
-Young-Chan Kim: Model training, mathematical verification,
+
+*Young-Chan Kim*:
+Model training, mathematical verification,
 and knowledge distillation implementation.
+
 All authors collaborated through Scrum sprints with rapid feedback cycles.
 
 // ============================================================
@@ -1051,15 +1055,15 @@ impossible to achieve at this scale.
 // Appendix
 #heading(numbering: none)[Appendix]
 
-=== A. Configuration Schema
+#heading(numbering: none, level: 3)[A. Configuration Schema]
 
 The entire system is controlled by two YAML configuration files:
- (model architecture, training hyperparameters, task definitions,
-AWS deployment settings) and  (feature group definitions,
+`pipeline.yaml` (model architecture, training hyperparameters, task definitions,
+AWS deployment settings) and `feature_groups.yaml` (feature group definitions,
 generator parameters, expert routing rules).
 Full configuration files are available in the accompanying repository.
 
-=== B. Ablation Scenario Definitions
+#heading(numbering: none, level: 3)[B. Ablation Scenario Definitions]
 
 The 30 ablation scenarios are organized into two phases:
 
@@ -1072,18 +1076,18 @@ and 6 top-down scenarios (full minus one expert-feature pair).
 Three task tiers (4, 8, 18 tasks) crossed with four structural variants
 (shared-bottom, PLE only, adaTT only, PLE + adaTT).
 
-=== C. Benchmark Data Generation
+#heading(numbering: none, level: 3)[C. Benchmark Data Generation]
 
 The synthetic benchmark uses a four-layer generative model:
 (1) latent personas via 6-component GMM with 5D continuous latent vector
-(70%% persona-conditioned, 30%% independent noise);
+(70% persona-conditioned, 30% independent noise);
 (2) Gaussian Copula demographics preserving realistic correlations;
 (3) vectorized transaction sequences as LIST columns;
-(4) variance-budget labels with post-hoc noise flipping (6-8%%).
+(4) variance-budget labels with post-hoc noise flipping (6--8%).
 Seed=42 ensures reproducibility.
-Full generation code: .
+Full generation code is available in the accompanying repository.
 
-=== D. Numerical Stability Fixes
+#heading(numbering: none, level: 3)[D. Numerical Stability Fixes]
 
 Mixed-precision (FP16) training in Phase 2 required four specific fixes:
 (1) CGC entropy: FP32 cast with clamp(min=1e-6) to prevent log(0);

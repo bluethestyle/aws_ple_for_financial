@@ -32,8 +32,7 @@
   #v(0.3em)
 
   #text(size: 9pt, style: "italic")[
-    #super[1]Independent Research \
-    
+    #super[1]Independent Research
   ]
 
   #v(1em)
@@ -71,8 +70,6 @@
   Recommendation explanation, Knowledge distillation, LLM agents,
   Regulatory compliance, Financial AI, EU AI Act
 ]
-
-#v(1em)
 
 // Switch to 2-column layout for body
 #show: rest => columns(2, rest)
@@ -324,16 +321,16 @@ with structured business metadata:
 
 #figure(
   table(
-    columns: (auto, auto, auto),
+    columns: (1fr, 1fr, 1.5fr),
     inset: 5pt,
     align: left,
     stroke: 0.5pt,
     [*Feature*], [*Business Mapping*], [*Explanation Template*],
-    [hmm_lifecycle_prob_growing], [Growth stage probability], ["Your asset portfolio is in a growth phase"],
-    [mamba_temporal_d3], [3-month spending trend], ["Your spending has been increasing recently"],
-    [hgcn_hierarchy_d5], [Product category position], ["Investment products are a natural next step"],
+    [hmm_lifecycle#linebreak()\_prob_growing], [Growth stage probability], ["Your asset portfolio is in a growth phase"],
+    [mamba_temporal#linebreak()\_d3], [3-month spending trend], ["Your spending has been increasing recently"],
+    [hgcn_hierarchy#linebreak()\_d5], [Product category position], ["Investment products are a natural next step"],
     [synth_stability], [Transaction stability], ["You maintain a stable transaction pattern"],
-    [gmm_cluster_prob_3], [Segment probability], ["You share characteristics with active investors"],
+    [gmm_cluster#linebreak()\_prob_3], [Segment probability], ["You share characteristics with active investors"],
   ),
   caption: [Feature reverse-mapping examples.],
 ) <tab:reverse-mapping>
@@ -445,7 +442,7 @@ Cache hit avoids LLM invocation entirely, reducing latency and cost.
 
 #figure(
   table(
-    columns: (auto, auto, auto),
+    columns: (1fr, 1.2fr, 1fr),
     inset: 5pt,
     align: left,
     stroke: 0.5pt,
@@ -464,7 +461,7 @@ Cache hit avoids LLM invocation entirely, reducing latency and cost.
 
 #figure(
   table(
-    columns: (auto, auto, auto),
+    columns: (auto, 1fr, 1.5fr),
     inset: 5pt,
     align: left,
     stroke: 0.5pt,
@@ -479,7 +476,14 @@ Cache hit avoids LLM invocation entirely, reducing latency and cost.
 
 == Korean AI Basic Act (2024.12)
 
-// TODO: High-risk classification analysis for financial recommendation
+Korea's AI Basic Act (enacted December 2024) @koreaaiact2024 introduces a domestic
+high-risk AI classification framework.
+Financial product recommendation falls within the high-risk category,
+requiring impact assessment, transparency obligations, and human oversight.
+Our system's existing compliance architecture (drift monitoring, fairness auditing,
+audit trails, and human-in-the-loop review) aligns with the Act's requirements,
+with the governance reporting module generating documentation
+suitable for regulatory submission.
 
 == Monitoring and Governance
 
@@ -560,7 +564,7 @@ The system implements this at multiple levels:
 
 #figure(
   table(
-    columns: (auto, auto, auto, auto),
+    columns: (1fr, auto, auto, 1fr),
     inset: 5pt,
     align: center,
     stroke: 0.5pt,
@@ -663,13 +667,19 @@ with limited ML engineering resources.
 // Author Contributions
 #heading(numbering: none)[Author Contributions]
 
-Seon-Gyu Jeong (PM/Lead Architect/Data Scientist): Designed the distillation strategy,
+*Seon-Gyu Jeong* (PM / Lead Architect / Data Scientist):
+Designed the distillation strategy,
 recommendation reason generation pipeline, and regulatory compliance architecture.
 Led the overall system design based on domain expertise in financial risk management.
-Eun-Cheol Sim: Feature reverse-mapping registry, vector database pipeline,
+
+*Eun-Cheol Sim*:
+Feature reverse-mapping registry, vector database pipeline,
 and data ingestion for the serving layer.
-Young-Chan Kim: Knowledge distillation implementation, model training validation,
+
+*Young-Chan Kim*:
+Knowledge distillation implementation, model training validation,
 and mathematical verification of distillation quality.
+
 All authors collaborated through Scrum sprints with rapid feedback cycles.
 
 // ============================================================
