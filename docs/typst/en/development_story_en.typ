@@ -514,7 +514,7 @@ The core philosophy of the PLE architecture — Mixture of Experts — was appli
       #text(size: 11pt, fill: anthropic-text, weight: "bold")[Infrastructure and Experimentation]
       #v(4pt)
       #text(size: 10pt, fill: anthropic-text)[
-        • 54 ablation scenarios \
+        • 24 ablation scenarios \
         • AWS SageMaker spot instances \
         • Phase 0 (CPU) + Phase 1\~2 (GPU) separation \
         • Config-driven pipeline architecture
@@ -534,7 +534,7 @@ Two papers are being prepared for submission to arXiv, covering the experience o
 
 == Expert Specialization Revealed by Ablation
 
-Analysis across 54 ablation scenarios clearly demonstrated task-type-specific expert specialization. LightGCN showed the greatest contribution for multiclass tasks (next product prediction), while the Causal expert excelled at regression tasks (customer value estimation). This empirically validates the heterogeneous expert design.
+Analysis across 24 ablation scenarios clearly demonstrated task-type-specific expert specialization. LightGCN showed the greatest contribution for multiclass tasks (next product prediction), while the Causal expert excelled at regression tasks (customer value estimation). This empirically validates the heterogeneous expert design.
 
 == Evaluation Metric Framework
 

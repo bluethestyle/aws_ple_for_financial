@@ -985,7 +985,7 @@ grep "gradient.*norm.*exceed" output/training.log
   [*Item*], [*On-Demand*], [*Spot*],
   [g4dn.xlarge per hour], [\$0.526], [\~\$0.16 (70% savings)],
   [50 epochs (\~4 hours)], [\$2.10], [\~\$0.64],
-  [48-scenario ablation], [\~\$100], [\~\$30],
+  [24-scenario ablation], [\~\$100], [\~\$30],
 )
 
 == Cost Check CLI
