@@ -4,7 +4,7 @@
 
 #set document(
   title: "From Prediction to Persuasion: Agentic Recommendation Reason Generation for Regulatory-Compliant Financial AI",
-  author: ("Seon-Gyu Jeong", "Eun-Cheol Sim", "Young-Chan Kim"),
+  author: ("Seonkyu Jeong", "Euncheol Sim", "Youngchan Kim"),
 )
 
 #set page(
@@ -26,7 +26,7 @@
   #v(0.8em)
 
   #text(size: 11pt)[
-    Seon-Gyu Jeong#super[1], Eun-Cheol Sim#super[1], Young-Chan Kim#super[1]
+    Seonkyu Jeong#super[1], Euncheol Sim#super[1], Youngchan Kim#super[1]
   ]
 
   #v(0.3em)
@@ -668,16 +668,16 @@ with limited ML engineering resources.
 // Author Contributions
 #heading(numbering: none)[Author Contributions]
 
-*Seon-Gyu Jeong* (PM / Lead Architect / Data Scientist):
+*Seonkyu Jeong* (PM / Lead Architect / Data Scientist):
 Designed the distillation strategy,
 recommendation reason generation pipeline, and regulatory compliance architecture.
 Led the overall system design based on domain expertise in financial risk management.
 
-*Eun-Cheol Sim*:
+*Euncheol Sim*:
 Feature reverse-mapping registry, vector database pipeline,
 and data ingestion for the serving layer.
 
-*Young-Chan Kim*:
+*Youngchan Kim*:
 Knowledge distillation implementation, model training validation,
 and mathematical verification of distillation quality.
 
@@ -699,7 +699,7 @@ with development conducted on a single consumer GPU in a resource-constrained en
 The authors thank Yeon-Jin Kim for consistently providing valuable insights
 on industry trends and marketing perspectives that informed the system's design direction.
 
-The authors express deep gratitude to Eun-Cheol Sim and Young-Chan Kim,
+The authors express deep gratitude to Euncheol Sim and Youngchan Kim,
 who dedicated countless nights and weekends to this project
 with unwavering commitment despite the absence of formal employment or compensation.
 

@@ -4,7 +4,7 @@
 
 #set document(
   title: "Heterogeneous Expert PLE: An Explainable Multi-Task Architecture for Financial Product Recommendation",
-  author: ("Seon-Gyu Jeong", "Eun-Cheol Sim", "Young-Chan Kim"),
+  author: ("Seonkyu Jeong", "Euncheol Sim", "Youngchan Kim"),
 )
 
 #set page(
@@ -26,7 +26,7 @@
   #v(0.8em)
 
   #text(size: 11pt)[
-    Seon-Gyu Jeong#super[1], Eun-Cheol Sim#super[1], Young-Chan Kim#super[1]
+    Seonkyu Jeong#super[1], Euncheol Sim#super[1], Youngchan Kim#super[1]
   ]
 
   #v(0.3em)
@@ -1035,7 +1035,7 @@ and regulatory compliance mapping for Korean FSS and EU AI Act requirements.
 // Author Contributions
 #heading(numbering: none)[Author Contributions]
 
-*Seon-Gyu Jeong* (PM / Lead Architect / Data Scientist):
+*Seonkyu Jeong* (PM / Lead Architect / Data Scientist):
 Conceived the project direction,
 designed the heterogeneous expert architecture and two-axis decomposition framework,
 selected multi-disciplinary feature engineering approaches based on structural isomorphism,
@@ -1043,11 +1043,11 @@ defined task groups and regulatory compliance mapping,
 led AI-augmented development methodology, and wrote the manuscript.
 Overall technical leadership and Scrum-based rapid feedback coordination.
 
-*Eun-Cheol Sim*:
+*Euncheol Sim*:
 Data ingestion pipeline, feature engineering implementation,
 feature business reverse-mapping, and vector database pipeline management.
 
-*Young-Chan Kim*:
+*Youngchan Kim*:
 Model training, mathematical verification,
 and knowledge distillation implementation.
 
@@ -1076,7 +1076,7 @@ requiring custom parallel query logic to overcome I/O bottlenecks.
 The authors thank Yeon-Jin Kim for consistently providing valuable insights
 on industry trends and marketing perspectives that informed the system's design direction.
 
-The authors express deep gratitude to Eun-Cheol Sim and Young-Chan Kim,
+The authors express deep gratitude to Euncheol Sim and Youngchan Kim,
 who dedicated countless nights and weekends to this project
 with unwavering commitment despite the absence of formal employment or compensation.
 
