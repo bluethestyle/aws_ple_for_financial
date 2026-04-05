@@ -703,14 +703,14 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
                         _removed_experts, filtered_shared, filtered_task)
 
     # -- Structure ablation: PLE toggle --
+    # use_ple=false: disable PLE layering/CGC gating but KEEP all heterogeneous experts.
     use_ple_raw = hp.get("use_ple")
     if use_ple_raw is not None:
         use_ple = json.loads(use_ple_raw) if isinstance(use_ple_raw, str) else use_ple_raw
         if not use_ple:
             num_extraction_layers = 1
-            num_shared_experts = 1
-            expert_basket = None
-            logger.info("Structure ablation: PLE disabled (shared-bottom mode)")
+            # Keep num_shared_experts and expert_basket intact
+            logger.info("Structure ablation: PLE disabled (single layer, all experts preserved)")
 
     # -- Structure ablation: adaTT toggle --
     use_adatt_raw = hp.get("use_adatt")
