@@ -2,6 +2,8 @@
 // Paper 1: Heterogeneous Expert PLE — Architecture & Ablation
 // ============================================================
 
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
+
 #set document(
   title: "Heterogeneous Expert PLE: An Explainable Multi-Task Architecture for Financial Product Recommendation",
   author: ("Seonkyu Jeong", "Euncheol Sim", "Youngchan Kim"),
@@ -443,14 +445,113 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
 #figure(
   scope: "parent",
   placement: auto,
-  // TODO: Replace with actual architecture diagram
-  rect(width: 100%, height: 8cm, stroke: 0.5pt)[
-    #align(center + horizon)[
-      _Architecture diagram placeholder_ \
-      Input (318 features) → 12 Feature Groups → CGC Gate → 7 Experts → 4 Task Groups → 18 Towers → Output \
-      + adaTT inter/intra transfer
-    ]
-  ],
+  kind: image,
+  {
+    set text(size: 7pt)
+    let gray-fill = luma(245)
+    let accent = rgb("#4a7c9b")
+    let accent-light = rgb("#d6e6f0")
+    let expert-fill = rgb("#e8eef3")
+    let task-fill = rgb("#f0f0f0")
+
+    diagram(
+      spacing: (8pt, 12pt),
+      node-stroke: 0.6pt + luma(80),
+      edge-stroke: 0.7pt + luma(80),
+      node-corner-radius: 3pt,
+
+      // === Row 0: Input ===
+      node((3, 0), [*Input* \ 318 features], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
+
+      // === Row 1: Feature Groups ===
+      node((3, 1), [*12 Feature Groups* \ #text(size: 6pt)[demo · product · txn · tda#sub[g] · tda#sub[l] · hmm · mamba · hierarchy · graph · gmm · model · derived]], width: 80mm, fill: gray-fill, name: <fg>),
+
+      // === Row 2: Feature Router ===
+      node((3, 2), [*Feature Router*], shape: fletcher.shapes.diamond, width: 26mm, height: 10mm, fill: accent-light, name: <router>),
+
+      // === Row 3: 7 Heterogeneous Experts ===
+      node((0, 3), [*DeepFM*], width: 16mm, fill: expert-fill, name: <e1>),
+      node((1, 3), [*Temporal*], width: 16mm, fill: expert-fill, name: <e2>),
+      node((2, 3), [*HGCN*], width: 16mm, fill: expert-fill, name: <e3>),
+      node((3, 3), [*PersLay*], width: 16mm, fill: expert-fill, name: <e4>),
+      node((4, 3), [*LightGCN*], width: 16mm, fill: expert-fill, name: <e5>),
+      node((5, 3), [*Causal*], width: 16mm, fill: expert-fill, name: <e6>),
+      node((6, 3), [*OT*], width: 16mm, fill: expert-fill, name: <e7>),
+
+      // Expert group label
+      node(
+        enclose: (<e1>, <e7>),
+        stroke: (paint: luma(160), thickness: 0.5pt, dash: "dashed"),
+        corner-radius: 5pt,
+        fill: none,
+        snap: -1,
+        name: <experts-box>,
+      ),
+
+      // === Row 4: CGC Gate ===
+      node((3, 4.4), [*CGC Gate* \ #text(size: 6pt)[(softmax / sigmoid)]], width: 34mm, fill: accent-light, name: <gate>),
+
+      // === Row 5: 4 Task Groups with adaTT ===
+      node((0.75, 5.6), [*Engagement*], width: 20mm, fill: task-fill, name: <tg1>),
+      node((2.25, 5.6), [*Lifecycle*], width: 20mm, fill: task-fill, name: <tg2>),
+      node((3.75, 5.6), [*Value*], width: 20mm, fill: task-fill, name: <tg3>),
+      node((5.25, 5.6), [*Consumption*], width: 20mm, fill: task-fill, name: <tg4>),
+
+      // Task group enclosure
+      node(
+        enclose: (<tg1>, <tg4>),
+        stroke: (paint: luma(160), thickness: 0.5pt, dash: "dashed"),
+        corner-radius: 5pt,
+        fill: none,
+        snap: -1,
+        name: <tg-box>,
+      ),
+
+      // === Row 6: Task Towers ===
+      node((3, 6.8), [*18 Task Towers* → Predictions], width: 50mm, fill: gray-fill, name: <towers>),
+
+      // === Row 7: Knowledge Distillation ===
+      node((3, 7.8), [*Knowledge Distillation* → LGBM ×18], width: 50mm, fill: gray-fill, name: <kd>),
+
+      // === Row 8: Serving ===
+      node((3, 8.8), [*Lambda Serving* + Reason Generation], shape: fletcher.shapes.pill, width: 50mm, fill: gray-fill, name: <serve>),
+
+      // === Vertical edges ===
+      edge(<input>, <fg>, "->"),
+      edge(<fg>, <router>, "->"),
+      edge(<router>, <e1>, "->"),
+      edge(<router>, <e2>, "->"),
+      edge(<router>, <e3>, "->"),
+      edge(<router>, <e4>, "->"),
+      edge(<router>, <e5>, "->"),
+      edge(<router>, <e6>, "->"),
+      edge(<router>, <e7>, "->"),
+      edge(<e1>, <gate>, "->"),
+      edge(<e2>, <gate>, "->"),
+      edge(<e3>, <gate>, "->"),
+      edge(<e4>, <gate>, "->"),
+      edge(<e5>, <gate>, "->"),
+      edge(<e6>, <gate>, "->"),
+      edge(<e7>, <gate>, "->"),
+      edge(<gate>, <tg1>, "->"),
+      edge(<gate>, <tg2>, "->"),
+      edge(<gate>, <tg3>, "->"),
+      edge(<gate>, <tg4>, "->"),
+      edge(<tg1>, <towers>, "->"),
+      edge(<tg2>, <towers>, "->"),
+      edge(<tg3>, <towers>, "->"),
+      edge(<tg4>, <towers>, "->"),
+      edge(<towers>, <kd>, "->"),
+      edge(<kd>, <serve>, "->"),
+
+      // === adaTT transfer arrows (between task groups) ===
+      edge(<tg1>, <tg2>, "<->", stroke: 0.8pt + accent, bend: -25deg, label: text(size: 5pt, fill: accent)[intra]),
+      edge(<tg2>, <tg3>, "<->", stroke: 0.8pt + accent, bend: -25deg),
+      edge(<tg3>, <tg4>, "<->", stroke: 0.8pt + accent, bend: -25deg, label: text(size: 5pt, fill: accent)[intra]),
+      edge(<tg1>, <tg3>, "<->", stroke: (paint: accent, thickness: 0.5pt, dash: "dashed"), bend: -40deg, label: text(size: 5pt, fill: accent)[inter]),
+      edge(<tg2>, <tg4>, "<->", stroke: (paint: accent, thickness: 0.5pt, dash: "dashed"), bend: -40deg, label: text(size: 5pt, fill: accent)[inter]),
+    )
+  },
   caption: [Heterogeneous Expert PLE architecture overview.],
 ) <fig:architecture>
 

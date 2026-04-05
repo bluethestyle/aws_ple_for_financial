@@ -2,6 +2,8 @@
 // Paper 1: Heterogeneous Expert PLE — 아키텍처 및 어블레이션
 // ============================================================
 
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
+
 #set document(
   title: "이종 전문가 PLE: 금융 상품 추천을 위한 설명 가능한 멀티태스크 아키텍처",
   author: ("정선규", "심은철", "김영찬"),
@@ -305,22 +307,22 @@ EU AI Act #cite(<euaiact2024>) 는 금융 추천을 고위험 AI로 분류하여
   scope: "parent",
   placement: auto,
   table(
-    columns: (auto, auto, auto),
+    columns: (auto, auto, auto, auto),
     inset: 5pt,
     align: left,
     stroke: 0.5pt,
-    [*모달리티*], [*특성*], [*최적 도구*],
-    [상태(State)], [이진/범주형, 시불변], [피처 교차(DeepFM)],
-    [스냅샷(Snapshot)], [특정 시점의 수치], [클러스터링(GMM)],
-    [단기 시계열], [최근 순차 패턴], [어텐션(Transformer)],
-    [장기 시계열], [수개월 추세], [상태 공간(Mamba)],
-    [불연속 시계열], [불규칙 / 휴면 갭], [적응형 ODE (LNN)],
-    [계층(Hierarchy)], [트리 구조 카테고리], [쌍곡 임베딩(HGCN)],
-    [관계(Relations)], [고객-상품 그래프], [그래프 합성곱(LightGCN)],
-    [위상(Topology)], [행동 패턴의 형태], [지속적 호몰로지(PersLay)],
-    [인과(Causality)], [방향성 의존관계], [DAG 제약(NOTEARS)],
+    [*모달리티*], [*예시*], [*전문가*], [*생성기*],
+    [상태(State)], [is_active, holdings], [DeepFM], [base],
+    [스냅샷(Snapshot)], [balance, demographics], [GMM, DeepFM], [GMM clustering],
+    [단기 시계열], [recent transactions], [Transformer], [temporal],
+    [장기 시계열], [monthly trends], [Mamba], [mamba temporal],
+    [불연속 시계열], [dormant→active], [LNN], [model derived],
+    [계층(Hierarchy)], [product category tree], [HGCN], [product hierarchy],
+    [관계(Relations)], [customer-product graph], [LightGCN], [graph collab.],
+    [위상(Topology)], [behavioral shape], [PersLay], [TDA global/local],
+    [인과(Causality)], [behavioral causation], [Causal], [causal features],
   ),
-  caption: [데이터 모달리티 분해 (축 2). 각 모달리티는 구조적으로 다른 전문가를 요구한다.],
+  caption: [데이터 모달리티 분해 (축 2). 각 모달리티는 전문가와 피처 생성기에 매핑된다.],
 ) <tab:modality-axis>
 
 *교차곱(cross-product)*은 아키텍처를 정의한다:
@@ -419,29 +421,9 @@ Google의 PageRank는 마르코프 체인 정상 분포의 응용이다.
 == 데이터 축 분류
 
 금융 고객 데이터는 본질적으로 다중 모달 구조를 나타낸다.
-데이터를 다수의 축을 따라 분류하며, 각각 최적의 피처 생성기와 전문가에 매핑된다:
+데이터를 다수의 축을 따라 분류하며, 각각 최적의 피처 생성기와 전문가에 매핑된다.
 
-#figure(
-  scope: "parent",
-  placement: auto,
-  table(
-    columns: (auto, auto, auto, auto),
-    inset: 6pt,
-    align: left,
-    stroke: 0.5pt,
-    [*데이터 축*], [*예시*], [*전문가*], [*생성기*],
-    [상태], [is_active, holdings], [DeepFM], [base],
-    [스냅샷], [balance, demographics], [GMM, DeepFM], [GMM clustering],
-    [단기 시계열], [recent transactions], [Transformer], [temporal],
-    [장기 시계열], [monthly trends], [Mamba], [mamba temporal],
-    [불연속 시계열], [dormant→active], [LNN], [model derived],
-    [계층], [product category tree], [HGCN], [product hierarchy],
-    [관계], [customer-product graph], [LightGCN], [graph collab.],
-    [위상], [behavioral shape], [PersLay], [TDA global/local],
-    [인과], [behavioral causation], [Causal], [causal features],
-  ),
-  caption: [데이터 축에서 전문가 및 피처 생성기로의 매핑.],
-) <tab:data-axis>
+데이터 축에서 전문가 및 피처 생성기로의 완전한 매핑은 @tab:modality-axis 에 나타나 있다. <tab:data-axis>
 
 #text(size: 8.5pt, fill: gray)[
   _참고_: 단기/장기/불연속 시계열은 Temporal Ensemble 전문가의 세 하위 구성요소
@@ -455,14 +437,113 @@ Google의 PageRank는 마르코프 체인 정상 분포의 응용이다.
 #figure(
   scope: "parent",
   placement: auto,
-  // TODO: 실제 아키텍처 다이어그램으로 교체
-  rect(width: 100%, height: 8cm, stroke: 0.5pt)[
-    #align(center + horizon)[
-      _아키텍처 다이어그램 플레이스홀더_ \
-      입력 (318 피처) → 12 피처 그룹 → CGC 게이트 → 7 전문가 → 4 태스크 그룹 → 18 타워 → 출력 \
-      + adaTT 그룹 간/내 전이
-    ]
-  ],
+  kind: image,
+  {
+    set text(size: 7pt)
+    let gray-fill = luma(245)
+    let accent = rgb("#4a7c9b")
+    let accent-light = rgb("#d6e6f0")
+    let expert-fill = rgb("#e8eef3")
+    let task-fill = rgb("#f0f0f0")
+
+    diagram(
+      spacing: (8pt, 12pt),
+      node-stroke: 0.6pt + luma(80),
+      edge-stroke: 0.7pt + luma(80),
+      node-corner-radius: 3pt,
+
+      // === Row 0: 입력 ===
+      node((3, 0), [*입력* \ 318 피처], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
+
+      // === Row 1: 피처 그룹 ===
+      node((3, 1), [*12 피처 그룹* \ #text(size: 6pt)[인구통계 · 상품 · 거래 · tda#sub[g] · tda#sub[l] · hmm · mamba · 계층 · 그래프 · gmm · 모델파생 · 파생]], width: 80mm, fill: gray-fill, name: <fg>),
+
+      // === Row 2: 피처 라우터 ===
+      node((3, 2), [*피처 라우터*], shape: fletcher.shapes.diamond, width: 26mm, height: 10mm, fill: accent-light, name: <router>),
+
+      // === Row 3: 7 이종 전문가 ===
+      node((0, 3), [*DeepFM*], width: 16mm, fill: expert-fill, name: <e1>),
+      node((1, 3), [*Temporal*], width: 16mm, fill: expert-fill, name: <e2>),
+      node((2, 3), [*HGCN*], width: 16mm, fill: expert-fill, name: <e3>),
+      node((3, 3), [*PersLay*], width: 16mm, fill: expert-fill, name: <e4>),
+      node((4, 3), [*LightGCN*], width: 16mm, fill: expert-fill, name: <e5>),
+      node((5, 3), [*Causal*], width: 16mm, fill: expert-fill, name: <e6>),
+      node((6, 3), [*OT*], width: 16mm, fill: expert-fill, name: <e7>),
+
+      // 전문가 그룹 테두리
+      node(
+        enclose: (<e1>, <e7>),
+        stroke: (paint: luma(160), thickness: 0.5pt, dash: "dashed"),
+        corner-radius: 5pt,
+        fill: none,
+        snap: -1,
+        name: <experts-box>,
+      ),
+
+      // === Row 4: CGC 게이트 ===
+      node((3, 4.4), [*CGC 게이트* \ #text(size: 6pt)[(softmax / sigmoid)]], width: 34mm, fill: accent-light, name: <gate>),
+
+      // === Row 5: 4 태스크 그룹 + adaTT ===
+      node((0.75, 5.6), [*참여*], width: 20mm, fill: task-fill, name: <tg1>),
+      node((2.25, 5.6), [*생애주기*], width: 20mm, fill: task-fill, name: <tg2>),
+      node((3.75, 5.6), [*가치*], width: 20mm, fill: task-fill, name: <tg3>),
+      node((5.25, 5.6), [*소비*], width: 20mm, fill: task-fill, name: <tg4>),
+
+      // 태스크 그룹 테두리
+      node(
+        enclose: (<tg1>, <tg4>),
+        stroke: (paint: luma(160), thickness: 0.5pt, dash: "dashed"),
+        corner-radius: 5pt,
+        fill: none,
+        snap: -1,
+        name: <tg-box>,
+      ),
+
+      // === Row 6: 태스크 타워 ===
+      node((3, 6.8), [*18 태스크 타워* → 예측], width: 50mm, fill: gray-fill, name: <towers>),
+
+      // === Row 7: 지식 증류 ===
+      node((3, 7.8), [*지식 증류* → LGBM ×18], width: 50mm, fill: gray-fill, name: <kd>),
+
+      // === Row 8: 서빙 ===
+      node((3, 8.8), [*Lambda 서빙* + 추천 사유 생성], shape: fletcher.shapes.pill, width: 50mm, fill: gray-fill, name: <serve>),
+
+      // === 수직 연결 ===
+      edge(<input>, <fg>, "->"),
+      edge(<fg>, <router>, "->"),
+      edge(<router>, <e1>, "->"),
+      edge(<router>, <e2>, "->"),
+      edge(<router>, <e3>, "->"),
+      edge(<router>, <e4>, "->"),
+      edge(<router>, <e5>, "->"),
+      edge(<router>, <e6>, "->"),
+      edge(<router>, <e7>, "->"),
+      edge(<e1>, <gate>, "->"),
+      edge(<e2>, <gate>, "->"),
+      edge(<e3>, <gate>, "->"),
+      edge(<e4>, <gate>, "->"),
+      edge(<e5>, <gate>, "->"),
+      edge(<e6>, <gate>, "->"),
+      edge(<e7>, <gate>, "->"),
+      edge(<gate>, <tg1>, "->"),
+      edge(<gate>, <tg2>, "->"),
+      edge(<gate>, <tg3>, "->"),
+      edge(<gate>, <tg4>, "->"),
+      edge(<tg1>, <towers>, "->"),
+      edge(<tg2>, <towers>, "->"),
+      edge(<tg3>, <towers>, "->"),
+      edge(<tg4>, <towers>, "->"),
+      edge(<towers>, <kd>, "->"),
+      edge(<kd>, <serve>, "->"),
+
+      // === adaTT 전이 화살표 (태스크 그룹 간) ===
+      edge(<tg1>, <tg2>, "<->", stroke: 0.8pt + accent, bend: -25deg, label: text(size: 5pt, fill: accent)[그룹내]),
+      edge(<tg2>, <tg3>, "<->", stroke: 0.8pt + accent, bend: -25deg),
+      edge(<tg3>, <tg4>, "<->", stroke: 0.8pt + accent, bend: -25deg, label: text(size: 5pt, fill: accent)[그룹내]),
+      edge(<tg1>, <tg3>, "<->", stroke: (paint: accent, thickness: 0.5pt, dash: "dashed"), bend: -40deg, label: text(size: 5pt, fill: accent)[그룹간]),
+      edge(<tg2>, <tg4>, "<->", stroke: (paint: accent, thickness: 0.5pt, dash: "dashed"), bend: -40deg, label: text(size: 5pt, fill: accent)[그룹간]),
+    )
+  },
   caption: [이종 전문가 PLE 아키텍처 개요.],
 ) <fig:architecture>
 
@@ -667,24 +748,9 @@ SIR 모델의 상품 채택 곡선은 "신규 상품 관심도 증가"로 역매
 18개 예측 태스크를 금융 고객 DNA에 기반하여 4개 그룹으로 조직한다.
 각 태스크 그룹은 하나의 DNA 축(@tab:dna-axis)에 대응하며,
 각 그룹 내에서 서로 다른 모달리티 전문가(@tab:modality-axis)가 다르게 기여하고,
-CGC 게이트가 태스크별 최적 조합을 학습한다:
+CGC 게이트가 태스크별 최적 조합을 학습한다.
 
-#figure(
-  scope: "parent",
-  placement: auto,
-  table(
-    columns: (auto, auto, 1fr),
-    inset: 6pt,
-    align: left,
-    stroke: 0.5pt,
-    [*그룹*], [*금융 DNA*], [*태스크*],
-    [활동(Engagement)], [고객이 무엇을 하는가?], [has_nba #linebreak() engagement_score #linebreak() next_mcc #linebreak() top_mcc_shift #linebreak() mcc_diversity_trend],
-    [생애주기(Lifecycle)], [고객이 어디에 있는가?], [churn_signal #linebreak() tenure_stage #linebreak() segment_prediction],
-    [가치(Value)], [고객의 가치는 얼마인가?], [income_tier #linebreak() spend_level #linebreak() cross_sell_count #linebreak() product_stability],
-    [소비(Consumption)], [고객이 무엇을 구매할 것인가?], [will_acquire\_\* (5), nba_primary],
-  ),
-  caption: [금융 고객 DNA에 기반한 4개 태스크 그룹.],
-) <tab:task-groups>
+4개 태스크 그룹 --- 활동(Engagement), 생애주기(Lifecycle), 가치(Value), 소비(Consumption) --- 과 그 구성 태스크는 @tab:dna-axis 에 정의되어 있다. <tab:task-groups>
 
 adaTT는 차별화된 전이를 강제한다: 강한 그룹 내 전이(동일 DNA 관점)와
 약한 그룹 간 전이(상이한 관점, 부정적 전이 최소화).
