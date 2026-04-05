@@ -323,6 +323,18 @@ AI collaboration extended far beyond code implementation. The on-prem project al
 
 The AI management framework established in the on-prem project was directly ported to the AWS project. A memory-bank system (8 context files: projectbrief, activeContext, progress, techContext, productContext, systemPatterns, tasks, style-guide) maintained cross-session context. .claude/RULES.md enforced coding rules, synchronized with .cursorrules so Cursor AI and Claude Code followed identical guardrails. The team even ran automated experiment branches across three AI platforms (exp/claude-auto-\*, exp/codex-auto-\*, exp/vertex-auto-\*), comparing Claude, Codex, and Vertex AI.
 
+== Why Claude Code Was Essential
+
+What proved decisive for this project's complexity was long context retention (1M tokens), cross-session memory banks, and parallel sub-agent execution.
+
+Tracing 3 label leakage cases in sequence was only possible by maintaining context across days of work. After fixing the first leakage (has_nba duplicate column), the second (ground truth glob sorting) and third (generator label input) were discovered in the same session because the context of previous fixes remained alive.
+
+Simultaneously diagnosing 4 FP16 NaN root causes (CGC entropy, OT Sinkhorn, Causal DAG, logits) required surveying the entire model architecture while tracing numerical operations in each expert. This was impossible with a file-by-file approach.
+
+Discovering the NeurIPS 2024 sigmoid paper during experiment wait time, connecting it to our observation of PLE softmax non-convergence, and implementing the sigmoid gate — this all happened within one continuous context: experiment analysis to literature search to theory connection to code implementation in a single flow.
+
+Maintaining consistency across 4 papers and 22 technical documents while making simultaneous edits was also a task only possible with an agent that remembered the entire document ecosystem.
+
 == Key Patterns Discovered in AI Collaboration
 
 Throughout the project, recurring patterns of AI collaboration emerged. These patterns were not deliberately designed but manifested naturally through actual work.
