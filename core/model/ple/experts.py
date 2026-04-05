@@ -263,6 +263,7 @@ class CGCLayer(nn.Module):
         self.num_task_experts = num_task_experts
         self.expert_hidden_dim = expert_hidden_dim
         self.feature_router = feature_router
+        self._last_gate_weights: Dict[int, torch.Tensor] = {}
 
         if expert_hidden_dims is None:
             expert_hidden_dims = [expert_hidden_dim]
@@ -384,6 +385,8 @@ class CGCLayer(nn.Module):
             # Weighted sum: (batch, hidden)
             gated = (gate_weights.unsqueeze(-1) * all_outs).sum(dim=1)
             outputs.append(gated)
+            if not self.training:
+                self._last_gate_weights[task_idx] = gate_weights.detach()
 
         return outputs, shared_concat
 
