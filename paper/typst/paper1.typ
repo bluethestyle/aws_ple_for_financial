@@ -221,6 +221,15 @@ means losing irreplaceable topological signal, not merely a redundant representa
 --- graph convolution, state-space models, topological persistence,
 causal DAG constraints, optimal transport ---
 as equal peers within a shared expert basket.
+Expert collapse manifests in two forms:
+(1) _function space collapse_ --- homogeneous experts converge to identical functions
+due to shared architecture and gradient dynamics;
+(2) _routing collapse_ --- gate weights concentrate on a single expert,
+effectively deactivating others regardless of their functional diversity.
+Our heterogeneous expert design structurally prevents (1),
+while sigmoid gating @sigmoid_moe2024 mitigates (2)
+by allowing independent, non-competitive expert contributions.
+
 Our work provides a *structural guarantee* against expert collapse:
 a DeepFM expert cannot converge to the same function as an HGCN expert
 regardless of training dynamics, because their architectures
@@ -381,6 +390,12 @@ Product adoption spreading through a customer network follows the same
 compartmental dynamics as an SIR epidemic model.
 These are not metaphors --- the governing equations are identical,
 and the solutions transfer with mathematical rigor.
+We emphasize that these are not loose analogies:
+the governing differential equations are structurally identical
+(see Appendix E for side-by-side comparison).
+The validity of each mapping can be independently verified
+by checking whether the mathematical preconditions
+of the source domain's theorems hold in the financial domain.
 
 This principle has a distinguished history in science and engineering:
 Shannon's information entropy was directly borrowed from Boltzmann's thermodynamic entropy;
@@ -911,6 +926,23 @@ Six structure variants are compared: shared-bottom (no PLE/adaTT), PLE-softmax, 
 
 // TODO: Gate weight distribution, SHAP comparison
 
+== Gate Entropy Analysis (RQ6: Does routing collapse occur?)
+
+Beyond function space collapse (prevented structurally by heterogeneous experts),
+routing collapse can occur when CGC gate weights concentrate on a single expert.
+We measure per-task gate entropy:
+
+$ H_t = - sum_k w_(t,k) log w_(t,k) $
+
+where $w_(t,k)$ is the gate weight for expert $k$ on task $t$.
+Maximum entropy $log K$ (K=7 experts, $log 7 approx 1.95$) indicates
+uniform expert utilization; entropy near zero indicates routing collapse.
+
+We compare gate entropy between softmax and sigmoid CGC gates
+across all 18 tasks, reporting mean entropy, minimum entropy (worst-case task),
+and expert utilization rate (fraction of experts with $w > 0.05$).
+// TODO: fill with results after structure ablation
+
 // ============================================================
 = Discussion
 
@@ -1143,6 +1175,24 @@ Mixed-precision (FP16) training in Phase 2 required four specific fixes:
 (2) OT Sinkhorn: FP32 cast before log-domain computation;
 (3) Causal DAG regularization: FP32 Taylor expansion to prevent overflow;
 (4) last logits: float() cast for stable loss computation.
+
+#heading(numbering: none, level: 3)[E. Structural Isomorphism Verification]
+
+To address the concern that cross-disciplinary feature engineering
+may be "plausible analogy rather than rigorous isomorphism,"
+we present the governing equations side by side:
+
+*Chemical Kinetics -> Spending Activation:*
+Arrhenius: $k = A e^(-E_a \/ R T)$ where $E_a$ = activation energy.
+Spending: $p_("reactivate") = A e^(-E_("threshold") \/ S)$ where $S$ = stimulus intensity.
+Both describe the probability of a state transition as a function of
+an energy barrier and an external driving force.
+
+*SIR -> Product Adoption:*
+Epidemiology: $d I / d t = beta S I - gamma I$
+Adoption: $d A / d t = beta_("exposure") dot U dot A - gamma_("churn") dot A$
+where $U$ = unadopted customers, $A$ = adopted, $beta$ = contact/exposure rate.
+The compartmental dynamics are identical; only the variable names change.
 
 // ============================================================
 // References
