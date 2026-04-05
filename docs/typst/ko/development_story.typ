@@ -16,7 +16,7 @@
   fill: anthropic-bg,
   header: context {
     if counter(page).get().first() > 1 [
-      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #set text(size: 7.5pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted, tracking: 0.12em)
       #smallcaps[개발 스토리]
       #h(1fr)
       #smallcaps[AI 에이전트 팀으로 차세대 추천 시스템을 만들기까지]
@@ -29,7 +29,7 @@
     if pg > 1 [
       #line(length: 100%, stroke: 0.3pt + anthropic-rule)
       #v(4pt)
-      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #set text(size: 8pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted)
       #h(1fr)
       — #pg —
       #h(1fr)
@@ -39,7 +39,7 @@
 
 // ── Base text ──
 #set text(
-  font: "New Computer Modern",
+  font: ("Pretendard", "New Computer Modern"),
   size: 10pt,
   fill: anthropic-text,
   lang: "ko",
@@ -197,7 +197,7 @@
 #set page(
   header: context {
     if counter(page).get().first() > 1 [
-      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #set text(size: 7.5pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted, tracking: 0.12em)
       #smallcaps[개발 스토리]
       #h(1fr)
       #smallcaps[AI 에이전트 팀으로 차세대 추천 시스템을 만들기까지]
@@ -210,7 +210,7 @@
     if pg > 1 [
       #line(length: 100%, stroke: 0.3pt + anthropic-rule)
       #v(4pt)
-      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #set text(size: 8pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted)
       #h(1fr)
       — #pg —
       #h(1fr)
@@ -418,9 +418,15 @@ AI 에이전트는 대화 세션이 끝나면 맥락을 잃는다. 이 문제를
 
 = 기술적 도전과 해결
 
-== Label Leakage 3건 발견 및 수정
+개발 과정에서 마주친 20건 이상의 기술적 문제를 5개 범주로 정리한다. 단순한 디버깅 기록이 아니라, 각 범주가 소비자 GPU 환경에서의 대규모 멀티태스크 학습이 요구하는 엔지니어링 역량의 단면을 보여준다.
 
-모델 학습 초기에 비정상적으로 높은 성능이 관측되었다. 원인 분석 결과, 3건의 label leakage를 발견했다.
+== 데이터 무결성 (Data Integrity)
+
+학습 데이터의 오염은 모델 성능을 무의미하게 만든다. 이 프로젝트에서는 레이블 리키지와 스키마 불일치가 반복적으로 발생했으며, 각각을 체계적으로 탐지하고 방어 체계를 구축했다.
+
+=== Label Leakage 3건
+
+모델 학습 초기에 비정상적으로 높은 성능(AUC=1.0)이 관측되어 3건의 리키지를 발견했다.
 
 #set par(first-line-indent: 0pt)
 #block(
@@ -429,116 +435,86 @@ AI 에이전트는 대화 세션이 끝나면 맥락을 잃는다. 이 문제를
   inset: (left: 12pt, y: 6pt),
 )[
   #set text(size: 10pt)
-  #strong[Leak 1 --- 중복 컬럼]: `has_nba_1` 컬럼이 레이블과 완전 중복(상관계수 1.0)으로 존재했다. 레이블 재파생 전에 EXCLUDE 처리가 필요했다. \
-  #strong[Leak 2 --- 파일 로딩 순서]: `ground_truth.parquet`가 `benchmark.parquet` 대신 로딩되었다. glob의 알파벳 정렬로 인해 정답 파일이 먼저 선택된 것이다. 해당 파일을 하위 디렉토리로 이동하여 해결했다. \
-  #strong[Leak 3 --- Generator 입력 오염]: GMM, model_derived 등의 generator가 레이블 컬럼을 입력으로 사용하여 AUC=1.0이 관측되었다. `label_cols`를 자동 제외하는 로직을 추가했다.
+  • *중복 컬럼*: `has_nba_1`이 레이블과 상관계수 1.0으로 존재. EXCLUDE 처리로 해결. \
+  • *파일 로딩 순서*: glob 알파벳 정렬로 `ground_truth.parquet`가 `benchmark.parquet`보다 먼저 로드됨. 하위 디렉토리 분리로 해결. \
+  • *Generator 입력 오염*: GMM 등의 generator가 레이블 컬럼을 입력으로 사용. `label_cols` 자동 제외 로직 추가.
 ]
 #set par(first-line-indent: 1.2em)
 
-#v(0.15cm)
+#v(0.1cm)
 LeakageValidator를 학습 전 필수 단계로 추가하고, CLAUDE.md 가드레일에 검증 규칙을 명시하여 재발을 방지했다.
 
-== Phase 2 NaN 문제 (FP16 Underflow)
+=== apply_ablation Schema 미갱신
 
-Mixed precision (AMP) 학습 중 Phase 2에서 NaN loss가 발생했다. 원인은 BFloat16 환경에서의 underflow였다. 작은 gradient 값들이 FP16 범위 밖으로 떨어지면서 NaN으로 전파되었다.
+Ablation 필터가 텐서에서 피처를 제거하는 데 성공했지만, `feature_schema["columns"]`가 원래의 316개 컬럼을 유지하여 모델이 매번 동일한 316차원 입력을 받았다. `apply_ablation`에서 텐서 제거와 동시에 `columns`, `num_features`, `feature_group_ranges`를 함께 갱신하도록 수정하여 해결했다.
 
-#info-box(
-  [해결 방법],
-  [
-    • BFloat16에서 `.float()` 변환 후 `.numpy()` 호출하는 패턴 적용 \
-    • subprocess pipe deadlock 문제 동시 수정 \
-    • GradScaler 설정 최적화로 underflow 빈도 감소
-  ],
-)
+== 수치 안정성 (Numerical Stability)
 
-== GPU 활용률 최적화 (37% → 98%)
+Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.
 
-초기 학습 시 GPU 활용률이 37%에 불과했다. 병목은 데이터 로딩이었다.
+=== FP16 Underflow와 NaN 전파
 
-#set par(first-line-indent: 0pt)
-#block(
-  width: 100%,
-  stroke: (left: 2pt + anthropic-accent),
-  inset: (left: 12pt, y: 6pt),
-)[
-  #text(size: 10pt, fill: anthropic-text, weight: "bold")[최적화 단계]
-  #v(4pt)
-  #text(size: 10pt, fill: anthropic-text)[
-    • *batch_size 증가*: 512 → 4096 (941K 데이터에 최적화) \
-    • *DataLoader 최적화*: num_workers, pin_memory, prefetch_factor 조정 \
-    • *데이터 전처리 분리*: Phase 0에서 텐서를 미리 저장, 학습 시 로드만 수행 \
-    • *결과*: GPU 활용률 37% → 98%, 학습 시간 약 3배 단축
-  ]
-]
-#set par(first-line-indent: 1.2em)
+Phase 2 AMP 학습 중 CGC 엔트로피, OT Sinkhorn, Causal DAG, logits 연산에서 FP16 underflow로 NaN이 전파되었다. 작은 gradient 값들이 FP16 범위 밖으로 떨어진 것이 원인이었다.
 
-== pandas에서 DuckDB/cuDF로 전환
+=== BFloat16 NumPy 변환 및 GradScaler
 
-941K 행의 데이터를 pandas로 처리하면 메모리 사용량이 급격히 증가했다. 대규모 데이터 처리 백엔드를 DuckDB (CPU columnar)와 cuDF (GPU)로 전환하여 메모리 효율성과 처리 속도를 동시에 개선했다.
+BFloat16 텐서를 `.numpy()`로 변환 시 NumPy가 해당 dtype을 지원하지 않아 모든 validation metrics 계산이 실패했다. 모든 텐서에 `.float()` 캐스트 후 `.numpy()` 호출 패턴을 적용했다. 또한 모든 배치가 NaN인 극단적 상황에서 `scaler.step()`이 "No inf checks were recorded" assertion을 발생시켰다. backward count가 0이면 step을 건너뛰는 방어 로직을 추가했다.
 
-== Docker GPU Passthrough 불안정
+== 인프라 및 환경 (Infrastructure)
 
-Windows 환경에서 Docker를 통한 GPU passthrough가 불안정하게 동작했다. CUDA 버전 불일치, 드라이버 호환성 문제가 반복적으로 발생했다. 결국 Docker를 포기하고 로컬 Python 환경에서 직접 개발하는 방식으로 전환했다.
+소비자 GPU 1대 환경에서는 드라이버 충돌, 백그라운드 프로세스, 네트워크 제약이 실험 설계 자체를 바꿀 수 있다.
 
-== torch CPU/CUDA 버전 충돌
+=== Docker GPU Passthrough 및 좀비 컨테이너
 
-conda 환경에서 torch의 CPU 빌드와 CUDA 빌드가 충돌하는 문제가 발생했다. 패키지 의존성 꼬임으로 인해 CUDA가 인식되지 않는 상황이 반복되었다. conda 캐시를 완전히 정리하고 CUDA 버전을 명시적으로 지정하여 환경을 재구성했다.
+Windows에서 Docker GPU passthrough가 CUDA 버전 불일치로 불안정하여 로컬 Python 환경으로 전환했다. 또한 종료되지 않은 좀비 컨테이너가 GPU 메모리를 점유하여 학습 속도가 1/3로 저하되는 문제도 발생했다.
 
-== Ground Truth 파일 오류 로드
+=== torch CPU/CUDA 버전 충돌
 
-Phase 0 실행 결과가 이상했다. 기대한 300개 이상의 피처 대신 142개만 생성되었고, 기본 피처들이 전부 누락되어 있었다. 원인 추적 결과, `benchmark_ground_truth.parquet`가 glob의 알파벳 순서로 `benchmark_v2.parquet`보다 앞에 위치하여 먼저 로드된 것이었다. Ground truth 파일에는 persona, latent 변수 등 정답 변수만 존재하여, 이를 원본 데이터로 인식한 Phase 0가 엉뚱한 피처를 생성했다. 해결 방법은 단순했다. ground truth 파일을 `ground_truth/` 하위 디렉토리로 분리하여 glob 대상에서 제외시켰다.
+SageMaker SDK v3(3.7.0) 설치 시 torch가 CPU 버전으로 교체되어 GPU 학습이 불가능해졌다. SageMaker v2(2.257.1)로 고정하여 해결했다. conda 환경에서도 CPU/CUDA 빌드 충돌이 반복되어 캐시 정리 후 CUDA 버전을 명시적으로 지정하여 재구성했다.
 
-== Ablation 필터 미작동
+=== torch conda 캐시 복구 및 Ollama GPU 점유
 
-24개 ablation 시나리오를 실행했는데, 모든 시나리오에서 AUC가 0.913으로 동일했다. 피처 제거가 전혀 작동하지 않은 것이다. 원인은 `feature_group_ranges`가 개별 컬럼 단위(예: `tda_global_h0_num_features`)로 저장되어 있었는데, ablation 필터는 그룹명(예: `tda_global`)으로 매칭을 시도했기 때문이다. 키 이름이 한 번도 일치하지 않아 모든 시나리오에서 피처가 하나도 제거되지 않았다. adapter에서 `feature_group_ranges`를 컬럼 단위와 그룹 레벨 양쪽으로 저장하도록 수정하여 해결했다.
+관공서 네트워크에서 `download.pytorch.org`가 방화벽 차단(403)되어 conda 캐시의 기존 패키지를 수동 복사하여 환경을 복구했다. 별도로, Ollama 자동 시작이 VRAM 2GB를 점유하여 batch size 선택에 영향을 미쳤다. 12GB VRAM 환경에서 백그라운드 프로세스 하나가 실험 설계를 바꿀 수 있다.
 
-== apply_ablation Schema 미갱신
+=== VRAM Spillover 분석
 
-Ablation 필터가 작동하기 시작한 후에도, 여전히 모든 시나리오의 성능이 동일했다. 피처를 텐서에서 제거하는 데는 성공했지만, `feature_schema["columns"]`가 원래의 316개 컬럼을 유지하고 있었다. 모델은 schema에 기록된 316차원으로 빌드되어, 제거된 피처 자리가 0으로 패딩되었다. 결국 모델 입장에서는 매번 동일한 차원의 입력을 받은 셈이었다. `apply_ablation` 함수에서 텐서 제거와 동시에 `columns`, `num_features`, `feature_group_ranges`를 함께 갱신하도록 수정하여 비로소 ablation이 정상 작동했다.
+batch 6144에서 전용 12GB + 공유 11GB = 23GB(시나리오당 10시간), batch 2048에서 전용 9GB + 공유 0.1GB = 9.1GB(시나리오당 2시간). 공유 GPU 메모리는 PCIe 경유로 전용 VRAM 대비 10--20배 느렸다. 이 정량 분석으로 최적 batch size를 결정했다.
 
-== Subprocess Pipe Deadlock
+== 파이프라인 엔지니어링 (Pipeline Engineering)
 
-ablation 오케스트레이터가 각 시나리오를 `subprocess.run(capture_output=True)`로 실행했는데, full 시나리오에서 프로세스가 무한 대기 상태에 빠졌다. 원인은 학습 과정에서 출력하는 대량의 stdout이 파이프 버퍼(64KB)를 초과한 것이었다. 버퍼가 가득 차면 자식 프로세스가 쓰기에서 블록되고, 부모 프로세스는 자식이 끝나기를 기다리면서 교착 상태가 발생했다. stdout과 stderr를 파일로 리다이렉트하는 방식으로 전환하여 해결했다.
+대규모 데이터 처리와 ablation 오케스트레이션에서 발생한 시스템 수준의 문제들이다.
 
-== BFloat16 NumPy 변환 실패
+=== pandas에서 DuckDB/cuDF 전환
 
-AMP 학습이 생성한 BFloat16 텐서를 validation 단계에서 `.numpy()`로 변환하려 했으나, NumPy가 BFloat16 dtype을 지원하지 않아 에러가 발생했다. 이로 인해 모든 validation metrics 계산이 실패했다. 학습 자체는 정상적으로 진행되었지만 성능을 확인할 수 없는 상태였다. 모든 텐서에 `.float()` 캐스트를 적용한 후 `.numpy()`를 호출하는 패턴으로 통일하여 해결했다.
+941K 행의 pandas 처리에서 메모리가 급증했다. DuckDB(CPU columnar)와 cuDF(GPU)로 전환하여 메모리 효율성과 처리 속도를 동시에 개선했다.
 
-== GradScaler Assertion 에러
+=== Subprocess Pipe Deadlock
 
-Phase 2에서 모든 배치가 NaN을 생성하는 극단적 상황이 발생했다. 모든 배치가 NaN이면 backward pass가 한 번도 호출되지 않는데, `scaler.step()`은 최소 한 번의 inf check가 수행되었음을 가정하여 "No inf checks were recorded" assertion을 발생시켰다. `_scaler_backward_count`를 추적하여 0인 경우 `scaler.step()`을 건너뛰는 방어 로직을 추가했다. 이는 AMP와 multi-task loss의 조합에서 발생하는 드문 엣지 케이스였다.
+ablation 오케스트레이터가 `subprocess.run(capture_output=True)`로 시나리오를 실행했으나, 대량의 stdout이 파이프 버퍼(64KB)를 초과하여 교착 상태가 발생했다. stdout/stderr를 파일로 리다이렉트하여 해결했다.
 
-== Docker 좀비 컨테이너
+=== Ground Truth 파일 오류 로드
 
-학습 속도가 갑자기 이전의 1/3로 떨어졌다. `nvidia-smi`로 확인한 결과, 이전 실험에서 종료되지 않은 Docker 컨테이너가 GPU 메모리를 점유하고 있었다. 새로운 학습 프로세스와 GPU 자원을 경합하면서 양쪽 모두 성능이 저하된 것이다. `docker kill`과 `docker rm`으로 좀비 컨테이너를 정리한 후 학습 속도가 원래대로 복구되었다. 이후 학습 시작 전 GPU 점유 상태를 확인하는 절차를 추가했다.
+glob 알파벳 정렬로 `benchmark_ground_truth.parquet`가 원본 데이터보다 먼저 로드되어 Phase 0가 정답 변수로 피처를 생성했다. ground truth 파일을 하위 디렉토리로 분리하여 해결했다.
 
-== Ollama GPU 점유
+=== Batch Size 불일치 및 bash JSON 이스케이프
 
-원인 불명의 VRAM 부족이 두 차례 발생했다. `nvidia-smi`를 확인하니 Ollama가 자동 시작되어 GPU VRAM을 약 2GB 점유하고 있었다. 12GB VRAM에서 2GB 감소는 batch size 선택에 직접적 영향을 미쳤다. `taskkill`로 프로세스를 종료하고, Windows 시작프로그램에서 Ollama 자동실행을 비활성화하여 재발을 방지했다. 제한된 GPU 환경에서는 백그라운드 프로세스 하나가 전체 실험 설계를 바꿀 수 있다.
+`pipeline.yaml`의 batch_size=2048을 `run_ablation_manual.sh`가 6144로 오버라이드하여 VRAM spillover가 발생했다. 모든 설정을 config 단일 소스로 통일했다. bash 스크립트에서 JSON 파라미터의 이스케이프 처리 실패도 별도로 수정했다.
 
-== SageMaker 패키지 충돌
+== 모델 아키텍처 발견 (Architecture Insights)
 
-SageMaker SDK v3(3.7.0)를 설치하자 torch가 CPU 버전(2.11.0+cpu)으로 교체되는 문제가 발생했다. SageMaker v3의 의존성 해석기가 torch를 재설치하면서 CUDA 빌드를 무시한 것이다. GPU 학습이 완전히 불가능해졌고, `torch.cuda.is_available()`이 False를 반환했다. SageMaker v2(2.257.1)로 고정 설치하여 기존 torch CUDA 빌드와의 호환성을 유지했다.
+ablation 실험과 학습 과정에서 모델 구조에 대한 근본적 발견이 있었다.
 
-== torch 방화벽 차단 복구
+=== PLE Toggle 버그와 Ablation 필터 미작동
 
-관공서 네트워크 환경에서 `download.pytorch.org`가 방화벽에 의해 차단되었다(403 Forbidden). pip install로 torch를 설치할 수 없는 상태였다. conda 캐시 디렉토리(`pkgs/`)에 이전에 다운로드된 `pytorch-2.5.1-cuda12.1` 패키지가 남아 있는 것을 발견하여, 이를 수동으로 복사하여 환경을 재구성했다. 폐쇄망에 가까운 환경에서의 패키지 관리 경험이 되었다.
+`use_ple=false` 설정 시 7개 이종 전문가가 MLP 1개로 축소되어 공정한 비교가 불가능했다. expert basket은 유지하고 PLE layering만 비활성화하도록 수정했다. 또한 `feature_group_ranges`가 컬럼 단위로만 저장되어 ablation 필터의 그룹명 매칭이 실패, 24개 시나리오 전체에서 AUC가 동일(0.913)했다. 그룹 레벨 키를 추가하여 해결했다.
 
-== PLE Toggle 버그
+=== GPU 활용률 최적화
 
-`use_ple=false` 설정으로 shared_bottom 베이스라인을 실행했는데, 모델 구조를 확인하니 `num_shared_experts=1`, `expert_basket=None`으로 설정되어 있었다. 7개의 이종 전문가가 MLP 1개로 축소된 것이다. shared_bottom(MLP 1개) vs ple_only(expert 7개)는 구조 차이가 너무 커서 PLE의 효과를 측정하는 공정한 비교가 아니었다. `use_ple=false`에서 expert basket은 유지하고 PLE layering만 비활성화하도록 수정하여, 동일 전문가 구성에서 PLE 라우팅의 순수 효과를 비교할 수 있게 했다.
+초기 GPU 활용률 37%에서 batch size 증가(512→4096), DataLoader 튜닝, Phase 0 텐서 사전 저장을 적용하여 98%로 개선했다. 학습 시간이 약 3배 단축되었다.
 
-== Batch Size 불일치
+=== Softmax vs Sigmoid Gate 발견
 
-ablation 결과에서 일부 시나리오의 학습 시간이 비정상적으로 길었다. 원인을 추적하니, `pipeline.yaml`에는 batch_size=2048이 설정되어 있었지만, `run_ablation_manual.sh`에서 6144로 오버라이드하고 있었다. 일부 시나리오가 6144로 실행되면서 VRAM 23GB까지 사용하여 극심한 속도 저하가 발생했다. 모든 설정을 2048로 통일하여 해결했다.
-
-== VRAM Spillover 분석
-
-batch size에 따른 VRAM 사용 패턴을 정밀 분석했다. batch 6144에서는 전용 메모리 12GB에 공유 GPU 메모리 11GB를 추가 사용하여 총 23GB, 시나리오당 10시간이 소요되었다. batch 4096은 전용 12GB + 공유 3GB = 15GB, batch 2048은 전용 9GB + 공유 0.1GB = 9.1GB로 시나리오당 2시간이었다. 공유 GPU 메모리는 PCIe를 경유하여 전용 VRAM 대비 10-20배 느렸다. 이 분석을 통해 "VRAM 초과 시 느려지는 정도"를 정량적으로 파악하고 최적 batch size를 결정했다.
-
-== Softmax vs Sigmoid Gate 발견
-
-PLE의 val_loss가 Phase 2에서 3.702로 완전히 고정되는 현상을 관찰했다. 동시에 shared_bottom(MLP 1개)의 val_loss=8.08이 ple_only(7 expert)의 val_loss=15.92보다 낮은 역전 현상이 나타났다. CGC(Customized Gate Control)의 softmax gate가 경쟁적 특성을 가져, 이종 전문가 간 수렴을 방해하고 있었다. NeurIPS 2024 논문에서 sigmoid gate가 softmax 대비 이론적 우위를 가진다는 분석을 확인했다. sigmoid 기반 CGC gate를 구현하여 실험을 진행 중이며, 이종 전문가 아키텍처에서 gate 함수 선택이 성능에 결정적 영향을 미칠 수 있다는 새로운 교훈을 얻었다.
+PLE의 val_loss가 Phase 2에서 3.702로 고정되고, shared_bottom(1 MLP)이 ple_only(7 expert)보다 낮은 val_loss를 보이는 역전 현상이 관찰되었다. CGC softmax gate의 경쟁적 특성이 이종 전문가 간 수렴을 방해한 것이다. NeurIPS 2024 논문의 sigmoid gate 이론적 우위를 확인하고 구현을 진행했다. 이종 전문가 아키텍처에서 gate 함수 선택이 성능에 결정적 영향을 미친다는 교훈을 얻었다.
 
 #section-break()
 

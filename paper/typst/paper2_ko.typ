@@ -13,7 +13,7 @@
   numbering: "1",
 )
 
-#set text(font: "New Computer Modern", size: 10pt)
+#set text(font: ("Noto Serif KR", "New Computer Modern"), size: 10pt)
 #set par(justify: true, leading: 0.6em)
 #set heading(numbering: "1.1")
 

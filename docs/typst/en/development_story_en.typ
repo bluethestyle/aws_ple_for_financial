@@ -407,9 +407,15 @@ The greatest risk when parallel agents simultaneously modify different modules i
 
 = Technical Challenges and Solutions
 
-== Three Label Leakage Cases Discovered and Fixed
+Over 20 technical issues arose during development. They are organized here into five categories. Rather than a debug log, each category illustrates a distinct engineering dimension required for large-scale multi-task training on consumer GPUs.
 
-Abnormally high performance was observed early in model training. Root cause analysis uncovered three instances of label leakage.
+== Data Integrity
+
+Data contamination renders model performance meaningless. Label leakage and schema inconsistencies occurred repeatedly in this project, each requiring systematic detection and the construction of defensive guardrails.
+
+=== Three Label Leakage Cases
+
+Abnormally high performance (AUC = 1.0) was observed early in training, uncovering three leakage sources.
 
 #set par(first-line-indent: 0pt)
 #block(
@@ -418,116 +424,86 @@ Abnormally high performance was observed early in model training. Root cause ana
   inset: (left: 12pt, y: 6pt),
 )[
   #set text(size: 10pt)
-  #strong[Leak 1 --- Duplicate Column]: A `has_nba_1` column existed as a perfect duplicate of the label (correlation = 1.0). It had to be EXCLUDED before label re-derivation. \
-  #strong[Leak 2 --- File Loading Order]: `ground_truth.parquet` was loaded instead of `benchmark.parquet`. Glob's alphabetical sorting caused the answer file to be selected first. Resolved by moving the file to a subdirectory. \
-  #strong[Leak 3 --- Generator Input Contamination]: Generators such as GMM and model_derived were using label columns as input, producing AUC = 1.0. An auto-exclude mechanism for `label_cols` was added.
+  • *Duplicate column*: `has_nba_1` existed as a perfect label duplicate (correlation = 1.0). Resolved by EXCLUDE before label re-derivation. \
+  • *File loading order*: Glob's alphabetical sorting loaded `ground_truth.parquet` instead of `benchmark.parquet`. Resolved by moving the file to a subdirectory. \
+  • *Generator input contamination*: GMM and other generators used label columns as input. An auto-exclude mechanism for `label_cols` was added.
 ]
 #set par(first-line-indent: 1.2em)
 
-#v(0.15cm)
-A LeakageValidator was added as a mandatory pre-training step, and validation rules were explicitly documented in the CLAUDE.md guardrails to prevent recurrence.
+#v(0.1cm)
+A LeakageValidator was added as a mandatory pre-training step, and validation rules were documented in the CLAUDE.md guardrails to prevent recurrence.
 
-== Phase 2 NaN Issue (FP16 Underflow)
+=== apply_ablation Schema Not Updated
 
-NaN loss appeared during Phase 2 of mixed precision (AMP) training. The cause was underflow in the BFloat16 environment. Small gradient values fell outside the FP16 representable range and propagated as NaN.
+The ablation filter successfully removed features from tensors, but `feature_schema["columns"]` still listed the original 316 columns, so the model received identical 316-dimensional input every time. The fix required `apply_ablation` to simultaneously update `columns`, `num_features`, and `feature_group_ranges` alongside tensor modification.
 
-#info-box(
-  [Resolution],
-  [
-    • Applied `.float()` conversion before `.numpy()` calls in BFloat16 contexts \
-    • Simultaneously fixed a subprocess pipe deadlock issue \
-    • Optimized GradScaler settings to reduce underflow frequency
-  ],
-)
+== Numerical Stability
 
-== GPU Utilization Optimization (37% to 98%)
+Mixed precision training doubles throughput, but the narrow representable range of FP16/BFloat16 triggers NaN propagation. Four underflow incidents and two conversion errors occurred.
 
-Initial training showed GPU utilization of only 37%. The bottleneck was data loading.
+=== FP16 Underflow and NaN Propagation
 
-#set par(first-line-indent: 0pt)
-#block(
-  width: 100%,
-  stroke: (left: 2pt + anthropic-accent),
-  inset: (left: 12pt, y: 6pt),
-)[
-  #text(size: 10pt, fill: anthropic-text, weight: "bold")[Optimization Steps]
-  #v(4pt)
-  #text(size: 10pt, fill: anthropic-text)[
-    • *batch_size increase*: 512 → 4096 (optimized for 941K data) \
-    • *DataLoader tuning*: Adjusted num_workers, pin_memory, prefetch_factor \
-    • *Preprocessing separation*: Tensors pre-saved in Phase 0, loaded directly during training \
-    • *Result*: GPU utilization 37% → 98%, training time reduced by approximately 3x
-  ]
-]
-#set par(first-line-indent: 1.2em)
+During Phase 2 AMP training, FP16 underflow in CGC entropy, OT Sinkhorn, Causal DAG, and logit computations caused NaN to propagate. Small gradient values fell outside the FP16 representable range.
 
-== Transition from pandas to DuckDB/cuDF
+=== BFloat16 NumPy Conversion and GradScaler
 
-Processing 941K rows with pandas caused memory usage to spike. The large-scale data processing backend was migrated to DuckDB (CPU columnar) and cuDF (GPU), simultaneously improving memory efficiency and processing speed.
+NumPy does not support BFloat16 as a dtype, so `.numpy()` calls on BFloat16 tensors failed and all validation metric calculations broke. A `.float()` cast before every `.numpy()` call was standardized across the pipeline. Additionally, when every batch in Phase 2 produced NaN, no backward pass was called, and `scaler.step()` raised "No inf checks were recorded." A backward-count guard was added to skip the step when the count was zero.
 
-== Docker GPU Passthrough Instability
+== Infrastructure
 
-GPU passthrough via Docker on Windows proved unstable. CUDA version mismatches and driver compatibility issues occurred repeatedly. Ultimately, Docker was abandoned in favor of direct development in a local Python environment.
+On a single consumer GPU, driver conflicts, background processes, and network restrictions can reshape the entire experimental design.
 
-== torch CPU/CUDA Version Conflict
+=== Docker GPU Passthrough and Zombie Containers
 
-A conflict arose between the CPU build and CUDA build of torch in the conda environment. Tangled package dependencies caused CUDA to go unrecognized. The conda cache was fully purged and the environment was rebuilt with explicitly specified CUDA versions.
+Docker GPU passthrough on Windows proved unstable due to CUDA version mismatches, leading to a switch to local Python development. Separately, unterminated zombie containers occupied GPU memory and reduced training speed to one-third of normal.
 
-== Ground Truth File Loaded by Mistake
+=== torch CPU/CUDA Version Conflicts
 
-Phase 0 produced unexpected results --- only 142 features were generated instead of the expected 300+, with all base features missing. Investigation revealed that `benchmark_ground_truth.parquet` appeared before `benchmark_v2.parquet` in glob's alphabetical ordering and was loaded as the source data. The ground truth file contained only persona and latent variables, so Phase 0 built features from answer columns instead of actual customer data. The fix was straightforward: moving the ground truth file into a `ground_truth/` subdirectory excluded it from the glob pattern.
+Installing SageMaker SDK v3 (3.7.0) silently replaced torch with a CPU-only build, disabling GPU training entirely. Pinning to SageMaker v2 (2.257.1) resolved the issue. In conda, CPU/CUDA build conflicts also recurred; the cache was purged and the environment rebuilt with explicit CUDA version pinning.
 
-== Ablation Filter Failure
+=== torch Cache Recovery and Ollama GPU Occupation
 
-All 24 ablation scenarios produced an identical AUC of 0.913 --- feature removal was not working at all. The root cause was that `feature_group_ranges` stored entries at the individual column level (e.g., `tda_global_h0_num_features`), while the ablation filter attempted matching at the group level (e.g., `tda_global`). The keys never matched, so no features were ever removed in any scenario. The fix was to generate `feature_group_ranges` at both column-level and group-level granularity in the adapter.
+The government office firewall blocked `download.pytorch.org` (403 Forbidden). A cached `pytorch-2.5.1-cuda12.1` package in conda's `pkgs/` directory was manually copied to restore the environment. Separately, Ollama auto-started and consumed 2GB of VRAM. On a 12GB card, a single background process directly constrained batch size choices.
 
-== apply_ablation Schema Not Updated
+=== VRAM Spillover Analysis
 
-Even after the ablation filter started working, all scenarios still showed identical performance. Features were successfully removed from tensors, but `feature_schema["columns"]` still listed the original 316 columns. The model was built with 316-dimensional input, and removed feature positions were zero-padded --- making every scenario structurally identical from the model's perspective. The fix required `apply_ablation` to simultaneously update `columns`, `num_features`, and `feature_group_ranges` alongside tensor modification. Only then did ablation produce meaningful performance differences.
+At batch 6144: 12GB dedicated + 11GB shared GPU memory = 23GB total, 10 hours per scenario. At batch 2048: 9GB + 0.1GB = 9.1GB, 2 hours per scenario. Shared GPU memory traverses PCIe at 10--20x slower than dedicated VRAM. This quantitative analysis determined the optimal batch size.
 
-== Subprocess Pipe Deadlock
+== Pipeline Engineering
 
-The ablation orchestrator ran each scenario via `subprocess.run(capture_output=True)`, but the full scenario hung indefinitely. The training process produced massive stdout output that exceeded the pipe buffer (64KB). Once the buffer filled, the child process blocked on writes while the parent process waited for the child to terminate --- a classic deadlock. Redirecting stdout and stderr to files instead of pipes resolved the issue.
+System-level issues in large-scale data processing and ablation orchestration.
 
-== BFloat16 NumPy Conversion Failure
+=== Transition from pandas to DuckDB/cuDF
 
-AMP training produced BFloat16 tensors, but NumPy does not support BFloat16 as a dtype. When the validation step called `.numpy()` on these tensors, it raised an error, causing all validation metric calculations to fail. Training itself ran fine, but performance could not be measured. The solution was to apply `.float()` casting before every `.numpy()` call, standardizing this pattern across the entire validation pipeline.
+Processing 941K rows with pandas caused memory spikes. Migrating to DuckDB (CPU columnar) and cuDF (GPU) simultaneously improved memory efficiency and throughput.
 
-== GradScaler Assertion Error
+=== Subprocess Pipe Deadlock
 
-An extreme situation arose in Phase 2 where every single batch produced NaN loss. With all batches NaN, no backward pass was ever called, but `scaler.step()` asserted that at least one inf check must have been recorded --- raising "No inf checks were recorded." A `_scaler_backward_count` tracker was added so that when the count was zero, `scaler.step()` was skipped entirely. This was a rare edge case arising from the combination of AMP with multi-task loss.
+The ablation orchestrator used `subprocess.run(capture_output=True)`, but massive stdout exceeded the 64KB pipe buffer, causing a classic deadlock. Redirecting stdout/stderr to files resolved the issue.
 
-== Docker Zombie Containers
+=== Ground Truth File Loaded by Mistake
 
-Training speed suddenly dropped to one-third of normal. Checking `nvidia-smi` revealed that Docker containers from previous experiments had not been properly terminated and were still occupying GPU memory. The new training process competed for GPU resources with these zombie containers, degrading performance for both. Running `docker kill` and `docker rm` cleared the zombies and restored normal training speed. A GPU occupancy check was added as a pre-training step going forward.
+Glob's alphabetical ordering loaded `benchmark_ground_truth.parquet` before the actual source data, causing Phase 0 to build features from answer columns. Moving the ground truth file to a subdirectory excluded it from the glob pattern.
 
-== Ollama GPU Occupation
+=== Batch Size Mismatch and bash JSON Escaping
 
-Unexplained VRAM shortages occurred twice. Investigation via `nvidia-smi` showed that Ollama had auto-started and was consuming approximately 2GB of GPU VRAM. On a 12GB card, losing 2GB directly constrained batch size choices. The process was killed with `taskkill`, and Ollama's auto-start was disabled in Windows startup programs. In a constrained GPU environment, a single background process can alter the entire experimental design.
+`pipeline.yaml` specified batch_size=2048, but `run_ablation_manual.sh` overrode it to 6144, triggering VRAM spillover. All settings were unified to a single config source. A separate bash JSON escaping failure was also fixed.
 
-== SageMaker Package Conflict
+== Architecture Insights
 
-Installing SageMaker SDK v3 (3.7.0) silently replaced torch with a CPU-only version (2.11.0+cpu). The v3 dependency resolver reinstalled torch while ignoring the existing CUDA build. GPU training became completely impossible, with `torch.cuda.is_available()` returning False. Pinning SageMaker to v2 (2.257.1) preserved compatibility with the existing torch CUDA build.
+Ablation experiments and the training process yielded fundamental discoveries about model structure.
 
-== torch Firewall Block Recovery
+=== PLE Toggle Bug and Ablation Filter Failure
 
-The government office network blocked `download.pytorch.org` via firewall (403 Forbidden), making it impossible to install torch via pip. A previously downloaded `pytorch-2.5.1-cuda12.1` package was discovered in the conda cache directory (`pkgs/`). This cached package was manually copied to reconstruct the environment. This became a valuable lesson in package management for near-airgapped network environments.
+With `use_ple=false`, all 7 heterogeneous experts collapsed into a single MLP, making the baseline comparison unfair. The fix preserved the expert basket and disabled only PLE layering. Additionally, `feature_group_ranges` stored only column-level keys, so the ablation filter's group-level matching never succeeded --- all 24 scenarios showed identical AUC (0.913). Adding group-level keys resolved it.
 
-== PLE Toggle Bug
+=== GPU Utilization Optimization
 
-Running the shared_bottom baseline with `use_ple=false` revealed that the model was configured with `num_shared_experts=1` and `expert_basket=None`. The 7 heterogeneous experts had been collapsed into a single MLP. Comparing shared_bottom (1 MLP) against ple_only (7 experts) was not a fair comparison --- the structural difference was too large to isolate PLE's contribution. The fix preserved the expert basket when `use_ple=false` and only disabled PLE layering, enabling a fair comparison of PLE routing's pure effect with the same expert composition.
+Initial GPU utilization was 37%. Increasing batch size (512 to 4096), tuning DataLoader parameters, and pre-saving tensors in Phase 0 raised utilization to 98%, reducing training time by approximately 3x.
 
-== Batch Size Mismatch
+=== Softmax vs Sigmoid Gate Discovery
 
-Some ablation scenarios exhibited abnormally long training times. Investigation revealed that `pipeline.yaml` specified batch_size=2048, but `run_ablation_manual.sh` overrode it to 6144. Scenarios running at 6144 consumed 23GB VRAM, causing extreme slowdown from GPU memory spillover. Unifying all configurations to batch_size=2048 resolved the issue.
-
-== VRAM Spillover Analysis
-
-A detailed analysis of VRAM usage patterns by batch size was conducted. At batch 6144: 12GB dedicated + 11GB shared GPU memory = 23GB total, requiring 10 hours per scenario. At batch 4096: 12GB + 3GB = 15GB. At batch 2048: 9GB + 0.1GB = 9.1GB, completing in 2 hours per scenario. Shared GPU memory traverses PCIe and is 10-20x slower than dedicated VRAM. This analysis quantified "how much slowdown occurs when VRAM is exceeded" and enabled optimal batch size selection.
-
-== Softmax vs Sigmoid Gate Discovery
-
-PLE's val_loss became completely fixed at 3.702 during Phase 2, showing zero improvement across epochs 6-10. Simultaneously, shared_bottom (1 MLP) achieved val_loss=8.08, paradoxically outperforming ple_only (7 experts) at val_loss=15.92. The CGC (Customized Gate Control) softmax gate's competitive nature was hindering convergence among heterogeneous experts. A NeurIPS 2024 paper confirmed the theoretical superiority of sigmoid gates over softmax for this setting. A sigmoid-based CGC gate implementation was added and experiments are in progress --- revealing that gate function selection can be a decisive factor in heterogeneous expert architectures.
+PLE's val_loss froze at 3.702 in Phase 2, while shared_bottom (1 MLP) paradoxically outperformed ple_only (7 experts). The CGC softmax gate's competitive nature hindered convergence among heterogeneous experts. A NeurIPS 2024 paper confirmed the theoretical superiority of sigmoid gates; implementation is in progress. Gate function selection proved decisive for heterogeneous expert architectures.
 
 #section-break()
 

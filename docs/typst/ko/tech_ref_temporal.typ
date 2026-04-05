@@ -15,7 +15,7 @@
   fill: anthropic-bg,
   header: context {
     if counter(page).get().first() > 1 [
-      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #set text(size: 7.5pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted, tracking: 0.12em)
       #smallcaps[Temporal Ensemble Expert]
       #h(1fr)
       #smallcaps[AIOps PLE for Financial]
@@ -28,7 +28,7 @@
     if pg > 1 [
       #line(length: 100%, stroke: 0.3pt + anthropic-rule)
       #v(4pt)
-      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #set text(size: 8pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted)
       #h(1fr)
       — #pg —
       #h(1fr)
@@ -36,7 +36,7 @@
   },
 )
 
-#set text(font: "New Computer Modern", size: 10pt, fill: anthropic-text, lang: "ko")
+#set text(font: ("Pretendard", "New Computer Modern"), size: 10pt, fill: anthropic-text, lang: "ko")
 #set par(justify: true, leading: 0.8em, spacing: 1.5em)
 #set heading(numbering: "1.1")
 #set math.equation(numbering: "(1)")
@@ -197,7 +197,7 @@
 #set page(
   header: context {
     if counter(page).get().first() > 1 [
-      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #set text(size: 7.5pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted, tracking: 0.12em)
       #smallcaps[Temporal Ensemble Expert]
       #h(1fr)
       #smallcaps[AIOps PLE for Financial]
@@ -210,7 +210,7 @@
     if pg > 1 [
       #line(length: 100%, stroke: 0.3pt + anthropic-rule)
       #v(4pt)
-      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #set text(size: 8pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted)
       #h(1fr)
       — #pg —
       #h(1fr)

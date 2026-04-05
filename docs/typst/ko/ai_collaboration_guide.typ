@@ -26,7 +26,7 @@
   fill: anthropic-bg,
   header: context {
     if counter(page).get().first() > 1 [
-      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #set text(size: 7.5pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted, tracking: 0.12em)
       #smallcaps[AI 협업 가이드라인]
       #h(1fr)
       #smallcaps[지식의 확장과 문제 해결을 위한 사고법]
@@ -39,7 +39,7 @@
     if pg > 1 [
       #line(length: 100%, stroke: 0.3pt + anthropic-rule)
       #v(4pt)
-      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #set text(size: 8pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted)
       #h(1fr)
       — #pg —
       #h(1fr)
@@ -49,7 +49,7 @@
 
 // ── Base text ──
 #set text(
-  font: "New Computer Modern",
+  font: ("Pretendard", "New Computer Modern"),
   size: 10pt,
   fill: anthropic-text,
   lang: "ko",
@@ -354,7 +354,7 @@
 #set page(
   header: context {
     if counter(page).get().first() > 1 [
-      #set text(size: 9pt, font: "New Computer Modern", fill: muted, tracking: 0.12em)
+      #set text(size: 9pt, font: ("Pretendard", "New Computer Modern"), fill: muted, tracking: 0.12em)
       #smallcaps[AI 협업 가이드라인]
       #h(1fr)
       #smallcaps[지식의 확장과 문제 해결을 위한 사고법]
@@ -367,7 +367,7 @@
     if pg > 1 [
       #line(length: 100%, stroke: 0.3pt + light-rule)
       #v(4pt)
-      #set text(size: 11pt, font: "New Computer Modern", fill: muted)
+      #set text(size: 11pt, font: ("Pretendard", "New Computer Modern"), fill: muted)
       #h(1fr)
       — #pg —
       #h(1fr)

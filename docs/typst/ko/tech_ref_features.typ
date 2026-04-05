@@ -25,7 +25,7 @@
   fill: anthropic-bg,
   header: context {
     if counter(page).get().first() > 1 [
-      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #set text(size: 7.5pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted, tracking: 0.12em)
       #smallcaps[피처 엔지니어링 기술 참조서]
       #h(1fr)
       #smallcaps[AWS PLE for Financial · v1.0]
@@ -38,7 +38,7 @@
     if pg > 1 [
       #line(length: 100%, stroke: 0.3pt + anthropic-rule)
       #v(4pt)
-      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #set text(size: 8pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted)
       #h(1fr)
       — #pg —
       #h(1fr)
@@ -47,7 +47,7 @@
 )
 
 // ─────────────────────────── 기본 텍스트 ──────────────────────────
-#set text(font: "New Computer Modern", size: 10pt, fill: anthropic-text, lang: "ko")
+#set text(font: ("Pretendard", "New Computer Modern"), size: 10pt, fill: anthropic-text, lang: "ko")
 #set par(justify: true, leading: 0.8em, spacing: 1.5em)
 
 // ─────────────────────────── 코드 블록 ───────────────────────────
@@ -214,7 +214,7 @@
 #set page(
   header: context {
     if counter(page).get().first() > 1 [
-      #set text(size: 7.5pt, font: "New Computer Modern", fill: anthropic-muted, tracking: 0.12em)
+      #set text(size: 7.5pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted, tracking: 0.12em)
       #smallcaps[피처 엔지니어링 기술 참조서]
       #h(1fr)
       #smallcaps[AWS PLE for Financial · v1.0]
@@ -227,7 +227,7 @@
     if pg > 1 [
       #line(length: 100%, stroke: 0.3pt + anthropic-rule)
       #v(4pt)
-      #set text(size: 8pt, font: "New Computer Modern", fill: anthropic-muted)
+      #set text(size: 8pt, font: ("Pretendard", "New Computer Modern"), fill: anthropic-muted)
       #h(1fr)
       — #pg —
       #h(1fr)
