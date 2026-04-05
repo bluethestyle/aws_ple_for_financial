@@ -306,22 +306,22 @@ each requiring a different mathematical tool to extract meaningful signals:
   scope: "parent",
   placement: auto,
   table(
-    columns: (auto, auto, auto),
+    columns: (auto, auto, auto, auto),
     inset: 5pt,
     align: left,
     stroke: 0.5pt,
-    [*Modality*], [*Nature*], [*Optimal Tool*],
-    [State], [Binary/categorical, time-invariant], [Feature crosses (DeepFM)],
-    [Snapshot], [Numeric at a point in time], [Clustering (GMM)],
-    [Short-term series], [Recent sequential patterns], [Attention (Transformer)],
-    [Long-term series], [Multi-month trends], [State space (Mamba)],
-    [Disrupted series], [Irregular / dormant gaps], [Adaptive ODE (LNN)],
-    [Hierarchy], [Tree-structured categories], [Hyperbolic embedding (HGCN)],
-    [Relations], [Customer-product graph], [Graph convolution (LightGCN)],
-    [Topology], [Shape of behavioral patterns], [Persistent homology (PersLay)],
-    [Causality], [Directional dependencies], [DAG constraint (NOTEARS)],
+    [*Modality*], [*Examples*], [*Expert*], [*Generator*],
+    [State], [is_active, holdings], [DeepFM], [base],
+    [Snapshot], [balance, demographics], [GMM, DeepFM], [GMM clustering],
+    [Short-term series], [recent transactions], [Transformer], [temporal],
+    [Long-term series], [monthly trends], [Mamba], [mamba temporal],
+    [Disrupted series], [dormant→active], [LNN], [model derived],
+    [Hierarchy], [product category tree], [HGCN], [product hierarchy],
+    [Relations], [customer-product graph], [LightGCN], [graph collab.],
+    [Topology], [behavioral shape], [PersLay], [TDA global/local],
+    [Causality], [behavioral causation], [Causal], [causal features],
   ),
-  caption: [Data modality decomposition (Axis 2). Each modality demands a structurally different expert.],
+  caption: [Data modality decomposition (Axis 2). Each modality is mapped to an expert and feature generator.],
 ) <tab:modality-axis>
 
 *The cross-product* of these two axes defines the architecture:
@@ -430,27 +430,7 @@ Four principles guide the architecture:
 Financial customer data exhibits inherently multi-modal structure.
 We classify data along multiple axes, each mapped to an optimal feature generator and expert:
 
-#figure(
-  scope: "parent",
-  placement: auto,
-  table(
-    columns: (auto, auto, auto, auto),
-    inset: 6pt,
-    align: left,
-    stroke: 0.5pt,
-    [*Data Axis*], [*Examples*], [*Expert*], [*Generator*],
-    [State], [is_active, holdings], [DeepFM], [base],
-    [Snapshot], [balance, demographics], [GMM, DeepFM], [GMM clustering],
-    [Short-term series], [recent transactions], [Transformer], [temporal],
-    [Long-term series], [monthly trends], [Mamba], [mamba temporal],
-    [Disrupted series], [dormant→active], [LNN], [model derived],
-    [Hierarchy], [product category tree], [HGCN], [product hierarchy],
-    [Relations], [customer-product graph], [LightGCN], [graph collab.],
-    [Topology], [behavioral shape], [PersLay], [TDA global/local],
-    [Causality], [behavioral causation], [Causal], [causal features],
-  ),
-  caption: [Data axis to Expert to Feature generator mapping.],
-) <tab:data-axis>
+The complete data axis to expert to feature generator mapping is shown in @tab:modality-axis. <tab:data-axis>
 
 #text(size: 8.5pt, fill: gray)[
   _Note_: Short-term, Long-term, and Disrupted series map to the three sub-components
@@ -679,22 +659,7 @@ Each task group corresponds to one DNA axis (@tab:dna-axis);
 within each group, different modality experts (@tab:modality-axis) contribute differently,
 and the CGC gate learns the optimal mixture per task:
 
-#figure(
-  scope: "parent",
-  placement: auto,
-  table(
-    columns: (auto, auto, 1fr),
-    inset: 6pt,
-    align: left,
-    stroke: 0.5pt,
-    [*Group*], [*Financial DNA*], [*Tasks*],
-    [Engagement], [What does the customer do?], [has_nba #linebreak() engagement_score #linebreak() next_mcc #linebreak() top_mcc_shift #linebreak() mcc_diversity_trend],
-    [Lifecycle], [Where is the customer?], [churn_signal #linebreak() tenure_stage #linebreak() segment_prediction],
-    [Value], [How valuable is the customer?], [income_tier #linebreak() spend_level #linebreak() cross_sell_count #linebreak() product_stability],
-    [Consumption], [What will the customer buy?], [will_acquire\_\* (5), nba_primary],
-  ),
-  caption: [Four task groups based on financial customer DNA.],
-) <tab:task-groups>
+The four task groups --- Engagement, Lifecycle, Value, Consumption --- and their constituent tasks are defined in @tab:dna-axis. <tab:task-groups>
 
 adaTT enforces differentiated transfer: strong intra-group transfer (same DNA perspective)
 and weaker inter-group transfer (different perspectives, minimizing negative transfer).
@@ -880,7 +845,7 @@ confirming that heterogeneous experts are not merely a performance trick
 but a structural requirement for multi-faceted persuasion.
 
 - *Data*: 1M customers, 318 features, 18 tasks.
-- *Hardware*: NVIDIA RTX 4070 (12GB) local; AWS g5.xlarge (A10G 24GB) cloud.
+- *Hardware*: NVIDIA RTX 4070 (12GB) local; AWS g5.xlarge Spot (A10G 24GB) cloud.
 - *Training*: 5+5 epochs (phase1 + phase2), batch 6144, lr 0.008, AMP, early stopping patience 3.
 - *Metrics*: AUC (binary), F1 macro (classification), MAE/R² (regression).
 
