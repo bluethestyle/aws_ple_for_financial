@@ -868,7 +868,7 @@ Synthetic Data Vault 프레임워크 #cite(<patki2016sdv>) 와
 다면적 설득을 위한 구조적 요건임을 확인한다.
 
 - *데이터*: 100만 고객, 318개 피처, 18개 태스크.
-- *하드웨어*: NVIDIA RTX 4070 (12GB) 로컬; AWS g5.xlarge (A10G 24GB) 클라우드.
+- *하드웨어*: NVIDIA RTX 4070 (12GB) 로컬; AWS g4dn.xlarge Spot (T4 16GB) 클라우드.
 - *학습*: 5+5 에포크 (phase1 + phase2), 배치 6144, lr 0.008, AMP, 조기 종료 patience 3.
 - *지표*: AUC (이진), F1 macro (분류), MAE/R² (회귀).
 

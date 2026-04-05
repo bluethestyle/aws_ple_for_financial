@@ -845,7 +845,7 @@ confirming that heterogeneous experts are not merely a performance trick
 but a structural requirement for multi-faceted persuasion.
 
 - *Data*: 1M customers, 318 features, 18 tasks.
-- *Hardware*: NVIDIA RTX 4070 (12GB) local; AWS g5.xlarge Spot (A10G 24GB) cloud.
+- *Hardware*: NVIDIA RTX 4070 (12GB) local; AWS g4dn.xlarge Spot (T4 16GB) cloud.
 - *Training*: 5+5 epochs (phase1 + phase2), batch 6144, lr 0.008, AMP, early stopping patience 3.
 - *Metrics*: AUC (binary), F1 macro (classification), MAE/R² (regression).
 
