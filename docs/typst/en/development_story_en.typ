@@ -224,12 +224,12 @@
 
 == Team Composition and Constraints
 
-The project team consisted of three people: one data scientist serving as PM and two engineers. There was no dedicated infrastructure budget, and the only GPU available for development was a single consumer-grade RTX 4070 (12GB VRAM) installed in a local PC.
+The project team consisted of three people: one data scientist serving as PM/Lead Architect and two engineers. There was no dedicated infrastructure budget, and the only GPU available for development was a single consumer-grade RTX 4070 (12GB VRAM) installed in a local PC.
 
 #info-box(
   [Constraint Summary],
   [
-    • *Team size*: 3 members (PM/Data Scientist 1 + Engineers 2) \
+    • *Team size*: 3 members (PM/Lead Architect/Data Scientist 1 + Engineers 2) \
     • *Infrastructure*: No dedicated GPU server. One RTX 4070 12GB (local) \
     • *Budget*: No infrastructure procurement budget. AWS SageMaker spot instances used \
     • *Objective*: Build a next-generation system to replace the existing ALS-based recommendation system
@@ -238,7 +238,7 @@ The project team consisted of three people: one data scientist serving as PM and
 
 == The Reality of Infrastructure Constraints
 
-Support from the organization was virtually nonexistent. Requests for GPU resources were met with "there is nothing we can do," and all project-related expenses --- AI tool subscriptions (Claude Code, Gemini, Cursor), peripherals, and meals --- were covered personally by the PM.
+Support from the organization was virtually nonexistent. Requests for GPU resources were met with "there is nothing we can do," and all project-related expenses --- AI tool subscriptions (Claude Code, Gemini, Cursor), peripherals, and meals --- were covered personally by the PM/Lead Architect.
 
 The data collection environment was equally challenging. Requests to migrate to Spark or Impala were denied, forcing the team to work within a HIVE-based bottleneck environment. To overcome this, parallel query logic was designed from scratch to maximize network bandwidth utilization.
 
@@ -247,6 +247,10 @@ The workspace was an unventilated area adjacent to the server room, without adeq
 The two team members were not formally contracted employees but youth advisory supporters --- recent graduates participating in the project while preparing for employment.
 
 All of these constraints ultimately reinforced the design philosophy: "When available resources are extremely limited, architectural efficiency and tool selection become decisively important."
+
+== On-Premises System Scale
+
+The on-prem system was not a prototype but a production-scale system: 80+ Airflow DAGs, Champion-Challenger model competition, weekly automated retraining, 734D feature tensor, 16 simultaneous tasks, and 62 data table ingestion. Building a system of this scale with 3 people was itself a result of AI-augmented development.
 
 == Project Objective
 
@@ -275,19 +279,69 @@ Different AI tools were strategically deployed at each stage of the project. The
 
 === Phase A: Ideation (Gemini)
 
-Gemini was used for initial concept exploration and brainstorming. Its broad knowledge base proved effective for rapidly scanning architecture candidates and comparing the pros and cons of various approaches.
+Gemini was used for initial concept exploration and brainstorming. Its broad knowledge base proved effective for rapidly scanning architecture candidates and comparing the pros and cons of various approaches. ALS replacement options, Black-Litterman exploration, and model ensemble approaches were all explored through dialogue with Gemini.
+
+The greatest value emerged from cross-disciplinary feature ideation. Questions like "Can chemical kinetics describe spending behavior?" and "Is product adoption structurally equivalent to an epidemic?" were posed to systematically identify academic domains with structurally isomorphic problems to financial customer behavior. The PM/Lead Architect brought domain expertise (FRM certification, credit analysis experience) while Gemini provided cross-domain connections. Through this process, the concept of "structural isomorphism" naturally emerged as a central design principle.
+
+Gemini's broad knowledge was optimal not for depth in any single technology, but for rapidly scanning "which field has already solved a similar problem." The design direction of importing features from 11 academic disciplines was established during this phase and became the foundation for all subsequent technical decisions.
 
 === Phase B: Technical Validation (Claude Opus)
 
 Claude Opus was employed to develop ideation results into concrete architectures. It was focused on tasks requiring technical depth, such as loss function design demanding mathematical rigor, data leakage verification, and normalization pipeline design.
 
+Each expert's feasibility was validated one by one: "Can HGCN work on MCC hierarchy?", "Is Mamba efficient enough for 17-month sequences?" Deep technical discussions with Opus covered PLE vs MMoE trade-offs, adaTT loss-level vs representation-level transfer comparisons, and other architecture-level analyses. Notably, the expert collapse problem in homogeneous MoE was first identified through conversation with Opus, which later led to the discovery of the NeurIPS 2024 sigmoid gate paper.
+
+Opus was also effective at challenging assumptions. Its counterargument --- "Is Black-Litterman really suitable?" --- accelerated the pivot toward PLE. During this phase, 19 technical reference documents (.typ files) were co-authored with Opus, serving as design specifications that each agent would reference during the subsequent implementation phase.
+
 === Phase C: Code Environment Setup (Cursor)
 
 GitHub-based code environment configuration, project structure design, and initial boilerplate generation were performed with Cursor. Its strength lay in fast code navigation and refactoring within an integrated IDE environment.
 
-=== Phase D: Parallel Implementation (Claude Code — Opus/Sonnet)
+During this phase, 6 initial design documents (00-09 architecture specifications) were drafted, and the most important deliverable was the establishment of CLAUDE.md guardrails. The config-driven principle, separation of concerns, and leakage prevention rules --- the "constitution" that all subsequent AI agents would follow --- were established before a single line of code was written. This ordering was intentional: guardrails first, agent execution second.
 
-In the full implementation phase, each team member served as the "team lead" for their AI agents. Opus and Sonnet were operated in parallel within the Claude Code environment to implement different modules simultaneously.
+=== Phase D: Parallel Implementation (Claude Code --- Opus/Sonnet)
+
+In the full implementation phase, each team member served as the "team lead" for their AI agents. Opus and Sonnet were operated in parallel within the Claude Code environment to implement different modules simultaneously. This was the most intensive phase, with three humans each leading AI agent teams.
+
+The PM/Lead Architect's AI team deployed Opus for architectural decisions (PLE config, adaTT task groups, logit transfer design) and Sonnet for rapid code implementation (generators, adapters, pipeline runner). Critical debugging sessions occurred during this phase: detection of 3 label leakage cases, diagnosis of 4 FP16 NaN root causes, and GPU utilization optimization. Engineer 1's AI team handled the data ingestion pipeline, HIVE parallel query logic, feature engineering for 10 generators (TDA, HMM, Mamba, Graph, GMM, etc.), and the feature-to-business reverse-mapping registry. Engineer 2's AI team was responsible for model training, mathematical verification, and knowledge distillation (PLE to LGBM).
+
+The ability to maintain consistency across parallel workstreams was thanks to the CLAUDE.md guardrails established in Phase C and the interface contract verification process. After every parallel work session, it was mandatory to verify that the keys saved by File A matched the keys read by File B, preemptively preventing interface mismatches that could arise during integration.
+
+=== Phase E: Experimentation + Papers (Claude Code Extension)
+
+During the ablation experimentation phase, Claude Code was used as a real-time monitoring tool. Ablation progress, GPU utilization, and error detection were performed in real time. The PLE toggle bug was discovered through live debugging --- the `use_ple=false` setting was altering the expert composition itself, making fair comparison impossible.
+
+Literature research during experiment wait times also proved valuable. While observing that PLE's val_loss failed to converge, a hypothesis was formed through dialogue with Opus that the softmax gate's competitive nature was hindering convergence among heterogeneous experts. This led to finding the NeurIPS 2024 sigmoid gate paper, providing theoretical grounding. Experiment result analysis and paper writing proceeded simultaneously.
+
+In the paper writing phase, 4 papers (English/Korean), and 22 technical documents were generated and refined through iterative work with Claude. The development story itself was written by reflecting on the project process together with Claude. In this phase, AI served not as a mere text generator but as a thought partner in constructing the meaning of the project.
+
+== Documentation Production Scale
+
+AI collaboration extended far beyond code implementation. The on-prem project alone produced 260+ documents (28 design specs, 19 tech references, 16 code reviews, 95 reports, 5 guides), totaling 30+ MB of technical documentation. Many were co-authored with AI or drafted by AI then reviewed by humans. Notably, the "Sonnet Work Verification Report" demonstrates an AI-to-AI review process where Opus verified Sonnet's code output, and the "500+ Item Checklist for Claude Code Opus" shows systematic delegation of quality assurance tasks to AI agents.
+
+== Memory Bank and Guardrail System
+
+The AI management framework established in the on-prem project was directly ported to the AWS project. A memory-bank system (8 context files: projectbrief, activeContext, progress, techContext, productContext, systemPatterns, tasks, style-guide) maintained cross-session context. .claude/RULES.md enforced coding rules, synchronized with .cursorrules so Cursor AI and Claude Code followed identical guardrails. The team even ran automated experiment branches across three AI platforms (exp/claude-auto-\*, exp/codex-auto-\*, exp/vertex-auto-\*), comparing Claude, Codex, and Vertex AI.
+
+== Key Patterns Discovered in AI Collaboration
+
+Throughout the project, recurring patterns of AI collaboration emerged. These patterns were not deliberately designed but manifested naturally through actual work.
+
+#set par(first-line-indent: 0pt)
+#block(
+  width: 100%,
+  stroke: (left: 2pt + anthropic-accent),
+  inset: (left: 12pt, y: 6pt),
+)[
+  #set text(size: 10pt)
+  #strong[1. "AI does HOW, humans decide WHAT and WHY"]: AI generates code and text, but architectural decisions are made by humans. The structural isomorphism insight emerged from human-AI dialogue, but the decision to adopt it as a design principle was a human judgment. \
+  #strong[2. "Guardrails before agents"]: CLAUDE.md was written before code, not after. Just as a constitution precedes legislation, guardrails precede agent execution. \
+  #strong[3. "Heterogeneous AI = heterogeneous experts"]: The model's heterogeneous expert design was directly applied to development tool selection. Each AI tool performed a specialized role, achieving quality and speed unattainable by any single tool. \
+  #strong[4. "Memory bank for continuity"]: A persistent file system for session-to-session context preservation was the key mechanism for overcoming AI agents' greatest weakness: context loss between sessions. \
+  #strong[5. "Fail fast with AI"]: Bugs that would take days to find manually --- leakage, FP16 NaN, ablation filter failures --- were detected and fixed within minutes with AI agents. Fast failure led to fast learning. \
+  #strong[6. "AI as thought partner, not code machine"]: The project's critical intellectual breakthroughs --- the structural isomorphism insight, the sigmoid gate hypothesis, identifying the expert collapse problem --- all emerged from human-AI dialogue.
+]
+#set par(first-line-indent: 1.2em)
 
 #v(0.3cm)
 
@@ -312,10 +366,11 @@ In the full implementation phase, each team member served as the "team lead" for
     stroke: 0.4pt + anthropic-rule,
     align: left + horizon,
     header-cell[Phase], header-cell[AI Tool], header-cell[Role],
-    body-cell[A. Ideation], body-cell[Gemini], body-cell[Concept exploration, architecture candidate scanning, brainstorming],
-    alt-cell[B. Technical Validation], alt-cell[Claude Opus], alt-cell[Mathematical verification, loss design, leakage analysis, architecture refinement],
-    body-cell[C. Environment Setup], body-cell[Cursor], body-cell[GitHub structure, boilerplate, IDE-based refactoring],
-    alt-cell[D. Parallel Implementation], alt-cell[Claude Code (Opus/Sonnet)], alt-cell[Module-level parallel coding, testing, debugging],
+    body-cell[A. Ideation], body-cell[Gemini], body-cell[Concept exploration, architecture scanning, cross-disciplinary brainstorming],
+    alt-cell[B. Technical Validation], alt-cell[Claude Opus], alt-cell[Mathematical verification, loss design, leakage analysis, 19 technical docs co-authored],
+    body-cell[C. Environment Setup], body-cell[Cursor], body-cell[GitHub structure, CLAUDE.md guardrails, 6 design documents],
+    alt-cell[D. Parallel Implementation], alt-cell[Claude Code (Opus/Sonnet)], alt-cell[3-person x AI team parallel coding, debugging, 10 generators],
+    body-cell[E. Experimentation + Papers], body-cell[Claude Code Extension], body-cell[Real-time monitoring, literature research, 4 papers + 22 technical docs],
   )
 }
 #set par(first-line-indent: 1.2em)
@@ -418,6 +473,62 @@ GPU passthrough via Docker on Windows proved unstable. CUDA version mismatches a
 
 A conflict arose between the CPU build and CUDA build of torch in the conda environment. Tangled package dependencies caused CUDA to go unrecognized. The conda cache was fully purged and the environment was rebuilt with explicitly specified CUDA versions.
 
+== Ground Truth File Loaded by Mistake
+
+Phase 0 produced unexpected results --- only 142 features were generated instead of the expected 300+, with all base features missing. Investigation revealed that `benchmark_ground_truth.parquet` appeared before `benchmark_v2.parquet` in glob's alphabetical ordering and was loaded as the source data. The ground truth file contained only persona and latent variables, so Phase 0 built features from answer columns instead of actual customer data. The fix was straightforward: moving the ground truth file into a `ground_truth/` subdirectory excluded it from the glob pattern.
+
+== Ablation Filter Failure
+
+All 24 ablation scenarios produced an identical AUC of 0.913 --- feature removal was not working at all. The root cause was that `feature_group_ranges` stored entries at the individual column level (e.g., `tda_global_h0_num_features`), while the ablation filter attempted matching at the group level (e.g., `tda_global`). The keys never matched, so no features were ever removed in any scenario. The fix was to generate `feature_group_ranges` at both column-level and group-level granularity in the adapter.
+
+== apply_ablation Schema Not Updated
+
+Even after the ablation filter started working, all scenarios still showed identical performance. Features were successfully removed from tensors, but `feature_schema["columns"]` still listed the original 316 columns. The model was built with 316-dimensional input, and removed feature positions were zero-padded --- making every scenario structurally identical from the model's perspective. The fix required `apply_ablation` to simultaneously update `columns`, `num_features`, and `feature_group_ranges` alongside tensor modification. Only then did ablation produce meaningful performance differences.
+
+== Subprocess Pipe Deadlock
+
+The ablation orchestrator ran each scenario via `subprocess.run(capture_output=True)`, but the full scenario hung indefinitely. The training process produced massive stdout output that exceeded the pipe buffer (64KB). Once the buffer filled, the child process blocked on writes while the parent process waited for the child to terminate --- a classic deadlock. Redirecting stdout and stderr to files instead of pipes resolved the issue.
+
+== BFloat16 NumPy Conversion Failure
+
+AMP training produced BFloat16 tensors, but NumPy does not support BFloat16 as a dtype. When the validation step called `.numpy()` on these tensors, it raised an error, causing all validation metric calculations to fail. Training itself ran fine, but performance could not be measured. The solution was to apply `.float()` casting before every `.numpy()` call, standardizing this pattern across the entire validation pipeline.
+
+== GradScaler Assertion Error
+
+An extreme situation arose in Phase 2 where every single batch produced NaN loss. With all batches NaN, no backward pass was ever called, but `scaler.step()` asserted that at least one inf check must have been recorded --- raising "No inf checks were recorded." A `_scaler_backward_count` tracker was added so that when the count was zero, `scaler.step()` was skipped entirely. This was a rare edge case arising from the combination of AMP with multi-task loss.
+
+== Docker Zombie Containers
+
+Training speed suddenly dropped to one-third of normal. Checking `nvidia-smi` revealed that Docker containers from previous experiments had not been properly terminated and were still occupying GPU memory. The new training process competed for GPU resources with these zombie containers, degrading performance for both. Running `docker kill` and `docker rm` cleared the zombies and restored normal training speed. A GPU occupancy check was added as a pre-training step going forward.
+
+== Ollama GPU Occupation
+
+Unexplained VRAM shortages occurred twice. Investigation via `nvidia-smi` showed that Ollama had auto-started and was consuming approximately 2GB of GPU VRAM. On a 12GB card, losing 2GB directly constrained batch size choices. The process was killed with `taskkill`, and Ollama's auto-start was disabled in Windows startup programs. In a constrained GPU environment, a single background process can alter the entire experimental design.
+
+== SageMaker Package Conflict
+
+Installing SageMaker SDK v3 (3.7.0) silently replaced torch with a CPU-only version (2.11.0+cpu). The v3 dependency resolver reinstalled torch while ignoring the existing CUDA build. GPU training became completely impossible, with `torch.cuda.is_available()` returning False. Pinning SageMaker to v2 (2.257.1) preserved compatibility with the existing torch CUDA build.
+
+== torch Firewall Block Recovery
+
+The government office network blocked `download.pytorch.org` via firewall (403 Forbidden), making it impossible to install torch via pip. A previously downloaded `pytorch-2.5.1-cuda12.1` package was discovered in the conda cache directory (`pkgs/`). This cached package was manually copied to reconstruct the environment. This became a valuable lesson in package management for near-airgapped network environments.
+
+== PLE Toggle Bug
+
+Running the shared_bottom baseline with `use_ple=false` revealed that the model was configured with `num_shared_experts=1` and `expert_basket=None`. The 7 heterogeneous experts had been collapsed into a single MLP. Comparing shared_bottom (1 MLP) against ple_only (7 experts) was not a fair comparison --- the structural difference was too large to isolate PLE's contribution. The fix preserved the expert basket when `use_ple=false` and only disabled PLE layering, enabling a fair comparison of PLE routing's pure effect with the same expert composition.
+
+== Batch Size Mismatch
+
+Some ablation scenarios exhibited abnormally long training times. Investigation revealed that `pipeline.yaml` specified batch_size=2048, but `run_ablation_manual.sh` overrode it to 6144. Scenarios running at 6144 consumed 23GB VRAM, causing extreme slowdown from GPU memory spillover. Unifying all configurations to batch_size=2048 resolved the issue.
+
+== VRAM Spillover Analysis
+
+A detailed analysis of VRAM usage patterns by batch size was conducted. At batch 6144: 12GB dedicated + 11GB shared GPU memory = 23GB total, requiring 10 hours per scenario. At batch 4096: 12GB + 3GB = 15GB. At batch 2048: 9GB + 0.1GB = 9.1GB, completing in 2 hours per scenario. Shared GPU memory traverses PCIe and is 10-20x slower than dedicated VRAM. This analysis quantified "how much slowdown occurs when VRAM is exceeded" and enabled optimal batch size selection.
+
+== Softmax vs Sigmoid Gate Discovery
+
+PLE's val_loss became completely fixed at 3.702 during Phase 2, showing zero improvement across epochs 6-10. Simultaneously, shared_bottom (1 MLP) achieved val_loss=8.08, paradoxically outperforming ple_only (7 experts) at val_loss=15.92. The CGC (Customized Gate Control) softmax gate's competitive nature was hindering convergence among heterogeneous experts. A NeurIPS 2024 paper confirmed the theoretical superiority of sigmoid gates over softmax for this setting. A sigmoid-based CGC gate implementation was added and experiments are in progress --- revealing that gate function selection can be a decisive factor in heterogeneous expert architectures.
+
 #section-break()
 
 
@@ -441,7 +552,7 @@ Features are not merely inputs for prediction performance; they also serve as vo
 
 == From Economics to Data Science
 
-The design philosophy of this project originates from the PM's intellectual journey. Trained in economics and decision science, then moving through financial engineering to data science, a fundamental question emerged: *"Where is the science in data-driven methodology?"*
+The design philosophy of this project originates from the PM/Lead Architect's intellectual journey. Trained in economics and decision science, then moving through financial engineering to data science, a fundamental question emerged: *"Where is the science in data-driven methodology?"*
 
 Economics has accumulated centuries of scientific methodology --- hypothesis formulation, theoretical frameworks, falsifiability. But economics itself borrowed tools from other disciplines: general equilibrium theory drew from thermodynamic equilibrium in physics, game theory from combinatorics in mathematics, econometrics from statistics. Economics is not uniquely scientific; rather, *cross-disciplinary tool transfer is a universal pattern of scientific progress*. Many Nobel laureates in economics came from physics and mathematics --- Samuelson (thermodynamics to economic equilibrium), Black-Scholes (heat equation to option pricing), Nash (fixed-point theorem to game theory), Mandelbrot (fractals to financial volatility). Economics' most powerful tools came from other sciences.
 
@@ -535,6 +646,10 @@ Two papers are being prepared for submission to arXiv, covering the experience o
 == Expert Specialization Revealed by Ablation
 
 Analysis across 24 ablation scenarios clearly demonstrated task-type-specific expert specialization. LightGCN showed the greatest contribution for multiclass tasks (next product prediction), while the Causal expert excelled at regression tasks (customer value estimation). This empirically validates the heterogeneous expert design.
+
+== On-Premises Operational Results
+
+The on-prem system achieved 85% compliance with the FSS AI RMF (11 full + 9 partial out of 24 items), with remaining gaps being organizational decisions rather than technical implementations. 12 regulatory compliance modules were implemented: AI notification, right to refuse, human reprocessing, fairness monitoring, conflict-of-interest prevention, herding detection, prompt injection defense, safety documentation, model cards, audit trail, consent management, and quality monitoring.
 
 == Evaluation Metric Framework
 
