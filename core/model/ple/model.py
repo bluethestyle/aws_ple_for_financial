@@ -519,6 +519,7 @@ class PLEModel(nn.Module):
                 expert_hidden_dims=cfg.shared_expert.hidden_dims,
                 feature_router=router,
                 shared_expert_names=expert_names,
+                gate_type=getattr(cfg, "gate_type", "softmax"),
             )
 
             # When Expert Basket is configured, replace the first layer's

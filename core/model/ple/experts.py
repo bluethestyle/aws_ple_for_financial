@@ -254,9 +254,11 @@ class CGCLayer(nn.Module):
         expert_hidden_dims: Optional[List[int]] = None,
         feature_router: Optional["FeatureRouter"] = None,
         shared_expert_names: Optional[List[str]] = None,
+        gate_type: str = "softmax",
     ):
         super().__init__()
         self.num_tasks = num_tasks
+        self.gate_type = gate_type
         self.num_shared_experts = num_shared_experts
         self.num_task_experts = num_task_experts
         self.expert_hidden_dim = expert_hidden_dim
@@ -373,7 +375,11 @@ class CGCLayer(nn.Module):
             # all_outs: (batch, num_total, hidden) -> flatten to (batch, num_total * hidden)
             gate_input = all_outs.reshape(all_outs.size(0), -1)
             gate_logits = self.gating[task_idx](gate_input)
-            gate_weights = F.softmax(gate_logits, dim=-1)
+            if self.gate_type == "sigmoid":
+                gate_weights = torch.sigmoid(gate_logits)
+                gate_weights = gate_weights / (gate_weights.sum(dim=-1, keepdim=True) + 1e-6)
+            else:
+                gate_weights = F.softmax(gate_logits, dim=-1)
 
             # Weighted sum: (batch, hidden)
             gated = (gate_weights.unsqueeze(-1) * all_outs).sum(dim=1)
