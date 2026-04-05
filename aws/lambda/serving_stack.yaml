@@ -15,7 +15,7 @@ Description: >
 Parameters:
   RegistryBase:
     Type: String
-    Default: "s3://aiops-ple-financial/models/artifacts"
+    Default: "s3://YOUR_S3_BUCKET/models/artifacts"
     Description: S3 base path for the ModelRegistry (_promoted marker lives here)
 
   MonitorTable:
@@ -109,8 +109,8 @@ Resources:
                   - s3:GetObject
                   - s3:ListBucket
                 Resource:
-                  - !Sub "arn:aws:s3:::aiops-ple-financial"
-                  - !Sub "arn:aws:s3:::aiops-ple-financial/*"
+                  - !Sub "arn:aws:s3:::YOUR_S3_BUCKET"
+                  - !Sub "arn:aws:s3:::YOUR_S3_BUCKET/*"
 
               # DynamoDB: write prediction logs
               - Effect: Allow

@@ -562,7 +562,7 @@ cold_start:
 # ---------------------------------------------------------------------------
 data:
   source: data/benchmark/benchmark_v2.parquet
-  s3_path: s3://aiops-ple-financial/data/santander/
+  s3_path: s3://YOUR_S3_BUCKET/data/santander/
   id_col: customer_id
   backend: [cudf, duckdb, pandas]
   format: parquet
@@ -959,9 +959,9 @@ serving_prep:
 # ---------------------------------------------------------------------------
 aws:
   region: ap-northeast-2
-  s3_bucket: aiops-ple-financial
+  s3_bucket: YOUR_S3_BUCKET
   instance_type: ml.g4dn.xlarge
   cpu_instance_type: ml.m5.2xlarge  # 32GB RAM for Phase 0 (processing jobs)
   use_spot: true
   max_run_seconds: 43200
-  role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole
+  role_arn: arn:aws:iam::ACCOUNT_ID:role/AWSPLEPlatformSageMakerRole
