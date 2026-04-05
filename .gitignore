@@ -70,3 +70,4 @@ htmlcov/
 
 # Orchestrator state (crash recovery)
 .ablation_state.json
+outreach/
