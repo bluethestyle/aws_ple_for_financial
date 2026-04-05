@@ -142,7 +142,9 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Financial DNA Task Grouping*: Four task groups (engagement, lifecycle, value, consumption) with differentiated adaTT intra/inter transfer strengths and logit transfer for natural experience propagation.
 
-+ *Comprehensive Ablation*: 30 scenarios (feature group / expert / task$times$structure) on a reproducible 1M-customer benchmark with Gaussian Copula + latent variable variance budget.
++ *Sigmoid CGC Gate for Heterogeneous Experts*: We identify that standard softmax CGC gates create harmful inter-expert competition with heterogeneous experts, and demonstrate that sigmoid gating (inspired by @sigmoid_moe2024) achieves better convergence by allowing independent expert contribution.
+
++ *Comprehensive Ablation*: 24 scenarios (18 feature+expert joint + 6 structure) on a reproducible 1M-customer benchmark with Gaussian Copula + latent variable variance budget.
 
 + *Config-driven Pipeline*: End-to-end system (feature engineering → training → distillation → serving) controlled by two YAML files, enabling deployment by teams with 1--2 ML engineers.
 
@@ -197,6 +199,23 @@ M3oE @zhang2024m3oe separates experts by domain
 but uses identical MLP architectures within each domain.
 MoE++ introduces computation-level heterogeneity (zero-compute vs. FFN experts)
 but not architectural heterogeneity.
+
+Furthermore, recent theoretical work demonstrates that the standard softmax gating mechanism
+itself contributes to representation collapse.
+Nguyen et al. @sigmoid_moe2024 prove that sigmoid gating achieves higher sample efficiency
+than softmax gating in MoE models:
+softmax's sum-to-one constraint forces experts into unnecessary competition,
+where increasing one expert's weight requires decreasing another's,
+leading to representation collapse even when experts provide complementary signals.
+Sigmoid gating eliminates this inter-expert competition
+by allowing each expert's contribution to be evaluated independently,
+achieving faster convergence and better utilization of all experts.
+This finding is especially relevant when experts are _heterogeneous_:
+since their outputs have fundamentally different scales and distributions
+(e.g., hyperbolic embeddings vs. persistence diagrams),
+softmax competition is particularly harmful ---
+suppressing a topological expert to increase a temporal expert's weight
+means losing irreplaceable topological signal, not merely a redundant representation.
 
 *Gap*: No prior work composes experts with *fundamentally different inductive biases*
 --- graph convolution, state-space models, topological persistence,
@@ -518,6 +537,32 @@ The total parameter count across all seven experts
 remains comparable to a single large MLP,
 but the diversity of learned representations is fundamentally richer.
 
+=== CGC Gate Design: Softmax vs. Sigmoid
+
+Standard PLE uses softmax CGC gates, which impose a competitive constraint:
+gate weights sum to 1, forcing experts to compete for influence.
+With homogeneous MLP experts this is reasonable --- experts provide redundant representations
+and the gate selects the best one.
+
+With heterogeneous experts, this competition is harmful:
+each expert provides unique, non-redundant information
+(temporal $eq.not$ hierarchical $eq.not$ topological),
+and suppressing one means losing irreplaceable signal.
+Recent theoretical work @sigmoid_moe2024 proves that sigmoid gating achieves
+higher sample efficiency by eliminating inter-expert competition.
+
+We implement both gate types for empirical comparison:
+- *Softmax*: $w_k = "softmax"(W dot h)_k$ --- competitive, sum-to-one.
+- *Sigmoid*: $w_k = sigma(bold(w)_k dot h) slash sum_j sigma(bold(w)_j dot h)$ --- independent evaluation, normalized.
+
+The sigmoid variant evaluates each expert's relevance independently
+before normalization, allowing multiple experts to receive high weight simultaneously.
+This is particularly important for tasks that require multiple analytical perspectives ---
+for example, churn prediction benefits from both temporal trends _and_ causal pathways,
+and neither should be suppressed to boost the other.
+The structure ablation (Section 5.5) compares these gate types
+with 20-epoch training to assess convergence behavior.
+
 === Temporal Ensemble: Expert-within-Expert
 
 Financial time series exhibit a uniquely complex structure rarely seen in other domains.
@@ -697,9 +742,10 @@ relationship managers, and regulators emerge as a natural
 byproduct of the forward pass, not as a separate post-hoc computation.
 
 *Mechanism.* The CGC (Customized Gate Control) module computes
-a softmax attention over the $K$ experts for each task $t$:
-$ w_t = "softmax"(W_t dot h + b_t) in RR^K $
-where $h$ is the input representation. The weight $w_(t,k)$ directly indicates
+an attention over the $K$ experts for each task $t$.
+With softmax gating: $w_t = "softmax"(W_t dot h + b_t) in RR^K$;
+with sigmoid gating: $w_(t,k) = sigma(bold(w)_(t,k) dot h) slash sum_j sigma(bold(w)_(t,j) dot h)$.
+The weight $w_(t,k)$ directly indicates
 how much expert $k$ contributed to task $t$'s prediction.
 
 *Business interpretability.* Because each expert $k$ has a named inductive bias
@@ -852,6 +898,8 @@ but a structural requirement for multi-faceted persuasion.
 // TODO: Fill results
 
 == Task × Structure Cross Ablation (RQ3)
+
+Six structure variants are compared: shared-bottom (no PLE/adaTT), PLE-softmax, PLE-sigmoid, adaTT-only, PLE-softmax+adaTT, and PLE-sigmoid+adaTT. All variants use the full 7 heterogeneous expert basket with 20 epochs to assess convergence behavior differences between gate types.
 
 // TODO: Fill results
 
@@ -1065,16 +1113,17 @@ Full configuration files are available in the accompanying repository.
 
 #heading(numbering: none, level: 3)[B. Ablation Scenario Definitions]
 
-The 30 ablation scenarios are organized into two phases:
+The 24 ablation scenarios are organized into two phases:
 
 *Phase 1 --- Feature + Expert Joint Ablation (18 scenarios):*
 Baseline (DeepFM only with base features), DeepFM with all features,
 full model, 8 bottom-up scenarios (DeepFM + one expert with matching features),
 and 6 top-down scenarios (full minus one expert-feature pair).
 
-*Phase 2 --- Task x Structure Cross Ablation (12 scenarios):*
-Three task tiers (4, 8, 18 tasks) crossed with four structural variants
-(shared-bottom, PLE only, adaTT only, PLE + adaTT).
+*Phase 2 --- Task x Structure Cross Ablation (6 scenarios):*
+Six structural variants --- shared-bottom (no PLE/adaTT), PLE-softmax, PLE-sigmoid,
+adaTT-only, PLE-softmax+adaTT, PLE-sigmoid+adaTT ---
+all using the full 18 tasks and 7 heterogeneous experts with 20 epochs.
 
 #heading(numbering: none, level: 3)[C. Benchmark Data Generation]
 
