@@ -720,16 +720,6 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
             model_config["adatt"] = {"enabled": False}
             logger.info("Structure ablation: adaTT disabled")
 
-    # -- Structure ablation: gate type (softmax vs sigmoid) --
-    gate_type_raw = hp.get("gate_type", "softmax")
-    if hasattr(ple_config, 'gate_type'):
-        ple_config.gate_type = gate_type_raw
-    else:
-        # Dynamically add attribute if config class doesn't have it
-        ple_config.gate_type = gate_type_raw
-    if gate_type_raw != "softmax":
-        logger.info("Structure ablation: gate_type=%s", gate_type_raw)
-
     # -- Loss weighting --
     lw_cfg = model_config.get("loss_weighting", {})
     loss_weighting = LossWeightingConfig(
@@ -754,6 +744,12 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
         expert_basket=expert_basket,
         loss_weighting=loss_weighting,
     )
+    # -- Structure ablation: gate type (softmax vs sigmoid) --
+    gate_type_raw = hp.get("gate_type", "softmax")
+    ple_config.gate_type = gate_type_raw
+    if gate_type_raw != "softmax":
+        logger.info("Structure ablation: gate_type=%s", gate_type_raw)
+
 
     # -- Per-expert input dimensions from model config --
     expert_input_dims_raw = model_config.get("expert_input_dims", {})
