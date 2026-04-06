@@ -572,12 +572,12 @@ data:
 
   # ---- Temporal split (leakage prevention) ----
   # Use time-based split instead of random split to prevent temporal leakage.
-  # For Santander: split by snapshot_date. Monthly snapshots with
-  # pre-aggregated sequences — gap_days=1 sufficient (no intra-day leak).
+  # Monthly snapshots (17 dates, 2015-01 to 2016-05).
+  # gap_days=30 ensures no overlap between adjacent monthly snapshots.
   temporal_split:
     enabled: true
     date_col: snapshot_date
-    gap_days: 1
+    gap_days: 30
     train_ratio: 0.7
     val_ratio: 0.15
 

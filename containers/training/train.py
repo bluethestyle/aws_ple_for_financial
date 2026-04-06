@@ -540,7 +540,7 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
             full_loader.dataset, [train_size, val_size], generator=gen,
         )
         _dl_cfg = (config or {}).get("ablation", {}).get("training_defaults", {})
-        _nw = int(_dl_cfg.get("num_workers", 2))
+        _nw = int(_dl_cfg.get("num_workers", 0))  # Windows: num_workers>0 causes DataLoader deadlock
         _pm = bool(_dl_cfg.get("pin_memory", True))
         _dl = bool(_dl_cfg.get("drop_last", True))
         train_loader = DataLoader(
@@ -1039,6 +1039,8 @@ def _build_task_val_masks(
                     _all_dates_arrow = _con_vm.execute(
                         f'SELECT "{date_col}" FROM \'{_uri}\''
                     ).arrow()
+                    if hasattr(_all_dates_arrow, 'read_all'):
+                        _all_dates_arrow = _all_dates_arrow.read_all()
                     _all_dates = _all_dates_arrow.column(0).to_numpy(zero_copy_only=False)
                     _val_dates = _all_dates[val_idx]
                 except Exception:
@@ -1700,17 +1702,18 @@ def main() -> None:
         # Try to load date column from parquet
         if date_col not in features.column_names:
             import duckdb as _ddb_date
+            import pyarrow.parquet as _pq_date
             _parquet_path = list(Path(train_dir).glob("**/*.parquet"))
             if _parquet_path:
-                _uri = str(_parquet_path[0]).replace("\\", "/")
-                _con_d = _ddb_date.connect()
+                _uri = str(_parquet_path[0])
                 try:
-                    _date_arrow = _con_d.execute(f'SELECT "{date_col}" FROM \'{_uri}\'').arrow()
-                    _date_arr = _date_arrow.column(0).to_numpy(zero_copy_only=False)
-                except Exception:
-                    pass
-                finally:
-                    _con_d.close()
+                    # PyArrow direct read — more reliable than DuckDB SQL on Windows
+                    _date_table = _pq_date.read_table(_uri, columns=[date_col])
+                    _date_arr = _date_table.column(0).to_numpy(zero_copy_only=False)
+                    logger.info("Loaded date column '%s' from parquet: %d values, %d unique",
+                                date_col, len(_date_arr), len(set(_date_arr[:10000])))
+                except Exception as e:
+                    logger.warning("Failed to load date column '%s': %s", date_col, e)
 
         # Detect if temporal split is appropriate:
         # If >80% of rows share the same date, it's cross-sectional → random split
@@ -1722,7 +1725,7 @@ def main() -> None:
                 _dates_col = pa.array(_date_arr)
             # Compute value_counts via Arrow
             _vc = pc.value_counts(_dates_col)
-            _max_count = max(entry["count"].as_py() for entry in _vc) if len(_vc) > 0 else len(_dates_col)
+            _max_count = max(entry["counts"].as_py() for entry in _vc) if len(_vc) > 0 else len(_dates_col)
             _top_date_ratio = _max_count / len(_dates_col) if len(_dates_col) > 0 else 1.0
             if _top_date_ratio < 0.8:
                 _use_temporal = True
@@ -1734,9 +1737,9 @@ def main() -> None:
             import duckdb as _ddb_split
 
             _ts_cfg = config.get("data", {}).get("temporal_split", {})
-            gap_days = int(_ts_cfg.get("gap_days", 1))
-            train_ratio = 0.7
-            val_ratio = 0.15
+            gap_days = int(_ts_cfg.get("gap_days", 7))  # CLAUDE.md: minimum 7 days
+            train_ratio = float(_ts_cfg.get("train_ratio", 0.7))
+            val_ratio = float(_ts_cfg.get("val_ratio", 0.15))
 
             # Build a date array aligned to feature rows
             if date_col in features.column_names:
@@ -1800,6 +1803,9 @@ def main() -> None:
                                AND _split_date <= (SELECT val_end FROM cutoffs))
                         ORDER BY _split_date, _orig_idx
                     """).arrow()
+                    # Ensure we have a Table, not a RecordBatchReader
+                    if hasattr(_split_arrow, 'read_all'):
+                        _split_arrow = _split_arrow.read_all()
 
                     # Extract train/val indices from Arrow result (no pandas)
                     _orig_idx_arr = _split_arrow.column("_orig_idx").to_numpy(zero_copy_only=False)
