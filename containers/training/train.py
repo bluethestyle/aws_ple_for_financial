@@ -1986,7 +1986,7 @@ def main() -> None:
         },
         "amp": {"enabled": use_amp},
         "gradient": {"clip_norm": 5.0, "accumulation_steps": grad_accum_steps},
-        "early_stopping": {"enabled": True, "patience": patience},
+        "early_stopping": {"enabled": True, "patience": patience, "auc_decline_patience": patience},
         "checkpoint": {"dir": checkpoint_dir, "save_every_n_epochs": 1, "max_to_keep": 3},
         "phase1": {"epochs": epochs if trainer_phase in ("phase1", "full") else 0},
         "phase2": {"epochs": epochs if trainer_phase in ("phase2", "full") else 0},
