@@ -533,11 +533,10 @@ class PLEModel(nn.Module):
                     # FeatureRouter already computed actual input dims
                     # per expert from group_ranges + routing config.
                     basket_names = self.expert_basket.shared_expert_names
-                    for i, bname in enumerate(basket_names):
-                        router_key = f"shared_{i}"
-                        if self.feature_router.has_routing(router_key):
+                    for bname in basket_names:
+                        if self.feature_router.has_routing(bname):
                             expert_dim_overrides[bname] = (
-                                self.feature_router.get_expert_input_dim(router_key)
+                                self.feature_router.get_expert_input_dim(bname)
                             )
                 if hasattr(cfg, "expert_input_dims") and cfg.expert_input_dims:
                     # Explicit overrides from config take precedence

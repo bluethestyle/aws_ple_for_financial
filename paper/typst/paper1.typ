@@ -824,9 +824,17 @@ providing an additional layer of interpretability.
 <inherent-explain>
 
 A central claim of this work is that the heterogeneous expert structure
-provides _inherent_ explainability --- explanations that _persuade_ customers,
-relationship managers, and regulators emerge as a natural
-byproduct of the forward pass, not as a separate post-hoc computation.
+provides _structural interpretability at the analytical-perspective level_ ---
+gate weights decompose each prediction into named analytical viewpoints
+(temporal trends, product hierarchy, causal pathways, etc.)
+as a natural byproduct of the forward pass.
+This is not causal explanation in the Pearl sense:
+most experts operate at Level 1 (association) of the causal ladder.
+The exception is the Causal expert, which learns a NOTEARS DAG
+and thus approaches Level 2 (intervention) reasoning.
+When the Causal expert's gate weight is high for a prediction,
+it indicates not merely correlation but that _structural causal relationships_
+contributed to the recommendation --- a qualitatively stronger form of explanation.
 
 *Mechanism.* The CGC (Customized Gate Control) module computes
 an attention over the $K$ experts for each task $t$.
@@ -848,6 +856,18 @@ $w_(t,k)$ carries business meaning without additional interpretation:
     #h(1em) Others (0.15)
   ]
 ]
+
+*What gate weights do and do not explain.*
+Gate weights answer "which analytical perspective mattered most" ---
+not "why this customer will buy this product" in a causal sense.
+For most experts (Temporal, HGCN, LightGCN, DeepFM, PersLay, OT),
+the weight indicates associative relevance.
+For the Causal expert specifically, a high weight signals
+that a learned DAG structure contributed to the prediction,
+providing a stronger explanatory basis.
+This is an honest middle ground:
+richer than SHAP's feature-level attribution,
+but short of full counterfactual reasoning.
 
 *Comparison with post-hoc methods.* SHAP and LIME operate at the _feature_ level
 ("feature\_237 contributed 0.12"), requiring an additional mapping step
@@ -1098,6 +1118,17 @@ The key enablers were: (1) config-driven architecture minimizing code changes,
 (2) AI agents handling parallel implementation tasks under human architectural guidance,
 (3) heterogeneous expert design achieving expressiveness through structural bias
 rather than parameter scale, and (4) knowledge distillation eliminating GPU serving costs.
+
+*Defense over offense in production ML.*
+In financial recommendation services, maintaining AUC above an operational threshold
+matters far more than pushing it higher.
+The heterogeneous expert design directly supports this _defensive_ posture:
+graceful degradation (ablation shows no single expert is a critical point of failure),
+drift detection triggering automatic retraining,
+and the champion-challenger gate requiring manual approval before deployment.
+The architecture prioritizes _not getting worse_ over _getting better_ ---
+a perspective that aligns with financial regulators' emphasis
+on model risk management and operational resilience.
 
 *Feature engineering philosophy.*
 A deeper lesson from this work is that _what to observe_ matters more than _how to model_.

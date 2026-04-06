@@ -103,27 +103,37 @@ Phase 5: Deployment
 - "예금→투자"보다 "예금→대출"이 더 먼 거리라는 관계가 자연스럽게 보존
 
 ### 모델 구조
-- **PLE (Progressive Layered Extraction)**: 18 tasks, 7 heterogeneous experts
+- **PLE (Progressive Layered Extraction)**: 18 tasks, 7 heterogeneous experts, **3.16M params**
+- **FeatureRouter**: feature_groups.yaml의 target_experts 설정에 따라 각 expert에 해당 피처 그룹만 라우팅
+  - deepfm=162D, temporal_ensemble=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, optimal_transport=124D
+  - 전체 316 피처 중 expert별로 귀납적 편향에 부합하는 부분집합만 수신 (config-driven)
 - **adaTT (Adaptive Task Transfer)**: 4 task groups 간 knowledge transfer
   - engagement: has_nba, engagement_score, next_mcc, top_mcc_shift
   - lifecycle: churn_signal, tenure_stage, segment_prediction
   - value: income_tier, spend_level, cross_sell_count, product_stability
   - consumption: will_acquire_* (5개), nba_primary
 - **Expert Basket**: deepfm, temporal_ensemble, hgcn, perslay, causal, lightgcn, optimal_transport
-- **Feature Groups**: 12 groups (4 base + 8 generated), 316 features
+- **Feature Groups**: 12 groups (4 base + 8 generated), 316 features total → FeatureRouter가 expert별 부분집합으로 분배
 
 ## 3. 아키텍처 기여 (Contribution)
 
-### Heterogeneous Shared Expert Basket
+### Heterogeneous Shared Expert Basket + FeatureRouter
 기존 PLE (Tencent, 2020)의 한계:
 - shared expert = 동종 MLP × N개 (같은 구조, 다른 초기화)
+- 모든 expert가 동일한 전체 피처를 입력받음 → 구조적 차이가 없어 파라미터 낭비
 - 파라미터를 늘려야 표현력이 올라감 → 경량 모델에서 표현력 부족
 
-본 논문의 접근:
+본 논문의 접근 — **이종 아키텍처 × 이종 입력**:
 - shared expert = 이종 전문가 7개 (DeepFM, Temporal, HGCN, PersLay, Causal, LightGCN, OT)
-- 각 expert가 다른 inductive bias로 같은 데이터를 다른 관점에서 처리
+- **FeatureRouter가 각 expert에 귀납적 편향에 부합하는 피처 부분집합만 라우팅**:
+  - PersLay는 TDA 위상 피처(32D)만 수신, LightGCN은 그래프 임베딩(66D)만 수신
+  - HGCN은 상품 계층 피처(34D)만, Temporal Ensemble은 시계열 피처(127D)만 수신
+  - 라우팅은 feature_groups.yaml의 target_experts에서 선언적으로 정의 (코드 수정 불필요)
+- 기존 PLE는 "다른 구조가 같은 데이터를 다른 관점에서 처리"하는 수준이었으나,
+  본 구조는 **"다른 구조가 다른 데이터를 처리"**하는 더 강한 이종성을 실현
+- 이로 인해 expert 간 입력 중복이 제거되어 파라미터 효율이 향상: 4.77M → 3.16M (34% 감소)
 - CGC gate가 "이 태스크에는 어떤 관점이 유용한가"를 학습
-- 결과: 단일 대형 MLP보다 가벼우면서 표현력은 더 높음
+- 결과: 단일 대형 MLP보다 가벼우면서 표현력은 더 높음. 파라미터 대비 표현력 비율이 극대화됨
 
 ### Inherent Explainability (구조적 설명 가능성)
 이종 전문가 구조의 부수적이지만 핵심적인 이점: 모델 자체가 설명력을 내재.

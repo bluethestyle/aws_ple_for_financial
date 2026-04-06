@@ -574,7 +574,7 @@ def _inject_sequences_into_ple_dataset(dataset, event_sequences, seq_lengths=Non
 # Model building
 # ---------------------------------------------------------------------------
 
-def build_model(feature_schema, label_schema, hp, input_dim, device):
+def build_model(feature_schema, label_schema, hp, input_dim, device, config=None):
     """Build PLEModel from schema + hyperparameters.
 
     ALL config comes from schema (produced by PipelineRunner).
@@ -584,6 +584,9 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
     -------
     model, ple_config
     """
+    if config is None:
+        config = {}
+
     from core.model.ple.model import PLEModel
     from core.model.ple.config import (
         PLEConfig, ExpertConfig, ExpertBasketConfig,
@@ -822,10 +825,14 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
         fg_cfg = config.get("feature_groups", [])
         if not fg_cfg:
             _fg_path = config.get("feature_groups_file", "")
-            if _fg_path and Path(_fg_path).exists():
-                import yaml as _yaml_fg
-                with open(_fg_path, encoding="utf-8") as _f_fg:
-                    fg_cfg = _yaml_fg.safe_load(_f_fg).get("feature_groups", [])
+            if _fg_path:
+                _fg_p = Path(_fg_path)
+                if not _fg_p.exists():
+                    _fg_p = Path("/opt/ml/code") / _fg_path
+                if _fg_p.exists():
+                    import yaml as _yaml_fg
+                    with open(_fg_p, encoding="utf-8") as _f_fg:
+                        fg_cfg = _yaml_fg.safe_load(_f_fg).get("feature_groups", [])
         if fg_cfg:
             from collections import defaultdict
             _expert_to_groups = defaultdict(list)
@@ -1982,7 +1989,7 @@ def main() -> None:
         input_dim = len(feature_schema.get("columns", []))
         logger.info("Model input_dim (from schema): %d", input_dim)
 
-    model, ple_config = build_model(feature_schema, label_schema, hp, input_dim, device)
+    model, ple_config = build_model(feature_schema, label_schema, hp, input_dim, device, config=config)
 
     n_params = sum(p.numel() for p in model.parameters())
     logger.info("Model: %d parameters (%.1f MB), estimated GPU memory: %.1f MB",

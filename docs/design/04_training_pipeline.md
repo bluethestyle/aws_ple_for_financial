@@ -377,6 +377,8 @@ scenarios = [
 
 Feature-expert 연동: 피처 그룹이 제거될 때 해당 expert만 받는 expert도 자동 비활성화.
 
+> **FeatureRouter 활성화 이후 해석 유의사항**: Expert 제거는 해당 Expert에 라우팅되던 **피처 경로도 함께 제거**한다. 즉, Expert Ablation 결과는 "Expert 구조의 기여"와 "해당 피처 그룹의 기여"를 동시에 측정한다. Dim 1 Feature Ablation 결과와 반드시 교차 비교하여 두 효과를 분리 해석해야 한다.
+
 ### Dim 3: Task x Structure Cross
 
 4개 태스크 티어 x 4개 구조 변형 = 16 시나리오 (full 중복 제거 시 15):
@@ -524,6 +526,7 @@ Santander 학습 기준 (50 epochs, ~4시간):
 | Loss 함수 | 코드 내 하드코딩 | **build_loss() + focal_alpha calibrated** | positive rate 반영 |
 | Loss 가중치 | 불확실성 (미활성화) | **Uncertainty weighting 활성화** | 자동 밸런싱 |
 | 모델 구조 | PLE + adaTT | **+ 7 heterogeneous experts + Evidential + SAE + AMP FP32 loss** | 불확실성 + 해석 가능성 |
+| Expert 입력 차원 | 전체 피처 브로드캐스트 | **FeatureRouter 활성화 — Expert별 이종 입력 차원** (deepfm=162D, temporal=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, ot=124D; 파라미터 4.77M→3.16M, 34% 감소) | 불필요한 피처 제거로 Expert 전문성 강화 |
 | Logit Transfer | 단일 방법 | **3-method dispatch (5 edges)** | 관계 유형별 최적화 |
 | 해석 가능성 | 없음 | **3-stage (A:분석, B:사유, C:서빙)** | 감사 가능한 추천 |
 | 증류 | distillation.py 단일 | **config 기반 + fidelity gate** | 품질 보증 |

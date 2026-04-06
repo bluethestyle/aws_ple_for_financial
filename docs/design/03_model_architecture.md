@@ -85,7 +85,11 @@ Model Architecture는 Stage 8 (PLETrainer)의 모델 구조를 정의한다.
 
 ## Expert → 5-Axis Feature 라우팅
 
-### FeatureRouter
+### FeatureRouter — **현재 활성 (Active)**
+
+> **상태**: FeatureRouter는 `build_model()`에서 **이미 활성화**되어 있다.
+> `feature_groups.yaml`의 `target_experts` 선언을 읽어 Expert별 피처 슬라이스를 자동 계산하며,
+> `feature_groups.yaml`만 수정하면 코드 변경 없이 라우팅이 변경된다.
 
 ```python
 # core/model/ple/feature_router.py
@@ -94,28 +98,48 @@ class FeatureRouter:
     5-Axis 피처를 Expert에 라우팅.
     feature_groups.yaml의 target_experts 매핑을 기반으로
     각 Expert가 받을 피처 슬라이스의 인덱스를 사전 계산.
+
+    build_model()에서 자동 생성:
+        router = FeatureRouter.from_feature_groups(feature_groups_cfg, feature_schema)
+    라우팅 결과는 Expert별 실제 input_dim을 결정하며 이종(heterogeneous) 차원을 만든다.
     """
     def route(self, x: torch.Tensor, expert_name: str) -> torch.Tensor:
         """전체 피처 텐서에서 해당 Expert의 서브셋 추출."""
 ```
 
+#### Expert별 실제 입력 차원 (Santander, 라우팅 활성 후)
+
+| Expert | 입력 차원 | 라우팅된 피처 그룹 |
+|--------|----------|--------------------|
+| `deepfm` | **162D** | demographics, product_holdings, txn_behavior, derived_temporal, gmm_clustering, model_derived |
+| `temporal_ensemble` | **127D** | txn_behavior, hmm_states, mamba_temporal, model_derived |
+| `hgcn` | **34D** | product_hierarchy only |
+| `perslay` | **32D** | tda_global, tda_local only |
+| `causal` | **158D** | demographics, product_holdings, txn_behavior, derived_temporal, product_hierarchy, gmm_clustering |
+| `lightgcn` | **66D** | graph_collaborative only |
+| `optimal_transport` | **124D** | demographics, product_holdings, txn_behavior, derived_temporal, gmm_clustering |
+
+라우팅 활성화로 모델 파라미터가 **4.77M → 3.16M (34% 감소)**되었다.
+각 Expert가 관련 없는 피처를 무시하고 전문 피처 서브셋만 처리하기 때문이다.
+
 ### Expert Pool — 11종 등록 (7종 Basket 활성)
 
-Pool에 11종이 등록되어 있으며, Santander Basket에는 **7 heterogeneous experts**가 활성화된다:
+Pool에 11종이 등록되어 있으며, Santander Basket에는 **7 heterogeneous experts**가 활성화된다.
+FeatureRouter 활성화로 각 Expert는 이종(heterogeneous) 입력 차원을 갖는다:
 
-| # | 등록 이름 | 파일 | 주요 Axis | Basket | 설명 |
-|---|-----------|------|-----------|--------|------|
-| 1 | `deepfm` | `core/model/experts/deepfm.py` | State | **O** | FM + Deep 피처 상호작용 |
-| 2 | `temporal_ensemble` | `core/model/experts/temporal.py` | Timeseries | **O** | Mamba + PatchTST + LNN 앙상블 |
-| 3 | `hgcn` | `core/model/experts/hgcn.py` | Hierarchy | **O** | 쌍곡 그래프 합성곱 |
-| 4 | `perslay` | `core/model/experts/perslay.py` | Snapshot | **O** | 위상 데이터 분석 (TDA global) |
-| 5 | `causal` | `core/model/experts/causal.py` | Snapshot | **O** | NOTEARS DAG 인과 구조 |
-| 6 | `lightgcn` | `core/model/experts/lightgcn.py` | Item | **O** | 경량 그래프 합성곱 |
-| 7 | `optimal_transport` | `core/model/experts/ot.py` | Snapshot | **O** | Sinkhorn 최적 수송 |
-| 8 | `mlp` | `core/model/experts/mlp.py` | State | - | 기본 MLP (task expert용) |
-| 9 | `mamba` | `core/model/experts/mamba.py` | Timeseries | - | Selective SSM (S6, O(n)) |
-| 10 | `autoint` | `core/model/experts/autoint.py` | State | - | Self-Attention 상호작용 |
-| 11 | `xdeepfm` | `core/model/experts/xdeepfm.py` | State | - | CIN + Deep |
+| # | 등록 이름 | 파일 | 주요 Axis | Basket | 실제 input_dim | 설명 |
+|---|-----------|------|-----------|--------|---------------|------|
+| 1 | `deepfm` | `core/model/experts/deepfm.py` | State | **O** | **162D** | FM + Deep 피처 상호작용 |
+| 2 | `temporal_ensemble` | `core/model/experts/temporal.py` | Timeseries | **O** | **127D** | Mamba + PatchTST + LNN 앙상블 |
+| 3 | `hgcn` | `core/model/experts/hgcn.py` | Hierarchy | **O** | **34D** | 쌍곡 그래프 합성곱 |
+| 4 | `perslay` | `core/model/experts/perslay.py` | Snapshot | **O** | **32D** | 위상 데이터 분석 (TDA global) |
+| 5 | `causal` | `core/model/experts/causal.py` | Snapshot | **O** | **158D** | NOTEARS DAG 인과 구조 |
+| 6 | `lightgcn` | `core/model/experts/lightgcn.py` | Item | **O** | **66D** | 경량 그래프 합성곱 |
+| 7 | `optimal_transport` | `core/model/experts/ot.py` | Snapshot | **O** | **124D** | Sinkhorn 최적 수송 |
+| 8 | `mlp` | `core/model/experts/mlp.py` | State | - | (full dim) | 기본 MLP (task expert용) |
+| 9 | `mamba` | `core/model/experts/mamba.py` | Timeseries | - | (full dim) | Selective SSM (S6, O(n)) |
+| 10 | `autoint` | `core/model/experts/autoint.py` | State | - | (full dim) | Self-Attention 상호작용 |
+| 11 | `xdeepfm` | `core/model/experts/xdeepfm.py` | State | - | (full dim) | CIN + Deep |
 
 ### Dual-Registry 아키텍처
 
@@ -186,8 +210,9 @@ ple:
   num_task_experts: 1
 ```
 
-- Layer 0: Expert Basket의 이종 Expert (deepfm, hgcn, perslay, ...) + FeatureRouter
-- Layer 1-2: 동종 MLP Expert (extraction_dim 입출력)
+- **Layer 0**: FeatureRouter가 전체 피처 텐서를 Expert별 서브셋으로 슬라이싱 후 각 Expert에 전달.
+  각 Expert는 라우팅된 이종 차원(32D~162D)을 입력으로 받으며, 출력은 `extraction_dim(64D)`으로 통일.
+- **Layer 1-2**: 동종 MLP Expert (extraction_dim 64D 입출력, Layer 0 출력을 재처리)
 
 ---
 
@@ -476,13 +501,33 @@ distillation:
 
 ---
 
-## 모델 빌드 자동화 — PLEModel.__init__()
+## 모델 빌드 자동화 — PLEModel.__init__() / build_model()
+
+### FeatureRouter 자동 생성 (Config-Driven)
+
+`build_model()`은 `feature_groups.yaml`의 `target_experts` 선언을 읽어
+`FeatureRouter`를 자동 생성하고 `PLEConfig`에 주입한다.
+`feature_groups.yaml`의 `target_experts`만 수정하면 코드 변경 없이 라우팅과 Expert 입력 차원이 바뀐다.
+
+```python
+# build_model()에서 자동 수행:
+#   1. feature_groups.yaml 로드 → group별 target_experts 파싱
+#   2. FeatureRouter.from_feature_groups(groups_cfg, feature_schema) 생성
+#      - 각 expert가 받을 컬럼 인덱스를 feature_schema로부터 사전 계산
+#      - expert_input_dims dict 자동 산출 (deepfm→162, perslay→32, ...)
+#   3. PLEConfig.feature_router = router, expert_input_dims = dims 주입
+#   4. PLEModel(config) 생성 → _build_extraction_layers()에서 router 사용
+```
+
+버그 수정 이력:
+- `build_model()` config 파라미터 스코핑 오류 수정 (router가 config에 올바르게 주입되지 않던 문제)
+- `model.py`의 `shared_{i}` → 실제 expert 이름 매핑 오류 수정 (CGCLayer에서 expert 출력 인덱싱 불일치)
 
 ```python
 class PLEModel(nn.Module):
     def __init__(self, config: PLEConfig):
         # 1. Expert Basket (optional) → Pool Registry에서 선택
-        self._build_extraction_layers()       # Stacked CGC + FeatureRouter
+        self._build_extraction_layers()       # Stacked CGC + FeatureRouter (Layer 0 활성)
         self._build_cgc_attention()           # Per-task attention (dim_normalize)
         self._build_task_experts()            # GroupTaskExpertBasket or MLP fallback
         self._build_hmm_projectors()          # 3 modes × projection
@@ -528,7 +573,7 @@ class PLEInput:
 | 항목 | 현재 (On-Prem) | AWS (설계) | 변경 이유 |
 |------|---------------|-----------|----------|
 | Expert 종류 | 8종 하드코딩 | ExpertRegistry 11종 Pool, 7종 Basket 활성 | 도메인별 Expert 선택적 활성화 |
-| Expert 라우팅 | 암묵적 (코드 내 분기) | **5-Axis FeatureRouter** (명시적) | 피처→Expert 매핑 투명화 |
+| Expert 라우팅 | 암묵적 (코드 내 분기) | **5-Axis FeatureRouter — 현재 활성** (`feature_groups.yaml` target_experts 기반 자동 생성) | 피처→Expert 매핑 투명화, config-driven |
 | Expert 선택 | 전체 사용 | **Pool→Basket→CGC 3계층** | Config-driven subset selection |
 | CGC | 기본 | **dim_normalize=True** + entropy regularization | Expert 출력 균형 + collapse 방지 |
 | 태스크 수 | 16개 고정 | **18개** (config 확장 가능) | Tier 5 txn-based NBA 추가 |
@@ -541,4 +586,4 @@ class PLEInput:
 | Loss 함수 | 코드 내 하드코딩 | **build_loss() 팩토리 + focal_alpha calibrated** | config 선언적, 양성비율 반영 |
 | Scoring | 없음 | **FD-TVS + DNA modifier + constraints** | 규제 준수 추천 |
 | Tower | 단일 MLP | **TowerRegistry** (standard/contrastive) | 태스크 유형별 최적 tower |
-| 입력 차원 | 734D 하드코딩 | feature_schema.input_dim 동적 | 피처 변경 시 자동 반영 |
+| 입력 차원 | 734D 균일 (모든 Expert 동일) | **이종(heterogeneous) Expert 입력 차원** — FeatureRouter 활성으로 Expert별 32D~162D; 모델 파라미터 4.77M → 3.16M (34% 감소) | 불필요한 피처 제거로 과적합 억제 및 연산 효율화 |

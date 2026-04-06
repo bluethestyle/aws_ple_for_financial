@@ -38,6 +38,8 @@
 - full-causal, full-lightgcn, full-ot
 - mlp_only (minimal baseline)
 
+> **주의 (FeatureRouter):** FeatureRouter 활성화로 각 expert의 입력 차원이 균일하지 않다. Expert ablation 시나리오의 파라미터 수는 uniform 316D 기준이 아니라 라우팅된 실제 입력 차원 기준으로 산출된다 (예: hgcn은 34D hierarchy 전용, perslay는 32D TDA 전용). Full basket 전체 모델 파라미터는 3.16M이며, expert 제거 시 해당 expert의 전용 파라미터가 제거된다.
+
 ### Phase 3: Task × Structure Cross Ablation (16 scenarios)
 
 **4 Task Tiers × 4 Structures:**
@@ -60,7 +62,11 @@ training_defaults:
   drop_last: true
 ```
 
-- 데이터: 1M customers, 316 features, 18 tasks
+- 데이터: 1M customers, 316 features (전체 피처 공간), 18 tasks
+- **FeatureRouter 활성화**: 각 expert는 전체 316D가 아닌 지정된 피처 그룹만 수신
+  - deepfm=162D, temporal_ensemble=127D, causal=158D, optimal_transport=124D
+  - lightgcn=66D, hgcn=34D, perslay=32D
+  - 모델 파라미터: 4.77M → 3.16M (34% 감소)
 - GPU: RTX 4070 12GB (로컬) / g5.xlarge A10G 24GB (클라우드)
 - 시나리오당 ~30분, 전체 ~24시간 (순차 실행)
 

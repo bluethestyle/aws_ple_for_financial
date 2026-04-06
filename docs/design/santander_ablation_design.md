@@ -33,7 +33,7 @@ Stage 1    데이터 로드        DataAdapter.load_raw() -> Dict[str, DataFrame
 Stage 1.5  Temporal 준비      시퀀스 truncation + prod_* 재계산 (리키지 방지)
 Stage 2    스키마 분류        numeric / categorical / sequence 자동 분류
 Stage 3    PII 암호화        (선택적) 개인식별정보 암호화
-Stage 4    피처 엔지니어링    FeatureGroupPipeline: 12개 그룹 -> ~500D
+Stage 4    피처 엔지니어링    FeatureGroupPipeline: 12개 그룹 -> ~500D (총합; 각 Expert는 FeatureRouter를 통해 지정된 서브셋만 수신)
 Stage 5    레이블 파생        LabelDeriver: 18개 태스크 레이블 생성
 Stage 5.5  리키지 검증        LeakageValidator: 상관/시퀀스/시간/prod 4개 검증
 Stage 6    시퀀스 빌드        Time-based + sliding window → 3D tensor (txn_day_offset_seq, prod_seq)
@@ -59,8 +59,11 @@ raw_data["main"] (941K x 89)
   |
   +-- Stage 1.5 --> seq_* truncated, prod_* recomputed
   |
-  +-- Stage 4 --> df_features (941K x ~500D)
+  +-- Stage 4 --> df_features (941K x ~500D, 총합)
   |                 checkpoints/features.parquet
+  |                 ※ FeatureRouter: 각 Expert는 지정된 피처 그룹의 서브셋만 수신
+  |                    (316D 라우팅 기준: deepfm=162D, temporal_ensemble=127D, hgcn=34D,
+  |                     perslay=32D, causal=158D, lightgcn=66D, optimal_transport=124D)
   |
   +-- Stage 5 --> df_labels (941K x 18 label cols)
   |                 checkpoints/labels.parquet
@@ -261,8 +264,18 @@ logit_transfer_strength = 0.5
 핵심 아키텍처는 **Progressive Layered Extraction (PLE)** 에 **adaptive Task-Transfer (adaTT)** 를 결합한 멀티태스크 학습 모델이다.
 
 ```
-Input (~500D)
+Input (~500D, 총 316D 활성 피처)
   |
+  v
+[FeatureRouter] ── Expert별 지정 피처 그룹 서브셋만 라우팅 (전체 브로드캐스트 아님)
+  |                  deepfm          → 162D  (demographics + product + synth 교차)
+  |                  temporal_ens    → 127D  (txn_behavior + temporal_pattern + synth)
+  |                  hgcn            → 34D   (product_hierarchy + product_holdings)
+  |                  perslay         → 32D   (tda_global)
+  |                  causal          → 158D  (demographics + synth + txn_behavior)
+  |                  lightgcn        → 66D   (product_holdings + co-purchase graph)
+  |                  optimal_transport→124D  (demographics + synth + distribution)
+  |                  ※ 파라미터: 4.77M → 3.16M (34% 감소)
   v
 [CGC Layer 1] ── shared experts x 7 + task expert x 1 per task
   |                gating: softmax(W * concat(input, task_embedding))
@@ -281,15 +294,17 @@ Input (~500D)
 
 ### 4.2 7 Shared Expert 구성
 
-| Expert | 역할 | 핵심 파라미터 |
-|---|---|---|
-| **DeepFM** | 피처 교차 상호작용 | emb_dim=8, hidden=[256,128], dropout=0.1 |
-| **Temporal Ensemble** | 시계열 패턴 (Mamba+Transformer+LNN) | mamba_d=64, n_layers=2, transformer_heads=4 |
-| **HGCN** | 쌍곡 기하학 기반 상품 계층 | hyperbolic_dim=20, product_dim=24, refine=128 |
-| **PersLay** | TDA 위상 특징 처리 | phi_hidden=64, rho_hidden=64 |
-| **Causal** | DAG 기반 인과관계 | dag_hidden=[128,64], lambda_dag=0.01 |
-| **LightGCN** | 협업 필터링 그래프 | emb_dim=64, n_layers=3 |
-| **Optimal Transport** | 분포 매칭 | hidden=[128,64], sinkhorn_iter=50 |
+| Expert | 역할 | 라우팅 입력 차원 | 핵심 파라미터 |
+|---|---|---|---|
+| **DeepFM** | 피처 교차 상호작용 | **162D** | emb_dim=8, hidden=[256,128], dropout=0.1 |
+| **Temporal Ensemble** | 시계열 패턴 (Mamba+Transformer+LNN) | **127D** | mamba_d=64, n_layers=2, transformer_heads=4 |
+| **HGCN** | 쌍곡 기하학 기반 상품 계층 | **34D** | hyperbolic_dim=20, product_dim=24, refine=128 |
+| **PersLay** | TDA 위상 특징 처리 | **32D** | phi_hidden=64, rho_hidden=64 |
+| **Causal** | DAG 기반 인과관계 | **158D** | dag_hidden=[128,64], lambda_dag=0.01 |
+| **LightGCN** | 협업 필터링 그래프 | **66D** | emb_dim=64, n_layers=3 |
+| **Optimal Transport** | 분포 매칭 | **124D** | hidden=[128,64], sinkhorn_iter=50 |
+
+> **FeatureRouter 활성화**: 전체 ~500D 피처를 모든 Expert에 브로드캐스트하지 않고, 각 Expert의 설계 목적에 맞는 피처 그룹만 라우팅한다. 총 모델 파라미터: 4.77M → 3.16M (34% 감소). 라우팅 입력 차원의 합이 총 피처 수(~500D)를 초과하는 것은 일부 피처 그룹이 복수 Expert에 공유되기 때문이다 (현재 활성 316D 기준).
 
 Task expert: MLP (hidden=[256,128], dropout=0.1) -- 각 태스크마다 1개
 
@@ -436,6 +451,8 @@ DeepFM을 기준선으로 한 bottom-up + top-down 설계:
 | Absolute min | `mlp_only` | [mlp] (shared expert 없이 task expert만) |
 
 > Phase 1의 `full` 결과를 Phase 2의 `full_basket` baseline으로 재사용 (-1 job)
+
+> **FeatureRouter 활성화에 따른 해석 유의사항**: Expert 제거(ablation)는 단순히 해당 Expert의 연산을 제거하는 것이 아니라, 그 Expert에게만 라우팅되던 **피처 경로(feature routing path)도 함께 제거**한다. 예를 들어 `full-perslay` 시나리오에서는 32D TDA 피처 경로가 완전히 차단된다. 따라서 Expert Ablation 결과는 "Expert 구조의 기여"와 "해당 피처 그룹의 기여"를 동시에 반영하므로, Dim 1 Feature Ablation 결과와 교차 비교하여 해석해야 한다.
 
 ### 5.4 Dimension 3: Task x Structure Cross (16 시나리오)
 
