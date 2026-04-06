@@ -478,9 +478,7 @@ class PLEModel(nn.Module):
         # Determine number of shared experts and their names
         if self.expert_basket is not None:
             num_shared = self.expert_basket.num_shared_experts
-            shared_expert_names = [
-                f"shared_{i}" for i in range(num_shared)
-            ]
+            shared_expert_names = self.expert_basket.shared_expert_names
         else:
             num_shared = cfg.num_shared_experts
             shared_expert_names = [

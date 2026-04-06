@@ -12,6 +12,7 @@
 task_name: santander_ple
 
 adapter: santander
+feature_groups_file: configs/santander/feature_groups.yaml
 
 # ---------------------------------------------------------------------------
 # Tasks -- 18 tasks across 4 tiers

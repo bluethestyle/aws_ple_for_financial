@@ -791,18 +791,23 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
         logger.info("Logit transfers: %d relationships", len(ple_config.logit_transfers))
 
     # -- Feature group ranges from schema --
-    group_ranges = feature_schema.get("group_ranges", {})
+    # Use group-level ranges (e.g. "demographics": [0, 29]) for FeatureRouter
+    # Fall back to column-level ranges if group-level not available
+    group_ranges = feature_schema.get("feature_group_ranges",
+                                       feature_schema.get("group_ranges", {}))
     if group_ranges:
         ple_config.feature_group_ranges = {k: tuple(v) for k, v in group_ranges.items()}
+    # Also keep column-level ranges for DeepFM field splitting
+    col_ranges = feature_schema.get("group_ranges", {})
 
     # -- Inject feature_group_ranges into DeepFM expert config ----------------
     # When field_dims="auto", the DeepFM expert reads feature_group_ranges
     # from its config dict to derive per-field boundaries for FM interaction.
-    if group_ranges and ple_config.expert_basket is not None:
+    if col_ranges and ple_config.expert_basket is not None:
         deepfm_cfg = ple_config.expert_basket.expert_configs.get("deepfm")
         if deepfm_cfg is not None and deepfm_cfg.get("field_dims") == "auto":
             deepfm_cfg["feature_group_ranges"] = {
-                k: tuple(v) for k, v in group_ranges.items()
+                k: tuple(v) for k, v in col_ranges.items()
             }
             logger.info(
                 "Injected %d feature_group_ranges into DeepFM expert config "
@@ -810,8 +815,31 @@ def build_model(feature_schema, label_schema, hp, input_dim, device):
                 len(group_ranges),
             )
 
-    # -- Expert routing from schema --
+    # -- Expert routing from schema or feature_groups.yaml --
     expert_routing = feature_schema.get("expert_routing", {})
+    if not expert_routing and group_ranges:
+        # Auto-build from feature_groups.yaml target_experts
+        fg_cfg = config.get("feature_groups", [])
+        if not fg_cfg:
+            _fg_path = config.get("feature_groups_file", "")
+            if _fg_path and Path(_fg_path).exists():
+                import yaml as _yaml_fg
+                with open(_fg_path, encoding="utf-8") as _f_fg:
+                    fg_cfg = _yaml_fg.safe_load(_f_fg).get("feature_groups", [])
+        if fg_cfg:
+            from collections import defaultdict
+            _expert_to_groups = defaultdict(list)
+            for fg in fg_cfg:
+                for exp in fg.get("target_experts", []):
+                    if fg["name"] in group_ranges:
+                        _expert_to_groups[exp].append(fg["name"])
+            expert_routing = [
+                {"expert_name": exp, "input_groups": grps}
+                for exp, grps in _expert_to_groups.items()
+            ]
+            if expert_routing:
+                logger.info("Auto-built expert_input_routing from feature_groups.yaml: %d experts",
+                            len(expert_routing))
     if expert_routing:
         from core.model.ple.config import ExpertInputConfig
         ple_config.expert_input_routing = [
