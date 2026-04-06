@@ -68,7 +68,7 @@
   Combined with Adaptive Task Transfer (adaTT) over four financial-DNA task groups
   and multi-disciplinary feature engineering spanning eleven academic disciplines,
   the architecture achieves parameter-efficient expressiveness
-  on a single consumer GPU (12GB VRAM) while maintaining graceful degradation.
+  on a single desktop GPU (12GB VRAM) while maintaining graceful degradation.
   // TODO: Fill in final ablation numbers
 
   #v(0.3em)
@@ -90,7 +90,7 @@ The primary deliverable is not a probability score but a _reason that the custom
 Three audiences must be persuaded:
 - *Customers*: "Why this product for me?" --- trust leads to conversion.
 - *Relationship managers*: "Why recommend this to this customer?" --- sales justification.
-- *Regulators* (Korean FSS @koreafsc2024, EU AI Act @euaiact2024): "Why was this decision made?" --- compliance obligation. Korea's AI Basic Act @koreaaiact2024 further classifies financial recommendation as potentially high-risk AI.
+- *Regulators* (Korean FSS @koreafsc2024, EU AI Act @euaiact2024): "Why was this decision made?" --- compliance obligation. Korea's AI Basic Act @koreaaiact2024 further classifies financial recommendation as potentially high-impact AI.
 
 Existing approaches fall short on this persuasion requirement:
 - *Single-task models* cannot jointly predict churn, product affinity, and customer lifetime value @caruana1997.
@@ -350,7 +350,7 @@ with a next-generation recommendation model.
 
 The constraints were formidable:
 no dedicated ML infrastructure budget,
-a single consumer-grade GPU (NVIDIA RTX 4070, 12GB VRAM) as the only training hardware,
+a single desktop-grade GPU (NVIDIA RTX 4070, 12GB VRAM) as the only training hardware,
 no GPU inference servers for deployment,
 and strict regulatory requirements (Korean FSS AI guidelines, EU AI Act).
 
@@ -447,7 +447,7 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
   placement: auto,
   kind: image,
   {
-    set text(size: 7pt)
+    set text(size: 7pt, hyphenate: false)
     let gray-fill = luma(245)
     let accent = rgb("#4a7c9b")
     let accent-light = rgb("#d6e6f0")
@@ -455,7 +455,7 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
     let task-fill = rgb("#f0f0f0")
 
     diagram(
-      spacing: (8pt, 12pt),
+      spacing: (6pt, 10pt),
       node-stroke: 0.6pt + luma(80),
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
@@ -464,19 +464,22 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
       node((3, 0), [*Input* \ 318 features], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
 
       // === Row 1: Feature Groups ===
-      node((3, 1), [*12 Feature Groups* \ #text(size: 6pt)[demo · product · txn · tda#sub[g] · tda#sub[l] · hmm · mamba · hierarchy · graph · gmm · model · derived]], width: 80mm, fill: gray-fill, name: <fg>),
+      node((3, 1), [*12 Feature Groups*], width: 32mm, fill: gray-fill, name: <fg>),
 
       // === Row 2: Feature Router ===
-      node((3, 2), [*Feature Router*], shape: fletcher.shapes.diamond, width: 26mm, height: 10mm, fill: accent-light, name: <router>),
+      node((3, 2.5), [*Feature Router*], shape: fletcher.shapes.diamond, width: 26mm, height: 10mm, fill: accent-light, name: <router>),
+
+      // === Fan-out hub (invisible) ===
+      node((3, 2.6), none, width: 1pt, height: 1pt, stroke: none, name: <fan-out>),
 
       // === Row 3: 7 Heterogeneous Experts ===
-      node((0, 3), [*DeepFM*], width: 16mm, fill: expert-fill, name: <e1>),
-      node((1, 3), [*Temporal*], width: 16mm, fill: expert-fill, name: <e2>),
-      node((2, 3), [*HGCN*], width: 16mm, fill: expert-fill, name: <e3>),
-      node((3, 3), [*PersLay*], width: 16mm, fill: expert-fill, name: <e4>),
-      node((4, 3), [*LightGCN*], width: 16mm, fill: expert-fill, name: <e5>),
-      node((5, 3), [*Causal*], width: 16mm, fill: expert-fill, name: <e6>),
-      node((6, 3), [*OT*], width: 16mm, fill: expert-fill, name: <e7>),
+      node((1, 4), [*DeepFM*], width: 17mm, fill: expert-fill, name: <e1>),
+      node((2, 4), [*Temporal*], width: 17mm, fill: expert-fill, name: <e2>),
+      node((2.5, 4), [*HGCN*], width: 17mm, fill: expert-fill, name: <e3>),
+      node((3, 4), [*PersLay*], width: 17mm, fill: expert-fill, name: <e4>),
+      node((3.5, 4), [*LightGCN*], width: 17mm, fill: expert-fill, name: <e5>),
+      node((4, 4), [*Causal*], width: 17mm, fill: expert-fill, name: <e6>),
+      node((5, 4), [*OT*], width: 17mm, fill: expert-fill, name: <e7>),
 
       // Expert group label
       node(
@@ -488,55 +491,58 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
         name: <experts-box>,
       ),
 
+      // === Fan-in hub (invisible) ===
+      node((3, 4.6), none, width: 1pt, height: 1pt, stroke: none, name: <fan-in>),
+
       // === Row 4: CGC Gate ===
-      node((3, 4.4), [*CGC Gate* \ #text(size: 6pt)[(softmax / sigmoid)]], width: 34mm, fill: accent-light, name: <gate>),
+      node((3, 5), [*CGC Gate* \ #text(size: 6pt)[(softmax / sigmoid)]], width: 34mm, fill: accent-light, name: <gate>),
 
-      // === Row 5: 4 Task Groups with adaTT ===
-      node((0.75, 5.6), [*Engagement*], width: 20mm, fill: task-fill, name: <tg1>),
-      node((2.25, 5.6), [*Lifecycle*], width: 20mm, fill: task-fill, name: <tg2>),
-      node((3.75, 5.6), [*Value*], width: 20mm, fill: task-fill, name: <tg3>),
-      node((5.25, 5.6), [*Consumption*], width: 20mm, fill: task-fill, name: <tg4>),
-
-      // Task group enclosure
-      node(
-        enclose: (<tg1>, <tg4>),
-        stroke: (paint: luma(160), thickness: 0.5pt, dash: "dashed"),
-        corner-radius: 5pt,
-        fill: none,
-        snap: -1,
-        name: <tg-box>,
-      ),
+      // === Row 5: 4 Task Groups ===
+      node((1, 6), [*Engage*], width: 19mm, fill: task-fill, name: <tg1>),
+      node((2.5, 6), [*Lifecycle*], width: 19mm, fill: task-fill, name: <tg2>),
+      node((3.5, 6), [*Value*], width: 19mm, fill: task-fill, name: <tg3>),
+      node((5, 6), [*Consume*], width: 19mm, fill: task-fill, name: <tg4>),
 
       // === Row 6: Task Towers ===
-      node((3, 6.8), [*18 Task Towers* → Predictions], width: 50mm, fill: gray-fill, name: <towers>),
+      node((3, 7), [*18 Task Towers* → Predictions], width: 50mm, fill: gray-fill, name: <towers>),
 
       // === Row 7: Knowledge Distillation ===
-      node((3, 7.8), [*Knowledge Distillation* → LGBM ×18], width: 50mm, fill: gray-fill, name: <kd>),
+      node((3, 8), [*Knowledge Distillation* → LGBM ×18], width: 50mm, fill: gray-fill, name: <kd>),
 
       // === Row 8: Serving ===
-      node((3, 8.8), [*Lambda Serving* + Reason Generation], shape: fletcher.shapes.pill, width: 50mm, fill: gray-fill, name: <serve>),
+      node((3, 9), [*Lambda Serving* + Reason Generation], shape: fletcher.shapes.pill, width: 50mm, fill: gray-fill, name: <serve>),
 
       // === Vertical edges ===
       edge(<input>, <fg>, "->"),
       edge(<fg>, <router>, "->"),
-      edge(<router>, <e1>, "->"),
-      edge(<router>, <e2>, "->"),
-      edge(<router>, <e3>, "->"),
-      edge(<router>, <e4>, "->"),
-      edge(<router>, <e5>, "->"),
-      edge(<router>, <e6>, "->"),
-      edge(<router>, <e7>, "->"),
-      edge(<e1>, <gate>, "->"),
-      edge(<e2>, <gate>, "->"),
-      edge(<e3>, <gate>, "->"),
-      edge(<e4>, <gate>, "->"),
-      edge(<e5>, <gate>, "->"),
-      edge(<e6>, <gate>, "->"),
-      edge(<e7>, <gate>, "->"),
+
+      // Fan-out: single arrow from router, then split to experts
+      edge(<router>, <fan-out>, "-"),
+      edge(<fan-out>, <e1>, "->"),
+      edge(<fan-out>, <e2>, "->"),
+      edge(<fan-out>, <e3>, "->"),
+      edge(<fan-out>, <e4>, "->"),
+      edge(<fan-out>, <e5>, "->"),
+      edge(<fan-out>, <e6>, "->"),
+      edge(<fan-out>, <e7>, "->"),
+
+      // Fan-in: experts merge, then single arrow to gate
+      edge(<e1>, <fan-in>, "->"),
+      edge(<e2>, <fan-in>, "->"),
+      edge(<e3>, <fan-in>, "->"),
+      edge(<e4>, <fan-in>, "->"),
+      edge(<e5>, <fan-in>, "->"),
+      edge(<e6>, <fan-in>, "->"),
+      edge(<e7>, <fan-in>, "->"),
+      edge(<fan-in>, <gate>, "-"),
+
+      // Gate to task groups
       edge(<gate>, <tg1>, "->"),
       edge(<gate>, <tg2>, "->"),
       edge(<gate>, <tg3>, "->"),
       edge(<gate>, <tg4>, "->"),
+
+      // Task groups to towers
       edge(<tg1>, <towers>, "->"),
       edge(<tg2>, <towers>, "->"),
       edge(<tg3>, <towers>, "->"),
@@ -544,12 +550,12 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
       edge(<towers>, <kd>, "->"),
       edge(<kd>, <serve>, "->"),
 
-      // === adaTT transfer arrows (between task groups) ===
-      edge(<tg1>, <tg2>, "<->", stroke: 0.8pt + accent, bend: -25deg, label: text(size: 5pt, fill: accent)[intra]),
-      edge(<tg2>, <tg3>, "<->", stroke: 0.8pt + accent, bend: -25deg),
-      edge(<tg3>, <tg4>, "<->", stroke: 0.8pt + accent, bend: -25deg, label: text(size: 5pt, fill: accent)[intra]),
-      edge(<tg1>, <tg3>, "<->", stroke: (paint: accent, thickness: 0.5pt, dash: "dashed"), bend: -40deg, label: text(size: 5pt, fill: accent)[inter]),
-      edge(<tg2>, <tg4>, "<->", stroke: (paint: accent, thickness: 0.5pt, dash: "dashed"), bend: -40deg, label: text(size: 5pt, fill: accent)[inter]),
+      // === adaTT: solid intra arrows between adjacent task groups ===
+      edge(<tg1>, <tg2>, "<->", stroke: 0.8pt + accent, label: text(size: 8pt, weight: "bold", fill: accent)[adaTT]),
+      edge(<tg2>, <tg3>, "<->", stroke: 0.8pt + accent, label: text(size: 8pt, weight: "bold", fill: accent)[adaTT]),
+      edge(<tg3>, <tg4>, "<->", stroke: 0.8pt + accent, label: text(size: 8pt, weight: "bold", fill: accent)[adaTT]),
+
+
     )
   },
   caption: [Heterogeneous Expert PLE architecture overview.],
@@ -621,7 +627,7 @@ in financial customer understanding that no other expert type addresses:
   respecting the metric structure of the feature space (unlike KL divergence).
 
 The rationale for heterogeneous experts is also rooted in a hardware constraint:
-with a single consumer GPU (12GB VRAM), we cannot scale a homogeneous MLP expert
+with a single desktop GPU (12GB VRAM), we cannot scale a homogeneous MLP expert
 to sufficient width/depth for high expressiveness.
 Instead, each expert leverages a _structural inductive bias_ to capture patterns
 that would require orders of magnitude more MLP parameters.
@@ -947,50 +953,100 @@ but a structural requirement for multi-faceted persuasion.
 
 - *Data*: 1M customers, 318 features, 18 tasks.
 - *Hardware*: NVIDIA RTX 4070 (12GB) local; AWS g4dn.xlarge Spot (T4 16GB) cloud.
-- *Training*: 5+5 epochs (phase1 + phase2), batch 6144, lr 0.008, AMP, early stopping patience 3.
+- *Training*: 20 epochs (single phase), batch 4096, lr 0.008 (shared-bottom: lr 0.003, batch 2048), FP32, early stopping patience 5.
 - *Metrics*: AUC (binary), F1 macro (classification), MAE/R² (regression).
 
-== Feature Group Ablation (RQ1)
+== Joint Feature + Expert Ablation (RQ1 + RQ2)
 
-// TODO: Fill results table after ablation completes
+// TODO: Fill after joint ablation completes
 #figure(
   scope: "parent",
   placement: auto,
   table(
-    columns: (auto, auto, auto, auto),
-    inset: 5pt,
+    columns: (auto, auto, auto, auto, auto),
+    inset: 4pt,
     align: center,
     stroke: 0.5pt,
-    [*Scenario*], [*Features*], [*Avg AUC*], [*Δ vs Full*],
-    [full], [318], [--], [baseline],
-    [base_only], [49], [--], [--],
-    [base+tda], [65], [--], [--],
-    [base+hmm], [74], [--], [--],
-    [base+mamba], [99], [--], [--],
-    [full−tda], [300], [--], [--],
-    [full−hmm], [291], [--], [--],
-    [...], [...], [...], [...],
+    table.header(
+      [*Scenario*], [*Avg AUC*], [*Avg F1m*], [*Avg MAE*], [*Val Loss*],
+    ),
+    table.cell(colspan: 5, align: left, [_Baselines_]),
+    [DeepFM + base feats], [--], [--], [--], [--],
+    [DeepFM + all feats], [--], [--], [--], [--],
+    [Full (7 experts)], [--], [--], [--], [--],
+    table.cell(colspan: 5, align: left, [_Bottom-up: DeepFM + single generator_]),
+    [DeepFM + TDA], [--], [--], [--], [--],
+    [DeepFM + Temporal], [--], [--], [--], [--],
+    [DeepFM + HGCN], [--], [--], [--], [--],
+    [DeepFM + LightGCN], [--], [--], [--], [--],
+    [DeepFM + Causal], [--], [--], [--], [--],
+    [DeepFM + OT], [--], [--], [--], [--],
+    [DeepFM + GMM], [--], [--], [--], [--],
+    [DeepFM + Model-derived], [--], [--], [--], [--],
+    table.cell(colspan: 5, align: left, [_Top-down: Full minus one expert_]),
+    [Full − TDA], [--], [--], [--], [--],
+    [Full − Temporal], [--], [--], [--], [--],
+    [Full − HGCN], [--], [--], [--], [--],
+    [Full − LightGCN], [--], [--], [--], [--],
+    [Full − Causal], [--], [--], [--], [--],
+    [Full − OT], [--], [--], [--], [--],
   ),
-  caption: [Feature group ablation results (to be filled after ablation).],
-) <tab:feat-ablation>
-
-== Expert Ablation (RQ2)
-
-// TODO: Fill results
+  caption: [Joint feature + expert ablation. Bottom-up adds one generator to DeepFM baseline; top-down removes one expert from the full 7-expert model.],
+) <tab:joint-ablation>
 
 == Task × Structure Cross Ablation (RQ3)
 
 Six structure variants are compared: shared-bottom (no PLE/adaTT), PLE-softmax, PLE-sigmoid, adaTT-only, PLE-softmax+adaTT, and PLE-sigmoid+adaTT. All variants use the full 7 heterogeneous expert basket with 20 epochs to assess convergence behavior differences between gate types.
 
-// TODO: Fill results
+// TODO: Fill after structure ablation completes
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    inset: 4pt,
+    align: center,
+    stroke: 0.5pt,
+    table.header(
+      [*Variant*], [*Val Loss*], [*Avg AUC*], [*Avg F1m*], [*Avg MAE*],
+    ),
+    [Shared Bottom], [--], [--], [--], [--],
+    [PLE Softmax], [--], [--], [--], [--],
+    [PLE Sigmoid], [--], [--], [--], [--],
+    [adaTT Only], [--], [--], [--], [--],
+    [PLE Softmax + adaTT], [--], [--], [--], [--],
+    [PLE Sigmoid + adaTT], [--], [--], [--], [--],
+  ),
+  caption: [Structure ablation: gate type and adaTT impact on convergence and task performance.],
+) <tab:structure-ablation>
 
 == Graceful Degradation (RQ4)
 
-// TODO: Analysis of performance drop per expert removal
+We assess robustness by examining how much performance degrades when each expert is individually removed from the full model. A gracefully degrading system should show moderate, predictable drops rather than catastrophic failure when any single component is absent.
+
+// TODO: Derive from joint ablation top-down results
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 4pt,
+    align: center,
+    stroke: 0.5pt,
+    table.header(
+      [*Removed Expert*], [*ΔAUC*], [*ΔVal Loss*],
+    ),
+    [TDA], [--], [--],
+    [Temporal], [--], [--],
+    [HGCN], [--], [--],
+    [LightGCN], [--], [--],
+    [Causal], [--], [--],
+    [OT], [--], [--],
+  ),
+  caption: [Graceful degradation: performance change when each expert is removed from the full model.],
+) <tab:degradation>
 
 == Explainability Analysis (RQ5)
 
-// TODO: Gate weight distribution, SHAP comparison
+The sigmoid CGC gate produces sparse, interpretable routing weights: each expert receives a non-negative weight independent of other experts, enabling direct attribution of "which expert contributed how much" per task. Unlike softmax gates where weights are coupled through the normalization denominator, sigmoid weights allow a task to strongly activate multiple experts simultaneously or suppress all but one. We examine per-task gate weight distributions across all 18 tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition (e.g., temporal expert weighted highly for churn prediction, causal expert for intervention-sensitive tasks).
+
+// TODO: Extract gate weight examples from ple_sigmoid checkpoints
 
 == Gate Entropy Analysis (RQ6: Does routing collapse occur?)
 
@@ -1007,7 +1063,22 @@ uniform expert utilization; entropy near zero indicates routing collapse.
 We compare gate entropy between softmax and sigmoid CGC gates
 across all 18 tasks, reporting mean entropy, minimum entropy (worst-case task),
 and expert utilization rate (fraction of experts with $w > 0.05$).
-// TODO: fill with results after structure ablation
+
+// TODO: Compare ple_softmax vs ple_sigmoid checkpoints
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 4pt,
+    align: center,
+    stroke: 0.5pt,
+    table.header(
+      [*Gate Type*], [*Mean $H_t$*], [*Min $H_t$*], [*Utilization ($w>0.05$)*],
+    ),
+    [Softmax CGC], [--], [--], [--],
+    [Sigmoid CGC], [--], [--], [--],
+  ),
+  caption: [Gate entropy comparison. Higher entropy and utilization indicate healthier expert routing without collapse.],
+) <tab:gate-entropy>
 
 // ============================================================
 = Discussion
@@ -1019,7 +1090,7 @@ and expert utilization rate (fraction of experts with $w > 0.05$).
 
 *Resource-constrained development.*
 This system was built without dedicated ML infrastructure budget,
-on a single consumer GPU, by a three-person team
+on a single desktop GPU, by a three-person team
 augmented with AI development agents.
 This demonstrates that complex multi-task recommendation systems
 are no longer exclusive to organizations with large ML teams and GPU clusters.
@@ -1060,6 +1131,27 @@ We expect the heterogeneous expert PLE pattern to generalize to these domains,
 with domain-specific expert types replacing the financial experts
 while retaining the structural benefits of collapse resistance and inherent explainability.
 
+*Lessons from design iteration.*
+The final architecture emerged through repeated trial and rejection.
+The first candidate --- Black-Litterman Bayesian model combination ---
+was abandoned because the blended posterior made individual model contributions
+opaque, failing the explainability requirement that drives the entire project.
+The second candidate --- N-model ensemble --- was rejected for N× management overhead.
+These failures led to the key reframing: combine experts _inside_ a single model,
+not _outside_ it.
+
+During ablation, the softmax CGC gate produced non-converging val\_loss
+(frozen at 3.702 across Phase 2), while shared-bottom paradoxically outperformed PLE.
+Investigation led to the NeurIPS 2024 sigmoid gate paper @sigmoid_moe2024,
+which explained why softmax competition is harmful for heterogeneous experts.
+
+A particularly instructive failure: a configuration bug caused `use_ple=false`
+to collapse the 7-expert basket into a single MLP,
+making all 24 ablation scenarios produce identical AUC (0.913).
+This was only discovered through systematic result comparison ---
+reinforcing the principle that ablation results must be verified
+against expected variation before drawing conclusions.
+
 *Infrastructure choice.*
 Financial institutions differ fundamentally from big tech in ML infrastructure needs.
 Big tech operates hundreds of GPUs across dozens of teams with hourly retraining cycles,
@@ -1090,12 +1182,25 @@ training pipeline, serving endpoint, and monitoring dashboard.
   DDP (DistributedDataParallel) support is architecturally designed
   but not yet experimentally validated.
   For the ablation scenarios studied here, single-GPU training completes within acceptable time.
-- *Phase 2 numerical stability*: Mixed-precision (FP16) training in Phase 2
-  requires careful handling of log-domain computations (CGC entropy, OT Sinkhorn)
-  to avoid FP16 underflow. We document four specific numerical fixes
-  that were necessary for stable Phase 2 training.
+- *FP32 training*: We chose FP32 over mixed-precision (FP16) to preserve the mathematical semantics of heterogeneous experts.
+  The on-prem ODE-based LNN dynamics, unbounded HGCN linear output, and Softplus TDA weights
+  produce wider intermediate value ranges than homogeneous MLPs, causing FP16 overflow under AMP.
+  FP32 eliminates this instability at the cost of ~1.5× slower training --- an acceptable trade-off given the single-GPU constraint.
 - *LLM dependency*: Recommendation reason generation relies on LLM inference,
   introducing latency and cost trade-offs (detailed in companion paper).
+
+== Future Work: Scaling Considerations
+
+The current architecture is intentionally lightweight --- each expert uses a compact, domain-specific design (e.g., 2-layer MLP for DeepFM deep branch, pre-computed embeddings for HGCN) rather than scaling parameters.
+This is a deliberate design choice, not merely a resource constraint: structural inductive biases substitute for raw parameter count.
+
+When scaling to larger institutions with dedicated GPU infrastructure, the natural progression is:
+(1) *data enrichment* --- longer transaction histories, broader product coverage, richer interaction signals --- before model capacity increase;
+(2) *per-expert input dimension expansion* --- wider feature groups feeding each expert's specialized inductive bias;
+(3) *expert depth/width scaling* --- deeper layers within individual experts, particularly Temporal (longer sequence modeling) and HGCN (deeper hierarchy encoding);
+(4) *multi-GPU training* via DDP, which is architecturally supported but not yet validated.
+
+Notably, scaling the expert basket size (adding more expert types) is less promising than scaling individual expert capacity, because the heterogeneous design already covers the major mathematical perspectives relevant to financial behavior.
 
 // ============================================================
 = Conclusion
@@ -1157,12 +1262,13 @@ All authors collaborated through Scrum sprints with rapid feedback cycles.
 
 This research received no external funding, grants, or institutional infrastructure support.
 All costs --- including AI development tools (Claude Code, Gemini, Cursor subscriptions),
-hardware peripherals, mobile data connectivity, and operational expenses ---
+hardware peripherals, mobile data connectivity, AWS SageMaker cloud training (Spot instances),
+S3 storage, and operational expenses ---
 were borne entirely by the first author's personal funds.
-Development was conducted on a single consumer-grade GPU (NVIDIA RTX 4070, 12GB VRAM)
+Development was conducted on a single desktop-grade GPU (NVIDIA RTX 4070, 12GB VRAM)
 in a repurposed, inadequately ventilated workspace
 with no dedicated ML infrastructure budget, no institutional network support,
-and no cloud computing allocation.
+and no institutional cloud computing allocation.
 Data collection was constrained to a legacy HIVE environment
 with no access to Spark or Impala,
 requiring custom parallel query logic to overcome I/O bottlenecks.
@@ -1234,13 +1340,9 @@ The synthetic benchmark uses a four-layer generative model:
 Seed=42 ensures reproducibility.
 Full generation code is available in the accompanying repository.
 
-#heading(numbering: none, level: 3)[D. Numerical Stability Fixes]
+#heading(numbering: none, level: 3)[D. FP32 Training Decision]
 
-Mixed-precision (FP16) training in Phase 2 required four specific fixes:
-(1) CGC entropy: FP32 cast with clamp(min=1e-6) to prevent log(0);
-(2) OT Sinkhorn: FP32 cast before log-domain computation;
-(3) Causal DAG regularization: FP32 Taylor expansion to prevent overflow;
-(4) last logits: float() cast for stable loss computation.
+Heterogeneous experts with on-prem-aligned activation functions (ODE-based LNN, linear HGCN output, Softplus TDA weights) produce wider intermediate value ranges than homogeneous MLPs. Under AMP (FP16), this causes GradScaler overflow that cascades into NaN loss --- observed consistently from epoch 2 in PLE configurations despite conservative GradScaler settings (init\_scale=1024, max\_scale=4096). FP32 training eliminates this entirely with zero NaN batches across all 20-epoch runs, at the cost of approximately 1.5× slower training. This trade-off preserves the mathematical semantics of each expert's inductive bias, which is the core design principle of the heterogeneous architecture.
 
 #heading(numbering: none, level: 3)[E. Structural Isomorphism Verification]
 

@@ -355,13 +355,22 @@ class PLETrainer:
     # ------------------------------------------------------------------
 
     def _create_grad_scaler(self) -> GradScaler:
-        """Create AMP GradScaler with conservative init_scale to avoid FP16 overflow."""
+        """Create AMP GradScaler with parameters from config."""
+        amp_cfg = self.config.amp
         device_type = getattr(self.device, "type", "cuda")
+        scaler_kwargs = dict(
+            init_scale=amp_cfg.grad_scaler_init_scale,
+            growth_factor=amp_cfg.grad_scaler_growth_factor,
+            backoff_factor=amp_cfg.grad_scaler_backoff_factor,
+            growth_interval=amp_cfg.grad_scaler_growth_interval,
+        )
         try:
-            return GradScaler(device_type, init_scale=1024.0)
+            scaler = GradScaler(device_type, **scaler_kwargs)
         except TypeError:
             # PyTorch < 2.0 fallback
-            return GradScaler(init_scale=1024.0)
+            scaler = GradScaler(**scaler_kwargs)
+        self._grad_scaler_max_scale = amp_cfg.grad_scaler_max_scale
+        return scaler
 
     # ------------------------------------------------------------------
     # Public API
@@ -869,6 +878,10 @@ class PLETrainer:
                                                 grad_norm, self.config.gradient.clip_norm, batch_idx)
                             self.scaler.step(self.optimizer)
                             self.scaler.update()
+                            # Cap scale to prevent FP16 overflow
+                            _max_scale = getattr(self, "_grad_scaler_max_scale", 4096.0)
+                            if self.scaler.get_scale() > _max_scale:
+                                self.scaler._scale = torch.tensor(_max_scale, device=self.device)
                         except (AssertionError, RuntimeError) as e:
                             logger.warning("GradScaler step failed: %s. Skipping.", e)
                     self.optimizer.zero_grad()
@@ -920,6 +933,9 @@ class PLETrainer:
                 )
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+                _max_scale = getattr(self, "_grad_scaler_max_scale", 4096.0)
+                if self.scaler.get_scale() > _max_scale:
+                    self.scaler._scale = torch.tensor(_max_scale, device=self.device)
             except (AssertionError, RuntimeError) as e:
                 logger.warning("GradScaler tail flush failed: %s. Skipping.", e)
             self.optimizer.zero_grad()

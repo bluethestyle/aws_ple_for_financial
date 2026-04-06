@@ -466,7 +466,7 @@ Mapping the current response status of the PLE-based financial AI recommendation
   [G-2], [Independent AI risk management org], [Operations team handles both dev and ops; independent function separation needed], [△],
   [G-3], [Establish AI risk management regulations], [FD-TVS, drift detection logic exists; internal regulation documentation needed], [○],
   [G-4], [Establish and publish AI ethics principles], [Not yet established --- enterprise AI ethics document needed], [△],
-  [G-5], [High-risk AI pre-approval process], [Pre-launch approval process formalization needed], [△],
+  [G-5], [High-impact AI pre-approval process], [Pre-launch approval process formalization needed], [△],
   [G-6], [Periodic AI utilization reporting], [Monthly report auto-generation complete; reporting line formalization needed], [○],
 )
 ]
@@ -596,10 +596,10 @@ The EU AI Act is likely to classify financial AI recommendation systems as *high
 #pagebreak()
 
 // ═══════════════════════════════════════════════════════════
-//  4. Korea AI Basic Act --- High-Risk AI Classification
+//  4. Korea AI Basic Act --- High-Impact AI Classification
 // ═══════════════════════════════════════════════════════════
 
-= Korea AI Basic Act High-Risk AI Classification and Financial Application
+= Korea AI Basic Act High-Impact AI Classification and Financial Application
 
 == High-Impact AI Applicability Assessment
 
@@ -611,7 +611,7 @@ Under current law, financial product recommendation systems are *not subject to 
   [Scenario], [Likelihood], [Basis],
   [Enforcement Decree amendment to include all financial product recommendations], [Medium], [EU AI Act already covers this scope],
   [Customer classification/segmentation interpreted as rights evaluation], [Low-Medium], [Similar structure to investment suitability assessment],
-  [Business expansion to insurance product recommendations], [High], [Insurance pricing is high-risk in both EU and domestic frameworks],
+  [Business expansion to insurance product recommendations], [High], [Insurance pricing is EU high-risk and domestic high-impact in both frameworks],
   [Discriminatory benefits based on churn prediction], [Medium], [Directly linked to fairness issues],
   [FSC guidelines separately regulating recommendation AI], [Medium-High], [Must monitor trends after integrated guidelines take effect],
 )
@@ -872,6 +872,178 @@ Automated classification and response system by severity.
   [MINOR], [24 hours], [Drift warning, quality degradation, herding high], [ML Team],
 )
 
+== Model Risk Management (MRM) Framework
+
+Full-lifecycle model governance aligned with *SR 11-7* (Federal Reserve/OCC), *EBA ML Guidelines*, and *NIST AI RMF 1.0*.
+
+=== MRM Lifecycle
+
+#card(title: "Development → Validation → Approval → Monitoring → Retrain / Retire", accent: navy)[
+  #table(
+    columns: (auto, 1.5fr, 1.5fr),
+    align: (center, left, left),
+    [Stage], [Activity], [System Component],
+    [Development], [Feature engineering, model training, offline evaluation], [PipelineRunner (Phase 0) + train.py (Phase 1)],
+    [Validation], [Champion-Challenger comparison, ablation, fairness audit], [ModelCompetitionManager + FairnessMonitor],
+    [Approval], [Manual review gate --- `auto_promote = false`], [AI Committee sign-off (Human-in-the-Loop)],
+    [Monitoring], [Drift, performance, fairness, herding --- continuous], [DriftDetector + PerformanceMonitor + FairnessMonitor],
+    [Retrain / Retire], [Triggered retrain or model decommission], [ConsecutiveDriftTracker → dag\_monthly\_retrain],
+  )
+]
+
+=== Model Inventory
+
+#card(title: "Model Registry", accent: teal)[
+  Every model version is recorded in `ModelCompetitionManager.model_registry` with:\
+  - *Model ID, version, training date, dataset snapshot hash*\
+  - *Architecture config* (expert count, task groups, adaTT strengths)\
+  - *Validation metrics* (per-task AUC/F1/MAPE, calibration, fairness DI/SPD/EOD)\
+  - *Approval status* (pending / approved / rejected / retired)\
+  - *Lineage* --- which champion it replaced and why
+]
+
+=== Independent Validation (Champion-Challenger)
+
+#card(title: "SR 11-7 Pillar 2 --- Independent Model Validation", accent: red-acc)[
+  *Gate policy*: `auto_promote = false` --- no model enters production without explicit human approval.\
+
+  *Comparison criteria*:\
+  + Per-task AUC / F1 / MAPE (absolute performance)\
+  + Paired _t_-test across temporal folds (statistical significance)\
+  + Calibration: predicted probability vs. observed frequency\
+  + Fairness: Disparate Impact (DI $>$ 0.8), SPD, EOD\
+  + Inference latency and cost efficiency\
+
+  *Decision flow*: Challenger trained → metrics collected → report generated → AI Committee reviews → promote / reject / request re-experiment.
+]
+
+=== Continuous Monitoring → Retrain Trigger
+
+#table(
+  columns: (1fr, 1.5fr, 1.5fr),
+  align: (left, left, left),
+  [Monitor], [Trigger Condition], [Action],
+  [DriftDetector (PSI)], [Feature or prediction PSI $>$ 0.25], [Alert (Orange)],
+  [ConsecutiveDriftTracker], [3 consecutive days of critical drift], [Auto-trigger `dag_monthly_retrain`],
+  [FairnessMonitor], [DI $<$ 0.8 or SPD/EOD threshold breach], [Alert → AI Committee review],
+  [PerformanceMonitor], [Task AUC below Yellow threshold], [Alert → retrain evaluation],
+)
+
+After retraining completes, `dag_champion_challenger` is invoked automatically: the new model becomes the challenger and must pass the validation gate described above before promotion.
+
+=== Emergency Response (Kill Switch)
+
+When monitoring detects a critical failure, the 3-tier Kill Switch provides immediate response:
+
++ *Deactivate* --- model serving is halted (global / per-task / per-cluster granularity)
++ *Rollback* --- previous approved model version is restored from the registry
++ *Fallback* --- rule-based recommendation engine takes over until a validated model is re-deployed
+
+All kill-switch activations are logged as CRITICAL incidents and reported to MSIT/FSS/CISO within 1 hour per the Incident Management protocol above.
+
+#pagebreak()
+
+// ═══════════════════════════════════════════════════════════
+//  5-1. Operational and Audit Agents
+// ═══════════════════════════════════════════════════════════
+
+= Operational and Audit Agents
+
+== Architecture Overview
+
+The serving agents (L1 Rule / L2a Retrieval / L2b Generation) reside on the real-time recommendation path. The *OpsAgent* and *AuditAgent* described here are fully separate *batch-only* agents that share no state with the serving path. They execute exclusively as downstream tasks within Airflow DAGs. This separation ensures regulatory surveillance functions do not impact real-time serving SLAs.
+
+== OpsAgent (Operational Agent)
+
+#card(title: "Trigger and Input", accent: navy)[
+  *Trigger*: `dag_drift_monitoring` completion, training Job completion event\
+  *Input data*:\
+  #h(1em) — `eval_metrics.json`: per-task AUC/F1/MAPE, calibration metrics\
+  #h(1em) — Training logs: per-task loss trajectory, gradient norm history\
+  #h(1em) — Gate entropy: expert routing skew (MoE gate softmax distribution)\
+  #h(1em) — PSI drift reports: feature/prediction/label distribution changes
+]
+
+*Processing pipeline*: JSON parsing → anomaly detection rules (threshold-based pre-filtering) → on anomaly detection, forward structured prompt to LLM.
+
+#card(title: "Prompt example", accent: teal)[
+  #text(size: 9pt)[
+  "Analyze the following eval\_metrics.json and gate entropy. Report (1) tasks with degraded performance, (2) gate skew (experts with entropy < 0.3), (3) features exceeding PSI threshold, (4) recommended actions in structured format."
+  ]
+]
+
+*Output*: Model health report (Markdown) — stored at S3 `governance/ops_reports/`. On anomaly detection, alerts are sent via Slack channel and email.
+
+== AuditAgent (Audit Agent)
+
+#card(title: "Trigger and Input", accent: navy)[
+  *Trigger*: `dag_fairness_monitoring` completion, quarterly governance cycle (`dag_governance_quarterly`)\
+  *Input data*:\
+  #h(1em) — FairnessMonitor report: DI/SPD/EOD (5 protected attributes × per-task)\
+  #h(1em) — Audit trail integrity verification: HMAC hash chain validation status\
+  #h(1em) — Opt-out statistics: request count, processing rate, avg. processing time by period\
+  #h(1em) — Governance checklist: 36-item auto-check results
+]
+
+*Processing pipeline*: automated comparison against regulatory thresholds (DI $>= 0.8$, $|$SPD$| <= 0.1$, $|$EOD$| <= 0.1$) → violation extraction → request LLM to summarize violations and recommend actions.
+
+#card(title: "Prompt example", accent: red-acc)[
+  #text(size: 9pt)[
+  "Compare the following fairness metrics against FSS thresholds (DI$>=0.8$, |SPD|$<=0.1$, |EOD|$<=0.1$). Report (1) violations (protected attribute, task, metric value), (2) severity (P1/P2/P3), (3) recommended actions."
+  ]
+]
+
+*Output*: Regulatory compliance report (Markdown) — stored at S3 `governance/audit_reports/`. Alerts dispatched by priority: P1 (immediate escalation), P2 (review within 24h), P3 (included in quarterly report).
+
+== Model Selection
+
+#text(size: 8.5pt)[
+#set par(justify: false)
+#table(
+  columns: (0.8fr, 1fr, 1fr),
+  align: (center, left, left),
+  [Environment], [Model], [Rationale],
+  [Air-gapped (on-prem)], [Qwen3 8B or Gemma 4 E4B, vLLM serving], [GPU instance shared with L2b recommendation rationale agent],
+  [Cloud (AWS)], [Claude Haiku 4.5 API], [Cost-efficient (\$0.25/1M input), reliable structured output],
+)
+]
+
+#text(size: 9pt)[
+*Cost estimate*: 1--2 calls per batch yields approximately \$0.01/day. Input consists of JSON metrics (a few KB) + prompt, so token consumption is minimal.
+]
+
+== Design Principles
+
+#grid(
+  columns: (1fr, 1fr),
+  gutter: 8pt,
+  card(title: "Automation scope", accent: navy)[
+    *Batch-only*: does not intervene in real-time serving path\
+    *Structured judgments*: threshold comparison, trend analysis, violation classification are handled by the agent\
+    *Unstructured judgments*: suspected data contamination, business context shifts, regulatory interpretation are reserved for humans
+  ],
+  card(title: "Audit artifact guarantees", accent: blue)[
+    *HMAC signing*: agent output itself is an audit artifact — HMAC-signed and immutably stored upon generation\
+    *Hash chain*: tamper-proof guarantee via hash chain linked to prior reports\
+    *Human review*: "check when you arrive" model — agent organizes, humans review at their own pace
+  ],
+)
+
+== Airflow DAG Integration
+
+#text(size: 8.5pt)[
+#set par(justify: false)
+#table(
+  columns: (1fr, 1fr, 0.8fr),
+  align: (left, left, center),
+  [DAG], [Agent task], [Cadence],
+  [`dag_drift_monitoring`], [After drift detection → `ops_agent_report` task appended], [Daily],
+  [`dag_fairness_monitoring`], [After fairness measurement → `audit_agent_report` task appended], [Daily],
+  [`dag_governance_quarterly`], [After 36-item check → `audit_agent_quarterly` report], [Quarterly],
+  [Training Job completion callback], [`ops_agent_training_report` — training metric analysis], [Event-driven],
+)
+]
+
 #pagebreak()
 
 // ═══════════════════════════════════════════════════════════
@@ -1059,7 +1231,7 @@ A quarterly full check is automatically executed via the 36-item regulatory comp
   align: (center, center, left),
   [Regulation], [Relevant Articles], [Design Reflection],
   [*AI Basic Act*], [Art. 31 (AI content labeling)], [AI disclosure + recommendation rationale L1/L2],
-  [], [Art. 33 (high-risk AI governance)], [36-item registry + governance report],
+  [], [Art. 33 (high-impact AI governance)], [36-item registry + governance report],
   [], [Art. 34 (risk management records)], [Audit log immutability + 7 audit tables],
   [*Financial Consumer\ Protection Act*], [Art. 19 (explanation duty)], [Feature reverse mapping + per-task interpretation],
   [*FSS AI RMF*], [(1) Legality], [36-item auto-check],

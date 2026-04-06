@@ -50,13 +50,16 @@
   not a score they must trust.
   Regulators (Korean FSS, EU AI Act) are one important audience for such explanations,
   but the primary driver is the human act of persuasion itself.
-  We present a three-stage pipeline that bridges the gap between model prediction and human persuasion:
+  We present a multi-stage pipeline that bridges the gap between model prediction and human persuasion:
   (1) IG-guided knowledge distillation from a heterogeneous-expert PLE teacher to per-task LGBM students,
   preserving explanation-relevant features while enabling GPU-free CPU inference;
-  (2) a multi-agent recommendation reason generation pipeline where three specialized agents
+  (2) a multi-agent recommendation reason generation pipeline where three specialized serving agents
   (Feature Selector, Reason Generator, Safety Gate) collaboratively produce natural-language explanations
   grounded in business-mapped feature attributions;
-  (3) regulatory compliance by design, with built-in drift monitoring, fairness auditing,
+  (3) two operational agents (OpsAgent and AuditAgent) that interpret monitoring outputs
+  and compliance reports in natural language, enabling regulation-compliant MLOps
+  for small teams without dedicated MLOps staff;
+  (4) regulatory compliance by design, with built-in drift monitoring, fairness auditing,
   and governance reporting aligned to Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act.
   // TODO: Fill key numbers after experiments
   We evaluate distillation quality (AUC gap < X%), reason generation quality via human evaluation
@@ -111,6 +114,8 @@ We propose a full-chain solution from prediction to persuasion:
 
 + *Safety Gate for Financial Compliance*: Automated checking for hallucination, inappropriate investment advice, and regulatory violations (Financial Consumer Protection Act (금소법), Suitability Principle (적합성 원칙)).
 
++ *5-Agent Architecture (3 Serving + 2 Ops)*: Beyond the 3 serving agents, two operational agents (OpsAgent, AuditAgent) interpret monitoring and compliance outputs in natural language, enabling small-team MLOps without dedicated MLOps staff.
+
 + *Regulatory Compliance Architecture*: Explicit mapping of system components to Korean FSS guidelines, EU AI Act articles, and the Korean AI Basic Act.
 
 + *Human Evaluation Protocol*: Systematic evaluation of recommendation reason quality by domain experts.
@@ -160,7 +165,7 @@ requiring explainability, fairness monitoring, and audit trails.
 The EU AI Act @euaiact2024 classifies financial credit/recommendation as high-risk AI,
 mandating transparency (Art. 13), human oversight (Art. 14), and accuracy (Art. 15).
 The EBA @eba2025ml calls for "interpretable" models in internal risk assessments.
-Korea's AI Basic Act @koreaaiact2024 (December 2024) adds domestic high-risk AI classification.
+Korea's AI Basic Act @koreaaiact2024 (December 2024) adds domestic high-impact AI classification.
 
 Pearl @pearl2009causality argues that true explanation requires causal understanding,
 not mere statistical association --- a position increasingly echoed by financial regulators
@@ -427,6 +432,13 @@ Validates the generated reason against:
 
 On failure: automatic fallback to template-based safe reason.
 All gate decisions are logged for audit trail.
+Upstream of the 3-agent pipeline, the `ConstraintAwareEngine` applies eligibility and suitability filters --- verifying investment experience, risk tolerance, and product-specific constraints --- so that no recommendation reaches the customer without passing a suitability check, as required by the Korean Financial Consumer Protection Act (금소법) Article 19 (적합성 원칙).
+
+=== Serving Model Selection
+
+All three serving agents run on a local LLM (8B-class, e.g., Qwen3 8B or Gemma 4 E4B) served via vLLM, as the on-premises deployment environment is air-gapped (폐쇄망) with no external network access.
+No cloud API dependency exists in the serving path.
+The specific model is selected based on Korean-language fluency benchmarks available at deployment time, since customer-facing recommendation reasons require natural, professional Korean text.
 
 == Caching Strategy
 
@@ -434,6 +446,146 @@ Recommendation reasons are cached by customer segment × product category × fea
 Cache hit avoids LLM invocation entirely, reducing latency and cost.
 
 // TODO: Cache hit rate analysis
+
+// ============================================================
+= Operational Agent Pipeline
+<ops-agents>
+
+The preceding section described three serving agents that generate recommendation reasons
+on the customer-facing path.
+This section introduces two additional agents that operate on a separate, batch-only path:
+interpreting monitoring outputs and compliance reports so that a small operations team
+can maintain regulation-compliant MLOps without dedicated MLOps staff.
+
+== Motivation: Human--AI Role Separation
+
+Not all operational tasks require the same cognitive mode.
+Formalized, repetitive monitoring --- checking whether PSI exceeded a threshold,
+whether fairness metrics dipped below a limit, whether gate entropy shifted ---
+is well-suited to LLM agents that run on a batch schedule (daily or weekly).
+Non-routine judgment --- diagnosing data contamination, interpreting business context shifts,
+responding to regulatory interpretation changes --- requires human expertise
+that no current LLM can reliably provide.
+
+The key design insight is role separation:
+agents tell _what changed_; humans decide _why it changed and what to do_.
+This division makes regulation-compliant operations feasible
+for small teams (1--2 people) without dedicated MLOps staff,
+because the agents eliminate "dashboard fatigue" ---
+instead of checking 10 metrics daily, the human reads one natural-language summary.
+
+== Two Operational Agents
+
+=== OpsAgent (Operations Agent)
+
+The OpsAgent runs after training completion and drift monitoring DAG executions.
+
+*Inputs*: `eval_metrics.json`, training logs, CGC gate entropy, PSI drift reports.
+
+*Output*: A "Model Health Report" in natural language.
+
+#figure(
+  block(
+    width: 100%,
+    inset: 8pt,
+    stroke: 0.5pt + gray,
+    radius: 4pt,
+  )[
+    #text(size: 9pt)[
+      *Example OpsAgent output:* \
+      "Task 'churn\_signal' AUC dropped 3.2% vs. previous version.
+      Gate entropy for LightGCN expert decreased to 0.4 (from 1.2),
+      suggesting routing concentration.
+      Recommend examining recent data distribution changes before promotion."
+    ]
+  ],
+  caption: [OpsAgent Model Health Report example.],
+) <fig:opsagent-example>
+
+*Triggers*: drift monitoring DAG completion, training job completion.
+
+The OpsAgent does not make promotion decisions ---
+it surfaces the information a human needs to make one.
+When all metrics are within normal bounds, the report is brief
+("All 18 tasks within tolerance; no action required").
+When anomalies are detected, the report identifies _which_ tasks and _which_ experts
+are affected, providing actionable context rather than raw numbers.
+
+=== AuditAgent (Audit/Compliance Agent)
+
+The AuditAgent runs after fairness monitoring and governance DAG executions.
+
+*Inputs*: `FairnessMonitor` reports (DI/SPD/EOD), audit trail integrity checks,
+opt-out statistics, governance checklist status.
+
+*Output*: A "Regulatory Compliance Report" in natural language.
+
+#figure(
+  block(
+    width: 100%,
+    inset: 8pt,
+    stroke: 0.5pt + gray,
+    radius: 4pt,
+  )[
+    #text(size: 9pt)[
+      *Example AuditAgent output:* \
+      "Disparate Impact for age\_group 60+ on lending recommendations: DI = 0.73
+      (threshold: 0.80). 3 consecutive days below threshold.
+      Recommend human review per FSS AI RMF requirement G-3."
+    ]
+  ],
+  caption: [AuditAgent Regulatory Compliance Report example.],
+) <fig:auditagent-example>
+
+*Triggers*: fairness monitoring DAG completion, quarterly governance cycle.
+
+The AuditAgent converts quantitative fairness metrics into regulatory language,
+explicitly referencing the applicable regulation (FSS guideline number, EU AI Act article)
+so that the human reviewer can act without cross-referencing documentation.
+
+== Design Principles
+
+#figure(placement: top, scope: "parent",
+  table(
+    columns: (auto, 1fr),
+    inset: 5pt,
+    align: left,
+    stroke: 0.5pt,
+    [*Principle*], [*Rationale*],
+    [Batch-only, never real-time], [No serving path dependency; agents run asynchronously after DAG completion],
+    [Local LLM (on-prem) / Claude Haiku 4.5 (cloud)], [On-prem (air-gapped): shares the same vLLM instance as serving agents (Qwen3/Gemma4), adding zero infrastructure. Cloud (AWS): Claude Haiku 4.5 API for superior structured reasoning at minimal cost],
+    [Reports deposited to shared folder], [Alerts via Slack/email only on anomalies; human reviews at their own pace],
+    [Agent outputs are audit artifacts], [Immutable, HMAC-signed; the report itself is evidence of monitoring],
+    [Cost: ~\$0.01/day], [1--2 small-model calls with structured input per execution cycle],
+  ),
+  caption: [Operational agent design principles.],
+) <tab:ops-design>
+
+The critical constraint is that operational agents have _no shared state_ with the serving path.
+The serving pipeline (L1 Feature Selector #sym.arrow L2a Reason Generator #sym.arrow L2b Safety Gate)
+produces customer-facing outputs; the operational pipeline
+(DAG completion #sym.arrow OpsAgent/AuditAgent #sym.arrow report storage #sym.arrow human review)
+produces internal operations artifacts.
+This separation ensures that an operational agent failure
+can never degrade customer-facing service.
+
+== Model Selection for Operational Agents
+
+Unlike serving agents, which require Korean-language fluency for customer-facing text, operational agents process structured JSON inputs and produce logical assessments --- natural language fluency is secondary to reasoning accuracy.
+*On-premises (air-gapped)*: operational agents share the same vLLM instance as serving agents (Qwen3 8B or Gemma 4 E4B), requiring zero additional infrastructure.
+*Cloud (AWS)*: Claude Haiku 4.5 API provides stronger logical reasoning over structured monitoring data at negligible cost (~\$0.01/day via batch calls).
+In both deployments, operational agents execute only 1--2 calls per DAG cycle, keeping cost and latency negligible regardless of model choice.
+
+== Practical Value
+
+The operational agents address three concrete pain points
+in financial AI operations:
+
++ *Dashboard fatigue elimination*: Instead of monitoring 10+ metrics dashboards daily, the operations team reads one natural-language summary --- "check when you come in to work."
+
++ *Automatic audit evidence accumulation*: When regulators ask "How did you respond to drift event X?", the institution produces the OpsAgent's report from that date plus the human's subsequent action record, forming a complete incident response trail.
+
++ *Small-team MLOps enablement*: The architecture makes regulation-compliant operations feasible without a large dedicated MLOps team. The agents handle the formalized interpretation; humans contribute the judgment that regulations actually require.
 
 // ============================================================
 = Regulatory Compliance
@@ -454,6 +606,8 @@ Cache hit avoids LLM invocation entirely, reducing latency and cost.
     [Monitoring], [DriftDetector (PSI)], [Continuous, 3-day trigger],
     [Audit trail], [HMAC hash-chain logs], [Immutable, 7 audit tables],
     [Fallback], [Template reason + kill switch], [Instant manual override],
+    [Model risk mgmt], [ModelCompetitionManager (champion-challenger)], [Independent validation, manual approval],
+    [Customer suitability], [ConstraintAwareEngine + eligibility filters], [Pre-recommendation suitability check],
   ),
   caption: [Korean FSS guideline compliance mapping.],
 ) <tab:fss-mapping>
@@ -470,6 +624,7 @@ Cache hit avoids LLM invocation entirely, reducing latency and cost.
     [Art. 13], [Transparency], [3-agent reason generation + feature attribution],
     [Art. 14], [Human oversight], [Human-in-the-Loop review + kill switch],
     [Art. 15], [Accuracy & robustness], [Ablation-validated degradation + drift monitoring],
+    [Art. 9], [Risk management], [MRM lifecycle: develop #sym.arrow validate #sym.arrow approve #sym.arrow monitor #sym.arrow retrain],
     [GDPR Art. 22], [Right to opt-out], [Consent/opt-out audit table + manual override],
   ),
   caption: [EU AI Act article-level compliance mapping.],
@@ -511,6 +666,131 @@ The system implements this at multiple levels:
 - *Model replacement approval*: Champion-Challenger results require human sign-off.
 - *Incident escalation*: Automated anomaly detection triggers human investigation.
 - *Fairness review*: Periodic human audit of fairness metrics.
+
+== Pipeline Auditability for High-Risk AI
+<pipeline-audit>
+
+The preceding sections map individual system components to regulatory articles.
+However, the EU AI Act's high-risk AI requirements (Title III, Chapter 2)
+demand auditability of the _entire ML pipeline_ --- not just the serving layer.
+This section demonstrates how our training infrastructure,
+described in the companion paper, satisfies these requirements end-to-end.
+
+=== Data Governance (Art. 10)
+
+Article 10 requires that training data be "relevant, representative,
+free of errors and complete" with appropriate data governance measures.
+Our Phase 0 pipeline (preprocessing $arrow.r$ feature generation $arrow.r$
+label derivation $arrow.r$ normalization $arrow.r$ tensor storage)
+produces two audit artifacts at every run:
+`feature_stats.json` records per-column NaN ratios, zero-variance flags,
+distribution statistics, and generated feature counts;
+`label_stats.json` records class balance and positive rates for all 18 tasks.
+These artifacts constitute a verifiable data quality record
+that an external auditor can inspect without executing any code.
+
+Reproducibility is guaranteed by config-driven processing:
+the entire pipeline is controlled by two YAML files
+(`pipeline.yaml` and `feature_groups.yaml`),
+so identical configs produce identical outputs given the same input data.
+No dataset-specific logic resides in executable code.
+
+As a pre-training gate, `LeakageValidator` verifies that
+(1) the scaler was fit on training data only,
+(2) a temporal gap separates train/validation/test splits, and
+(3) the final sequence timestep does not overlap with label windows.
+Training is blocked if any check fails ---
+ensuring data governance violations are caught _before_ compute is consumed.
+
+=== Technical Documentation (Art. 11)
+
+Article 11 mandates technical documentation sufficient to assess compliance.
+Our system achieves this through config-as-documentation:
+the two YAML files fully specify feature groups, generator parameters,
+normalization stages, task definitions, loss weights, and expert routing.
+A config snapshot is saved alongside every training run,
+and `eval_metrics.json` captures the full training provenance
+(hyperparameters, data splits, final metrics, timestamps).
+Combined with fixed random seeds, any historical experiment
+can be exactly reproduced from its archived config.
+
+=== Logging and Traceability (Art. 12)
+
+Article 12 requires automatic recording of events
+for the identification of risks and substantial modifications.
+The training loop produces per-epoch logs with task-level loss breakdowns,
+enabling auditors to trace exactly when and where performance changed.
+NaN/Inf detection identifies _which task_ produced anomalous gradients,
+rather than reporting a generic training failure.
+Gradient norm monitoring flags when norms exceed
+the clipping threshold by an order of magnitude,
+providing a training stability audit trail.
+Checkpoints are versioned with their corresponding eval metrics,
+creating a complete lineage from data to deployed model.
+
+=== Human Oversight (Art. 14)
+
+Beyond the Human-in-the-Loop mechanisms described above,
+the system provides two additional transparency layers for human reviewers.
+First, post-distillation LGBM students expose
+IG-based feature importance rankings per task ---
+a human-readable audit that compliance officers can review
+without deep learning expertise.
+Second, CGC gate weights in the PLE teacher
+quantify each expert's contribution to every prediction,
+making the expert routing mechanism transparent
+rather than a black-box ensemble.
+The 3-agent LLM pipeline (Section 4) further translates
+these technical attributions into natural-language explanations
+that compliance officers can directly evaluate.
+
+=== Accuracy and Robustness (Art. 15)
+
+Article 15 requires that high-risk AI systems achieve
+"an appropriate level of accuracy, robustness and cybersecurity."
+The companion paper's ablation study demonstrates _graceful degradation_:
+removing any single expert reduces performance incrementally
+rather than causing catastrophic failure,
+proving that no single component is a critical point of failure.
+Uncertainty weighting @kendall2018 prevents any single task
+from dominating the multi-task objective,
+ensuring robust performance across all 18 tasks simultaneously.
+Drift monitoring (PSI-based) is designed to provide continuous robustness verification once deployed.
+
+=== Bias Monitoring (Art. 10.2f)
+
+Article 10(2)(f) requires examination of training data
+for possible biases that may affect health, safety, or fundamental rights.
+Label distribution validation before training
+(via `label_stats.json`) ensures class imbalance is documented and addressed.
+The task-level breakdown in `eval_metrics.json`
+enables per-segment performance monitoring:
+auditors can verify that model accuracy does not vary systematically
+across customer demographics or product categories.
+The `FairnessMonitor` component (disparate impact, statistical parity difference,
+equalized odds difference) provides automated bias detection
+at the granularity required by Article 10(2)(f).
+
+=== Model Risk Management Lifecycle
+
+The system implements an SR 11-7 aligned five-stage MRM lifecycle:
+_develop_ (teacher training + student distillation),
+_validate_ (independent metric evaluation on held-out data),
+_approve_ (manual sign-off gate; `auto_promote=False` by default),
+_monitor_ (continuous PSI-based drift detection), and
+_retrain_ (automatic re-distillation when drift exceeds threshold).
+The `ModelCompetitionManager` orchestrates champion-challenger evaluation:
+when a newly distilled student is produced, it is compared against the
+current production champion on all target metrics.
+Promotion requires explicit human approval ---
+the system will never silently replace a production model.
+When the drift detector fires on consecutive monitoring windows
+(configurable threshold, default 3 consecutive days),
+the retrain stage is triggered automatically,
+producing a new challenger that re-enters the competition cycle.
+This closed loop ensures that model risk is managed continuously
+rather than at discrete annual review points,
+satisfying both SR 11-7 expectations and EU AI Act Art. 9 risk management requirements.
 
 // ============================================================
 = Experiments
@@ -634,7 +914,7 @@ than any amount of architectural sophistication applied to shallow statistical s
 We presented a full-chain system that bridges the gap
 between model prediction and human persuasion in financial product recommendation.
 
-Three key contributions define this work.
+Four key contributions define this work.
 First, IG-guided knowledge distillation with a dual-objective feature selection
 preserves both predictive accuracy and explanation material
 when compressing a complex PLE teacher into lightweight LGBM students.
@@ -642,7 +922,12 @@ Second, the 3-agent recommendation reason generation pipeline
 (Feature Selector → Reason Generator → Safety Gate)
 produces natural-language explanations grounded in business-mapped feature attributions,
 with role separation enabling independent improvement and audit logging.
-Third, regulatory compliance is embedded by design ---
+Third, two operational agents (OpsAgent and AuditAgent) interpret
+monitoring and compliance outputs in natural language,
+eliminating dashboard fatigue and enabling regulation-compliant MLOps
+for small teams without dedicated MLOps staff ---
+extending the architecture to a 5-agent system (3 serving + 2 ops).
+Fourth, regulatory compliance is embedded by design ---
 Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act
 are explicitly mapped to system architecture components,
 with automated monitoring (drift, fairness, herding)
@@ -688,9 +973,10 @@ All authors collaborated through Scrum sprints with rapid feedback cycles.
 #heading(numbering: none)[Funding]
 
 This research received no external funding, grants, or institutional infrastructure support.
-All costs --- including AI tools, hardware, mobile connectivity, and operational expenses ---
+All costs --- including AI tools, hardware, mobile connectivity, AWS SageMaker cloud training (Spot instances),
+S3 storage, and operational expenses ---
 were borne entirely by the first author's personal funds,
-with development conducted on a single consumer GPU in a resource-constrained environment.
+with development conducted on a single desktop GPU in a resource-constrained environment.
 
 // ============================================================
 // Acknowledgments

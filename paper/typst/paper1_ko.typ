@@ -68,7 +68,7 @@
   이종 설계의 타당성을 검증하였다.
   4개 금융 DNA 태스크 그룹에 대한 Adaptive Task Transfer(adaTT)와
   11개 학문 분야에 걸친 다학제적 피처 엔지니어링을 결합하여,
-  단일 소비자용 GPU(12GB VRAM)에서 파라미터 효율적 표현력을 달성하면서도
+  단일 데스크톱 GPU(12GB VRAM)에서 파라미터 효율적 표현력을 달성하면서도
   우아한 성능 저하(graceful degradation)를 유지한다.
   // TODO: 최종 어블레이션 수치 입력
 
@@ -91,7 +91,7 @@
 세 가지 대상을 설득해야 한다:
 - *고객*: "왜 이 상품이 나에게 적합한가?" --- 신뢰가 전환으로 이어진다.
 - *영업 담당자*: "왜 이 고객에게 이 상품을 추천하는가?" --- 영업 근거 제시.
-- *규제기관* (한국 금융감독원 @koreafsc2024, EU AI Act @euaiact2024): "이 결정은 왜 내려졌는가?" --- 규제 준수 의무. 한국의 AI 기본법 #cite(<koreaaiact2024>) 은 금융 추천을 잠재적 고위험 AI로 분류한다.
+- *규제기관* (한국 금융감독원 @koreafsc2024, EU AI Act @euaiact2024): "이 결정은 왜 내려졌는가?" --- 규제 준수 의무. 한국의 AI 기본법 #cite(<koreaaiact2024>) 은 금융 추천을 잠재적 고영향 AI로 분류한다.
 
 기존 접근법은 이러한 설득 요건에 미흡하다:
 - *단일 태스크 모델*은 이탈, 상품 선호도, 고객 생애가치를 동시에 예측할 수 없다 @caruana1997.
@@ -345,7 +345,7 @@ EU AI Act #cite(<euaiact2024>) 는 금융 추천을 고위험 AI로 분류하여
 
 제약은 상당했다:
 전용 ML 인프라 예산 없음,
-유일한 학습 하드웨어인 단일 소비자용 GPU (NVIDIA RTX 4070, 12GB VRAM),
+유일한 학습 하드웨어인 단일 데스크톱 GPU (NVIDIA RTX 4070, 12GB VRAM),
 배포를 위한 GPU 추론 서버 없음,
 엄격한 규제 요건 (한국 금융감독원 AI 가이드라인, EU AI Act).
 
@@ -439,7 +439,7 @@ Google의 PageRank는 마르코프 체인 정상 분포의 응용이다.
   placement: auto,
   kind: image,
   {
-    set text(size: 7pt)
+    set text(size: 7pt, hyphenate: false)
     let gray-fill = luma(245)
     let accent = rgb("#4a7c9b")
     let accent-light = rgb("#d6e6f0")
@@ -447,7 +447,7 @@ Google의 PageRank는 마르코프 체인 정상 분포의 응용이다.
     let task-fill = rgb("#f0f0f0")
 
     diagram(
-      spacing: (8pt, 12pt),
+      spacing: (6pt, 10pt),
       node-stroke: 0.6pt + luma(80),
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
@@ -456,19 +456,22 @@ Google의 PageRank는 마르코프 체인 정상 분포의 응용이다.
       node((3, 0), [*입력* \ 318 피처], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
 
       // === Row 1: 피처 그룹 ===
-      node((3, 1), [*12 피처 그룹* \ #text(size: 6pt)[인구통계 · 상품 · 거래 · tda#sub[g] · tda#sub[l] · hmm · mamba · 계층 · 그래프 · gmm · 모델파생 · 파생]], width: 80mm, fill: gray-fill, name: <fg>),
+      node((3, 1), [*12 피처 그룹*], width: 32mm, fill: gray-fill, name: <fg>),
 
       // === Row 2: 피처 라우터 ===
-      node((3, 2), [*피처 라우터*], shape: fletcher.shapes.diamond, width: 26mm, height: 10mm, fill: accent-light, name: <router>),
+      node((3, 2.5), [*피처 라우터*], shape: fletcher.shapes.diamond, width: 26mm, height: 10mm, fill: accent-light, name: <router>),
+
+      // === Fan-out 허브 (비가시) ===
+      node((3, 2.6), none, width: 1pt, height: 1pt, stroke: none, name: <fan-out>),
 
       // === Row 3: 7 이종 전문가 ===
-      node((0, 3), [*DeepFM*], width: 16mm, fill: expert-fill, name: <e1>),
-      node((1, 3), [*Temporal*], width: 16mm, fill: expert-fill, name: <e2>),
-      node((2, 3), [*HGCN*], width: 16mm, fill: expert-fill, name: <e3>),
-      node((3, 3), [*PersLay*], width: 16mm, fill: expert-fill, name: <e4>),
-      node((4, 3), [*LightGCN*], width: 16mm, fill: expert-fill, name: <e5>),
-      node((5, 3), [*Causal*], width: 16mm, fill: expert-fill, name: <e6>),
-      node((6, 3), [*OT*], width: 16mm, fill: expert-fill, name: <e7>),
+      node((1, 4), [*DeepFM*], width: 17mm, fill: expert-fill, name: <e1>),
+      node((2, 4), [*Temporal*], width: 17mm, fill: expert-fill, name: <e2>),
+      node((2.5, 4), [*HGCN*], width: 17mm, fill: expert-fill, name: <e3>),
+      node((3, 4), [*PersLay*], width: 17mm, fill: expert-fill, name: <e4>),
+      node((3.5, 4), [*LightGCN*], width: 17mm, fill: expert-fill, name: <e5>),
+      node((4, 4), [*Causal*], width: 17mm, fill: expert-fill, name: <e6>),
+      node((5, 4), [*OT*], width: 17mm, fill: expert-fill, name: <e7>),
 
       // 전문가 그룹 테두리
       node(
@@ -480,55 +483,58 @@ Google의 PageRank는 마르코프 체인 정상 분포의 응용이다.
         name: <experts-box>,
       ),
 
+      // === Fan-in 허브 (비가시) ===
+      node((3, 4.6), none, width: 1pt, height: 1pt, stroke: none, name: <fan-in>),
+
       // === Row 4: CGC 게이트 ===
-      node((3, 4.4), [*CGC 게이트* \ #text(size: 6pt)[(softmax / sigmoid)]], width: 34mm, fill: accent-light, name: <gate>),
+      node((3, 5), [*CGC 게이트* \ #text(size: 6pt)[(softmax / sigmoid)]], width: 34mm, fill: accent-light, name: <gate>),
 
-      // === Row 5: 4 태스크 그룹 + adaTT ===
-      node((0.75, 5.6), [*참여*], width: 20mm, fill: task-fill, name: <tg1>),
-      node((2.25, 5.6), [*생애주기*], width: 20mm, fill: task-fill, name: <tg2>),
-      node((3.75, 5.6), [*가치*], width: 20mm, fill: task-fill, name: <tg3>),
-      node((5.25, 5.6), [*소비*], width: 20mm, fill: task-fill, name: <tg4>),
-
-      // 태스크 그룹 테두리
-      node(
-        enclose: (<tg1>, <tg4>),
-        stroke: (paint: luma(160), thickness: 0.5pt, dash: "dashed"),
-        corner-radius: 5pt,
-        fill: none,
-        snap: -1,
-        name: <tg-box>,
-      ),
+      // === Row 5: 4 태스크 그룹 ===
+      node((1, 6), [*참여*], width: 19mm, fill: task-fill, name: <tg1>),
+      node((2.5, 6), [*생애주기*], width: 19mm, fill: task-fill, name: <tg2>),
+      node((3.5, 6), [*가치*], width: 19mm, fill: task-fill, name: <tg3>),
+      node((5, 6), [*소비*], width: 19mm, fill: task-fill, name: <tg4>),
 
       // === Row 6: 태스크 타워 ===
-      node((3, 6.8), [*18 태스크 타워* → 예측], width: 50mm, fill: gray-fill, name: <towers>),
+      node((3, 7), [*18 태스크 타워* → 예측], width: 50mm, fill: gray-fill, name: <towers>),
 
       // === Row 7: 지식 증류 ===
-      node((3, 7.8), [*지식 증류* → LGBM ×18], width: 50mm, fill: gray-fill, name: <kd>),
+      node((3, 8), [*지식 증류* → LGBM ×18], width: 50mm, fill: gray-fill, name: <kd>),
 
       // === Row 8: 서빙 ===
-      node((3, 8.8), [*Lambda 서빙* + 추천 사유 생성], shape: fletcher.shapes.pill, width: 50mm, fill: gray-fill, name: <serve>),
+      node((3, 9), [*Lambda 서빙* + 추천 사유 생성], shape: fletcher.shapes.pill, width: 50mm, fill: gray-fill, name: <serve>),
 
       // === 수직 연결 ===
       edge(<input>, <fg>, "->"),
       edge(<fg>, <router>, "->"),
-      edge(<router>, <e1>, "->"),
-      edge(<router>, <e2>, "->"),
-      edge(<router>, <e3>, "->"),
-      edge(<router>, <e4>, "->"),
-      edge(<router>, <e5>, "->"),
-      edge(<router>, <e6>, "->"),
-      edge(<router>, <e7>, "->"),
-      edge(<e1>, <gate>, "->"),
-      edge(<e2>, <gate>, "->"),
-      edge(<e3>, <gate>, "->"),
-      edge(<e4>, <gate>, "->"),
-      edge(<e5>, <gate>, "->"),
-      edge(<e6>, <gate>, "->"),
-      edge(<e7>, <gate>, "->"),
+
+      // Fan-out: 라우터에서 단일 화살표 후 전문가로 분기
+      edge(<router>, <fan-out>, "-"),
+      edge(<fan-out>, <e1>, "->"),
+      edge(<fan-out>, <e2>, "->"),
+      edge(<fan-out>, <e3>, "->"),
+      edge(<fan-out>, <e4>, "->"),
+      edge(<fan-out>, <e5>, "->"),
+      edge(<fan-out>, <e6>, "->"),
+      edge(<fan-out>, <e7>, "->"),
+
+      // Fan-in: 전문가 합류 후 게이트로 단일 화살표
+      edge(<e1>, <fan-in>, "->"),
+      edge(<e2>, <fan-in>, "->"),
+      edge(<e3>, <fan-in>, "->"),
+      edge(<e4>, <fan-in>, "->"),
+      edge(<e5>, <fan-in>, "->"),
+      edge(<e6>, <fan-in>, "->"),
+      edge(<e7>, <fan-in>, "->"),
+      edge(<fan-in>, <gate>, "-"),
+
+      // 게이트에서 태스크 그룹으로
       edge(<gate>, <tg1>, "->"),
       edge(<gate>, <tg2>, "->"),
       edge(<gate>, <tg3>, "->"),
       edge(<gate>, <tg4>, "->"),
+
+      // 태스크 그룹에서 타워로
       edge(<tg1>, <towers>, "->"),
       edge(<tg2>, <towers>, "->"),
       edge(<tg3>, <towers>, "->"),
@@ -536,12 +542,12 @@ Google의 PageRank는 마르코프 체인 정상 분포의 응용이다.
       edge(<towers>, <kd>, "->"),
       edge(<kd>, <serve>, "->"),
 
-      // === adaTT 전이 화살표 (태스크 그룹 간) ===
-      edge(<tg1>, <tg2>, "<->", stroke: 0.8pt + accent, bend: -25deg, label: text(size: 5pt, fill: accent)[그룹내]),
-      edge(<tg2>, <tg3>, "<->", stroke: 0.8pt + accent, bend: -25deg),
-      edge(<tg3>, <tg4>, "<->", stroke: 0.8pt + accent, bend: -25deg, label: text(size: 5pt, fill: accent)[그룹내]),
-      edge(<tg1>, <tg3>, "<->", stroke: (paint: accent, thickness: 0.5pt, dash: "dashed"), bend: -40deg, label: text(size: 5pt, fill: accent)[그룹간]),
-      edge(<tg2>, <tg4>, "<->", stroke: (paint: accent, thickness: 0.5pt, dash: "dashed"), bend: -40deg, label: text(size: 5pt, fill: accent)[그룹간]),
+      // === adaTT: 인접 태스크 그룹 간 실선 화살표 ===
+      edge(<tg1>, <tg2>, "<->", stroke: 0.8pt + accent, label: text(size: 8pt, weight: "bold", fill: accent)[adaTT]),
+      edge(<tg2>, <tg3>, "<->", stroke: 0.8pt + accent, label: text(size: 8pt, weight: "bold", fill: accent)[adaTT]),
+      edge(<tg3>, <tg4>, "<->", stroke: 0.8pt + accent, label: text(size: 8pt, weight: "bold", fill: accent)[adaTT]),
+
+
     )
   },
   caption: [이종 전문가 PLE 아키텍처 개요.],
@@ -613,7 +619,7 @@ Google의 PageRank는 마르코프 체인 정상 분포의 응용이다.
   (KL 발산과 달리) 피처 공간의 거리 구조를 존중한다.
 
 이종 전문가의 근거는 하드웨어 제약에도 있다:
-단일 소비자용 GPU(12GB VRAM)로는 동질적 MLP 전문가를
+단일 데스크톱 GPU(12GB VRAM)로는 동질적 MLP 전문가를
 높은 표현력을 위한 충분한 너비/깊이로 확장할 수 없다.
 대신, 각 전문가는 _구조적 귀납적 편향_을 활용하여
 MLP 파라미터로는 수 차수 더 많은 파라미터가 필요한 패턴을 포착한다.
@@ -935,50 +941,100 @@ Synthetic Data Vault 프레임워크 #cite(<patki2016sdv>) 와
 
 - *데이터*: 100만 고객, 318개 피처, 18개 태스크.
 - *하드웨어*: NVIDIA RTX 4070 (12GB) 로컬; AWS g4dn.xlarge Spot (T4 16GB) 클라우드.
-- *학습*: 5+5 에포크 (phase1 + phase2), 배치 6144, lr 0.008, AMP, 조기 종료 patience 3.
+- *학습*: 20 에포크 (단일 페이즈), 배치 4096, lr 0.008 (shared-bottom: lr 0.003, 배치 2048), FP32, 조기 종료 patience 5.
 - *지표*: AUC (이진), F1 macro (분류), MAE/R² (회귀).
 
-== 피처 그룹 어블레이션 (RQ1)
+== 피처 + 전문가 결합 어블레이션 (RQ1 + RQ2)
 
-// TODO: 어블레이션 완료 후 결과 테이블 입력
+// TODO: 결합 어블레이션 완료 후 입력
 #figure(
   scope: "parent",
   placement: auto,
   table(
-    columns: (auto, auto, auto, auto),
-    inset: 5pt,
+    columns: (auto, auto, auto, auto, auto),
+    inset: 4pt,
     align: center,
     stroke: 0.5pt,
-    [*시나리오*], [*피처 수*], [*평균 AUC*], [*Δ vs Full*],
-    [full], [318], [--], [baseline],
-    [base_only], [49], [--], [--],
-    [base+tda], [65], [--], [--],
-    [base+hmm], [74], [--], [--],
-    [base+mamba], [99], [--], [--],
-    [full−tda], [300], [--], [--],
-    [full−hmm], [291], [--], [--],
-    [...], [...], [...], [...],
+    table.header(
+      [*시나리오*], [*평균 AUC*], [*평균 F1m*], [*평균 MAE*], [*Val Loss*],
+    ),
+    table.cell(colspan: 5, align: left, [_베이스라인_]),
+    [DeepFM + 기본 피처], [--], [--], [--], [--],
+    [DeepFM + 전체 피처], [--], [--], [--], [--],
+    [Full (7 전문가)], [--], [--], [--], [--],
+    table.cell(colspan: 5, align: left, [_상향식: DeepFM + 단일 생성기_]),
+    [DeepFM + TDA], [--], [--], [--], [--],
+    [DeepFM + Temporal], [--], [--], [--], [--],
+    [DeepFM + HGCN], [--], [--], [--], [--],
+    [DeepFM + LightGCN], [--], [--], [--], [--],
+    [DeepFM + Causal], [--], [--], [--], [--],
+    [DeepFM + OT], [--], [--], [--], [--],
+    [DeepFM + GMM], [--], [--], [--], [--],
+    [DeepFM + Model-derived], [--], [--], [--], [--],
+    table.cell(colspan: 5, align: left, [_하향식: Full에서 전문가 1개 제거_]),
+    [Full − TDA], [--], [--], [--], [--],
+    [Full − Temporal], [--], [--], [--], [--],
+    [Full − HGCN], [--], [--], [--], [--],
+    [Full − LightGCN], [--], [--], [--], [--],
+    [Full − Causal], [--], [--], [--], [--],
+    [Full − OT], [--], [--], [--], [--],
   ),
-  caption: [피처 그룹 어블레이션 결과. TODO: 어블레이션 후 입력.],
-) <tab:feat-ablation>
-
-== 전문가 어블레이션 (RQ2)
-
-// TODO: 결과 입력
+  caption: [피처 + 전문가 결합 어블레이션. 상향식은 DeepFM 베이스라인에 생성기 1개를 추가하고, 하향식은 7-전문가 전체 모델에서 전문가 1개를 제거한다.],
+) <tab:joint-ablation>
 
 == 태스크 × 구조 교차 어블레이션 (RQ3)
 
 6개 구조 변형을 비교한다: shared-bottom (PLE/adaTT 없음), PLE-softmax, PLE-sigmoid, adaTT 단독, PLE-softmax+adaTT, PLE-sigmoid+adaTT. 모든 변형은 게이트 유형 간 수렴 행동 차이를 평가하기 위해 7개 이종 전문가 바스켓 전체와 20 에포크를 사용한다.
 
-// TODO: 결과 입력
+// TODO: 구조 어블레이션 완료 후 입력
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    inset: 4pt,
+    align: center,
+    stroke: 0.5pt,
+    table.header(
+      [*변형*], [*Val Loss*], [*평균 AUC*], [*평균 F1m*], [*평균 MAE*],
+    ),
+    [Shared Bottom], [--], [--], [--], [--],
+    [PLE Softmax], [--], [--], [--], [--],
+    [PLE Sigmoid], [--], [--], [--], [--],
+    [adaTT 단독], [--], [--], [--], [--],
+    [PLE Softmax + adaTT], [--], [--], [--], [--],
+    [PLE Sigmoid + adaTT], [--], [--], [--], [--],
+  ),
+  caption: [구조 어블레이션: 게이트 유형과 adaTT가 수렴 및 태스크 성능에 미치는 영향.],
+) <tab:structure-ablation>
 
 == 우아한 성능 저하 (RQ4)
 
-// TODO: 전문가 제거별 성능 하락 분석
+전체 모델에서 각 전문가를 개별적으로 제거했을 때 성능이 얼마나 저하되는지 평가한다. 우아하게 성능이 저하되는 시스템은 단일 구성 요소가 제거되어도 치명적 실패가 아닌 완만하고 예측 가능한 성능 하락을 보여야 한다.
+
+// TODO: 결합 어블레이션 하향식 결과에서 도출
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 4pt,
+    align: center,
+    stroke: 0.5pt,
+    table.header(
+      [*제거된 전문가*], [*ΔAUC*], [*ΔVal Loss*],
+    ),
+    [TDA], [--], [--],
+    [Temporal], [--], [--],
+    [HGCN], [--], [--],
+    [LightGCN], [--], [--],
+    [Causal], [--], [--],
+    [OT], [--], [--],
+  ),
+  caption: [우아한 성능 저하: 전체 모델에서 각 전문가 제거 시 성능 변화.],
+) <tab:degradation>
 
 == 설명 가능성 분석 (RQ5)
 
-// TODO: 게이트 가중치 분포, SHAP 비교
+Sigmoid CGC 게이트는 희소하고 해석 가능한 라우팅 가중치를 생성한다: 각 전문가는 다른 전문가와 독립적으로 비음수 가중치를 받으므로, 태스크별 "어떤 전문가가 얼마나 기여했는지"를 직접 귀인할 수 있다. 정규화 분모를 통해 가중치가 결합되는 softmax 게이트와 달리, sigmoid 가중치는 태스크가 여러 전문가를 동시에 강하게 활성화하거나 하나만 남기고 모두 억제하는 것을 허용한다. 18개 전체 태스크에 걸쳐 태스크별 게이트 가중치 분포를 조사하여 (a) 어떤 전문가가 어떤 태스크 유형을 지배하는지, (b) 학습된 라우팅이 도메인 직관과 일치하는지(예: 이탈 예측에서 시계열 전문가의 높은 가중치, 개입 민감 태스크에서 인과 전문가의 높은 가중치) 확인한다.
+
+// TODO: ple_sigmoid 체크포인트에서 게이트 가중치 예시 추출
 
 == 게이트 엔트로피 분석 (RQ6: 라우팅 붕괴가 발생하는가?)
 
@@ -994,7 +1050,22 @@ $ H_t = - sum_k w_(t,k) log w_(t,k) $
 
 18개 전체 태스크에 걸쳐 softmax와 sigmoid CGC 게이트 간의 게이트 엔트로피를 비교하며,
 평균 엔트로피, 최소 엔트로피(최악의 태스크), 전문가 활용률($w > 0.05$인 전문가 비율)을 보고한다.
-// TODO: 구조 어블레이션 후 결과 입력
+
+// TODO: ple_softmax vs ple_sigmoid 체크포인트 비교
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 4pt,
+    align: center,
+    stroke: 0.5pt,
+    table.header(
+      [*게이트 유형*], [*평균 $H_t$*], [*최소 $H_t$*], [*활용률 ($w>0.05$)*],
+    ),
+    [Softmax CGC], [--], [--], [--],
+    [Sigmoid CGC], [--], [--], [--],
+  ),
+  caption: [게이트 엔트로피 비교. 높은 엔트로피와 활용률은 붕괴 없는 건전한 전문가 라우팅을 나타낸다.],
+) <tab:gate-entropy>
 
 // ============================================================
 = 논의
@@ -1006,7 +1077,7 @@ $ H_t = - sum_k w_(t,k) log w_(t,k) $
 
 *자원 제약 환경에서의 개발.*
 본 시스템은 전용 ML 인프라 예산 없이,
-단일 소비자용 GPU에서, AI 개발 에이전트의 지원을 받는
+단일 데스크톱 GPU에서, AI 개발 에이전트의 지원을 받는
 3인 팀에 의해 구축되었다.
 이는 복잡한 멀티태스크 추천 시스템이 더 이상
 대규모 ML 팀과 GPU 클러스터를 보유한 조직만의 전유물이 아님을 입증한다.
@@ -1045,6 +1116,13 @@ _어떻게 모델링할 것인가_보다 중요하다는 점이다.
 도메인별 전문가 유형이 금융 전문가를 대체하되
 붕괴 저항성과 본질적 설명 가능성의 구조적 이점은 유지될 것이다.
 
+*설계 반복에서 얻은 교훈.*
+최종 아키텍처는 반복적인 시도와 기각을 거쳐 도출되었다. 첫 번째 후보인 Black-Litterman 베이지안 모델 결합은 혼합된 사후분포가 개별 모델의 기여도를 불투명하게 만들어, 프로젝트 전체를 이끄는 설명 가능성 요건에 부합하지 못해 기각되었다. 두 번째 후보인 N-모델 앙상블은 N배의 관리 부담으로 기각되었다. 이러한 실패가 핵심적 리프레이밍으로 이어졌다: 전문가를 모델 _밖에서_ 결합하는 것이 아니라 단일 모델 _안에서_ 결합하는 것.
+
+어블레이션 과정에서 softmax CGC 게이트가 비수렴 val\_loss를 보였고(Phase 2에서 3.702로 고정), shared-bottom이 역설적으로 PLE보다 우수한 성능을 보였다. 조사 과정에서 NeurIPS 2024 sigmoid 게이트 논문 @sigmoid_moe2024 을 발견하였고, 이를 통해 softmax 경쟁이 이종 전문가에게 해로운 이유를 설명할 수 있었다.
+
+특히 교훈적인 실패 사례가 있다: 설정 버그로 인해 `use_ple=false`가 7개 전문가 바스켓을 단일 MLP로 축소시켜, 24개 어블레이션 시나리오 전체가 동일한 AUC(0.913)를 산출하였다. 이는 체계적 결과 비교를 통해서만 발견되었으며, 어블레이션 결과는 결론 도출 전에 반드시 예상 변동량 대비 검증되어야 한다는 원칙을 재확인시켰다.
+
 *인프라 선택.*
 금융기관은 ML 인프라 필요에서 빅테크와 근본적으로 다르다.
 빅테크는 수십 개 팀에 걸쳐 수백 대의 GPU를 운영하며 시간별 재학습 주기를 가져,
@@ -1075,12 +1153,20 @@ config 기반 설계(2개의 YAML 파일이 전체 파이프라인을 제어)는
   DDP (DistributedDataParallel) 지원이 아키텍처적으로 설계되었으나
   아직 실험적으로 검증되지 않았다.
   본 연구에서 다룬 어블레이션 시나리오에서는 단일 GPU 학습이 허용 가능한 시간 내에 완료된다.
-- *Phase 2 수치 안정성*: Phase 2의 혼합 정밀도(FP16) 학습은
-  FP16 언더플로를 방지하기 위해 로그 도메인 계산(CGC 엔트로피, OT Sinkhorn)의
-  신중한 처리를 필요로 한다. 안정적 Phase 2 학습에 필요했던
-  4가지 구체적 수치적 수정을 문서화하였다.
+- *FP32 학습*: 이종 전문가의 수학적 의미를 보존하기 위해 혼합 정밀도(FP16) 대신 FP32를 선택하였다.
+  온프렘의 ODE 기반 LNN 동역학, 비활성화 없는 HGCN 선형 출력, Softplus TDA 가중치는
+  동질적 MLP보다 중간 활성값 범위가 넓어 AMP에서 FP16 오버플로를 유발한다.
+  FP32는 약 1.5배 느린 학습 시간을 대가로 이 불안정성을 완전히 제거한다.
 - *LLM 의존성*: 추천 사유 생성이 LLM 추론에 의존하여
   지연 시간과 비용 트레이드오프가 발생한다(동반 논문에서 상세 설명).
+
+== 향후 과제: 스케일 확장 고려사항
+
+현재 아키텍처는 의도적으로 경량 설계되었다 --- 각 전문가는 파라미터를 확장하는 대신 소형 도메인 특화 구조(예: DeepFM의 2계층 MLP, HGCN의 사전 계산 임베딩)를 사용한다. 이는 단순한 자원 제약이 아닌 의도적 설계 선택이다: 구조적 귀납적 편향이 순수 파라미터 수를 대체한다.
+
+전용 GPU 인프라를 갖춘 대형 기관으로 확장 시, 자연스러운 진행 순서는: (1) *데이터 풍부화* --- 더 긴 거래 이력, 더 넓은 상품 범위, 더 풍부한 상호작용 신호 --- 를 모델 용량 증가보다 우선; (2) *전문가별 입력 차원 확장* --- 각 전문가의 특화된 귀납적 편향에 공급되는 피처 그룹 확대; (3) *전문가 깊이/폭 확장* --- 개별 전문가 내부 레이어 추가, 특히 Temporal(더 긴 시퀀스 모델링)과 HGCN(더 깊은 계층 인코딩); (4) DDP를 통한 *멀티 GPU 학습*(아키텍처적으로 지원되나 아직 미검증)이다.
+
+주목할 점은 전문가 바스켓 크기 확장(더 많은 전문가 유형 추가)보다 개별 전문가 용량 확장이 더 유망하다는 것이다. 이종 설계가 이미 금융 행동에 관련된 주요 수학적 관점을 포괄하고 있기 때문이다.
 
 // ============================================================
 = 결론
@@ -1149,13 +1235,9 @@ adaTT 단독, PLE-softmax+adaTT, PLE-sigmoid+adaTT ---
 시드=42로 재현 가능성을 보장한다.
 전체 생성 코드는 동반 저장소에서 제공된다.
 
-#heading(numbering: none, level: 3)[D. 수치 안정성 수정]
+#heading(numbering: none, level: 3)[D. FP32 학습 결정]
 
-Phase 2의 혼합 정밀도(FP16) 학습에는 4가지 특정 수정이 필요하였다:
-(1) CGC 엔트로피: log(0) 방지를 위한 FP32 캐스팅 및 clamp(min=1e-6);
-(2) OT Sinkhorn: 로그 도메인 계산 전 FP32 캐스팅;
-(3) Causal DAG 정규화: 오버플로우 방지를 위한 FP32 Taylor 전개;
-(4) 최종 로짓: 안정적 손실 계산을 위한 float() 캐스팅.
+온프렘과 동일한 활성화 함수를 사용하는 이종 전문가(ODE 기반 LNN, 선형 HGCN 출력, Softplus TDA 가중치)는 동질적 MLP보다 중간 활성값 범위가 넓다. AMP(FP16)에서 이는 보수적인 GradScaler 설정(init\_scale=1024, max\_scale=4096)에도 불구하고 에포크 2부터 일관되게 NaN 손실을 유발하는 GradScaler 오버플로로 이어졌다. FP32 학습은 전체 20 에포크 실행에서 NaN 배치 0건으로 이 문제를 완전히 제거하며, 약 1.5배 느린 학습 시간이라는 대가를 수반한다. 이 트레이드오프는 각 전문가의 귀납적 편향에 대한 수학적 의미를 보존하며, 이는 이종 아키텍처의 핵심 설계 원리이다.
 
 #heading(numbering: none, level: 3)[E. 구조적 동형사상 검증]
 
@@ -1201,11 +1283,12 @@ AI 활용 개발 방법론 주도, 논문 작성.
 
 본 연구는 외부 연구비, 보조금, 기관 인프라 지원을 일절 받지 않았다.
 AI 개발 도구(Claude Code, Gemini, Cursor 구독료), 하드웨어 부속기기,
-모바일 데이터 통신비, 운영 경비 등 모든 비용은
+모바일 데이터 통신비, AWS SageMaker 클라우드 학습(Spot 인스턴스),
+S3 스토리지, 운영 경비 등 모든 비용은
 전적으로 제1저자의 개인 자금으로 충당하였다.
-개발은 소비자용 GPU 1대(NVIDIA RTX 4070, 12GB VRAM)로
+개발은 데스크톱 GPU 1대(NVIDIA RTX 4070, 12GB VRAM)로
 냉방이 부적절한 재활용 작업 공간에서 수행되었으며,
-기관 네트워크 지원이나 클라우드 컴퓨팅 할당 없이 진행되었다.
+기관 네트워크 지원이나 기관 클라우드 컴퓨팅 할당 없이 진행되었다.
 데이터 수집은 Spark/Impala 전환이 거부된 레거시 HIVE 환경에서
 I/O 병목을 극복하기 위한 병렬 쿼리 로직을 자체 설계하여 수행하였다.
 

@@ -157,11 +157,11 @@ class UnifiedHGCNExpert(AbstractExpert):
         refine_out_dim = combined_dim
 
         # -- Output projection ---------------------------------------------------
-        self.output_proj = nn.Sequential(
-            nn.Linear(refine_out_dim, self._output_dim),
-            nn.LayerNorm(self._output_dim),
-            nn.SiLU(),
-        )
+        # On-prem: Linear or Identity only (no activation on output)
+        if refine_out_dim != self._output_dim:
+            self.output_proj = nn.Linear(refine_out_dim, self._output_dim)
+        else:
+            self.output_proj = nn.Identity()
 
         # -- Interpretable 6D projection (detached for audit) -------------------
         # Produces scores along 3 interpretive axes (2D each):

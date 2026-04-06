@@ -171,24 +171,39 @@ class PatchTST(nn.Module):
 
 class LiquidTimeConstantCell(nn.Module):
     """
-    Single Liquid Time-Constant (LTC) cell with input-dependent time constants.
+    Single Liquid Time-Constant (LTC) cell — ODE-based dynamics.
 
-    Inspired by Hasani et al. "Liquid Time-constant Networks" (AAAI 2021).
-    The time constant tau is computed from both the current input and the
-    previous hidden state, allowing the network to adapt its temporal dynamics
-    per-sample.  Small tau yields fast adaptation; large tau yields slow
-    (memory-like) behaviour.
+    Ported from on-prem LiquidCell. Pure ODE formulation:
+        dh/dt = (-h + f(x, h)) / tau(x, h)
+    Discretised via Euler method:
+        h_new = h + dt * (-h + f(x, h)) / tau
+
+    tau: input-dependent time constant (ReLU + Softplus → always positive).
+    f:   state update network (Tanh bounded).
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int, dropout: float = 0.1):
+    def __init__(self, input_dim: int, hidden_dim: int, dropout: float = 0.1,
+                 num_units: int = 32):
         super().__init__()
-        # Gates: input, forget, candidate, output (LSTM-style)
-        self.x_proj = nn.Linear(input_dim + hidden_dim, hidden_dim * 4)
-        # Adaptive time constant from (x_t, h_prev)
+        self.hidden_dim = hidden_dim
+
+        # Adaptive time constant: tau = f(x, h), always > 0
         self.tau_net = nn.Sequential(
-            nn.Linear(input_dim + hidden_dim, hidden_dim),
-            nn.Sigmoid(),
+            nn.Linear(input_dim + hidden_dim, num_units),
+            nn.ReLU(),
+            nn.Linear(num_units, hidden_dim),
+            nn.Softplus(),  # tau > 0
         )
+
+        # State update network: f(x, h)
+        self.state_net = nn.Sequential(
+            nn.Linear(input_dim + hidden_dim, hidden_dim),
+            nn.Tanh(),
+        )
+
+        # Time scaling (learnable)
+        self.time_scale = nn.Parameter(torch.tensor(1.0))
+
         self.layer_norm = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
 
@@ -215,26 +230,18 @@ class LiquidTimeConstantCell(nn.Module):
         """
         combined = torch.cat([x_t, h_prev], dim=-1)
 
-        # LSTM-style gates
-        gates = self.x_proj(combined)
-        i_gate, f_gate, g_gate, o_gate = gates.chunk(4, dim=-1)
-        i_gate = torch.sigmoid(i_gate)
-        f_gate = torch.sigmoid(f_gate)
-        g_gate = torch.tanh(g_gate)
-        o_gate = torch.sigmoid(o_gate)
+        # Adaptive time constant (always positive via Softplus + floor)
+        tau = self.tau_net(combined) + 0.1  # min tau = 0.1 for stability
 
-        # Candidate state (gated)
-        candidate = o_gate * torch.tanh(f_gate * h_prev + i_gate * g_gate)
+        # State update function
+        f_xh = self.state_net(combined)
 
-        # Adaptive time constant
-        tau = self.tau_net(combined)  # [batch, hidden_dim], in (0, 1)
-        # Scale tau to a meaningful range (eps prevents division by zero)
-        eps = 1e-6
-        # ODE-inspired update: h += (dt / (tau + eps)) * (candidate - h_prev)
+        # Discretised ODE: h_new = h + dt * (-h + f(x,h)) / tau
         if isinstance(dt, torch.Tensor):
-            dt = dt.unsqueeze(-1)  # [batch, 1]
-        alpha = dt / (tau + eps)
-        h_new = h_prev + alpha * (candidate - h_prev)
+            dt_scaled = (dt * self.time_scale).unsqueeze(-1).clamp(min=0.001, max=30.0)
+        else:
+            dt_scaled = (dt * self.time_scale).clamp(min=0.001, max=30.0)
+        h_new = h_prev + dt_scaled * (-h_prev + f_xh) / tau
 
         h_new = self.layer_norm(h_new)
         h_new = self.dropout(h_new)

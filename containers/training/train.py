@@ -1657,6 +1657,23 @@ def main() -> None:
             epochs, batch_size, lr, patience,
         )
 
+    # ---- 2b. Structure variant overrides from config ----
+    # If ablation_scenario contains a known structure variant name,
+    # apply per-variant HP overrides (e.g. lower LR for shared_bottom).
+    # Config overrides take priority over script defaults — the config
+    # is the authoritative source for per-variant tuning.
+    _scenario = hp.get("ablation_scenario", "")
+    _struct_variants = config.get("ablation", {}).get("structure_variants", {})
+    for _vname, _vcfg in _struct_variants.items():
+        if _vname in _scenario and isinstance(_vcfg, dict):
+            if "learning_rate" in _vcfg:
+                lr = float(_vcfg["learning_rate"])
+                logger.info("Structure variant '%s' LR override: %s", _vname, lr)
+            if "amp" in _vcfg:
+                use_amp = str(_vcfg["amp"]).lower() in ("true", "1", "yes")
+                logger.info("Structure variant '%s' AMP override: %s", _vname, use_amp)
+            break
+
     # ---- 3. Apply ablation filters ----
     features, labels, feature_schema, label_schema = apply_ablation(
         features, labels, feature_schema, label_schema, hp,
@@ -1946,7 +1963,7 @@ def main() -> None:
 
     ckpt_mgr = CheckpointManager(local_dir=checkpoint_dir, max_keep=3)
 
-    _phase_map = {"single": "full", "1": "phase1", "2": "phase2", "full": "full"}
+    _phase_map = {"single": "phase1", "1": "phase1", "2": "phase2", "full": "full"}
     trainer_phase = _phase_map.get(phase, "full")
 
     # Build TrainingConfig

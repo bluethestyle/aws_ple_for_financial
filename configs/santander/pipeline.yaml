@@ -789,6 +789,13 @@ training:
   scheduler:
     type: cosine
     warmup_epochs: 3
+  amp:
+    enabled: true
+    grad_scaler_init_scale: 1024.0
+    grad_scaler_growth_factor: 2.0
+    grad_scaler_backoff_factor: 0.5
+    grad_scaler_growth_interval: 2000
+    grad_scaler_max_scale: 4096.0    # cap to prevent FP16 overflow in multi-task
 
 # ---------------------------------------------------------------------------
 # Distillation
@@ -875,15 +882,28 @@ ablation:
     shared_bottom:
       use_ple: false
       use_adatt: false
-    ple_only:
+      learning_rate: 0.003       # lower LR: all 18 task gradients hit single network
+      amp: false                 # FP32 required: gradient conflict causes FP16 overflow
+    ple_softmax:
       use_ple: true
       use_adatt: false
+      amp: false                 # FP32: PLE softmax gate causes FP16 overflow with heterogeneous experts
+    ple_sigmoid:
+      use_ple: true
+      use_adatt: false
+      amp: false                 # FP32: unified with softmax for fair comparison
     adatt_only:
       use_ple: false
       use_adatt: true
-    full:
+      amp: false                 # FP32: unified with PLE variants for fair comparison
+    ple_softmax_adatt:
       use_ple: true
       use_adatt: true
+      amp: false                 # FP32: PLE + adaTT combined
+    ple_sigmoid_adatt:
+      use_ple: true
+      use_adatt: true
+      amp: false                 # FP32: unified
 
   # Budget limit (USD) for cost guard — ablation stops if exceeded
   budget_limit: 80.0

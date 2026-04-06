@@ -72,6 +72,13 @@ class AMPConfig:
     enabled: bool = True
     dtype: str = "float16"  # "float16" | "bfloat16"
 
+    # GradScaler parameters (read from config to avoid train.py hardcoding)
+    grad_scaler_init_scale: float = 1024.0
+    grad_scaler_growth_factor: float = 2.0
+    grad_scaler_backoff_factor: float = 0.5
+    grad_scaler_growth_interval: int = 2000
+    grad_scaler_max_scale: float = 4096.0
+
 
 @dataclass
 class GradientConfig:

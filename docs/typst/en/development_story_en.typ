@@ -157,7 +157,7 @@
     size: 13pt,
     fill: anthropic-muted,
     style: "italic",
-  )[One Consumer GPU, a Team of Three, and the Record of AI Collaboration]
+  )[One Desktop GPU, a Team of Three, and the Record of AI Collaboration]
 ]
 
 #v(2cm)
@@ -175,7 +175,7 @@
     #text(size: 9pt, fill: anthropic-muted)[
       This document records the journey of building an 18-task, 7-expert\
       PLE+adaTT recommendation system — without infrastructure budget,\
-      using a single consumer GPU and a team of AI agents.
+      using a single desktop GPU and a team of AI agents.
     ]
   ]
 ]
@@ -224,7 +224,7 @@
 
 == Team Composition and Constraints
 
-The project team consisted of three people: one data scientist serving as PM/Lead Architect and two engineers. There was no dedicated infrastructure budget, and the only GPU available for development was a single consumer-grade RTX 4070 (12GB VRAM) installed in a local PC.
+The project team consisted of three people: one data scientist serving as PM/Lead Architect and two engineers. There was no dedicated infrastructure budget, and the only GPU available for development was a single desktop-grade RTX 4070 (12GB VRAM) installed in a local PC.
 
 #info-box(
   [Constraint Summary],
@@ -238,7 +238,7 @@ The project team consisted of three people: one data scientist serving as PM/Lea
 
 == The Reality of Infrastructure Constraints
 
-Support from the organization was virtually nonexistent. Requests for GPU resources were met with "there is nothing we can do," and all project-related expenses --- AI tool subscriptions (Claude Code, Gemini, Cursor), peripherals, and meals --- were covered personally by the PM/Lead Architect.
+Support from the organization was virtually nonexistent. Requests for GPU resources were met with "there is nothing we can do," and all project-related expenses --- AI tool subscriptions (Claude Code, Gemini, Cursor), AWS cloud costs (SageMaker Spot instances, S3 storage), peripherals, and meals --- were covered personally by the PM/Lead Architect.
 
 The data collection environment was equally challenging. Requests to migrate to Spark or Impala were denied, forcing the team to work within a HIVE-based bottleneck environment. To overcome this, parallel query logic was designed from scratch to maximize network bandwidth utilization.
 
@@ -246,7 +246,11 @@ The workspace was an unventilated area adjacent to the server room, without adeq
 
 The two team members were not formally contracted employees but youth advisory supporters --- recent graduates participating in the project while preparing for employment.
 
-All of these constraints ultimately reinforced the design philosophy: "When available resources are extremely limited, architectural efficiency and tool selection become decisively important."
+All of these constraints ultimately gave the design its identity.
+
+Just as selection pressure in biological evolution drives species specialization, resource constraints acted as selection pressure on the architecture. The 12GB VRAM ceiling fundamentally blocked the lazy approach of "scale parameters for performance" and instead forced evolution toward "encode expressiveness through structural inductive biases." Seven heterogeneous experts each encoding a distinct mathematical perspective, feature engineering borrowing structural isomorphisms from eleven academic disciplines, lightweight expert designs that run in FP32 on a single desktop GPU --- all of these are adaptations born from constraint.
+
+Had a large GPU cluster been available, this architecture would likely never have been conceived. The team would have stacked seven Transformer-based heavy experts and brute-forced the problem with parameters --- a forgettable approach. Without constraint, there would have been no identity.
 
 == On-Premises System Scale
 
@@ -419,7 +423,7 @@ The greatest risk when parallel agents simultaneously modify different modules i
 
 = Technical Challenges and Solutions
 
-Over 20 technical issues arose during development. They are organized here into five categories. Rather than a debug log, each category illustrates a distinct engineering dimension required for large-scale multi-task training on consumer GPUs.
+Over 20 technical issues arose during development. They are organized here into five categories. Rather than a debug log, each category illustrates a distinct engineering dimension required for large-scale multi-task training on desktop GPUs.
 
 == Data Integrity
 
@@ -463,7 +467,7 @@ NumPy does not support BFloat16 as a dtype, so `.numpy()` calls on BFloat16 tens
 
 == Infrastructure
 
-On a single consumer GPU, driver conflicts, background processes, and network restrictions can reshape the entire experimental design.
+On a single desktop GPU, driver conflicts, background processes, and network restrictions can reshape the entire experimental design.
 
 === Docker GPU Passthrough and Zombie Containers
 
@@ -489,6 +493,10 @@ System-level issues in large-scale data processing and ablation orchestration.
 
 Processing 941K rows with pandas caused memory spikes. Migrating to DuckDB (CPU columnar) and cuDF (GPU) simultaneously improved memory efficiency and throughput.
 
+=== NVIDIA Merlin Ecosystem Evaluation and Selective Adoption
+
+We initially attempted to adopt the NVIDIA Merlin ecosystem (NVTabular, HugeCTR, etc.) as a full-stack solution. However, our custom heterogeneous expert architecture --- 7 distinct experts (DeepFM, Temporal Ensemble, HGCN, PersLay, LightGCN, Causal, OT) --- did not fit well with Merlin's opinionated pipeline. Merlin is optimized for single-model training workflows and could not easily accommodate an architecture where each expert demands different input formats and computation graphs. In the end, we retained only Merlin's DataLoader component, adopted cuDF directly for GPU-accelerated preprocessing and feature engineering, and introduced Triton Inference Server for model serving and deployment. This decision reflects a practical engineering philosophy: evaluate full-stack frameworks thoroughly, but only adopt the components that genuinely fit.
+
 === Subprocess Pipe Deadlock
 
 The ablation orchestrator used `subprocess.run(capture_output=True)`, but massive stdout exceeded the 64KB pipe buffer, causing a classic deadlock. Redirecting stdout/stderr to files resolved the issue.
@@ -511,7 +519,7 @@ With `use_ple=false`, all 7 heterogeneous experts collapsed into a single MLP, m
 
 === GPU Utilization Optimization
 
-Initial GPU utilization was 37%. Increasing batch size (512 to 4096), tuning DataLoader parameters, and pre-saving tensors in Phase 0 raised utilization to 98%, reducing training time by approximately 3x.
+Initial GPU utilization was low with batch size 512. Increasing batch size, tuning DataLoader parameters (num_workers, pin_memory), and pre-saving tensors in Phase 0 improved training throughput. However, the 12GB VRAM constraint capped batch size at 2048 --- exceeding this caused spillover into shared GPU memory, degrading rather than improving performance.
 
 === Softmax vs Sigmoid Gate Discovery
 
@@ -669,6 +677,6 @@ Gold standard metrics were established by task type: AUC for binary classificati
 #align(center)[
   #text(size: 9pt, fill: anthropic-muted, style: "italic")[
     This project was completed not by overcoming a "lack of resources"\ but by "redefining resources."\
-    It demonstrates that one consumer GPU combined with AI agents\ can substitute for dedicated infrastructure.
+    It demonstrates that one desktop GPU combined with AI agents\ can substitute for dedicated infrastructure.
   ]
 ]

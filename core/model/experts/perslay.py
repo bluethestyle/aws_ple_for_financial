@@ -134,12 +134,14 @@ class WeightFunction(nn.Module):
         Hidden layer width (default 32).
     """
 
-    def __init__(self, input_features: int = 2, hidden_dim: int = 32):
+    def __init__(self, input_features: int = 2, hidden_dim: int = 16):
         super().__init__()
+        # On-prem: ReLU -> Softplus (positive weights, no softmax normalisation)
         self.net = nn.Sequential(
             nn.Linear(input_features, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
+            nn.Softplus(),
         )
 
     def forward(
@@ -156,12 +158,12 @@ class WeightFunction(nn.Module):
         Returns
         -------
         torch.Tensor
-            ``[batch, max_points, 1]`` softmax-normalised weights.
+            ``[batch, max_points, 1]`` positive weights (Softplus).
         """
-        logits = self.net(points)  # [B, P, 1]
+        weights = self.net(points)  # [B, P, 1]
         if mask is not None:
-            logits = logits.masked_fill(~mask.unsqueeze(-1), float("-inf"))
-        return F.softmax(logits, dim=1)
+            weights = weights.masked_fill(~mask.unsqueeze(-1), 0.0)
+        return weights
 
 
 class PermutationInvariantRho(nn.Module):
