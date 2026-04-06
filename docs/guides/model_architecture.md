@@ -29,30 +29,30 @@ multi-task learning architecture that solves the "seesaw" problem in multi-task
 learning -- where improving one task degrades another.
 
 ```
-                        Input Features (total_dim)
+                        Input Features (316D total)
                                |
-                    FeatureRouter (expert routing)
-                    /          |          \
-               [subset_1]  [subset_2]  [all features]
-                  |            |            |
-         +-------+---+  +----+----+  +----+----+
-         | Shared    |  | Shared  |  | Task    |
-         | Expert 0  |  | Expert 1|  | Expert  |
-         | (DeepFM)  |  | (MLP)   |  | (Mamba) |
-         +-----------+  +---------+  +---------+
-               \            |            /
-                +-----+-----+-----+----+
-                      |           |
-              CGC Gating    CGC Gating        <-- per-task attention over experts
-              (Task A)      (Task B)
-                      |           |
-              adaTT Transfer Matrix           <-- gradient-based task affinity
-                      |           |
-              Task Tower A  Task Tower B      <-- task-specific MLPs
-              [128 -> 64]   [128 -> 64]
-                      |           |
-              Output A      Output B          <-- predictions + loss
-              (sigmoid)     (softmax)
+                    FeatureRouter [ACTIVE]
+                    (auto-built from feature_groups.yaml target_experts)
+          /         |         |        |         |         |         \
+      [162D]     [127D]     [34D]    [32D]    [158D]    [66D]     [124D]   [316D]
+        |           |         |        |         |         |         |       |
+   +--------+  +------+  +------+  +------+  +------+  +------+  +------+ +-----+
+   | DeepFM |  |Temp. |  | HGCN |  |Pers- |  |Causal|  |Light-|  | OT   | | MLP |
+   | Shared |  |Ens.  |  |Shared|  |Lay   |  |Shared|  |GCN   |  |Shared| |Task |
+   +--------+  +------+  +------+  +------+  +------+  +------+  +------+ +-----+
+          \        |         |        |         |         |         |       /
+           +-------+---------+--------+---------+---------+---------+------+
+                             |                  |
+                     CGC Gating          CGC Gating        <-- per-task attention over experts
+                     (Task A)            (Task B)
+                             |                  |
+                     adaTT Transfer Matrix       <-- gradient-based task affinity
+                             |                  |
+                     Task Tower A      Task Tower B        <-- task-specific MLPs
+                     [128 -> 64]       [128 -> 64]
+                             |                  |
+                     Output A          Output B            <-- predictions + loss
+                     (sigmoid)         (softmax)
 ```
 
 ### Key components
@@ -63,7 +63,7 @@ learning -- where improving one task degrades another.
 | `PLEModel` | `core/model/ple/model.py` | Main model class |
 | `CGCLayer` | `core/model/ple/gating.py` | Customized Gate Control |
 | `AdaTT` | `core/model/ple/adatt.py` | Adaptive Task Transfer |
-| `FeatureRouter` | `core/model/ple/feature_router.py` | Expert input routing |
+| `FeatureRouter` | `core/model/ple/feature_router.py` | Expert input routing — **active**, auto-built from `feature_groups.yaml` `target_experts`; routes heterogeneous input dims per expert (162D–316D) |
 | `ExpertRegistry` | `core/model/experts/registry.py` | Expert plugin system |
 | `TaskRegistry` | `core/task/registry.py` | Task head plugin system |
 
@@ -73,6 +73,11 @@ learning -- where improving one task degrades another.
 
 Customized Gate Control (CGC) is the per-task attention mechanism that lets each
 task learn which experts are most relevant to it.
+
+Because **FeatureRouter is now active**, each shared expert receives a
+different input dimensionality (162D–316D) rather than the uniform 316D total.
+Expert outputs are projected to a common `output_dim` (default 64) before the
+CGC gate concatenates them, so gating arithmetic remains dimension-agnostic.
 
 ### How it works
 
@@ -623,7 +628,11 @@ tasks:
 ```yaml
 model:
   # Global dimensions
-  input_dim: 196               # Set by FeatureGroupPipeline.total_dim
+  input_dim: 316               # Total feature dim (set by FeatureGroupPipeline.total_dim).
+                               # With FeatureRouter active, each expert receives a
+                               # routed subset: deepfm=162D, temporal_ensemble=127D,
+                               # hgcn=34D, perslay=32D, causal=158D, lightgcn=66D,
+                               # optimal_transport=124D, mlp_task=316D (full).
   task_expert_output_dim: 32
 
   # Task definitions

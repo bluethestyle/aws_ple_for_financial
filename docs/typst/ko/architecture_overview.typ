@@ -391,12 +391,32 @@ Pool (등록 목록)        Basket (Config 선택)       Runtime (가중 실행)
 
 Stacked PLE: 3개 CGC layer. Layer 0에서 이종 Expert Basket + FeatureRouter를 사용하고, Layer 1--2는 동종 MLP expert로 추상화한다.
 
+=== FeatureRouter 활성화 (현재 상태)
+
+`FeatureRouter`는 *현재 완전히 활성화*되어 있으며, `build_model()` 시점에 `feature_groups.yaml`의 `target_experts` 선언으로부터 자동 생성된다. 전체 316D 피처 텐서를 expert별로 슬라이싱하여 *이종 입력 차원*을 제공한다.
+
+#table(
+  columns: (auto, auto, 1fr),
+  align: (left, center, left),
+  table.header[*Expert*][*입력 차원*][*라우팅된 피처 그룹 (요약)*],
+  [`deepfm`], [162D], [demographics, product\_holdings, txn\_behavior, gmm\_clustering, model\_derived 등],
+  [`temporal_ensemble`], [127D], [txn\_behavior, derived\_temporal, hmm\_states, mamba\_temporal 등],
+  [`hgcn`], [34D], [product\_hierarchy],
+  [`perslay`], [32D], [tda\_local (16D) + tda\_global (16D)],
+  [`causal`], [158D], [demographics, product\_holdings, txn\_behavior, derived\_temporal, model\_derived 등],
+  [`lightgcn`], [66D], [graph\_collaborative],
+  [`optimal_transport`], [124D], [txn\_behavior, gmm\_clustering, model\_derived 등],
+  [`mlp` (task expert)], [316D], [전체 피처 (라우팅 없음)],
+)
+
+FeatureRouter 활성화 효과: 총 파라미터 4.77M → *3.16M* (−34% 감소). `dim_normalize=True` 설정으로 expert 출력이 공통 `output_dim`(64D)으로 투영된 후 CGC gate에 입력되므로, gate 연산은 입력 차원 이종성에 무관하다.
+
 == Dual-Registry 아키텍처
 
 ```
 Expert Pool Registry (core.model.experts.registry.ExpertRegistry)
     └── AbstractExpert(input_dim, config)
-    └── 11종 등록
+    └── 11종 등록  ← input_dim은 FeatureRouter가 expert별로 자동 설정
 
 Expert PLE Registry (core.model.ple.experts.ExpertRegistry)
     └── BaseExpert(input_dim, output_dim, dropout)

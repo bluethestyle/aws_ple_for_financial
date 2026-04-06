@@ -285,11 +285,21 @@
 + *예측 입력*: PLE-adaTT 모델의 입력 텐서로서 18개 태스크의 예측에 기여한다.
 + *전문가 라우팅 신호*: GMM의 소프트 할당 확률($gamma_(n k)$)은 GroupTaskExpertBasket의 20개 서브헤드를 가중 결합하는 라우팅 신호로 사용되고, HMM 48D는 별도 입력 경로(separate input)를 통해 전용 Projector에 공급된다.
 
+*FeatureRouter에 의한 서브셋 라우팅 (현재 활성):*
+전체 316D 입력 텐서는 `feature_groups.yaml`의 `target_experts` 선언에 따라
+`FeatureRouter`가 전문가별 지정 인덱스를 슬라이싱하여 전달한다.
+각 전문가는 전체 피처가 아닌 관련 서브셋만 수신한다:
+deepfm=162D, temporal=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, ot=124D.
+모델 파라미터는 4.77M → 3.16M으로 34% 감소하였다.
+
 == 전체 피처 텐서 구성
+
+아래 표는 풀뱅크 설계(734D) 기준이다. 현재 Santander 벤치마크 구현은 316D (12 feature groups)이며,
+`feature_groups.yaml` 설정에 따라 결정된다.
 
 #styled-table(
   (1.2fr, 0.6fr, 2fr),
-  table.header([*피처 블록*], [*차원*], [*구성 요소*]),
+  table.header([*피처 블록*], [*차원 (설계)*], [*구성 요소*]),
   [Base], [238D], [RFM(34) + Category(64) + Transaction Stats(76) + Product Diversity(12) + ...],
   [Multi-Source], [91D], [Deposit + Credit + Investment + Digital 등],
   [Extended-Source], [84D], [Insurance + Refund + Consultation + STT 등],
@@ -297,13 +307,20 @@
   [Model-Derived], [27D], [HMM summary(5) + Bandit/MAB(4) + LNN(18)],
   [Multidisciplinary], [24D], [Chemical(6) + SIR(5) + Crime(5) + Wave(8)],
   [Merchant Hierarchy], [21D], [MCC 계층 좌표 + Brand 임베딩],
-  [*합계 (normalized)*], [*644D*], [],
+  [*합계 (normalized)*], [*644D (설계) / 316D (구현)*], [],
   [Raw power-law copy], [90D], [멱법칙 컬럼의 log1p 원본 (스케일링 미적용)],
-  [*Main Tensor 총합*], [*734D*], [644D normalized + 90D raw power-law],
+  [*Main Tensor 총합*], [*734D (설계) / 316D (구현)*], [설계: 644D normalized + 90D raw; 구현: 316D],
 )
 
 #v(4pt)
 #dim-label[별도 입력: HMM Triple-Mode 48D + Hyperbolic 20D = 68D (separate input path)]
+
+#note[FeatureRouter 슬라이싱][
+  구현에서 316D 전체 텐서는 `FeatureRouter`를 통해 전문가별로 슬라이싱된다.
+  각 전문가는 `feature_groups.yaml`의 `target_experts` 필드에 지정된 피처 그룹의 인덱스만 수신한다.
+  전문가별 입력 차원: deepfm=162D, temporal=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, ot=124D.
+  전문가 출력은 모두 64D로 균일하게 정렬되어 CGC Gate에 전달된다.
+]
 
 
 // =====================================================================
@@ -1053,20 +1070,26 @@ MCC 계층 구조(Root -> L1 -> L2 -> Brand)를 반영한 좌표 및 임베딩. 
 // =====================================================================
 = 부록: 설계 vs 구현 차원 매핑
 
-#warn[참고][이 부록은 풀뱅크 설계(734D)와 현재 Santander 벤치마크 구현(316D) 간의 차원 차이를 정리한 것입니다. 구현 차원은 `outputs/phase0/feature_schema.json`에서 확인할 수 있습니다.]
+#warn[참고][이 부록은 풀뱅크 설계(734D)와 현재 Santander 벤치마크 구현(316D) 간의 차원 차이를 정리한 것입니다. 구현 차원은 `outputs/phase0/feature_schema.json`에서 확인할 수 있습니다. *FeatureRouter 활성화*: 316D 입력은 전문가별로 서브셋 슬라이싱되어 전달됩니다 — 각 전문가의 실제 입력 차원은 아래 per-expert 컬럼을 참조하십시오.]
 
 #styled-table(
-  (1.2fr, 1fr, 1fr, 2fr),
-  table.header([*피처 그룹*], [*설계 (734D)*], [*구현 (316D)*], [*비고*]),
-  [TDA], [70D], [32D], [tda\_global 16D + tda\_local 16D],
-  [HMM], [48D + 5D (별도)], [25D], [main tensor only],
-  [Base (Profile 등)], [238D], [47D], [Demographics, RFM, Financial Summary 축소],
-  [Graph], [미명시], [66D], [구현에서 독립 그룹으로 추가],
-  [Merchant / Hierarchy], [21D], [34D], [MCC levels, brand embeddings 확장],
-  [GMM], [22D], [53D], [클러스터 수 및 파생 피처 확장],
-  [기타 (Economics, SIR 등)], [335D], [59D], [Mamba, Wave, Crime 등 축소],
-  [*합계*], [*734D*], [*316D*], [12 feature groups],
+  (1.2fr, 0.8fr, 0.8fr, 1.2fr, 2fr),
+  table.header([*피처 그룹*], [*설계 (734D)*], [*구현 (316D)*], [*주요 수신 전문가*], [*비고*]),
+  [TDA], [70D], [32D], [perslay (32D)], [tda\_global 16D + tda\_local 16D],
+  [HMM], [48D + 5D (별도)], [25D], [temporal 일부], [main tensor only],
+  [Base (Profile 등)], [238D], [47D], [deepfm, causal, ot 일부], [Demographics, RFM, Financial Summary 축소],
+  [Graph], [미명시], [66D], [lightgcn (66D)], [구현에서 독립 그룹으로 추가],
+  [Merchant / Hierarchy], [21D], [34D], [hgcn (34D)], [MCC levels, brand embeddings 확장],
+  [GMM], [22D], [53D], [deepfm, causal 일부], [클러스터 수 및 파생 피처 확장],
+  [기타 (Economics, SIR 등)], [335D], [59D], [ot, causal 일부], [Mamba, Wave, Crime 등 축소],
+  [*합계*], [*734D*], [*316D*], [—], [12 feature groups; 이종 입력으로 각 전문가에 분배],
 )
+
+#note[per-expert 입력 차원 요약 (FeatureRouter 활성)][
+  deepfm=162D, temporal=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, ot=124D.
+  출력은 모두 64D로 균일. 모델 파라미터: 4.77M → 3.16M (34% 감소).
+  라우팅 구성: `feature_groups.yaml`의 `target_experts` 필드.
+]
 
 
 // =====================================================================

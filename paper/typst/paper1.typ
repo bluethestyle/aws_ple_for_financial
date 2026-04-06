@@ -56,6 +56,10 @@
   Hyperbolic GCN, PersLay, Causal (NOTEARS), LightGCN, and Optimal Transport ---
   share a common basket, providing a *structural guarantee* against expert collapse:
   experts with fundamentally different inductive biases cannot converge to the same function.
+  A *FeatureRouter* further assigns each expert only its designated feature groups
+  (per-expert input dims: 32D--162D from a 316D total space),
+  realizing "heterogeneous architecture × heterogeneous input" specialization
+  and reducing model parameters from 4.77M to 3.16M (34% reduction).
   CGC gates learn task-specific expert compositions whose weights
   are inherently interpretable as business-meaningful explanations ---
   "35% spending trend (Temporal) + 28% product hierarchy (HGCN)" ---
@@ -137,6 +141,8 @@ increasingly demand this shift toward structurally transparent explanations
 == Contributions
 
 + *Heterogeneous Shared Expert Basket with Structural Collapse Guarantee*: We replace PLE's homogeneous MLP experts with seven architecturally distinct experts (DeepFM, Mamba+LNN+Transformer, HGCN, PersLay, NOTEARS, LightGCN, Optimal Transport). Unlike prior "heterogeneous" MoE work that varies expert _size_ @mowst2024 or _modality_ @jamba2024, we vary the fundamental _inductive bias_, providing a structural guarantee against expert collapse --- a persistent failure mode in homogeneous MoE/PLE deployments @home2024.
+
++ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via `feature_groups.yaml`), not the full 316D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 32D--162D), reducing model parameters from 4.77M to 3.16M (34% reduction) while strengthening each expert's specialization.
 
 + *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), CGC gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
 
@@ -461,7 +467,7 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
       node-corner-radius: 3pt,
 
       // === Row 0: Input ===
-      node((3, 0), [*Input* \ 318 features], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
+      node((3, 0), [*Input* \ 316D total], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
 
       // === Row 1: Feature Groups ===
       node((3, 1), [*12 Feature Groups*], width: 32mm, fill: gray-fill, name: <fg>),
@@ -635,9 +641,49 @@ For example, HGCN embeds a product hierarchy tree in 32 hyperbolic dimensions --
 achieving in $O(d)$ parameters what Euclidean embeddings require $O(2^d)$ dimensions to represent
 without distortion @chami2019.
 
-The total parameter count across all seven experts
-remains comparable to a single large MLP,
-but the diversity of learned representations is fundamentally richer.
+The total parameter count across all seven experts is *3.16M*,
+reduced from the 4.77M baseline (34% reduction)
+by replacing broad shared inputs with expert-specific subsets via FeatureRouter.
+The diversity of learned representations is fundamentally richer
+despite the smaller parameter budget.
+
+=== FeatureRouter: Heterogeneous Input × Heterogeneous Architecture
+
+FeatureRouter is now active, implementing a stronger form of expert specialization:
+not only does each expert use a *different architecture* (heterogeneous basket),
+but each also receives a *different subset of input features* (heterogeneous input).
+This "heterogeneous architecture × heterogeneous input" design maximizes
+the signal-to-noise ratio for each expert by eliminating features
+that carry no information relevant to that expert's inductive bias.
+
+Feature group assignments are declared in `feature_groups.yaml` via the `target_experts` field,
+ensuring zero dataset-specific hardcoding in model code.
+The resulting per-expert input dimensions are:
+
+#figure(
+  scope: "parent",
+  placement: auto,
+  table(
+    columns: (auto, auto, auto),
+    inset: 6pt,
+    align: left,
+    stroke: 0.5pt,
+    [*Expert*], [*Input Dim*], [*Feature Groups Routed*],
+    [DeepFM], [162D], [state, snapshot, GMM clusters, model-derived],
+    [Temporal Ensemble], [127D], [temporal sequences, spending dynamics],
+    [HGCN], [34D], [product hierarchy, MCC embeddings],
+    [PersLay], [32D], [TDA persistence diagrams (Betti numbers)],
+    [Causal], [158D], [state, snapshot, causal graph features],
+    [LightGCN], [66D], [graph collaborative features, OT features],
+    [Optimal Transport], [124D], [distribution shift, segment prototypes],
+  ),
+  caption: [Per-expert input dimensions after FeatureRouter. Total feature space: 316D.],
+) <tab:feature-router>
+
+The sum of per-expert dimensions (703D) exceeds 316D because several feature groups
+are shared across multiple experts where complementary inductive biases
+benefit from the same signal (e.g., state features are useful to both DeepFM
+for interaction modeling and Causal for DAG structure inference).
 
 === CGC Gate Design: Softmax vs. Sigmoid
 
@@ -723,8 +769,9 @@ that each extract a structurally different signal from the same underlying data.
   caption: [Multi-disciplinary feature engineering across 11 academic disciplines.],
 ) <tab:multidisciplinary>
 
-#text(size: 8.5pt, fill: gray)[_Note_: Total 269 generated features + 49 base features = 318.
-    Base features include 47 raw columns plus 2 derived columns (is\_cold\_start, income\_log).]
+#text(size: 8.5pt, fill: gray)[_Note_: Total 269 generated features + 47 base features = 316.
+    FeatureRouter routes feature subsets to each expert (per-expert dims: DeepFM 162D, Temporal 127D,
+    HGCN 34D, PersLay 32D, Causal 158D, LightGCN 66D, OT 124D); model parameters: 3.16M.]
 
 Several of these applications are, to our knowledge, novel in financial recommendation:
 
@@ -971,7 +1018,7 @@ The ablation validates whether each expert provides a distinct "why" for differe
 confirming that heterogeneous experts are not merely a performance trick
 but a structural requirement for multi-faceted persuasion.
 
-- *Data*: 1M customers, 318 features, 18 tasks.
+- *Data*: 1M customers, 316 features (total), 18 tasks.
 - *Hardware*: NVIDIA RTX 4070 (12GB) local; AWS g4dn.xlarge Spot (T4 16GB) cloud.
 - *Training*: 20 epochs (single phase), batch 4096, lr 0.008 (shared-bottom: lr 0.003, batch 2048), FP32, early stopping patience 5.
 - *Metrics*: AUC (binary), F1 macro (classification), MAE/R² (regression).

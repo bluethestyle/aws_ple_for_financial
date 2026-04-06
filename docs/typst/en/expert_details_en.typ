@@ -87,7 +87,8 @@
   no single expert can substitute for any other.
   Additionally, this document covers the dynamic knowledge transfer mechanism across 18 tasks
   via adaTT (Adaptive Task-aware Transfer), and the 316-dimensional feature engineering framework
-  derived from 11 academic disciplines.
+  derived from 11 academic disciplines. With FeatureRouter active, each expert receives a
+  designated subset of the 316D tensor rather than the full input.
 
   #v(0.3em)
   #text(weight: "bold")[Keywords:]
@@ -107,6 +108,10 @@
   #text(weight: "bold")[Design vs. Implementation Note.]
   This document is written based on the full-bank design (734D).
   The current Santander benchmark implementation uses 316D (12 feature groups).
+  FeatureRouter is active: each expert receives a per-expert subset of the 316D tensor
+  (deepfm=162D, temporal\_ensemble=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, ot=124D),
+  reducing model parameters from 4.77M to 3.16M (34% reduction).
+  I/O specs below reflect the FeatureRouter-active per-expert input dims.
 ]
 
 #v(1em)
@@ -190,12 +195,12 @@ while Deep MLP operates on the flattened $[B, 448]$.
   table(
     columns: (auto, auto),
     stroke: 0.5pt,
-    [*Input*], [644D normalized feature tensor $[B, 644]$],
-    [*Internal*], [28 fields $times$ 16D embeddings $arrow$ FM $[B, 28, 16]$ + Deep $[B, 448]$],
+    [*Input*], [162D feature subset $[B, 162]$ (FeatureRouter: State-axis groups)],
+    [*Internal*], [fields $times$ 16D embeddings $arrow$ FM + Deep],
     [*Output*], [64D expert representation for PLE CGC Gate],
     [*Parameters*], [$tilde 169$K],
   ),
-  caption: [DeepFM Expert I/O specification.],
+  caption: [DeepFM Expert I/O specification. Input is 162D (FeatureRouter active) vs. 644D in full-bank design.],
 )
 
 == Implementation Notes
@@ -326,13 +331,13 @@ Mamba $arrow$ trends, PatchTST $arrow$ seasonality, LNN $arrow$ residuals.
   table(
     columns: (auto, auto),
     stroke: 0.5pt,
-    [*Input*], [Transaction seq $[B, 180, 16]$ + Session seq $[B, 90, 8]$],
+    [*Input*], [127D feature subset (FeatureRouter: Timeseries-axis groups) + Transaction seq $[B, 180, 16]$ + Session seq $[B, 90, 8]$],
     [*Mamba output*], [128D + 64D = 192D],
     [*LNN output*], [64D + 32D = 96D (SingleStep on Mamba final state)],
     [*PatchTST output*], [64D + 32D = 96D],
     [*Ensemble output*], [64D (gated combination for PLE gate)],
   ),
-  caption: [Temporal Ensemble Expert I/O specification.],
+  caption: [Temporal Ensemble Expert I/O specification. FeatureRouter provides 127D static feature subset.],
 )
 
 == Implementation Notes
@@ -428,8 +433,9 @@ The Lorentz factor $gamma_i$ assigns higher weight to boundary points (specializ
     [Space], [Euclidean $bb(R)^(64)$], [Poincare Ball $bb(B)^8$],
     [Learning], ["Who likes what" (CF)], ["How merchants relate" (hierarchy)],
     [Output], [Customer embedding 64D (direct)], [Merchant emb $arrow$ per-customer agg 47D],
+    [FeatureRouter input], [66D subset], [34D subset],
   ),
-  caption: [Dual GCN architecture comparison.],
+  caption: [Dual GCN architecture comparison. With FeatureRouter active, LightGCN receives 66D and H-GCN receives 34D from the 316D tensor.],
 )
 
 == Implementation Notes
@@ -563,12 +569,12 @@ Short concat 128D + Long concat 192D + Global stats MLP 32D + Phase transition 1
   table(
     columns: (auto, auto),
     stroke: 0.5pt,
-    [*PersLay Input*], [Raw persistence diagrams (dual mode: raw PD / pre-computed 70D fallback)],
+    [*PersLay Input*], [32D feature subset (FeatureRouter: Snapshot-axis TDA groups) or raw persistence diagrams],
     [*PersLay Output*], [64D expert representation for PLE gate],
-    [*TDA Offline Output*], [70D features integrated into main 734D tensor],
+    [*TDA Offline Output*], [70D features integrated into main 316D tensor],
     [*Computation*], [Ripser++ (GPU) $arrow$ Ripser (CPU) $arrow$ giotto-tda (fallback)],
   ),
-  caption: [PersLay / TDA Expert I/O specification.],
+  caption: [PersLay / TDA Expert I/O specification. FeatureRouter provides 32D input subset.],
 )
 
 == Implementation Notes
@@ -632,13 +638,13 @@ $ cal(L)_"BPR" = -sum_((u, i^+, i^-)) log sigma(hat(y)_(u i^+) - hat(y)_(u i^-))
   table(
     columns: (auto, auto),
     stroke: 0.5pt,
-    [*Input*], [User-item bipartite graph (customer-merchant transactions)],
+    [*Input*], [User-item bipartite graph + 66D feature subset (FeatureRouter: Item-axis groups)],
     [*Embedding dim*], [64D (Euclidean $bb(R)^(64)$)],
     [*Layers*], [3 hops with uniform averaging],
     [*Loss*], [BPR (pairwise ranking)],
     [*Output*], [Customer embedding 64D for PLE gate],
   ),
-  caption: [LightGCN Expert I/O specification.],
+  caption: [LightGCN Expert I/O specification. Feature input is 66D (FeatureRouter active).],
 )
 
 == Implementation Notes
@@ -678,10 +684,10 @@ population-level ATE.
 
 === Feature Compression
 
-$ bold(z) = "Compressor"(bold(x)): bb(R)^(644) arrow bb(R)^(128) arrow bb(R)^(32) $
+$ bold(z) = "Compressor"(bold(x)): bb(R)^(158) arrow bb(R)^(128) arrow bb(R)^(32) $
 
-Reduces 644D normalized features to 32 causal variables.
-Prevents the DAG adjacency matrix from exploding to $644^2 approx 410$K entries.
+Reduces 158D feature subset (FeatureRouter active; 644D in full-bank design) to 32 causal variables.
+Prevents the DAG adjacency matrix from exploding to large $n^2$ entries.
 
 === SCM (Structural Causal Model) Intervention
 
@@ -735,13 +741,13 @@ $ cal(L)_"DAG" = lambda_"acyclic" dot h(bold(W)) + lambda_"sparse" dot ||bold(W)
   table(
     columns: (auto, auto),
     stroke: 0.5pt,
-    [*Input*], [644D normalized features $[B, 644]$],
-    [*Compressor*], [$644 arrow 128 arrow 32$ (causal variables)],
+    [*Input*], [158D feature subset $[B, 158]$ (FeatureRouter: Snapshot-axis groups)],
+    [*Compressor*], [$158 arrow 128 arrow 32$ (causal variables)],
     [*SCM*], [$32 times 32$ learnable adjacency $bold(W)$],
     [*Output*], [64D causal representation + DAG (visualization)],
     [*Auxiliary loss*], [$cal(L)_"DAG" = lambda_"acyclic" dot h(bold(W)) + lambda_"sparse" dot ||bold(W)^2||_1$],
   ),
-  caption: [Causal Expert I/O specification.],
+  caption: [Causal Expert I/O specification. Input is 158D (FeatureRouter active) vs. 644D in full-bank design.],
 )
 
 == Implementation Notes
@@ -785,10 +791,10 @@ while OT answers "How _close_ is this customer's spending distribution to the ta
 
 === Distribution Projection
 
-$ bold(mu) = "softmax"("DistProjector"(bold(x))) in Delta^(32) $
+$ bold(mu) = "softmax"("DistProjector"(bold(x)_"OT")) in Delta^(32), quad bold(x)_"OT" in bb(R)^(124) $
 
-Transforms 644D features into a probability simplex, representing each customer's feature profile
-as a discrete distribution over 32 latent categories.
+Transforms 124D feature subset (FeatureRouter active; 644D in full-bank design) into a probability simplex,
+representing each customer's feature profile as a discrete distribution over 32 latent categories.
 
 === Learnable Reference Distributions
 
@@ -849,14 +855,14 @@ This provides directional information impossible with KL divergence or Euclidean
   table(
     columns: (auto, auto),
     stroke: 0.5pt,
-    [*Input*], [644D normalized features $[B, 644]$],
-    [*Distribution*], [$644 arrow 32$ probability simplex $Delta^(32)$],
+    [*Input*], [124D feature subset $[B, 124]$ (FeatureRouter: Snapshot-axis groups)],
+    [*Distribution*], [$124 arrow 32$ probability simplex $Delta^(32)$],
     [*References*], [16 learnable prototypes $in Delta^(32)$],
     [*Cost matrix*], [Learnable PSD: $bold(M)^top bold(M) in bb(R)^(32 times 32)$],
     [*Sinkhorn*], [10 iterations, log-domain, $epsilon = 0.1$],
     [*Output*], [64D expert representation for PLE gate],
   ),
-  caption: [Optimal Transport Expert I/O specification.],
+  caption: [Optimal Transport Expert I/O specification. Input is 124D (FeatureRouter active) vs. 644D in full-bank design.],
 )
 
 == Implementation Notes
@@ -867,7 +873,8 @@ This provides directional information impossible with KL divergence or Euclidean
 - Synergy with Causal Expert: DeepFM extracts symmetric feature interactions $chevron.l bold(v)_i, bold(v)_j chevron.r$,
   Causal extracts asymmetric directional causality $W_(i,j)^2$,
   OT extracts distance functions (metric) $W(mu, nu_k)$.
-  The three experts extract _mathematically completely different_ structures from the same 644D input.
+  The three experts extract _mathematically completely different_ structures; with FeatureRouter active,
+  each operates on its own input subset (causal=158D, ot=124D, deepfm=162D) rather than the same full input.
 
 *Key References:*
 Cuturi (NeurIPS 2013), Kantorovich (1942).

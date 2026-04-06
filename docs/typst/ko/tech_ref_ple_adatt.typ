@@ -396,40 +396,57 @@ $ "scale"_i = sqrt("mean\_dim" / "dim"_i), quad "mean\_dim" = (128 + 64 times 7)
 각 Expert는 입력 데이터를 전혀 다른 수학적 관점으로 해석하며,
 CGC Gate가 태스크별 최적 조합을 학습한다.
 
+*FeatureRouter 활성화 (현재 구현):* `feature_groups.yaml`의 `target_experts` 선언에 따라
+`FeatureRouter`가 각 Expert에게 전체 316D 중 해당 Expert에 지정된 피처 서브셋만을 슬라이싱하여 전달한다.
+이로 인해 각 Expert의 입력 차원은 서로 다르며(이종 입력), 출력은 64D로 균일하게 정렬된다.
+모델 파라미터는 4.77M → 3.16M으로 34% 감소하였다.
+
 #styled-table(
-  (1.3fr, 0.9fr, 0.6fr, 2.5fr),
-  [*Expert*], [*입력*], [*출력*], [*역할 및 대체 불가능성*],
-  [DeepFM], [정규화 644D], [64D], [FM의 $O(n k)$ 2차 교차를 명시적으로 포착],
-  [LightGCN], [사전 계산 64D], [64D], [이분 그래프 기반 "비슷한 고객" 협업 신호],
-  [Unified HGCN], [47D], [128D], [쌍곡 공간에서 MCC 계층 구조 인코딩],
-  [Temporal], [시퀀스 입력], [64D], [Mamba+LNN+Transformer 시간 패턴 앙상블],
-  [PersLay], [Persistence Diagram], [64D], [소비 패턴의 위상적 구조(루프, 클러스터)],
-  [Causal], [정규화 644D], [64D], [SCM/NOTEARS 기반 방향성 인과 관계 추출],
-  [Optimal Transport], [정규화 644D], [64D], [Sinkhorn Wasserstein 분포 기하학],
-  [RawScale], [원시 90D], [64D], [정규화 전 멱법칙 분포 정보 보존],
+  (1.3fr, 1.0fr, 0.6fr, 2.3fr),
+  [*Expert*], [*라우팅 입력 (316D 서브셋)*], [*출력*], [*역할 및 대체 불가능성*],
+  [DeepFM], [162D], [64D], [FM의 $O(n k)$ 2차 교차를 명시적으로 포착],
+  [LightGCN], [66D], [64D], [이분 그래프 기반 "비슷한 고객" 협업 신호],
+  [Unified HGCN], [34D], [128D], [쌍곡 공간에서 MCC 계층 구조 인코딩],
+  [Temporal], [127D (시퀀스)], [64D], [Mamba+LNN+Transformer 시간 패턴 앙상블],
+  [PersLay], [32D], [64D], [소비 패턴의 위상적 구조(루프, 클러스터)],
+  [Causal], [158D], [64D], [SCM/NOTEARS 기반 방향성 인과 관계 추출],
+  [Optimal Transport], [124D], [64D], [Sinkhorn Wasserstein 분포 기하학],
+  [RawScale], [원시 멱법칙 서브셋], [64D], [정규화 전 멱법칙 분포 정보 보존],
 )
 
 결합 차원은 $7 times 64 + 1 times 128 = 576$D이다.
 
 $ bold(h)_"shared" = ["unified\_hgcn"_(128"D") || "perslay"_(64"D") || "deepfm"_(64"D") || "temporal"_(64"D") || "lightgcn"_(64"D") || "causal"_(64"D") || "OT"_(64"D") || "raw\_scale"_(64"D")] $
 
+#note[이종 입력 → 균일 출력][
+  FeatureRouter 활성화 이후 각 Expert의 입력 차원이 상이하더라도(이종 입력),
+  각 Expert 내부의 입력 프로젝션 레이어가 해당 서브셋 차원에 맞게 초기화되어
+  출력은 64D로 동일하게 유지된다. CGC Gate는 이 균일한 64D 표현을 결합한다.
+]
+
 == 2.2 Expert 선정 기준
 
 8개 Expert는 동일 고객 데이터의 *근본적으로 다른 수학 구조*를 추출한다:
 
-- *DeepFM/Causal/OT*: 동일 정규화 644D를 입력받지만, 대칭 교차(FM), 비대칭 인과(DAG), 분포 거리(Wasserstein)라는 다른 구조를 포착
-- *Temporal*: 시퀀스 데이터의 시간적 동역학 ($[B, 180, 16]$, $[B, 90, 8]$)
-- *PersLay*: 위상적 불변량 (Betti number, persistence)
-- *Unified HGCN*: 쌍곡 기하학에서의 계층 관계
-- *LightGCN*: 고객-가맹점 그래프의 협업 필터링 신호
+- *DeepFM (162D)*: 피처 상호작용 중심 서브셋 — 대칭 교차(FM) 구조 포착
+- *Causal (158D)*: 인과 구조 관련 서브셋 — 비대칭 인과(DAG) 방향성 추출
+- *Optimal Transport (124D)*: 분포 비교 서브셋 — Wasserstein 분포 거리 포착
+- *Temporal (127D)*: 시계열 서브셋 — 시간적 동역학 ($[B, 180, 16]$, $[B, 90, 8]$)
+- *PersLay (32D)*: TDA 서브셋 — 위상적 불변량 (Betti number, persistence)
+- *Unified HGCN (34D)*: 계층/그래프 서브셋 — 쌍곡 기하학에서의 계층 관계
+- *LightGCN (66D)*: 그래프 서브셋 — 고객-가맹점 그래프의 협업 필터링 신호
 - *RawScale*: 정규화 시 손실되는 원시 스케일/멱법칙 분포 패턴
 
-== 2.3 Expert 라우팅
+== 2.3 Expert 라우팅 (FeatureRouter)
 
 각 Expert는 config의 `shared_experts` 섹션에서 활성화되며,
-`_forward_shared_experts()`에서 Expert 이름에 따라 서로 다른 입력이 디스패치된다.
-입력 데이터가 `None`인 경우 *zero tensor fallback*을 수행하며,
+`feature_groups.yaml`의 `target_experts` 선언으로부터 `FeatureRouter`가 빌드된다.
+`FeatureRouter`는 전체 316D 입력 텐서에서 Expert별 지정 인덱스를 슬라이싱하여 전달하며,
+입력 데이터가 `None`인 경우 *zero tensor fallback*을 수행하고
 CGC 게이팅이 해당 Expert의 가중치를 자동으로 낮춘다.
+
+*라우팅은 전적으로 config-driven이다* — `feature_groups.yaml`의 `target_experts` 필드만 수정하면
+코드 변경 없이 라우팅이 재구성된다.
 
 HMM Triple-Mode는 별도 입력 경로로 처리된다:
 

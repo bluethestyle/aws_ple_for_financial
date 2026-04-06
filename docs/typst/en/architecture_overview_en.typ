@@ -296,7 +296,7 @@ Financial time series have compound structures that no single model can capture.
 - *bias\_high/bias\_low*: Injects initial bias toward domain-relevant experts
 - *entropy regularization*: Prevents expert collapse
 
-Stacked PLE: 3 CGC layers. Layer 0 uses the heterogeneous Expert Basket + FeatureRouter, while Layers 1--2 use homogeneous MLP experts for abstraction.
+Stacked PLE: 3 CGC layers. Layer 0 uses the heterogeneous Expert Basket + FeatureRouter (each expert receives a different input_dim subset), while Layers 1--2 use homogeneous MLP experts for abstraction. Because per-expert input dims are heterogeneous (34D--162D), `dim_normalize` corrects dimensional imbalance in the CGC gate.
 
 == Dual-Registry Architecture
 
@@ -416,7 +416,9 @@ All features are classified along 5 axes, and each axis is mapped to a correspon
   [Item], [None (relational)], [Medium], [Customer-product interactions], [Graph collaborative filtering],
 )
 
-== 12 Feature Groups (316D)
+== 12 Feature Groups (316D Total)
+
+The full feature tensor is 316D. With FeatureRouter active, each expert receives a designated subset of this tensor rather than the full 316D. Per-expert input dims: deepfm=162D, temporal\_ensemble=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, optimal\_transport=124D. Feature group-to-expert routing is declared via `target_experts` in `feature_groups.yaml`.
 
 === 4 Base Groups (transform type)
 
@@ -820,19 +822,21 @@ EncryptionPipeline.process_source()
 
 == Internal Model Data Flow
 
+FeatureRouter is *active*: each expert receives only its designated feature group subset, not the full 316D tensor. Per-expert input dims: deepfm=162D, temporal_ensemble=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, optimal_transport=124D. This reduced model parameters from 4.77M to 3.16M (34% reduction).
+
 ```
-5-Axis Features (316D)
+5-Axis Features (316D total)
     |
-    v FeatureRouter (per-axis distribution)
+    v FeatureRouter (slices per-expert subsets via feature_group_ranges)
 +----------------------------------+
 |  Expert Basket (7 shared)        |
-|  DeepFM <- State axis            |
-|  Temporal <- Timeseries axis     |
-|  HGCN <- Hierarchy axis          |
-|  PersLay <- Snapshot axis        |
-|  Causal <- Snapshot axis         |
-|  LightGCN <- Item axis           |
-|  OT <- Snapshot axis             |
+|  DeepFM <- 162D (State axis)     |
+|  Temporal <- 127D (Timeseries)   |
+|  HGCN <- 34D (Hierarchy axis)    |
+|  PersLay <- 32D (Snapshot axis)  |
+|  Causal <- 158D (Snapshot axis)  |
+|  LightGCN <- 66D (Item axis)     |
+|  OT <- 124D (Snapshot axis)      |
 +----------+-----------------------+
            |
            v CGC Layer x 3 (dim_normalize, entropy reg.)

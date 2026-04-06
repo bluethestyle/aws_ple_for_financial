@@ -790,9 +790,25 @@ Feature Groups:                Expert Networks:
 1. Each feature group specifies `target_experts: [expert1, expert2]`.
 2. `FeatureGroupPipeline.expert_routing` computes a mapping of expert name
    to the integer feature indices it should receive.
-3. The PLE model's `FeatureRouter` uses this mapping to slice the
-   concatenated feature tensor before feeding each expert.
-4. If `target_experts` is empty, the group is broadcast to all experts.
+3. In `build_model()`, `FeatureRouter` is **auto-built** from this mapping —
+   no manual wiring required. Each expert's `input_dim` is set to the length
+   of its assigned index list, yielding heterogeneous input dims:
+
+   | Expert | Routed input dim |
+   |---|---|
+   | `deepfm` | 162D |
+   | `temporal_ensemble` | 127D |
+   | `hgcn` | 34D |
+   | `perslay` | 32D |
+   | `causal` | 158D |
+   | `lightgcn` | 66D |
+   | `optimal_transport` | 124D |
+   | `mlp` (task expert) | 316D (full — no routing) |
+
+   Total model parameters: **3.16M** (down from 4.77M pre-routing, −34%).
+
+4. If `target_experts` is empty, the group is broadcast to all experts
+   (equivalent to the old uniform 316D behaviour).
 
 ### Accessing the routing map
 
@@ -800,9 +816,9 @@ Feature Groups:                Expert Networks:
 pipeline = FeatureGroupPipeline(groups)
 pipeline.fit(train_df)
 
-# Expert -> feature indices
+# Expert -> feature indices (populated by FeatureRouter at build_model time)
 routing = pipeline.expert_routing
-# e.g., {"deepfm": [0,1,2,3], "temporal": [4,...,73,124,...,153], "mamba": [124,...,153]}
+# e.g., {"deepfm": [0,...,161], "temporal_ensemble": [4,...,130], "causal": [0,...,157]}
 ```
 
 ### Why expert routing matters

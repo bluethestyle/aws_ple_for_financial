@@ -278,6 +278,29 @@ generator_params:
 
 *금지*: adapter에서 `product_cols`, `synth_cols` 같은 하드코딩 라우팅을 하면 안 된다.
 
+== FeatureRouter — Expert별 피처 서브셋 라우팅 (활성화됨)
+
+*FeatureRouter*는 현재 *활성화* 상태이다. 각 expert는 전체 316D 피처 중 자신에게 지정된 feature group만 입력으로 받는다. `feature_groups.yaml`의 `target_experts` 선언이 실제 런타임 라우팅을 결정한다.
+
+*Expert별 입력 차원 (현재 기준):*
+
+#table(
+  columns: (auto, auto),
+  stroke: 0.5pt,
+  [*Expert*], [*입력 차원*],
+  [deepfm], [162D],
+  [temporal\_ensemble], [127D],
+  [hgcn], [34D],
+  [perslay], [32D],
+  [causal], [158D],
+  [lightgcn], [66D],
+  [optimal\_transport], [124D],
+)
+
+전체 피처는 316D이며, 각 expert는 전체의 부분집합을 입력으로 받는다. FeatureRouter 활성화로 모델 파라미터가 4.77M → 3.16M으로 34% 감소했다.
+
+*구현 방식*: `target_experts` config에서 읽어 `FeatureRouter`가 `feature_group_ranges`를 참조, expert별로 해당 컬럼 범위를 슬라이싱하여 전달한다. 하드코딩 라우팅은 금지한다.
+
 == Phase 0 출력 검증 (Pre-flight Check)
 
 Phase 0 완료 후, 학습 전에 반드시 아래를 확인한다:
