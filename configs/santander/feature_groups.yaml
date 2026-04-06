@@ -56,7 +56,7 @@ feature_groups:
         clip_min: 0
         clip_max: 256
     output_dim: 38
-    target_experts: [deepfm, mlp]
+    target_experts: [deepfm, mlp, causal, optimal_transport]
     interpretation:
       category: demographics
       template: "{feature} is {value}, indicating a {direction} customer profile"
@@ -98,7 +98,7 @@ feature_groups:
       - prod_direct_debit      # 6%
       - prod_auto_debit        # 12%
     output_dim: 24
-    target_experts: [deepfm, mlp]
+    target_experts: [deepfm, mlp, causal, optimal_transport]
     interpretation:
       category: product_ownership
       template: "Customer {holds/does_not_hold} {product}, indicating {direction} portfolio"
@@ -132,7 +132,7 @@ feature_groups:
       - synth_stability        # DOUBLE, 0.58-1.76 (1=stable, CV-based)
       - synth_fraud_ratio      # DOUBLE, ALL 0.0 (zero variance)
     output_dim: 14
-    target_experts: [deepfm, temporal_ensemble]
+    target_experts: [deepfm, temporal_ensemble, causal, optimal_transport]
     interpretation:
       category: transaction_behavior
       template: "{feature} shows {direction} transaction behavior at {value}"
@@ -154,7 +154,7 @@ feature_groups:
       - months_observed        # BIGINT, 1-17, avg 14.3
       - product_diversity      # BIGINT, 0-15, avg 1.56
     output_dim: 4
-    target_experts: [deepfm, causal]
+    target_experts: [deepfm, causal, optimal_transport]
     interpretation:
       category: product_lifecycle
       template: "{feature} at {value} indicates {direction} product activity"
@@ -289,7 +289,7 @@ feature_groups:
       prefix: product_hierarchy
       entity_column: customer_id
     output_dim: 32
-    target_experts: [hgcn]
+    target_experts: [hgcn, causal]
     interpretation:
       category: product_structure
       template: "Position in product hierarchy suggests {insight} at depth {value}"
@@ -348,7 +348,7 @@ feature_groups:
       covariance_type: full
       max_iter: 200
     output_dim: 22
-    target_experts: [deepfm, mlp]
+    target_experts: [deepfm, mlp, causal, optimal_transport]
     interpretation:
       category: customer_segment
       template: "Customer belongs to cluster pattern {value}, suggesting {direction} segment"
