@@ -575,8 +575,13 @@ def build_ple_dataloader(
         num_workers = 0
         pin_memory = True
     else:
-        # CPU tensors: use workers for prefetch, pin_memory for fast DMA
-        num_workers = min(num_workers, 4) if num_workers > 0 else 2
+        # CPU tensors: pin_memory for fast DMA.
+        # num_workers=0 on Windows to avoid DataLoader multiprocessing deadlock.
+        import sys
+        if sys.platform == "win32":
+            num_workers = 0
+        else:
+            num_workers = min(num_workers, 4) if num_workers > 0 else 2
         pin_memory = True
 
     loader = DataLoader(
