@@ -31,7 +31,7 @@ run_one() {
     SM_CHANNEL_TRAIN="$PHASE0" \
     SM_OUTPUT_DATA_DIR="$OUT" \
     SM_MODEL_DIR="$OUT/model" \
-    SM_HPS="{\"config\":\"$CONFIG\",\"epochs\":$EPOCHS,\"batch_size\":$BATCH,\"learning_rate\":$LR,\"seed\":$SEED,\"amp\":true,\"early_stopping_patience\":$EPOCHS,\"ablation_scenario\":\"$NAME\"$EXTRA_HPS}" \
+    SM_HPS="{\"config\":\"$CONFIG\",\"epochs\":$EPOCHS,\"batch_size\":$BATCH,\"learning_rate\":$LR,\"seed\":$SEED,\"amp\":false,\"early_stopping_patience\":$EPOCHS,\"ablation_scenario\":\"$NAME\"$EXTRA_HPS}" \
     python -u containers/training/train.py \
         > "$OUT/logs/stdout.log" 2> "$OUT/logs/stderr.log"
 
@@ -51,7 +51,7 @@ echo "JOINT ABLATION (resume): $(date)"
 echo "============================================================"
 
 # Joint: 17 scenarios x 5ep (completed ones will be SKIPped)
-JE=5; JL=0.008
+JE=10; JL=0.008
 run_one "joint_deepfm_base" ",\"shared_experts\":\"[\\\"deepfm\\\"]\",\"removed_feature_groups\":\"[\\\"tda_global\\\",\\\"tda_local\\\",\\\"hmm_states\\\",\\\"mamba_temporal\\\",\\\"product_hierarchy\\\",\\\"graph_collaborative\\\",\\\"gmm_clustering\\\",\\\"model_derived\\\"]\"" $JE $JL
 run_one "joint_deepfm_all_features" ",\"shared_experts\":\"[\\\"deepfm\\\"]\"" $JE $JL
 run_one "joint_full" "" $JE $JL
@@ -87,7 +87,7 @@ else
     rm -rf "$RESULTS"/struct_18_*
 fi
 
-SE=20; SL=0.008
+SE=10; SL=0.008
 run_one "struct_18_shared_bottom" ",\"use_ple\":\"false\",\"use_adatt\":\"false\"" $SE $SL
 run_one "struct_18_ple_softmax" ",\"use_ple\":\"true\",\"use_adatt\":\"false\",\"gate_type\":\"softmax\"" $SE $SL
 run_one "struct_18_ple_sigmoid" ",\"use_ple\":\"true\",\"use_adatt\":\"false\",\"gate_type\":\"sigmoid\"" $SE $SL

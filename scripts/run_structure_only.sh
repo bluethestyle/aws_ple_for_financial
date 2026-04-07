@@ -32,7 +32,7 @@ run_one() {
     SM_CHANNEL_TRAIN="$PHASE0" \
     SM_OUTPUT_DATA_DIR="$OUT" \
     SM_MODEL_DIR="$OUT/model" \
-    SM_HPS="{\"config\":\"$CONFIG\",\"epochs\":$EPOCHS,\"batch_size\":$BATCH,\"learning_rate\":$LR,\"seed\":$SEED,\"amp\":true,\"early_stopping_patience\":20,\"ablation_scenario\":\"$NAME\"$EXTRA_HPS}" \
+    SM_HPS="{\"config\":\"$CONFIG\",\"epochs\":$EPOCHS,\"batch_size\":$BATCH,\"learning_rate\":$LR,\"seed\":$SEED,\"amp\":false,\"early_stopping_patience\":20,\"ablation_scenario\":\"$NAME\"$EXTRA_HPS}" \
     python -u containers/training/train.py \
         > "$OUT/logs/stdout.log" 2> "$OUT/logs/stderr.log"
 
