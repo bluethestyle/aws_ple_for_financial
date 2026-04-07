@@ -796,16 +796,16 @@ Feature Groups:                Expert Networks:
 
    | Expert | Routed input dim |
    |---|---|
-   | `deepfm` | 162D |
-   | `temporal_ensemble` | 127D |
+   | `deepfm` | 109D |
+   | `temporal_ensemble` | 129D |
    | `hgcn` | 34D |
    | `perslay` | 32D |
-   | `causal` | 158D |
+   | `causal` | 103D |
    | `lightgcn` | 66D |
-   | `optimal_transport` | 124D |
-   | `mlp` (task expert) | 316D (full — no routing) |
+   | `optimal_transport` | 69D |
+   | `mlp` (task expert) | 51D |
 
-   Total model parameters: **3.16M** (down from 4.77M pre-routing, −34%).
+   Total model parameters: **~2.8M** (down from 4.77M pre-routing, input dims decreased).
 
 4. If `target_experts` is empty, the group is broadcast to all experts
    (equivalent to the old uniform 316D behaviour).

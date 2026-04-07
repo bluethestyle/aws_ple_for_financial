@@ -288,16 +288,16 @@ generator_params:
   columns: (auto, auto),
   stroke: 0.5pt,
   [*Expert*], [*입력 차원*],
-  [deepfm], [162D],
-  [temporal\_ensemble], [127D],
+  [deepfm], [109D],
+  [temporal\_ensemble], [129D],
   [hgcn], [34D],
   [perslay], [32D],
-  [causal], [158D],
+  [causal], [103D],
   [lightgcn], [66D],
-  [optimal\_transport], [124D],
+  [optimal\_transport], [69D],
 )
 
-전체 피처는 316D이며, 각 expert는 전체의 부분집합을 입력으로 받는다. FeatureRouter 활성화로 모델 파라미터가 4.77M → 3.16M으로 34% 감소했다.
+전체 피처는 316D이며, 각 expert는 전체의 부분집합을 입력으로 받는다. FeatureRouter 활성화로 모델 파라미터가 4.77M → ~2.8M으로 감소했다.
 
 *구현 방식*: `target_experts` config에서 읽어 `FeatureRouter`가 `feature_group_ranges`를 참조, expert별로 해당 컬럼 범위를 슬라이싱하여 전달한다. 하드코딩 라우팅은 금지한다.
 

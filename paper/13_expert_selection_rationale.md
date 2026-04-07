@@ -6,13 +6,13 @@ Each expert in the PLE architecture was chosen to address a specific gap that no
 
 ## 1. DeepFM Expert -- Feature Interaction
 
-**FeatureRouter 라우팅:** demographics, product_holdings, txn_behavior, derived_temporal, gmm_clustering, model_derived → **162D** (전체 316D 중 feature interaction에 유효한 연속형 피처만 수신)
+**FeatureRouter 라우팅:** demographics, product_holdings, txn_behavior, derived_temporal, gmm_clustering, model_derived → **109D** (전체 316D 중 feature interaction에 유효한 연속형 피처만 수신)
 
 **Problem it solves:** Financial recommendation depends on feature *interactions* (e.g., "30s + digital-savvy + high RFM" jointly predict online investment conversion), not individual features alone. A linear model with explicit cross-terms requires O(n^2) parameters (207K for 644 features), most of which cannot be reliably estimated from sparse data.
 
 **Why DeepFM over alternatives:** FM's low-rank factorization reduces cross-parameters to O(nk) = 10,304 while enabling generalization to unobserved feature pairs via shared latent vectors. The Deep component adds implicit high-order interactions (3+ features) that FM's 2nd-order limitation cannot capture. Unlike Wide&Deep (Google 2016), DeepFM shares embeddings between FM and Deep, eliminating manual cross-feature engineering. The combination provides "structural efficiency (FM) + universal expressiveness (Deep)" -- FM explicitly captures pairwise interactions that MLP would learn inefficiently, while MLP captures arbitrarily complex nonlinear patterns that FM structurally cannot represent.
 
-**Financial domain justification:** Patterns like "high RFM + digital adoption + economic uncertainty -> safe-asset preference surge" are 3rd-order interactions requiring both FM (efficient 2nd-order) and Deep (implicit higher-order). FeatureRouter가 그래프/토폴로지 피처를 제외하고 162D만 전달함으로써 FM의 파라미터 효율성이 더욱 강화된다 (교차항 수 O(nk): 316D 대비 48% 감소).
+**Financial domain justification:** Patterns like "high RFM + digital adoption + economic uncertainty -> safe-asset preference surge" are 3rd-order interactions requiring both FM (efficient 2nd-order) and Deep (implicit higher-order). FeatureRouter가 그래프/토폴로지 피처를 제외하고 109D만 전달함으로써 FM의 파라미터 효율성이 더욱 강화된다 (교차항 수 O(nk): 316D 대비 65% 감소).
 
 ---
 
@@ -45,26 +45,26 @@ Each expert in the PLE architecture was chosen to address a specific gap that no
 ## 4. Causal Expert + OT Expert -- Causal Inference and Distributional Matching
 
 **FeatureRouter 라우팅:**
-- **Causal Expert**: demographics, product_holdings, txn_behavior, derived_temporal, product_hierarchy, gmm_clustering → **158D** (인과 추론에 필요한 공변량 집합 전체 수신. 그래프·TDA 피처는 제외하여 DAG 추정 안정성 확보)
-- **OT Expert**: demographics, product_holdings, txn_behavior, derived_temporal, gmm_clustering → **124D** (분포 매칭에 필요한 연속형 피처만 수신. 계층·그래프 피처는 거리 계산의 기하학적 의미를 훼손할 수 있어 제외)
+- **Causal Expert**: demographics, product_holdings, txn_behavior, derived_temporal, product_hierarchy, gmm_clustering → **103D** (인과 추론에 필요한 공변량 집합 전체 수신. 그래프·TDA 피처는 제외하여 DAG 추정 안정성 확보)
+- **OT Expert**: demographics, product_holdings, txn_behavior, derived_temporal, gmm_clustering → **69D** (분포 매칭에 필요한 연속형 피처만 수신. 계층·그래프 피처는 거리 계산의 기하학적 의미를 훼손할 수 있어 제외)
 
 **Problem it solves:** Standard recommendation systems rely on *correlation* ("customers who bought A also bought B"), which conflates spurious associations with genuine causal effects. Example: "premium card holders have high travel insurance uptake" may be confounded by income level -- the card does not *cause* insurance purchase. Additionally, comparing customer-to-prototype similarity requires respecting the geometric structure of the underlying feature space, which KL divergence and total variation distance ignore.
 
 **Why Causal + OT over alternatives (e.g., A/B testing):** A/B testing is the gold standard but impractical at scale (16 tasks x N strategies = infeasible), slow (weeks to significance), and provides only group-level ATE. The Causal Expert learns a DAG adjacency matrix W via NOTEARS, extracting *directional* causal relationships (asymmetric, W_ij != W_ji) and enabling individual treatment effect (ITE) estimation from observational data. The OT Expert uses Sinkhorn-regularized optimal transport to compute distributional distances that respect the metric structure of feature space (unlike KL divergence, Wasserstein distance reflects that Seoul-Incheon is closer than Seoul-Busan). The two experts answer complementary questions: Causal asks "will this recommendation *cause* behavioral change?" (directional); OT asks "how well does this customer's spending distribution *match* the target profile?" (geometric distance).
 
-**Financial domain justification:** Confounders are pervasive in financial data (income drives both product holding and spending patterns). Causal DAG structure provides explainable recommendation pathways. OT-based distributional matching enables precise customer-to-archetype positioning. Causal Expert가 158D로 인과 공변량을 충분히 확보하면서도 TDA·그래프 피처를 제외한 것은 NOTEARS DAG 추정의 수치적 안정성을 위한 설계적 선택이다.
+**Financial domain justification:** Confounders are pervasive in financial data (income drives both product holding and spending patterns). Causal DAG structure provides explainable recommendation pathways. OT-based distributional matching enables precise customer-to-archetype positioning. Causal Expert가 103D로 인과 공변량을 충분히 확보하면서도 TDA·그래프 피처를 제외한 것은 NOTEARS DAG 추정의 수치적 안정성을 위한 설계적 선택이다.
 
 ---
 
 ## 5. Temporal Ensemble Expert (Mamba + LNN + PatchTST) -- Time Series
 
-**FeatureRouter 라우팅:** txn_behavior, hmm_states, mamba_temporal, model_derived → **127D** (시계열·시퀀스 피처만 수신. 인구통계·정적 피처는 제외하여 temporal 신호 순도를 유지)
+**FeatureRouter 라우팅:** txn_behavior, hmm_states, mamba_temporal, model_derived → **129D** (시계열·시퀀스 피처만 수신. 인구통계·정적 피처는 제외하여 temporal 신호 순도를 유지)
 
 **Problem it solves:** Static features (age, average spend) discard the temporal dimension -- periodicity, trends, and irregular event patterns in transaction sequences. Compressing a 180-day spending sequence to a single monthly average loses weekly cycles, trend direction, and anomalous bursts.
 
 **Why a three-model ensemble over a single temporal model:** Every time series decomposes into trend T(t) + seasonality S(t) + residual R(t). No single architecture optimally captures all three: (1) Mamba (Selective SSM) excels at long-range sequential dependencies (trend) via selective state transitions but struggles with precise periodicity beyond ~100 steps due to exponential decay. (2) PatchTST (Patch Transformer) excels at global periodic pattern matching (seasonality) via self-attention over 16-day patches but handles ordering only implicitly. (3) LNN (Liquid Neural Network / ODE-based) naturally handles irregular time intervals (residual) via adaptive time constants but has limited capacity per single ODE step. The Ensemble Gating dynamically assigns per-customer weights, determining which model best explains each customer's temporal pattern -- this is the "4th generation" of time-series modeling, combining the strengths of all prior paradigms (ARIMA -> LSTM -> Transformer -> SSM+ODE+Transformer ensemble).
 
-**Financial domain justification:** Financial transactions exhibit strong periodicity (payday cycles, weekend dining), gradual trends (lifestyle changes, approaching churn), and irregular residuals (travel, fraud). Each component maps directly to a model's strength. FeatureRouter가 txn_behavior·hmm_states·mamba_temporal·model_derived 127D만 전달하여 시계열 모델이 정적 피처의 분포 편향 없이 순수 동적 패턴에 집중하도록 한다.
+**Financial domain justification:** Financial transactions exhibit strong periodicity (payday cycles, weekend dining), gradual trends (lifestyle changes, approaching churn), and irregular residuals (travel, fraud). Each component maps directly to a model's strength. FeatureRouter가 txn_behavior·hmm_states·mamba_temporal·model_derived 129D만 전달하여 시계열 모델이 정적 피처의 분포 편향 없이 순수 동적 패턴에 집중하도록 한다.
 
 ---
 

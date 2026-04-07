@@ -62,8 +62,8 @@ raw_data["main"] (941K x 89)
   +-- Stage 4 --> df_features (941K x ~500D, 총합)
   |                 checkpoints/features.parquet
   |                 ※ FeatureRouter: 각 Expert는 지정된 피처 그룹의 서브셋만 수신
-  |                    (316D 라우팅 기준: deepfm=162D, temporal_ensemble=127D, hgcn=34D,
-  |                     perslay=32D, causal=158D, lightgcn=66D, optimal_transport=124D)
+  |                    (316D 라우팅 기준: deepfm=109D, temporal_ensemble=129D, hgcn=34D,
+  |                     perslay=32D, causal=103D, lightgcn=66D, optimal_transport=69D)
   |
   +-- Stage 5 --> df_labels (941K x 18 label cols)
   |                 checkpoints/labels.parquet
@@ -268,14 +268,14 @@ Input (~500D, 총 316D 활성 피처)
   |
   v
 [FeatureRouter] ── Expert별 지정 피처 그룹 서브셋만 라우팅 (전체 브로드캐스트 아님)
-  |                  deepfm          → 162D  (demographics + product + synth 교차)
-  |                  temporal_ens    → 127D  (txn_behavior + temporal_pattern + synth)
+  |                  deepfm          → 109D  (demographics + product + synth 교차)
+  |                  temporal_ens    → 129D  (txn_behavior + temporal_pattern + synth)
   |                  hgcn            → 34D   (product_hierarchy + product_holdings)
   |                  perslay         → 32D   (tda_global)
-  |                  causal          → 158D  (demographics + synth + txn_behavior)
+  |                  causal          → 103D  (demographics + synth + txn_behavior)
   |                  lightgcn        → 66D   (product_holdings + co-purchase graph)
-  |                  optimal_transport→124D  (demographics + synth + distribution)
-  |                  ※ 파라미터: 4.77M → 3.16M (34% 감소)
+  |                  optimal_transport→ 69D  (demographics + synth + distribution)
+  |                  ※ 파라미터: 4.77M → ~2.8M (감소)
   v
 [CGC Layer 1] ── shared experts x 7 + task expert x 1 per task
   |                gating: softmax(W * concat(input, task_embedding))
@@ -296,15 +296,15 @@ Input (~500D, 총 316D 활성 피처)
 
 | Expert | 역할 | 라우팅 입력 차원 | 핵심 파라미터 |
 |---|---|---|---|
-| **DeepFM** | 피처 교차 상호작용 | **162D** | emb_dim=8, hidden=[256,128], dropout=0.1 |
-| **Temporal Ensemble** | 시계열 패턴 (Mamba+Transformer+LNN) | **127D** | mamba_d=64, n_layers=2, transformer_heads=4 |
+| **DeepFM** | 피처 교차 상호작용 | **109D** | emb_dim=8, hidden=[256,128], dropout=0.1 |
+| **Temporal Ensemble** | 시계열 패턴 (Mamba+Transformer+LNN) | **129D** | mamba_d=64, n_layers=2, transformer_heads=4 |
 | **HGCN** | 쌍곡 기하학 기반 상품 계층 | **34D** | hyperbolic_dim=20, product_dim=24, refine=128 |
 | **PersLay** | TDA 위상 특징 처리 | **32D** | phi_hidden=64, rho_hidden=64 |
-| **Causal** | DAG 기반 인과관계 | **158D** | dag_hidden=[128,64], lambda_dag=0.01 |
+| **Causal** | DAG 기반 인과관계 | **103D** | dag_hidden=[128,64], lambda_dag=0.01 |
 | **LightGCN** | 협업 필터링 그래프 | **66D** | emb_dim=64, n_layers=3 |
-| **Optimal Transport** | 분포 매칭 | **124D** | hidden=[128,64], sinkhorn_iter=50 |
+| **Optimal Transport** | 분포 매칭 | **69D** | hidden=[128,64], sinkhorn_iter=50 |
 
-> **FeatureRouter 활성화**: 전체 ~500D 피처를 모든 Expert에 브로드캐스트하지 않고, 각 Expert의 설계 목적에 맞는 피처 그룹만 라우팅한다. 총 모델 파라미터: 4.77M → 3.16M (34% 감소). 라우팅 입력 차원의 합이 총 피처 수(~500D)를 초과하는 것은 일부 피처 그룹이 복수 Expert에 공유되기 때문이다 (현재 활성 316D 기준).
+> **FeatureRouter 활성화**: 전체 ~500D 피처를 모든 Expert에 브로드캐스트하지 않고, 각 Expert의 설계 목적에 맞는 피처 그룹만 라우팅한다. 총 모델 파라미터: 4.77M → ~2.8M (감소). 라우팅 입력 차원의 합이 총 피처 수(~500D)를 초과하는 것은 일부 피처 그룹이 복수 Expert에 공유되기 때문이다 (현재 활성 316D 기준).
 
 Task expert: MLP (hidden=[256,128], dropout=0.1) -- 각 태스크마다 1개
 

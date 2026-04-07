@@ -164,7 +164,7 @@
   추가로 adaTT(Adaptive Task-aware Transfer)를 통한 18개 태스크 간 동적 지식 전이 메커니즘과
   11개 학문 분야에서 도출된 316차원 피처 엔지니어링 체계를 기술한다.
   FeatureRouter 활성화로 각 전문가는 전체 316D 중 지정된 서브셋만 입력으로 받으며
-  (deepfm=162D, temporal=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, ot=124D),
+  (deepfm=109D, temporal=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, ot=69D),
   출력은 64D로 균일하게 유지된다.
 
   #v(0.3em)
@@ -185,8 +185,8 @@
   현재 Santander 벤치마크 구현은 316D (12 feature groups)입니다.
   *FeatureRouter 활성화*: 각 전문가는 전체 316D를 모두 받는 것이 아니라
   `feature_groups.yaml`의 `target_experts` 선언에 따라 서브셋만 입력받습니다.
-  전문가별 실제 입력 차원: deepfm=162D, temporal=127D, hgcn=34D, perslay=32D,
-  causal=158D, lightgcn=66D, ot=124D. 모델 파라미터: 4.77M → 3.16M (34% 감소).
+  전문가별 실제 입력 차원: deepfm=109D, temporal=129D, hgcn=34D, perslay=32D,
+  causal=103D, lightgcn=66D, ot=69D. 모델 파라미터: 4.77M → ~2.8M (감소).
 ]
 
 #v(1em)
@@ -269,12 +269,12 @@ Deep MLP는 flatten된 $[B, 448]$에서 동작한다.
     columns: (auto, auto),
     stroke: 0.5pt,
     [*Input (설계)*], [644D normalized feature tensor $[B, 644]$],
-    [*Input (현재 구현)*], [162D — FeatureRouter가 316D에서 DeepFM 지정 서브셋 슬라이싱],
+    [*Input (현재 구현)*], [109D — FeatureRouter가 316D에서 DeepFM 지정 서브셋 슬라이싱],
     [*Internal*], [필드 임베딩 $arrow$ FM + Deep MLP (입력 차원에 따라 자동 조정)],
     [*Output*], [64D expert representation for PLE CGC Gate],
-    [*Parameters*], [$tilde 169$K (설계 기준; 162D 입력 시 비례 감소)],
+    [*Parameters*], [$tilde 169$K (설계 기준; 109D 입력 시 비례 감소)],
   ),
-  caption: [DeepFM Expert 입출력 사양. FeatureRouter 활성화 시 입력 차원이 162D로 축소되며, 출력 64D는 동일하게 유지된다.],
+  caption: [DeepFM Expert 입출력 사양. FeatureRouter 활성화 시 입력 차원이 109D로 축소되며, 출력 64D는 동일하게 유지된다.],
 )
 
 == 구현 참고사항 (Implementation Notes)
@@ -1112,8 +1112,8 @@ Chen et al. (ICML 2018), Navon et al. (ICML 2022).
   `feature_groups.yaml`의 `target_experts` 선언에 따라 `FeatureRouter`가
   각 전문가에게 관련 서브셋만 슬라이싱하여 전달한다.
   예를 들어 PersLay는 TDA 피처 그룹(32D)만, LightGCN은 그래프 피처 그룹(66D)만 입력받는다.
-  전문가별 입력 차원: deepfm=162D, temporal=127D, hgcn=34D, perslay=32D,
-  causal=158D, lightgcn=66D, ot=124D.
+  전문가별 입력 차원: deepfm=109D, temporal=129D, hgcn=34D, perslay=32D,
+  causal=103D, lightgcn=66D, ot=69D.
   피처 그룹 라우팅 구성은 `feature_groups.yaml`에서만 관리하며 코드 수정이 불필요하다.
 ]
 

@@ -146,7 +146,7 @@ Great Expectations (로컬)              CloudWatch + SageMaker Monitor
             │ AutoInt  │ Causal   │ Mamba    │          │           │
             │          │ OT       │ LNN      │          │           │
             ├──────────┼──────────┼──────────┼──────────┼───────────┤
- 라우팅 차원 │ 162D     │ 32D      │ 127D     │ 34D      │ 66D       │
+ 라우팅 차원 │ 109D     │ 32D      │ 129D     │ 34D      │ 66D       │
  (FeatureRouter) │ (deepfm) │ (perslay) │ (temporal) │ (hgcn) │ (lightgcn) │
             ├──────────┼──────────┼──────────┼──────────┼───────────┤
  GPU 가속   │ -        │ cuPY     │ GPU      │ GPU      │ GPU       │
@@ -154,7 +154,7 @@ Great Expectations (로컬)              CloudWatch + SageMaker Monitor
             └──────────┴──────────┴──────────┴──────────┴───────────┘
 ```
 
-> causal (158D), optimal_transport (124D) 는 State+Snapshot 복합 입력. mlp (task expert) 는 전체 입력(316D), 라우팅 없음.
+> causal (103D), optimal_transport (69D) 는 State+Snapshot 복합 입력. mlp (task expert) 는 51D 라우팅 입력.
 
 ### 축별 특성
 
@@ -450,7 +450,7 @@ class DataAdapter(ABC):
 | 결정 | 선택 | 근거 |
 |------|------|------|
 | 쿼리 엔진 | DuckDB 단일 (Athena는 옵션) | 단일 머신 최강, 수백 GB까지 충분 |
-| 피처 분류 | 5-Axis (State/Snapshot/Timeseries/Hierarchy/Item) | Expert 라우팅의 명시적 기반 — FeatureRouter로 런타임 강제 (4.77M→3.16M, 34% 감소) |
+| 피처 분류 | 5-Axis (State/Snapshot/Timeseries/Hierarchy/Item) | Expert 라우팅의 명시적 기반 — FeatureRouter로 런타임 강제 (4.77M→~2.8M 감소) |
 | 태스크 아키텍처 | 18 tasks in 4 semantic groups | adaTT intra/inter transfer 기반 |
 | 데이터 분할 | Cross-sectional auto-detect → random split / Temporal split + gap_days | 자동 감지 (>80% 동일 date → random) |
 | 누수 방지 | 시퀀스절단 + prod재계산 + LeakageValidator | 4중 검증 |

@@ -57,9 +57,9 @@
   share a common basket, providing a *structural guarantee* against expert collapse:
   experts with fundamentally different inductive biases cannot converge to the same function.
   A *FeatureRouter* further assigns each expert only its designated feature groups
-  (per-expert input dims: 32D--162D from a 316D total space),
+  (per-expert input dims: 32D--129D from a 316D total space),
   realizing "heterogeneous architecture × heterogeneous input" specialization
-  and reducing model parameters from 4.77M to 3.16M (34% reduction).
+  and reducing model parameters from 4.77M to ~2.8M.
   CGC gates learn task-specific expert compositions whose weights
   are inherently interpretable as business-meaningful explanations ---
   "35% spending trend (Temporal) + 28% product hierarchy (HGCN)" ---
@@ -142,7 +142,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Heterogeneous Shared Expert Basket with Structural Collapse Guarantee*: We replace PLE's homogeneous MLP experts with seven architecturally distinct experts (DeepFM, Mamba+LNN+Transformer, HGCN, PersLay, NOTEARS, LightGCN, Optimal Transport). Unlike prior "heterogeneous" MoE work that varies expert _size_ @mowst2024 or _modality_ @jamba2024, we vary the fundamental _inductive bias_, providing a structural guarantee against expert collapse --- a persistent failure mode in homogeneous MoE/PLE deployments @home2024.
 
-+ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via `feature_groups.yaml`), not the full 316D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 32D--162D), reducing model parameters from 4.77M to 3.16M (34% reduction) while strengthening each expert's specialization.
++ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via `feature_groups.yaml`), not the full 316D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 32D--129D), reducing model parameters from 4.77M to ~2.8M while strengthening each expert's specialization.
 
 + *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), CGC gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
 
@@ -641,8 +641,8 @@ For example, HGCN embeds a product hierarchy tree in 32 hyperbolic dimensions --
 achieving in $O(d)$ parameters what Euclidean embeddings require $O(2^d)$ dimensions to represent
 without distortion @chami2019.
 
-The total parameter count across all seven experts is *3.16M*,
-reduced from the 4.77M baseline (34% reduction)
+The total parameter count across all seven experts is *~2.8M*,
+reduced from the 4.77M baseline
 by replacing broad shared inputs with expert-specific subsets via FeatureRouter.
 The diversity of learned representations is fundamentally richer
 despite the smaller parameter budget.
@@ -669,13 +669,13 @@ The resulting per-expert input dimensions are:
     align: left,
     stroke: 0.5pt,
     [*Expert*], [*Input Dim*], [*Feature Groups Routed*],
-    [DeepFM], [162D], [state, snapshot, GMM clusters, model-derived],
-    [Temporal Ensemble], [127D], [temporal sequences, spending dynamics],
+    [DeepFM], [109D], [state, snapshot, GMM clusters, model-derived],
+    [Temporal Ensemble], [129D], [temporal sequences, spending dynamics],
     [HGCN], [34D], [product hierarchy, MCC embeddings],
     [PersLay], [32D], [TDA persistence diagrams (Betti numbers)],
-    [Causal], [158D], [state, snapshot, causal graph features],
+    [Causal], [103D], [state, snapshot, causal graph features],
     [LightGCN], [66D], [graph collaborative features, OT features],
-    [Optimal Transport], [124D], [distribution shift, segment prototypes],
+    [Optimal Transport], [69D], [distribution shift, segment prototypes],
   ),
   caption: [Per-expert input dimensions after FeatureRouter. Total feature space: 316D.],
 ) <tab:feature-router>
@@ -770,8 +770,8 @@ that each extract a structurally different signal from the same underlying data.
 ) <tab:multidisciplinary>
 
 #text(size: 8.5pt, fill: gray)[_Note_: Total 269 generated features + 47 base features = 316.
-    FeatureRouter routes feature subsets to each expert (per-expert dims: DeepFM 162D, Temporal 127D,
-    HGCN 34D, PersLay 32D, Causal 158D, LightGCN 66D, OT 124D); model parameters: 3.16M.]
+    FeatureRouter routes feature subsets to each expert (per-expert dims: DeepFM 109D, Temporal 129D,
+    HGCN 34D, PersLay 32D, Causal 103D, LightGCN 66D, OT 69D); model parameters: ~2.8M.]
 
 Several of these applications are, to our knowledge, novel in financial recommendation:
 

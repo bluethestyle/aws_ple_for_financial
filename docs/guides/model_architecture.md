@@ -34,7 +34,7 @@ learning -- where improving one task degrades another.
                     FeatureRouter [ACTIVE]
                     (auto-built from feature_groups.yaml target_experts)
           /         |         |        |         |         |         \
-      [162D]     [127D]     [34D]    [32D]    [158D]    [66D]     [124D]   [316D]
+      [109D]     [129D]     [34D]    [32D]    [103D]    [66D]     [69D]    [316D]
         |           |         |        |         |         |         |       |
    +--------+  +------+  +------+  +------+  +------+  +------+  +------+ +-----+
    | DeepFM |  |Temp. |  | HGCN |  |Pers- |  |Causal|  |Light-|  | OT   | | MLP |
@@ -63,7 +63,7 @@ learning -- where improving one task degrades another.
 | `PLEModel` | `core/model/ple/model.py` | Main model class |
 | `CGCLayer` | `core/model/ple/gating.py` | Customized Gate Control |
 | `AdaTT` | `core/model/ple/adatt.py` | Adaptive Task Transfer |
-| `FeatureRouter` | `core/model/ple/feature_router.py` | Expert input routing — **active**, auto-built from `feature_groups.yaml` `target_experts`; routes heterogeneous input dims per expert (162D–316D) |
+| `FeatureRouter` | `core/model/ple/feature_router.py` | Expert input routing — **active**, auto-built from `feature_groups.yaml` `target_experts`; routes heterogeneous input dims per expert (32D–316D) |
 | `ExpertRegistry` | `core/model/experts/registry.py` | Expert plugin system |
 | `TaskRegistry` | `core/task/registry.py` | Task head plugin system |
 
@@ -75,7 +75,7 @@ Customized Gate Control (CGC) is the per-task attention mechanism that lets each
 task learn which experts are most relevant to it.
 
 Because **FeatureRouter is now active**, each shared expert receives a
-different input dimensionality (162D–316D) rather than the uniform 316D total.
+different input dimensionality (32D–316D) rather than the uniform 316D total.
 Expert outputs are projected to a common `output_dim` (default 64) before the
 CGC gate concatenates them, so gating arithmetic remains dimension-agnostic.
 
@@ -630,9 +630,9 @@ model:
   # Global dimensions
   input_dim: 316               # Total feature dim (set by FeatureGroupPipeline.total_dim).
                                # With FeatureRouter active, each expert receives a
-                               # routed subset: deepfm=162D, temporal_ensemble=127D,
-                               # hgcn=34D, perslay=32D, causal=158D, lightgcn=66D,
-                               # optimal_transport=124D, mlp_task=316D (full).
+                               # routed subset: deepfm=109D, temporal_ensemble=129D,
+                               # hgcn=34D, perslay=32D, causal=103D, lightgcn=66D,
+                               # optimal_transport=69D, mlp_task=51D.
   task_expert_output_dim: 32
 
   # Task definitions

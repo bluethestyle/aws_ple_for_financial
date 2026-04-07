@@ -464,7 +464,7 @@ Ablation 필터가 텐서에서 피처를 제거하는 데 성공했지만, `fea
 
 === FeatureRouter 활성화 — Expert별 피처 서브셋 라우팅
 
-*마일스톤*: FeatureRouter가 활성화되어 각 expert가 전체 316D 피처 중 자신에게 지정된 feature group만 입력으로 받게 됐다. Expert별 입력 차원: deepfm=162D, temporal\_ensemble=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, optimal\_transport=124D. 모델 파라미터가 4.77M → 3.16M으로 34% 감소했다.
+*마일스톤*: FeatureRouter가 활성화되어 각 expert가 전체 316D 피처 중 자신에게 지정된 feature group만 입력으로 받게 됐다. Expert별 입력 차원: deepfm=109D, temporal\_ensemble=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, optimal\_transport=69D. 모델 파라미터가 4.77M → ~2.8M으로 감소했다 (feature_group_ranges 패치 후 최종 기준).
 
 구현 과정에서 두 가지 버그가 발생했다:
 

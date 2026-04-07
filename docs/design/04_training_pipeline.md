@@ -526,7 +526,7 @@ Santander 학습 기준 (50 epochs, ~4시간):
 | Loss 함수 | 코드 내 하드코딩 | **build_loss() + focal_alpha calibrated** | positive rate 반영 |
 | Loss 가중치 | 불확실성 (미활성화) | **Uncertainty weighting 활성화** | 자동 밸런싱 |
 | 모델 구조 | PLE + adaTT | **+ 7 heterogeneous experts + Evidential + SAE + AMP FP32 loss** | 불확실성 + 해석 가능성 |
-| Expert 입력 차원 | 전체 피처 브로드캐스트 | **FeatureRouter 활성화 — Expert별 이종 입력 차원** (deepfm=162D, temporal=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, ot=124D; 파라미터 4.77M→3.16M, 34% 감소) | 불필요한 피처 제거로 Expert 전문성 강화 |
+| Expert 입력 차원 | 전체 피처 브로드캐스트 | **FeatureRouter 활성화 — Expert별 이종 입력 차원** (deepfm=109D, temporal=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, ot=69D; 파라미터 4.77M→~2.8M 감소) | 불필요한 피처 제거로 Expert 전문성 강화 |
 | Logit Transfer | 단일 방법 | **3-method dispatch (5 edges)** | 관계 유형별 최적화 |
 | 해석 가능성 | 없음 | **3-stage (A:분석, B:사유, C:서빙)** | 감사 가능한 추천 |
 | 증류 | distillation.py 단일 | **config 기반 + fidelity gate** | 품질 보증 |

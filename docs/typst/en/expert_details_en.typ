@@ -109,8 +109,8 @@
   This document is written based on the full-bank design (734D).
   The current Santander benchmark implementation uses 316D (12 feature groups).
   FeatureRouter is active: each expert receives a per-expert subset of the 316D tensor
-  (deepfm=162D, temporal\_ensemble=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, ot=124D),
-  reducing model parameters from 4.77M to 3.16M (34% reduction).
+  (deepfm=109D, temporal\_ensemble=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, ot=69D),
+  reducing model parameters from 4.77M to ~2.8M.
   I/O specs below reflect the FeatureRouter-active per-expert input dims.
 ]
 
@@ -195,12 +195,12 @@ while Deep MLP operates on the flattened $[B, 448]$.
   table(
     columns: (auto, auto),
     stroke: 0.5pt,
-    [*Input*], [162D feature subset $[B, 162]$ (FeatureRouter: State-axis groups)],
+    [*Input*], [109D feature subset $[B, 109]$ (FeatureRouter: State-axis groups)],
     [*Internal*], [fields $times$ 16D embeddings $arrow$ FM + Deep],
     [*Output*], [64D expert representation for PLE CGC Gate],
     [*Parameters*], [$tilde 169$K],
   ),
-  caption: [DeepFM Expert I/O specification. Input is 162D (FeatureRouter active) vs. 644D in full-bank design.],
+  caption: [DeepFM Expert I/O specification. Input is 109D (FeatureRouter active) vs. 644D in full-bank design.],
 )
 
 == Implementation Notes
@@ -331,13 +331,13 @@ Mamba $arrow$ trends, PatchTST $arrow$ seasonality, LNN $arrow$ residuals.
   table(
     columns: (auto, auto),
     stroke: 0.5pt,
-    [*Input*], [127D feature subset (FeatureRouter: Timeseries-axis groups) + Transaction seq $[B, 180, 16]$ + Session seq $[B, 90, 8]$],
+    [*Input*], [129D feature subset (FeatureRouter: Timeseries-axis groups) + Transaction seq $[B, 180, 16]$ + Session seq $[B, 90, 8]$],
     [*Mamba output*], [128D + 64D = 192D],
     [*LNN output*], [64D + 32D = 96D (SingleStep on Mamba final state)],
     [*PatchTST output*], [64D + 32D = 96D],
     [*Ensemble output*], [64D (gated combination for PLE gate)],
   ),
-  caption: [Temporal Ensemble Expert I/O specification. FeatureRouter provides 127D static feature subset.],
+  caption: [Temporal Ensemble Expert I/O specification. FeatureRouter provides 129D static feature subset.],
 )
 
 == Implementation Notes
@@ -684,9 +684,9 @@ population-level ATE.
 
 === Feature Compression
 
-$ bold(z) = "Compressor"(bold(x)): bb(R)^(158) arrow bb(R)^(128) arrow bb(R)^(32) $
+$ bold(z) = "Compressor"(bold(x)): bb(R)^(103) arrow bb(R)^(128) arrow bb(R)^(32) $
 
-Reduces 158D feature subset (FeatureRouter active; 644D in full-bank design) to 32 causal variables.
+Reduces 103D feature subset (FeatureRouter active; 644D in full-bank design) to 32 causal variables.
 Prevents the DAG adjacency matrix from exploding to large $n^2$ entries.
 
 === SCM (Structural Causal Model) Intervention
@@ -741,13 +741,13 @@ $ cal(L)_"DAG" = lambda_"acyclic" dot h(bold(W)) + lambda_"sparse" dot ||bold(W)
   table(
     columns: (auto, auto),
     stroke: 0.5pt,
-    [*Input*], [158D feature subset $[B, 158]$ (FeatureRouter: Snapshot-axis groups)],
-    [*Compressor*], [$158 arrow 128 arrow 32$ (causal variables)],
+    [*Input*], [103D feature subset $[B, 103]$ (FeatureRouter: Snapshot-axis groups)],
+    [*Compressor*], [$103 arrow 128 arrow 32$ (causal variables)],
     [*SCM*], [$32 times 32$ learnable adjacency $bold(W)$],
     [*Output*], [64D causal representation + DAG (visualization)],
     [*Auxiliary loss*], [$cal(L)_"DAG" = lambda_"acyclic" dot h(bold(W)) + lambda_"sparse" dot ||bold(W)^2||_1$],
   ),
-  caption: [Causal Expert I/O specification. Input is 158D (FeatureRouter active) vs. 644D in full-bank design.],
+  caption: [Causal Expert I/O specification. Input is 103D (FeatureRouter active) vs. 644D in full-bank design.],
 )
 
 == Implementation Notes
@@ -791,9 +791,9 @@ while OT answers "How _close_ is this customer's spending distribution to the ta
 
 === Distribution Projection
 
-$ bold(mu) = "softmax"("DistProjector"(bold(x)_"OT")) in Delta^(32), quad bold(x)_"OT" in bb(R)^(124) $
+$ bold(mu) = "softmax"("DistProjector"(bold(x)_"OT")) in Delta^(32), quad bold(x)_"OT" in bb(R)^(69) $
 
-Transforms 124D feature subset (FeatureRouter active; 644D in full-bank design) into a probability simplex,
+Transforms 69D feature subset (FeatureRouter active; 644D in full-bank design) into a probability simplex,
 representing each customer's feature profile as a discrete distribution over 32 latent categories.
 
 === Learnable Reference Distributions
@@ -855,14 +855,14 @@ This provides directional information impossible with KL divergence or Euclidean
   table(
     columns: (auto, auto),
     stroke: 0.5pt,
-    [*Input*], [124D feature subset $[B, 124]$ (FeatureRouter: Snapshot-axis groups)],
-    [*Distribution*], [$124 arrow 32$ probability simplex $Delta^(32)$],
+    [*Input*], [69D feature subset $[B, 69]$ (FeatureRouter: Snapshot-axis groups)],
+    [*Distribution*], [$69 arrow 32$ probability simplex $Delta^(32)$],
     [*References*], [16 learnable prototypes $in Delta^(32)$],
     [*Cost matrix*], [Learnable PSD: $bold(M)^top bold(M) in bb(R)^(32 times 32)$],
     [*Sinkhorn*], [10 iterations, log-domain, $epsilon = 0.1$],
     [*Output*], [64D expert representation for PLE gate],
   ),
-  caption: [Optimal Transport Expert I/O specification. Input is 124D (FeatureRouter active) vs. 644D in full-bank design.],
+  caption: [Optimal Transport Expert I/O specification. Input is 69D (FeatureRouter active) vs. 644D in full-bank design.],
 )
 
 == Implementation Notes
@@ -874,7 +874,7 @@ This provides directional information impossible with KL divergence or Euclidean
   Causal extracts asymmetric directional causality $W_(i,j)^2$,
   OT extracts distance functions (metric) $W(mu, nu_k)$.
   The three experts extract _mathematically completely different_ structures; with FeatureRouter active,
-  each operates on its own input subset (causal=158D, ot=124D, deepfm=162D) rather than the same full input.
+  each operates on its own input subset (causal=103D, ot=69D, deepfm=109D) rather than the same full input.
 
 *Key References:*
 Cuturi (NeurIPS 2013), Kantorovich (1942).

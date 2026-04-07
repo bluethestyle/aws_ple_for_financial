@@ -399,18 +399,18 @@ CGC Gate가 태스크별 최적 조합을 학습한다.
 *FeatureRouter 활성화 (현재 구현):* `feature_groups.yaml`의 `target_experts` 선언에 따라
 `FeatureRouter`가 각 Expert에게 전체 316D 중 해당 Expert에 지정된 피처 서브셋만을 슬라이싱하여 전달한다.
 이로 인해 각 Expert의 입력 차원은 서로 다르며(이종 입력), 출력은 64D로 균일하게 정렬된다.
-모델 파라미터는 4.77M → 3.16M으로 34% 감소하였다.
+모델 파라미터는 4.77M → ~2.8M으로 감소하였다.
 
 #styled-table(
   (1.3fr, 1.0fr, 0.6fr, 2.3fr),
   [*Expert*], [*라우팅 입력 (316D 서브셋)*], [*출력*], [*역할 및 대체 불가능성*],
-  [DeepFM], [162D], [64D], [FM의 $O(n k)$ 2차 교차를 명시적으로 포착],
+  [DeepFM], [109D], [64D], [FM의 $O(n k)$ 2차 교차를 명시적으로 포착],
   [LightGCN], [66D], [64D], [이분 그래프 기반 "비슷한 고객" 협업 신호],
   [Unified HGCN], [34D], [128D], [쌍곡 공간에서 MCC 계층 구조 인코딩],
-  [Temporal], [127D (시퀀스)], [64D], [Mamba+LNN+Transformer 시간 패턴 앙상블],
+  [Temporal], [129D (시퀀스)], [64D], [Mamba+LNN+Transformer 시간 패턴 앙상블],
   [PersLay], [32D], [64D], [소비 패턴의 위상적 구조(루프, 클러스터)],
-  [Causal], [158D], [64D], [SCM/NOTEARS 기반 방향성 인과 관계 추출],
-  [Optimal Transport], [124D], [64D], [Sinkhorn Wasserstein 분포 기하학],
+  [Causal], [103D], [64D], [SCM/NOTEARS 기반 방향성 인과 관계 추출],
+  [Optimal Transport], [69D], [64D], [Sinkhorn Wasserstein 분포 기하학],
   [RawScale], [원시 멱법칙 서브셋], [64D], [정규화 전 멱법칙 분포 정보 보존],
 )
 
@@ -428,10 +428,10 @@ $ bold(h)_"shared" = ["unified\_hgcn"_(128"D") || "perslay"_(64"D") || "deepfm"_
 
 8개 Expert는 동일 고객 데이터의 *근본적으로 다른 수학 구조*를 추출한다:
 
-- *DeepFM (162D)*: 피처 상호작용 중심 서브셋 — 대칭 교차(FM) 구조 포착
-- *Causal (158D)*: 인과 구조 관련 서브셋 — 비대칭 인과(DAG) 방향성 추출
-- *Optimal Transport (124D)*: 분포 비교 서브셋 — Wasserstein 분포 거리 포착
-- *Temporal (127D)*: 시계열 서브셋 — 시간적 동역학 ($[B, 180, 16]$, $[B, 90, 8]$)
+- *DeepFM (109D)*: 피처 상호작용 중심 서브셋 — 대칭 교차(FM) 구조 포착
+- *Causal (103D)*: 인과 구조 관련 서브셋 — 비대칭 인과(DAG) 방향성 추출
+- *Optimal Transport (69D)*: 분포 비교 서브셋 — Wasserstein 분포 거리 포착
+- *Temporal (129D)*: 시계열 서브셋 — 시간적 동역학 ($[B, 180, 16]$, $[B, 90, 8]$)
 - *PersLay (32D)*: TDA 서브셋 — 위상적 불변량 (Betti number, persistence)
 - *Unified HGCN (34D)*: 계층/그래프 서브셋 — 쌍곡 기하학에서의 계층 관계
 - *LightGCN (66D)*: 그래프 서브셋 — 고객-가맹점 그래프의 협업 필터링 신호

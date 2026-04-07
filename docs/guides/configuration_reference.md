@@ -677,8 +677,8 @@ model:
                                       # per-expert subset — NOT the full 316D. The global input_dim
                                       # represents the total feature tensor fed to FeatureRouter,
                                       # which then slices per-expert views via feature_group_ranges.
-                                      # Per-expert dims: deepfm=162D, temporal_ensemble=127D,
-                                      # hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, ot=124D.
+                                      # Per-expert dims: deepfm=109D, temporal_ensemble=129D,
+                                      # hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, ot=69D.
   task_expert_output_dim: 32
 
   # Task definitions
@@ -707,7 +707,7 @@ model:
   # NOTE: With FeatureRouter active, CGC Layer 0 receives heterogeneous expert inputs
   # (each expert has a different input_dim per its target_experts routing). Layers 1-2
   # use homogeneous MLP experts for abstraction. dim_normalize=true is recommended
-  # when per-expert input dims differ significantly (e.g., hgcn=34D vs deepfm=162D).
+  # when per-expert input dims differ significantly (e.g., hgcn=34D vs deepfm=109D).
   cgc:
     enabled: true
     bias_high: 1.0

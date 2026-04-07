@@ -103,9 +103,9 @@ Phase 5: Deployment
 - "예금→투자"보다 "예금→대출"이 더 먼 거리라는 관계가 자연스럽게 보존
 
 ### 모델 구조
-- **PLE (Progressive Layered Extraction)**: 18 tasks, 7 heterogeneous experts, **3.16M params**
+- **PLE (Progressive Layered Extraction)**: 18 tasks, 7 heterogeneous experts, **~2.8M params**
 - **FeatureRouter**: feature_groups.yaml의 target_experts 설정에 따라 각 expert에 해당 피처 그룹만 라우팅
-  - deepfm=162D, temporal_ensemble=127D, hgcn=34D, perslay=32D, causal=158D, lightgcn=66D, optimal_transport=124D
+  - deepfm=109D, temporal_ensemble=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, optimal_transport=69D
   - 전체 316 피처 중 expert별로 귀납적 편향에 부합하는 부분집합만 수신 (config-driven)
 - **adaTT (Adaptive Task Transfer)**: 4 task groups 간 knowledge transfer
   - engagement: has_nba, engagement_score, next_mcc, top_mcc_shift
@@ -127,11 +127,11 @@ Phase 5: Deployment
 - shared expert = 이종 전문가 7개 (DeepFM, Temporal, HGCN, PersLay, Causal, LightGCN, OT)
 - **FeatureRouter가 각 expert에 귀납적 편향에 부합하는 피처 부분집합만 라우팅**:
   - PersLay는 TDA 위상 피처(32D)만 수신, LightGCN은 그래프 임베딩(66D)만 수신
-  - HGCN은 상품 계층 피처(34D)만, Temporal Ensemble은 시계열 피처(127D)만 수신
+  - HGCN은 상품 계층 피처(34D)만, Temporal Ensemble은 시계열 피처(129D)만 수신
   - 라우팅은 feature_groups.yaml의 target_experts에서 선언적으로 정의 (코드 수정 불필요)
 - 기존 PLE는 "다른 구조가 같은 데이터를 다른 관점에서 처리"하는 수준이었으나,
   본 구조는 **"다른 구조가 다른 데이터를 처리"**하는 더 강한 이종성을 실현
-- 이로 인해 expert 간 입력 중복이 제거되어 파라미터 효율이 향상: 4.77M → 3.16M (34% 감소)
+- 이로 인해 expert 간 입력 중복이 제거되어 파라미터 효율이 향상: 4.77M → ~2.8M (감소)
 - CGC gate가 "이 태스크에는 어떤 관점이 유용한가"를 학습
 - 결과: 단일 대형 MLP보다 가벼우면서 표현력은 더 높음. 파라미터 대비 표현력 비율이 극대화됨
 
