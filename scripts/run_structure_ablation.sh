@@ -109,9 +109,18 @@ echo "============================================================"
 echo "JOINT ABLATION RE-RUN: 17 scenarios x 5 epochs ($(date))"
 echo "============================================================"
 
-# Delete old joint results (ran with pre-unification activations)
-echo "Cleaning old joint results..."
-rm -rf "$RESULTS"/joint_*
+# Archive previous joint results (preserve history)
+if ls "$RESULTS"/joint_*/eval_metrics.json 1>/dev/null 2>&1; then
+    ARCHIVE="$RESULTS/archive_joint_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$ARCHIVE"
+    for d in "$RESULTS"/joint_*/; do
+        [ -d "$d" ] && mv "$d" "$ARCHIVE/"
+    done
+    echo "Archived previous joint results to $ARCHIVE"
+else
+    echo "Cleaning incomplete joint results..."
+    rm -rf "$RESULTS"/joint_*
+fi
 
 JOINT_EPOCHS=5
 JOINT_LR=0.008

@@ -75,8 +75,17 @@ echo "============================================================"
 echo "STRUCTURE ABLATION (re-run with fixed ranges): $(date)"
 echo "============================================================"
 
-# Clean incomplete structure results
-rm -rf "$RESULTS"/struct_18_*
+# Archive previous structure results (preserve history)
+if ls "$RESULTS"/struct_18_*/eval_metrics.json 1>/dev/null 2>&1; then
+    ARCHIVE="$RESULTS/archive_struct_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$ARCHIVE"
+    for d in "$RESULTS"/struct_18_*/; do
+        [ -d "$d" ] && mv "$d" "$ARCHIVE/"
+    done
+    echo "Archived previous structure results to $ARCHIVE"
+else
+    rm -rf "$RESULTS"/struct_18_*
+fi
 
 SE=20; SL=0.008
 run_one "struct_18_shared_bottom" ",\"use_ple\":\"false\",\"use_adatt\":\"false\"" $SE $SL

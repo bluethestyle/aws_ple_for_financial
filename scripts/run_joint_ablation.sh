@@ -56,9 +56,18 @@ echo "JOINT ABLATION: 17 scenarios x $EPOCHS epochs ($(date))"
 echo "Batch=$BATCH  LR=$LR  FP32  patience=$EPOCHS"
 echo "============================================================"
 
-# Delete old joint results
-echo "Cleaning old joint results..."
-rm -rf "$RESULTS"/joint_*
+# Archive previous joint results (preserve history)
+if ls "$RESULTS"/joint_*/eval_metrics.json 1>/dev/null 2>&1; then
+    ARCHIVE="$RESULTS/archive_joint_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$ARCHIVE"
+    for d in "$RESULTS"/joint_*/; do
+        [ -d "$d" ] && mv "$d" "$ARCHIVE/"
+    done
+    echo "Archived previous joint results to $ARCHIVE"
+else
+    echo "Cleaning incomplete joint results..."
+    rm -rf "$RESULTS"/joint_*
+fi
 
 # Baselines
 run_one "joint_deepfm_base" ",\"shared_experts\":\"[\\\"deepfm\\\"]\",\"removed_feature_groups\":\"[\\\"tda_global\\\",\\\"tda_local\\\",\\\"hmm_states\\\",\\\"mamba_temporal\\\",\\\"product_hierarchy\\\",\\\"graph_collaborative\\\",\\\"gmm_clustering\\\",\\\"model_derived\\\"]\""
