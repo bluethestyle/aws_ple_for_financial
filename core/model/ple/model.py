@@ -1384,26 +1384,29 @@ class PLEModel(nn.Module):
                         and self.global_step % self._adatt_grad_interval == 0):
                     task_gradients = self._extract_task_gradients(task_losses)
 
-            # Apply adaTT transfer enhancement
+            # Step 1: Apply uncertainty weighting to normalize loss scales
+            # (on-prem design: uncertainty weighting FIRST, then adaTT on top)
+            weighted_losses = task_losses
+            if self.loss_weighting is not None:
+                if isinstance(self.loss_weighting, UncertaintyWeighting):
+                    weighted_losses = self.loss_weighting.weighted_loss_dict(task_losses)
+                else:
+                    weights = self.loss_weighting.compute_weights()
+                    weighted_losses = {
+                        name: weights.get(name, 1.0) * loss
+                        for name, loss in task_losses.items()
+                    }
+
+            # Step 2: Apply adaTT transfer on top of weighted losses
             if self.adatt is not None:
                 enhanced_losses = self.adatt.compute_transfer_loss(
-                    task_losses,
+                    weighted_losses,
                     task_gradients=task_gradients,
                 )
                 total_loss = sum(enhanced_losses.values())
                 transfer_weights = self.adatt.get_transfer_matrix()
-            elif self.loss_weighting is not None:
-                # Apply loss weighting strategy
-                if isinstance(self.loss_weighting, UncertaintyWeighting):
-                    total_loss = self.loss_weighting.weighted_loss(task_losses)
-                else:
-                    weights = self.loss_weighting.compute_weights()
-                    total_loss = sum(
-                        weights.get(name, 1.0) * loss
-                        for name, loss in task_losses.items()
-                    )
             else:
-                total_loss = sum(task_losses.values())
+                total_loss = sum(weighted_losses.values())
 
             # CGC entropy regularization
             if (self.training

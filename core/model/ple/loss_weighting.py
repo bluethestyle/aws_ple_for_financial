@@ -358,6 +358,24 @@ class UncertaintyWeighting(BaseLossWeighting):
                 total = total + precision * task_losses[name] + self.log_vars[name] / 2.0
         return total
 
+    def weighted_loss_dict(
+        self,
+        task_losses: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """Return per-task uncertainty-weighted losses (for adaTT chaining).
+
+        Same formula as ``weighted_loss`` but returns individual task losses
+        instead of the sum.  This allows adaTT to operate on scale-normalized
+        losses, matching the on-prem design where uncertainty weighting is
+        applied before task transfer.
+        """
+        result = {}
+        for name in self.task_names:
+            if name in task_losses:
+                precision = torch.exp(-self.log_vars[name])
+                result[name] = precision * task_losses[name] + self.log_vars[name] / 2.0
+        return result
+
 
 # ============================================================================
 # Factory
