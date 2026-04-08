@@ -1376,14 +1376,12 @@ class PLEModel(nn.Module):
                     aux_losses=aux_losses,
                 )
 
-            # Gradient extraction for adaTT — ONCE per epoch only
-            # (per-step extraction is prohibitively expensive for large datasets)
+            # Gradient extraction for adaTT — at configured interval
+            # (on-prem uses every N steps; epoch-only is too infrequent)
             task_gradients = None
             if self.training and self.adatt is not None:
-                # Only extract on the LAST batch of each epoch (detected by
-                # epoch_step counter set by PLETrainer), or at configured interval
-                _is_epoch_end = getattr(self, '_is_epoch_end_step', False)
-                if _is_epoch_end and self.current_epoch >= self.config.adatt.warmup_epochs:
+                if (self.current_epoch >= self.config.adatt.warmup_epochs
+                        and self.global_step % self._adatt_grad_interval == 0):
                     task_gradients = self._extract_task_gradients(task_losses)
 
             # Apply adaTT transfer enhancement

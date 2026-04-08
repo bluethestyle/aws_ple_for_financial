@@ -445,8 +445,9 @@ task_groups:
 adatt:
   transfer_lambda: 0.1
   temperature: 1.0
-  warmup_epochs: 0
-  grad_interval: 1
+  warmup_epochs: 3          # measure affinity before transfer (on-prem: 10)
+  freeze_epoch: 8           # freeze transfer weights for stable fine-tuning
+  grad_interval: 10         # extract gradients every N steps (on-prem: 10)
   inter_group_strength: 0.3
 
 # ---------------------------------------------------------------------------
