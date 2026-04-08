@@ -525,6 +525,26 @@ Initial GPU utilization was low with batch size 512. Increasing batch size, tuni
 
 PLE's val_loss froze at 3.702 in Phase 2, while shared_bottom (1 MLP) paradoxically outperformed ple_only (7 experts). The CGC softmax gate's competitive nature hindered convergence among heterogeneous experts. A NeurIPS 2024 paper confirmed the theoretical superiority of sigmoid gates; implementation is in progress. Gate function selection proved decisive for heterogeneous expert architectures.
 
+=== Five adaTT Porting Bugs — Discovered by Comparing Against On-Prem Code
+
+*Background*: In the structure ablation, adaTT consistently degraded performance (sigmoid: --0.006, softmax: --0.021, no PLE: --0.004). The problem was not adaTT's design but implementation errors introduced during porting.
+
+*Root Cause*: A line-by-line comparison against the on-prem (gotothemoon) source code revealed five bugs.
+
+1. *Gradient extraction frequency*: AWS extracted gradients only at the last batch of each epoch (once per epoch). The on-prem version extracted every 10 steps (~17 times per epoch). Fixed by replacing the `_is_epoch_end_step` flag with `global_step % grad_interval`.
+
+2. *Config load path*: The root-level `adatt:` section in pipeline.yaml was not being read from `model_config` or `label_schema`. Fixed by adding a `config.get("adatt")` fallback.
+
+3. *freeze_epoch not passed*: `AdaTTConfig` was constructed without passing `freeze_epoch`, leaving it always None. Transfer weights kept adapting unstably until the end of training.
+
+4. *Loss composition*: The on-prem version applies uncertainty weighting first (normalizing loss scales) and then adaTT transfer. The AWS version used either/or logic, silently disabling uncertainty weighting whenever adaTT was active. With 18 tasks having mismatched loss scales, transfer was dominated by the largest-loss tasks.
+
+5. *warmup_epochs: 0*: Transfer began immediately while the affinity matrix was still identity (no measurements taken), resulting in meaningless loss sharing from epoch one.
+
+*Outcome*: sigmoid_adatt AUC improved from 0.5605 to 0.5746 (+0.014). At peak (Ep6) it reached 0.5786, surpassing the sigmoid baseline (0.5771).
+
+*Lesson*: Preflight logging (`"AdaTT config: warmup=X, freeze=X, source=X"`) was added so that config application can be verified before training begins. Had MLflow been in place, a significant portion of this investigation could have been avoided.
+
 #section-break()
 
 

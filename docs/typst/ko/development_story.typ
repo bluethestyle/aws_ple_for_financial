@@ -473,6 +473,26 @@ Ablation 필터가 텐서에서 피처를 제거하는 데 성공했지만, `fea
 
 `feature_groups.yaml`의 `target_experts` 선언이 실제 런타임 라우팅을 결정하며, 코드에는 expert 이름이나 컬럼명이 하드코딩되지 않는다.
 
+=== adaTT 포팅 버그 5건 — 온프렘 코드 비교로 발견
+
+*배경*: Structure ablation에서 adaTT가 일관적으로 성능을 하락시켰다 (sigmoid: -0.006, softmax: -0.021, no PLE: -0.004). adaTT의 설계 문제가 아니라 포팅 과정의 구현 오류였다.
+
+*원인 발견*: 온프렘(gotothemoon) 소스코드와 1:1 비교하여 5건의 버그를 발견했다.
+
+1. *Gradient 추출 빈도*: AWS는 에포크 마지막 배치에서만 gradient를 추출 (1회/epoch). 온프렘은 10스텝마다 추출 (~17회/epoch). `_is_epoch_end_step` 플래그 대신 `global_step % grad_interval`을 사용하도록 수정.
+
+2. *Config 로드 경로*: pipeline.yaml의 root-level `adatt:` 섹션이 `model_config`이나 `label_schema`에서 읽히지 않았다. `config.get("adatt")` fallback을 추가.
+
+3. *freeze_epoch 미전달*: `AdaTTConfig` 생성 시 `freeze_epoch`을 전달하지 않아 항상 None. transfer weight가 끝까지 불안정하게 적응.
+
+4. *Loss 구조*: 온프렘은 uncertainty weighting을 먼저 적용 (loss scale 정규화) 후 adaTT transfer. AWS는 either/or로 구현되어 adaTT 활성화 시 uncertainty weighting이 꺼졌다. 18개 태스크의 loss scale이 제각각인 상태에서 transfer → 큰 loss가 지배.
+
+5. *warmup_epochs: 0*: affinity matrix가 identity (측정 없음) 상태에서 즉시 transfer 시작. 의미 없는 loss 공유.
+
+*수정 결과*: sigmoid_adatt AUC 0.5605 → 0.5746 (+0.014). 피크(Ep6)에서 0.5786으로 sigmoid baseline(0.5771)을 초과.
+
+*교훈*: preflight 로그 (`"AdaTT config: warmup=X, freeze=X, source=X"`)를 추가하여 config 적용 여부를 학습 시작 전에 검증하도록 했다. MLflow가 있었다면 이 삽질을 상당 부분 방지할 수 있었을 것이다.
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.
