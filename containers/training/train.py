@@ -867,6 +867,8 @@ def build_model(feature_schema, label_schema, hp, input_dim, device, config=None
         adatt_cfg_raw = model_config.get("adatt", {})
         if not adatt_cfg_raw:
             adatt_cfg_raw = label_schema.get("adatt", {})
+        if not adatt_cfg_raw:
+            adatt_cfg_raw = config.get("adatt", {})
         adatt_task_groups: Dict[str, TaskGroupDef] = {}
         for tg in raw_task_groups:
             tg_name = tg["name"] if isinstance(tg, dict) else tg.name
@@ -880,6 +882,9 @@ def build_model(feature_schema, label_schema, hp, input_dim, device, config=None
                 intra_strength=tg_intra,
             )
 
+        _freeze = adatt_cfg_raw.get("freeze_epoch")
+        if _freeze is not None:
+            _freeze = int(_freeze)
         ple_config.adatt = AdaTTConfig(
             enabled=adatt_cfg_raw.get("enabled", True),
             task_groups=adatt_task_groups,
@@ -887,11 +892,25 @@ def build_model(feature_schema, label_schema, hp, input_dim, device, config=None
             transfer_lambda=adatt_cfg_raw.get("transfer_lambda", 0.1),
             temperature=adatt_cfg_raw.get("temperature", 1.0),
             warmup_epochs=adatt_cfg_raw.get("warmup_epochs", 10),
+            freeze_epoch=_freeze,
             grad_interval=adatt_cfg_raw.get("grad_interval", 10),
         )
         logger.info(
             "AdaTT task_groups: %d groups (%s)",
             len(adatt_task_groups), list(adatt_task_groups.keys()),
+        )
+        logger.info(
+            "AdaTT config: warmup=%d, freeze=%s, grad_interval=%d, "
+            "lambda=%.3f, tau=%.1f, inter_group=%.2f, source=%s",
+            ple_config.adatt.warmup_epochs,
+            ple_config.adatt.freeze_epoch,
+            ple_config.adatt.grad_interval,
+            ple_config.adatt.transfer_lambda,
+            ple_config.adatt.temperature,
+            ple_config.adatt.inter_group_strength,
+            "model" if model_config.get("adatt") else
+            "label_schema" if label_schema.get("adatt") else
+            "config(root)" if config.get("adatt") else "defaults",
         )
 
     # -- GroupTaskExpert config from model section --
