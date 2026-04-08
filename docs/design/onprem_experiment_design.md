@@ -162,7 +162,23 @@ for batch in val_loader:
 
 ---
 
-## 7. 체크리스트 (실행 전)
+## 7. 리허설 결과 (2026-04-08)
+
+4개 시나리오 x 2ep dry-run 전부 PASS:
+
+| # | Scenario | 시간 | checks |
+|---|----------|------|--------|
+| 1 | shared_bottom | 8m | adatt_cfg, router, uw |
+| 2 | ple_sigmoid | 9m | adatt_cfg, router, uw |
+| 3 | ple_sigmoid_adatt | 9m | adatt_cfg, router, uw |
+| 4 | deepfm_temporal | 7m | adatt_cfg, router, uw |
+
+FeatureRouter, UncertaintyWeighting, adaTT config 전부 정상 작동 확인.
+파이프라인 온프렘 배포 준비 완료.
+
+---
+
+## 8. 체크리스트 (실행 전)
 
 - [ ] 온프렘 gotothemoon 레포에서 config 확인 (pipeline.yaml, feature_groups.yaml)
 - [ ] AWS 프레임워크의 adapter를 온프렘 데이터 포맷에 맞게 조정
