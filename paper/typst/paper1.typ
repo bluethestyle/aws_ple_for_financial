@@ -1079,13 +1079,13 @@ Six structure variants are compared: shared-bottom (no PLE/adaTT), PLE-softmax, 
     [PLE Softmax], [8.572], [0.5684], [0.3074], [0.1275],
     [PLE Sigmoid], [7.616], [*0.5771*], [0.4594], [0.1246],
     [adaTT Only], [28.40], [0.5765], [0.4890], [0.1255],
-    [PLE Softmax + adaTT], [_pending_], [_v3 running_], [_v3 running_], [_v3 running_],
-    [PLE Sigmoid + adaTT], [_pending_], [_v3 running_], [_v3 running_], [_v3 running_],
+    [PLE Softmax + adaTT], [_pending_], [0.5693], [--], [--],
+    [PLE Sigmoid + adaTT], [_pending_], [*0.5746*], [--], [--],
   ),
-  caption: [Structure ablation: gate type and adaTT impact on convergence and task performance. Bold = best completed result. v3 combined variants in progress.],
+  caption: [Structure ablation: gate type and adaTT impact on convergence and task performance. Bold = best result. v3 applies uncertainty weighting sequentially before adaTT.],
 ) <tab:structure-ablation>
 
-PLE sigmoid consistently outperforms PLE softmax (+0.009 AUC), confirming the NeurIPS 2024 finding that independent per-expert gating avoids the zero-sum competition inherent in softmax normalization. adaTT results required three iterations to debug: (1) gradient extraction frequency (epoch-only → every 10 steps), (2) config loading path (root YAML not read), (3) loss structure (either/or → sequential uncertainty + adaTT). The corrected implementation is validated on-prem.
+PLE sigmoid consistently outperforms PLE softmax (+0.009 AUC), confirming the NeurIPS 2024 finding that independent per-expert gating avoids the zero-sum competition inherent in softmax normalization. adaTT results required three iterations to debug: (1) gradient extraction frequency (epoch-only → every 10 steps), (2) config loading path (root YAML not read), (3) loss structure (either/or → sequential uncertainty + adaTT). v3 applies uncertainty weighting _before_ adaTT (sequential, not either/or). The sigmoid + adaTT v3 result (AUC 0.5746) shows +0.014 improvement over v2 (0.5605). Peak AUC at epoch 6 reached 0.5786, exceeding the sigmoid-only baseline, but declined after the freeze epoch — longer training with a later freeze_epoch may resolve this.
 
 == Graceful Degradation (RQ4)
 

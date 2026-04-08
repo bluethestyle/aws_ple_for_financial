@@ -1041,10 +1041,10 @@ Synthetic Data Vault 프레임워크 #cite(<patki2016sdv>) 와
     [PLE Softmax], [--], [0.5684], [0.3074], [0.1275],
     [PLE Sigmoid], [--], [0.5771], [0.4594], [0.1246],
     [adaTT 단독], [--], [0.5765], [0.4890], [0.1255],
-    [PLE Softmax + adaTT], [--], [진행 중 (v3)], [--], [--],
-    [PLE Sigmoid + adaTT], [--], [진행 중 (v3)], [--], [--],
+    [PLE Softmax + adaTT], [--], [0.5693], [--], [--],
+    [PLE Sigmoid + adaTT], [--], [*0.5746*], [--], [--],
   ),
-  caption: [구조 어블레이션: 게이트 유형과 adaTT가 수렴 및 태스크 성능에 미치는 영향.],
+  caption: [구조 어블레이션: 게이트 유형과 adaTT가 수렴 및 태스크 성능에 미치는 영향. v3는 uncertainty weighting을 adaTT 이전에 순차 적용.],
 ) <tab:structure-ablation>
 
 == 우아한 성능 저하 (RQ4)
@@ -1127,7 +1127,7 @@ $ H_t = - sum_k w_(t,k) log w_(t,k) $
 PLE Sigmoid(AUC 0.5771)가 PLE Softmax(AUC 0.5684)보다 +0.009 높으며, Softmax는 이종 전문가 간 경쟁적 억제로 인해 F1m이 0.3074로 현저히 낮다. 이는 정규화 분모 없이 독립적으로 가중치를 할당하는 sigmoid의 구조적 이점을 확인한다.
 
 *adaTT는 uncertainty weighting과 순차 적용이 필요하다.*
-adaTT 단독(AUC 0.5765)은 PLE Sigmoid보다 근소하게 낮다. PLE + adaTT 조합(v3 진행 중)의 최종 결과가 두 메커니즘의 상호보완성을 검증할 것이다. adaTT는 either/or 대체가 아닌 PLE 위에 추가하는 순차 적용이 설계 의도이다.
+adaTT 단독(AUC 0.5765)은 PLE Sigmoid보다 근소하게 낮다. v3는 uncertainty weighting을 adaTT 이전에 순차 적용한다(either/or 대체가 아님). PLE Sigmoid + adaTT v3(AUC 0.5746)는 v2(0.5605) 대비 +0.014 향상을 보인다. Epoch 6에서 최고 AUC 0.5786을 기록하여 sigmoid 단독 기준선을 초과했으나, freeze 이후 감소했다 — freeze_epoch을 늦추거나 학습을 연장하면 개선될 가능성이 있다.
 
 == 실용적 함의
 
