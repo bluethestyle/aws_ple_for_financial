@@ -674,6 +674,65 @@ Gold standard metrics were established by task type: AUC for binary classificati
 #section-break()
 
 
+= Ops/Audit Agents — "AI Analyzes, Humans Decide"
+
+The most ambitious design challenge in this project was building an autonomous pipeline diagnostic agent system, separate from recommendation reason generation. Core question: "Can a small team maintain regulation-compliant AI operations without dedicated MLOps staff?"
+
+== Design Process: From Conversation to Architecture
+
+The design evolved progressively through continuous dialog in a single session:
+
++ *"Let's add agents"* → Ops/Audit separation → async decoupling rationale (latency, regulatory independence, fault isolation)
++ *"What model level?"* → "Rule engine handles 95%" → deterministic engine + LLM dialog interface separation
++ *"On-prem?"* → "Core features work without Bedrock" → on-prem baseline + AWS Bedrock extension
++ *"Hallucination risk"* → 3-agent independent voting → *"Delphi has convergence bias"* → 2-Round hybrid (independent voting + sequential deliberation) + minority report preservation
++ *"Cases accumulate into knowledge"* → Diagnostic Case Store (LanceDB) → similar search + statistics + resolution tracking
++ *"Korean models?"* → Solar Pro (AWS) + Exaone 3.5 (on-prem) → per-task optimal model assignment
+
+Repeatedly asking "What's the weakness in this design?" at each step resulted in a 15-section, 3,800-line design document and 21 files of \~4,800 lines of implementation completed in a single session.
+
+== Key Design Decisions
+
+=== Deterministic Engine with LLM on Top
+
+95% of the agent runs on a Python rule engine (if-else, thresholds, pattern matching). 48 checklist items are auto-evaluated, generating reports in finding + likely_cause + suggested_action format. LLMs are used only for discussing "how to interpret these numbers" with operators.
+
+The core reason for this separation: LLM non-determinism is a risk in audit contexts --- same input may produce different diagnoses. The rule engine establishes facts; the LLM discusses interpretation of those facts.
+
+=== Minority Report: "Missing a Signal is Worse than a False Alarm"
+
+Minority opinions (1/3) in the 3-agent consensus are structurally preserved. Initially considered pure Delphi (sequential deliberation), but identified the problem of "later agents conforming to earlier opinions." Final design: Round 1 locks minorities via independent voting, Round 2 only strengthens arguments --- minorities are never deleted.
+
+The name was inspired by the film _Minority Report_: one of three precogs makes a different prediction.
+
+=== Feature Reverse-Mapping Pipeline Completion
+
+Four critical gaps in recommendation reason generation were fixed:
++ English fallback replaced with Korean default templates
++ 12+ missing feature prefix-to-group mappings added
++ ReverseMapper integrated as Level RM fallback in InterpretationRegistry
++ `generate_l1()` connected to InterpretationRegistry via 3-tuple enrichment
+
+These fixes ensure L1 reasons include Korean interpretations with IG direction and task context.
+
+== Implementation Method: Parallel Sub-Agent Execution
+
+Design document → implementation plan → Phase-by-phase Sonnet sub-agent parallel execution → main agent (Opus) review. Pre-req (4) → Phase 0 (3) → Phase 1+2 (5) → Phase 3+4 (4) → Phase 5 (2) → gap fixes (5), 6 rounds of parallel execution total.
+
+Each round: `py_compile` + `yaml.safe_load` + interface contract verification + hardcoding scan --- maintaining a rhythm of "build fast, verify thoroughly."
+
+== Deliverables
+
+- *Design document*: 3,861 lines (Typst) + 1,168 lines (Markdown) + on-prem handoff 430 lines
+- *Implementation*: 21 Python files, \~4,800 lines
+- *Configuration*: agent.yaml + agent_tools.yaml (38 tools) + checklist.yaml (53 items)
+- *Document updates*: Paper 2 both versions + typst 10 files + design 6 + guides 3 = 20+ files
+- *Diagrams*: 3 Paper 2 placeholders → fletcher diagrams, 15 docs/typst ASCII → fletcher conversion
+- *Translation*: 5 docs/typst/en tech_ref files Korean → English full translation
+
+#section-break()
+
+
 = Future Plans
 
 == Academic and Industry Publications
