@@ -367,6 +367,10 @@ This registry serves dual purposes:
 (1) grounding material for the Reason Generator agent, and
 (2) audit trail showing which features influenced each recommendation.
 
+`InterpretationRegistry` interprets features into Korean via a 5-level cascade:
+Level IG (IG sign direction + task context) → Level 3 (feature×task manual overrides) → Level 2 (group×task) → Level 1 (group×task_group auto-generated) → Level RM (`ReverseMapper` glossary templates). Only features unresolved by this cascade fall to raw fallback.
+`ReverseMapper` is integrated as Level RM, so glossary value-substitution templates (e.g., "월 평균 \{value\}건 거래") operate as part of the cascade. All fallback text outputs Korean.
+
 == 3-Agent Pipeline Architecture
 
 #figure(
@@ -459,14 +463,21 @@ Upstream of the 3-agent pipeline, the `ConstraintAwareEngine` applies eligibilit
 
 === Serving Model Selection
 
-All three serving agents run on a local LLM (8B-class, e.g., Qwen3 8B or Gemma 4 E4B) served via vLLM, as the on-premises deployment environment is air-gapped (폐쇄망) with no external network access.
-No cloud API dependency exists in the serving path.
-The specific model is selected based on Korean-language fluency benchmarks available at deployment time, since customer-facing recommendation reasons require natural, professional Korean text.
+Customer-facing recommendation reasons require natural, professional Korean text. The optimal model differs by deployment environment:
+*On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.
+*Cloud (AWS)*: L2a rewriting uses Solar Pro 22B (Upstage, Bedrock Marketplace) --- top performance on Korean benchmarks (KMMLU). L2b self-critique also uses Solar (generator $<=$ critic model principle). SelfChecker factuality scoring uses Claude Haiku.
 
-== Caching Strategy
+== Caching Strategy and Asynchronous L2a Architecture
 
-Recommendation reasons are cached by customer segment × product category × feature pattern hash.
-Cache hit avoids LLM invocation entirely, reducing latency and cost.
+Recommendation reasons are served via a 3-layer asynchronous architecture:
+
++ *L1 (Template)*: returned immediately on customer request. No LLM call. `TemplateEngine` generates deterministic Korean reasons based on IG top-K feature business reverse-mappings. Features pass through `InterpretationRegistry`'s 5-level cascade (IG direction → L3 → L2 → L1 → ReverseMapper) to produce enriched 3-tuples `(feature_name, IG_value, Korean_interpretation)`.
+
++ *L2a (LLM Rewrite)*: submitted asynchronously via SQS. Solar Pro refines L1 reasons into natural Korean. Results are cached in DynamoDB for subsequent requests. VIP customers receive priority processing.
+
++ *L2b (Quality Validation)*: applies a 5-stage safety gate to L2a output --- (1) PromptSanitizer, (2) PII detection (Korean resident registration number, card numbers, etc.), (3) SelfChecker (compliance + injection + factuality), (4) grounding verification (number cross-check), (5) 5% human review sampling. Pass promotes to L2b; failure falls back to L1.
+
+Caching uses a dual backend (in-memory + DynamoDB) with composite key `customer_id + product_id + task_name` and TTL-based auto-expiry. Of 941K customers, L2a targets (~5% sample, ~47K items) are processed by 5 parallel Solar workers in ~8 minutes at ~\$0.10 cost.
 
 // TODO: Cache hit rate analysis
 
