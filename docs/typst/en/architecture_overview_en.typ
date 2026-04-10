@@ -335,19 +335,19 @@ Expert Basket (core.model.ple.experts.ExpertBasket)
 
 == 4 Financial DNA Groups
 
-The initial design considered per-GMM-cluster task sub-heads, but with K=20, T=18, this would produce 360 sub-heads -> unmanageable, high overfitting risk. The direction was shifted to *grouping tasks by financial DNA perspective*:
+The initial design considered per-GMM-cluster task sub-heads, but with K=20, T=14, this would produce 280 sub-heads -> unmanageable, high overfitting risk. The direction was shifted to *grouping tasks by financial DNA perspective*:
 
 #table(
   columns: (auto, 1fr, 1fr, auto, auto),
   align: (left, left, left, center, center),
   table.header[*Group*][*Financial DNA*][*Included Tasks*][*intra*][*inter*],
-  [engagement], [Does the customer respond?], [has\_nba, engagement\_score, next\_mcc, top\_mcc\_shift], [0.8], [0.3],
-  [lifecycle], [Where is the customer?], [churn\_signal, product\_stability, tenure\_stage, segment\_prediction], [0.7], [0.3],
-  [value], [How valuable is the customer?], [spend\_level, income\_tier, mcc\_diversity\_trend], [0.6], [0.3],
+  [engagement], [Does the customer respond?], [has\_nba, next\_mcc, top\_mcc\_shift], [0.8], [0.3],
+  [lifecycle], [Where is the customer?], [churn\_signal, product\_stability, segment\_prediction], [0.7], [0.3],
+  [value], [How valuable is the customer?], [mcc\_diversity\_trend], [0.6], [0.3],
   [consumption], [What will the customer buy?], [nba\_primary, cross\_sell\_count, will\_acquire\_\* (5)], [0.7], [0.3],
 )
 
-A total of *18 tasks* organized into 4 semantic groups.
+A total of *14 tasks* organized into 4 semantic groups.
 
 == Adaptive Task Transfer (adaTT)
 
@@ -359,16 +359,14 @@ A total of *18 tasks* organized into 4 semantic groups.
 
 == Loss-Level Transfer: Logit Transfer (3-Method Dispatch)
 
-Explicit causal relationships between tasks are modeled through 5 edges:
+Explicit causal relationships between tasks are modeled through 3 edges:
 
 #table(
   columns: (auto, auto, auto, 1fr),
   align: (left, left, left, left),
   table.header[*Source*][*Target*][*Method*][*Meaning*],
-  [engagement\_score], [has\_nba], [output\_concat], [Activity -> Subscription (leading indicator)],
   [has\_nba], [nba\_primary], [output\_concat], [Subscription status -> Which product],
   [churn\_signal], [product\_stability], [output\_concat], [Churn -> Product stability],
-  [spend\_level], [cross\_sell\_count], [output\_concat], [Spending level -> Cross-sell],
   [next\_mcc], [nba\_primary], [hidden\_concat], [Next merchant category -> Next product (feature sharing)],
 )
 
@@ -520,7 +518,7 @@ A 10+ stage PipelineRunner transforms raw data into training-ready tensors.
   [2], [SchemaClassifier], [Classify all columns into 5-Axis], [---],
   [3], [EncryptionPipeline], [PII -> SHA256 -> INT32 (domain-specific salt)], [---],
   [4], [FeatureGroupPipeline], [Run 8 Generators + PowerLawAwareScaler], [cuDF],
-  [5], [LabelDeriver], [Config-driven 18-label generation], [---],
+  [5], [LabelDeriver], [Config-driven 14-label generation], [---],
   [5.5], [LeakageValidator], [Sequence/correlation/product/temporal 4-way leakage check], [---],
   [6], [SequenceBuilder], [flat -> 3D tensor (event\_seq, session\_seq)], [---],
 )
@@ -777,7 +775,7 @@ EncryptionPipeline.process_source()
       node((0, 4), [*Stage 2: SchemaClassifier* #text(size: 6pt)[(5-Axis classification)]], width: 55mm, fill: proc-fill, name: <s2>),
       node((0, 5), [*Stage 3: EncryptionPipeline* #text(size: 6pt)[(PII → SHA256 → INT32)]], width: 55mm, fill: proc-fill, name: <s3e>),
       node((0, 6), [*Stage 4: FeatureGroupPipeline* #text(size: 6pt)[(8 Generators + Normalization)]], width: 55mm, fill: proc-fill, name: <s4>),
-      node((0, 7), [*Stage 5: LabelDeriver* #text(size: 6pt)[(18 tasks, config-driven)]], width: 55mm, fill: proc-fill, name: <s5>),
+      node((0, 7), [*Stage 5: LabelDeriver* #text(size: 6pt)[(14 tasks, config-driven)]], width: 55mm, fill: proc-fill, name: <s5>),
       node((0, 8), [*Stage 5.5: LeakageValidator* #text(size: 6pt)[(4-check, auto-drop)]], width: 55mm, fill: valid-fill, name: <s55>),
       node((0, 9), [*Stage 6: SequenceBuilder* #text(size: 6pt)[(flat → 3D tensors)]], width: 55mm, fill: proc-fill, name: <s6>),
 
@@ -827,7 +825,7 @@ EncryptionPipeline.process_source()
       // Phase 1-3 header
       node((0, 1), [*Phase 1--3: Ablation Training*], width: 60mm, fill: phase-fill, name: <ph13>),
       node((0, 2), [*Stage 7: DataLoader* #text(size: 6pt)[(temporal split, gap\_days)]], width: 55mm, fill: proc-fill, name: <s7>),
-      node((0, 3), [*Stage 8: PLETrainer* \ #text(size: 6pt)[PLE (3-layer CGC, 7 shared + 1 task expert)] \ #text(size: 6pt)[adaTT (4 groups, intra/inter) · Logit Transfer (5 edges)] \ #text(size: 6pt)[HMM Triple-Mode · Evidential + SAE · AMP FP16]], width: 55mm, fill: proc-fill, name: <s8>),
+      node((0, 3), [*Stage 8: PLETrainer* \ #text(size: 6pt)[PLE (3-layer CGC, 7 shared + 1 task expert)] \ #text(size: 6pt)[adaTT (4 groups, intra/inter) · Logit Transfer (3 edges)] \ #text(size: 6pt)[HMM Triple-Mode · Evidential + SAE · AMP FP16]], width: 55mm, fill: proc-fill, name: <s8>),
       node((0, 4), [*Stage 8.5: Model Analysis* \ #text(size: 6pt)[IG · CCA · Gate · HGCN · Multi Interpreter] \ #text(size: 6pt)[Template Engine · XAI Quality · Model Card]], width: 55mm, fill: proc-fill, name: <s85>),
 
       edge(<prev>, <ph13>, "->", stroke: 0.4pt + luma(150)),
@@ -887,9 +885,9 @@ FeatureRouter is *active*: each expert receives only its designated feature grou
       edge(<multi>, <adatt>, "->"),
       node((0, 5), [*adaTT* \ #text(size: 6pt)[intra 0.6--0.8 · inter 0.3 · negative transfer detection]], width: 68mm, fill: proc-fill, name: <adatt>),
       edge(<adatt>, <logit>, "->"),
-      node((0, 6), [*Logit Transfer* \ #text(size: 6pt)[5 edges · strength=0.5]], width: 68mm, fill: proc-fill, name: <logit>),
+      node((0, 6), [*Logit Transfer* \ #text(size: 6pt)[3 edges · strength=0.5]], width: 68mm, fill: proc-fill, name: <logit>),
       edge(<logit>, <towers>, "->"),
-      node((0, 7), [*Task Towers × 18 (TowerRegistry)* \ #text(size: 6pt)[Evidential Layer (regression) · SAE sidecar] \ #text(size: 6pt)[Per-task Loss + Uncertainty Weighting]], width: 68mm, fill: out-fill, name: <towers>),
+      node((0, 7), [*Task Towers × 14 (TowerRegistry)* \ #text(size: 6pt)[Evidential Layer (regression) · SAE sidecar] \ #text(size: 6pt)[Per-task Loss + Uncertainty Weighting]], width: 68mm, fill: out-fill, name: <towers>),
     )
   },
   caption: [Internal model data flow: FeatureRouter slices per-expert subsets from the 316D feature tensor.],
@@ -926,7 +924,7 @@ When `PLEModel.__init__(config: PLEConfig)` is called, the following are built a
 + `_build_task_experts()` --- GroupTaskExpertBasket or MLP fallback
 + `_build_hmm_projectors()` --- 3 modes x projection
 + `_build_adatt()` --- Adaptive Task Transfer
-+ `_build_logit_transfer()` --- 3-method dispatch, 5 edges
++ `_build_logit_transfer()` --- 3-method dispatch, 3 edges
 + `_build_multidisciplinary_routing()` --- 24D -> 4 x 6D
 + `_build_task_towers()` --- TowerRegistry (standard/contrastive)
 + `_build_evidential_layers()` --- NIG for regression (config-gated)
@@ -960,10 +958,10 @@ class PLEInput:
 All system parameters are managed through 2 YAML files:
 
 *`pipeline.yaml`*: Task definitions, model structure, training parameters, AWS infrastructure settings
-- `tasks`: 18 tasks (name, type, loss, loss\_weight, label\_col)
+- `tasks`: 14 tasks (name, type, loss, loss\_weight, label\_col)
 - `model.ple`: num\_layers, extraction\_dim, expert\_basket
 - `model.adatt`: task\_groups, intra/inter strength
-- `model.logit_transfers`: 5 transfer edges
+- `model.logit_transfers`: 3 transfer edges
 - `training`: batch\_size, epochs, learning\_rate, amp
 - `aws`: instance\_type, spot, budget\_limit
 

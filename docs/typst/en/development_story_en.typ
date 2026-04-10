@@ -173,7 +173,7 @@
     ]
     #v(0.5cm)
     #text(size: 9pt, fill: anthropic-muted)[
-      This document records the journey of building an 18-task, 7-expert\
+      This document records the journey of building a 14-task, 7-expert\
       PLE+adaTT recommendation system — without infrastructure budget,\
       using a single desktop GPU and a team of AI agents.
     ]
@@ -258,7 +258,7 @@ The on-prem system was not a prototype but a production-scale system: 80+ Airflo
 
 == Project Objective
 
-The existing financial product recommendation system was based on ALS (Alternating Least Squares) collaborative filtering. The goal was to replace it with a multi-task deep learning recommendation system built on PLE (Progressive Layered Extraction) + adaTT (Adaptive Task Transfer) architecture. The system processes 18 tasks through 7 expert networks, explicitly modeling inter-task relationships.
+The existing financial product recommendation system was based on ALS (Alternating Least Squares) collaborative filtering. The goal was to replace it with a multi-task deep learning recommendation system built on PLE (Progressive Layered Extraction) + adaTT (Adaptive Task Transfer) architecture. The system processes 14 tasks through 7 expert networks, explicitly modeling inter-task relationships.
 
 == Architecture Decision Journey
 
@@ -537,7 +537,7 @@ PLE's val_loss froze at 3.702 in Phase 2, while shared_bottom (1 MLP) paradoxica
 
 3. *freeze_epoch not passed*: `AdaTTConfig` was constructed without passing `freeze_epoch`, leaving it always None. Transfer weights kept adapting unstably until the end of training.
 
-4. *Loss composition*: The on-prem version applies uncertainty weighting first (normalizing loss scales) and then adaTT transfer. The AWS version used either/or logic, silently disabling uncertainty weighting whenever adaTT was active. With 18 tasks having mismatched loss scales, transfer was dominated by the largest-loss tasks.
+4. *Loss composition*: The on-prem version applies uncertainty weighting first (normalizing loss scales) and then adaTT transfer. The AWS version used either/or logic, silently disabling uncertainty weighting whenever adaTT was active. With 14 tasks having mismatched loss scales, transfer was dominated by the largest-loss tasks.
 
 5. *warmup_epochs: 0*: Transfer began immediately while the affinity matrix was still identity (no measurements taken), resulting in meaningless loss sharing from epoch one.
 
@@ -630,7 +630,7 @@ The core philosophy of the PLE architecture — Mixture of Experts — was appli
       #text(size: 11pt, fill: anthropic-text, weight: "bold")[Recommendation System]
       #v(4pt)
       #text(size: 10pt, fill: anthropic-text)[
-        • 18-task multi-task learning \
+        • 14-task multi-task learning \
         • 7-expert PLE network \
         • adaTT adaptive inter-task transfer \
         • Uncertainty weighting (Kendall et al.) \

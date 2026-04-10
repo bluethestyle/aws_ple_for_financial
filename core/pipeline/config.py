@@ -184,6 +184,7 @@ class AWSSpec:
     region: str = "ap-northeast-2"
     s3_bucket: str = ""
     instance_type: str = "ml.g4dn.xlarge"
+    cpu_instance_type: str = "ml.m5.2xlarge"
     use_spot: bool = True
     max_run_seconds: int = 7200
     role_arn: str = ""
@@ -262,7 +263,10 @@ def load_config(path: Union[str, Path]) -> PipelineConfig:
         k: v for k, v in raw.get("training", {}).items()
         if k in TrainingSpec.__dataclass_fields__
     })
-    aws = AWSSpec(**raw.get("aws", {}))
+    aws = AWSSpec(**{
+        k: v for k, v in raw.get("aws", {}).items()
+        if k in AWSSpec.__dataclass_fields__
+    })
     task_groups = [TaskGroupConfig(**tg) for tg in raw.get("task_groups", [])]
 
     # --- New pipeline sections (optional, backward-compatible) ---
@@ -270,7 +274,23 @@ def load_config(path: Union[str, Path]) -> PipelineConfig:
         k: v for k, v in raw.get("security", {}).items()
         if k in SecuritySpec.__dataclass_fields__
     })
-    labels = [LabelSpec(**lb) for lb in raw.get("labels", [])]
+    # labels: accept both list-of-dicts and dict-of-dicts (name→spec) formats
+    _labels_raw = raw.get("labels", [])
+    _label_fields = LabelSpec.__dataclass_fields__.keys()
+    if isinstance(_labels_raw, dict):
+        labels = [
+            LabelSpec(name=name, **{k: v for k, v in spec.items() if k in _label_fields})
+            for name, spec in _labels_raw.items()
+            if isinstance(spec, dict)
+        ]
+    elif isinstance(_labels_raw, list):
+        labels = [
+            LabelSpec(**{k: v for k, v in lb.items() if k in _label_fields})
+            for lb in _labels_raw
+            if isinstance(lb, dict)
+        ]
+    else:
+        labels = []
 
     # Fallback: extract labels from tasks[].derive blocks if no top-level labels
     if not labels:

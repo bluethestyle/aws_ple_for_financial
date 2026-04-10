@@ -34,12 +34,12 @@ Raw Data Load      Leakage Prevention (5-axis)           (PII→SHA256→INT32)
                                                                ▼
 Stage 4            Stage 5           Stage 5.5          Stage 6
 FeatureGroup +     LabelDeriver      LeakageValidator   SequenceBuilder
-Normalization      (18 tasks)        (4-check)          (flat→3D)
+Normalization      (14 tasks)        (4-check)          (flat→3D)
 ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
 │ Per-Axis     │  │ Config-driven│  │ Sequence     │  │ event_seq.npy│
 │ Feature Eng. │  │ label derive │  │ Correlation  │  │ session_seq  │
 │ + PowerLaw   │  │ clip+log1p   │  │ Product      │  │ .npy         │
-│ Scaler       │  │ 18 labels    │  │ Temporal     │  │              │
+│ Scaler       │  │ 14 labels    │  │ Temporal     │  │              │
 └──────────────┘  └──────────────┘  └──────────────┘  └──────┬───────┘
                                                               │
                                                               ▼
@@ -82,7 +82,7 @@ Store (RAG)        Reason Orchestrator
 | **2** | SchemaClassifier (5-axis) | 모든 컬럼을 State/Snapshot/Timeseries/Hierarchy/Item 축으로 분류 | `core/pipeline/schema_classifier.py` | - |
 | **3** | EncryptionPipeline | PII 컬럼 → SHA256 domain-specific salt → INT32 global index | `core/security/pipeline.py` | - |
 | **4** | FeatureGroupPipeline + Normalization | 8개 Generator 실행 (cuDF primary, pandas fallback) + PowerLawAwareScaler | `core/feature/` | cuDF/cuPY |
-| **5** | LabelDeriver (18 tasks) | Config-driven 레이블 생성 — direct/bucket/weighted_sum/product_group 등 | `core/pipeline/label_deriver.py` | - |
+| **5** | LabelDeriver (14 tasks) | Config-driven 레이블 생성 — direct/bucket/weighted_sum/product_group 등 | `core/pipeline/label_deriver.py` | - |
 | **5.5** | LeakageValidator + auto-drop | 시퀀스/상관관계/제품/시간 4중 누수 검증, >0.95 상관 피처 자동 제거 | `core/pipeline/leakage_validator.py` | - |
 | **6** | SequenceBuilder | Time-based + sliding window → 3D 텐서 (txn_day_offset_seq 기반) | `core/pipeline/sequence_builder.py` | - |
 | **7** | DataLoader | Cross-sectional auto-detect → random split / temporal split, PyArrow 로딩 | `containers/training/train.py` | - |
@@ -175,24 +175,22 @@ Great Expectations (로컬)              CloudWatch + SageMaker Monitor
 
 ---
 
-## 18-Task Architecture (4 Semantic Groups)
+## 14-Task Architecture (4 Semantic Groups)
 
-Santander 데이터셋 기준 18개 태스크가 4개 의미 그룹으로 구성된다:
+Santander 데이터셋 기준 14개 태스크가 4개 의미 그룹으로 구성된다:
 
 | Group | 질문 | 태스크 | 개수 |
 |-------|------|--------|------|
-| **engagement** | 고객이 반응하는가 | has_nba, engagement_score, next_mcc, top_mcc_shift | 4 |
-| **lifecycle** | 고객이 어디에 있는가 | churn_signal, product_stability, tenure_stage, segment_prediction | 4 |
-| **value** | 언제/어디서 가치를 만드는가 | spend_level, income_tier, mcc_diversity_trend | 3 |
-| **consumption** | 무엇을 소비하는가 | nba_primary, cross_sell_count, will_acquire_{deposits,investments,accounts,lending,payments} | 7 |
+| **engagement** | 고객이 반응하는가 | has_nba, next_mcc, top_mcc_shift | 3 |
+| **lifecycle** | 고객이 어디에 있는가 | churn_signal, product_stability, segment_prediction | 3 |
+| **value** | 언제/어디서 가치를 만드는가 | mcc_diversity_trend, cross_sell_count | 2 |
+| **consumption** | 무엇을 소비하는가 | nba_primary, will_acquire_{deposits,investments,accounts,lending,payments} | 6 |
 
 ### Logit Transfer 5 Edges
 
 ```
-engagement_score → has_nba (활성도→가입)
 has_nba → nba_primary (가입여부→어떤상품)
 churn_signal → product_stability (이탈→안정성)
-spend_level → cross_sell_count (소비수준→교차판매)
 next_mcc → nba_primary (다음업종→다음상품)
 ```
 
@@ -394,7 +392,7 @@ PipelineRunner.run()
     ├── Stage 4: FeatureGroupPipeline + Normalization
     │   └── TDA, HMM, Mamba, Graph generators + PowerLawAwareScaler
     │
-    ├── Stage 5: LabelDeriver (18 tasks)
+    ├── Stage 5: LabelDeriver (14 tasks)
     │   └── direct/bucket/weighted_sum/product_group/sequence_next 등
     │
     ├── Stage 5.5: LeakageValidator
@@ -467,7 +465,7 @@ class DataAdapter(ABC):
 |------|------|------|
 | 쿼리 엔진 | DuckDB 단일 (Athena는 옵션) | 단일 머신 최강, 수백 GB까지 충분 |
 | 피처 분류 | 5-Axis (State/Snapshot/Timeseries/Hierarchy/Item) | Expert 라우팅의 명시적 기반 — FeatureRouter로 런타임 강제 (4.77M→~2.8M 감소) |
-| 태스크 아키텍처 | 18 tasks in 4 semantic groups | adaTT intra/inter transfer 기반 |
+| 태스크 아키텍처 | 14 tasks in 4 semantic groups | adaTT intra/inter transfer 기반 |
 | 데이터 분할 | Cross-sectional auto-detect → random split / Temporal split + gap_days | 자동 감지 (>80% 동일 date → random) |
 | 누수 방지 | 시퀀스절단 + prod재계산 + LeakageValidator | 4중 검증 |
 | 모델 구조 | PLE + adaTT + Evidential + SAE | 불확실성 정량화 + 해석 가능성 |
@@ -486,7 +484,7 @@ class DataAdapter(ABC):
 |------|------|
 | [01_data_layer](01_data_layer.md) | DataAdapter, TemporalPrep, 암호화, 5-axis 분류, temporal split, LeakageValidator |
 | [02_feature_engineering](02_feature_engineering.md) | 5축별 피처 매핑, TDA/HMM/Mamba/Graph/LightGCN, 정규화, LabelDeriver |
-| [03_model_architecture](03_model_architecture.md) | PLE, Expert Basket, CGC, adaTT, Logit Transfer, HMM routing, Evidential, SAE, 18 tasks |
+| [03_model_architecture](03_model_architecture.md) | PLE, Expert Basket, CGC, adaTT, Logit Transfer, HMM routing, Evidential, SAE, 14 tasks |
 | [04_training_pipeline](04_training_pipeline.md) | PLETrainer, 4-Dimension Ablation, Santander 36-job, Distillation, Interpretability |
 | [05_serving_and_testing](05_serving_and_testing.md) | Lambda↔ECS 자동 전환, 실시간 추론, A/B 테스트 |
 | [06_orchestration_and_audit](06_orchestration_and_audit.md) | Step Functions 5개, 3계층 감사, E2E 리니지 |

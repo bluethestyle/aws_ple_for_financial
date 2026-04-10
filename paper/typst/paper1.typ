@@ -1017,6 +1017,12 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
   caption: [Variance budget per label tier. XGB AUC ceiling validates difficulty control.],
 ) <tab:variance-budget>
 
+The benchmark underwent two iterations: v2 used uniform-random MCC codes and fixed transaction
+amounts across personas, producing near-random labels for MCC-dependent tasks.
+v3 (reported here) introduces persona-weighted MCC distributions with temporal stickiness,
+persona-dependent transaction amounts, and quantile-based label boundaries,
+producing meaningful variation in all 14 tasks.
+
 == Experimental Setup
 
 The ablation validates whether each expert provides a distinct "why" for different task types ---
@@ -1166,7 +1172,7 @@ The ablation experiments yield the following principal findings.
 In the bottom-up ablation, TDA (+0.011) and LightGCN (+0.027) show the largest individual gains over the DeepFM baseline. These two experts supply distinct inductive biases: topological feature-space structure and product-graph connectivity, respectively.
 
 *Temporal expert causes negative transfer due to synthetic sequence limitations.*
-In the bottom-up ablation, adding the Temporal expert yields AUC 0.5507 (below baseline), and in the top-down ablation, removing it raises AUC by +0.0283 to 0.5753. This stems from distributional limitations of synthetic transaction sequences; the contribution is expected to reverse with real production data.
+In the bottom-up ablation, adding the Temporal expert yields AUC 0.5507 (below baseline), and in the top-down ablation, removing it raises AUC by +0.0283 to 0.5753. This stems from distributional limitations of synthetic transaction sequences: v2 used uniform-random MCC codes that provided no temporal signal, while v3's persona-weighted MCC distributions with temporal stickiness may partially reduce this negative transfer. Nevertheless, the Temporal expert's contribution pattern is expected to change substantially with real production data where genuine behavioral sequences carry predictive signal for binary tasks.
 
 *HGCN and LightGCN are structurally essential experts.*
 Removing either of these experts in the top-down ablation causes AUC to drop by −0.0478 and −0.0173, respectively, confirming that product-hierarchy and graph-connectivity signals are core contributions of the full model.
@@ -1277,9 +1283,16 @@ training pipeline, serving endpoint, and monitoring dashboard.
 
 == Limitations
 
-- *Synthetic benchmark*: While our variance-budget approach controls difficulty levels,
-  synthetic data cannot fully capture the distributional complexity of real financial data.
-  We plan to validate on production data from a partner institution in future work.
+- *Synthetic benchmark limitations*: The 1M-customer benchmark uses a four-layer generative model
+  with persona-based MCC distributions, time-of-day weighting, and persona-dependent transaction amounts.
+  Despite these calibrations, binary task signals (has\_nba, churn\_signal, will\_acquire\_\*)
+  derive primarily from demographic and product-holding features, not transaction behavior ---
+  limiting the performance ceiling for these tasks regardless of model capacity or training duration.
+  Multiclass and regression tasks that depend on MCC patterns (next\_mcc, mcc\_diversity\_trend)
+  benefit from the persona-weighted MCC generation but remain constrained
+  by the absence of real merchant affinity and seasonal patterns.
+  We expect significant AUC improvements when the architecture is deployed on production data
+  with genuine behavioral signals.
 - *Single-GPU training*: The current implementation runs on a single GPU.
   DDP (DistributedDataParallel) support is architecturally designed
   but not yet experimentally validated.

@@ -85,7 +85,7 @@
   topological structure (PersLay/TDA), collaborative filtering (LightGCN),
   causal inference (Causal/NOTEARS), and distributional matching (Optimal Transport)---and
   no single expert can substitute for any other.
-  Additionally, this document covers the dynamic knowledge transfer mechanism across 18 tasks
+  Additionally, this document covers the dynamic knowledge transfer mechanism across 14 tasks
   via adaTT (Adaptive Task-aware Transfer), and the 316-dimensional feature engineering framework
   derived from 11 academic disciplines. With FeatureRouter active, each expert receives a
   designated subset of the 316D tensor rather than the full input.
@@ -670,7 +670,7 @@ Example: "Premium cardholders have high travel insurance adoption" may be due to
 confounder --- the card does not _cause_ insurance adoption.
 
 A/B testing is the gold standard but does not scale
-(18 tasks $times$ $N$ strategies = infeasible), is slow (weeks), and provides only
+(14 tasks $times$ $N$ strategies = infeasible), is slow (weeks), and provides only
 population-level ATE.
 
 == Alternative Comparison
@@ -887,11 +887,11 @@ Cuturi (NeurIPS 2013), Kantorovich (1942).
 
 == Motivation: Negative Transfer in Multi-Task Learning
 
-When 18 simultaneous tasks share expert parameters,
+When 14 simultaneous tasks share expert parameters,
 gradient conflicts cause negative transfer.
 Three fundamental limitations of fixed-tower MTL:
 (1) The shared backbone equally affects all tasks --- no mechanism to detect/prevent one task's optimization from degrading another's predictions,
-(2) Unable to measure which of the 18 task pairs help or harm each other,
+(2) Unable to measure which of the 14 task pairs help or harm each other,
 (3) Fixed weights cannot track task relationships that change across training stages.
 
 == Core Mechanism: Gradient Cosine Similarity
@@ -1019,7 +1019,7 @@ blocking clearly adversarial gradients.
 - A lightweight variant of Hypernetworks (Ha et al., 2017): uses observed gradients instead of learned task embeddings
   as the conditioning signal, enabling zero-delay adaptation to changing task relationships.
 - `detect_negative_transfer()` API returns the list of adversarial tasks for each task
-  (e.g., `{"churn_signal": ["has_nba", "engagement_score"]}`).
+  (e.g., `{"churn_signal": ["has_nba", "nba_primary"]}`).
 
 *Key References:*
 Tang et al. (RecSys 2020), Yu et al. (NeurIPS 2020), Fifty et al. (ICML 2021),

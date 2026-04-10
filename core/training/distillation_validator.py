@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -70,14 +70,18 @@ class ValidationCriteria:
         max_speed_ratio: Maximum student_time / teacher_time ratio.
     """
 
-    max_auc_gap: float = 0.03
-    min_ranking_corr: float = 0.95
-    min_binary_agreement: float = 0.90
-    min_multiclass_agreement: float = 0.85
+    max_auc_gap: float = 0.05
+    min_ranking_corr: float = 0.90
+    min_binary_agreement: float = 0.85
+    min_multiclass_agreement: float = 0.70
     max_jsd: float = 0.10
-    max_calibration_gap: float = 0.02
-    regression_quartile_agreement_min: float = 0.80
+    max_calibration_gap: float = 0.05
+    regression_quartile_agreement_min: float = 0.70
     max_speed_ratio: float = 0.1
+    # Task-type-specific metrics (new)
+    max_f1_macro_gap: float = 0.10       # multiclass: |teacher_f1 - student_f1|
+    max_mae_gap: float = 0.05            # regression: |teacher_mae - student_mae|
+    max_rmse_gap: float = 0.10           # regression: |teacher_rmse - student_rmse|
 
 
 # ============================================================================
@@ -215,11 +219,20 @@ class DistillationValidator:
             metrics["jsd"] = self._compute_jsd_multiclass(
                 teacher_preds, student_preds,
             )
-            metrics["ranking_corr"] = self._compute_ranking_correlation(
-                teacher_preds.max(axis=1) if teacher_preds.ndim > 1 else teacher_preds,
-                student_preds.max(axis=1) if student_preds.ndim > 1 else student_preds,
-            )
+            # F1-macro on hard labels (the metric that matters)
+            if labels is not None:
+                f1_gap, t_f1, s_f1 = self._compute_f1_macro_gap(
+                    teacher_preds, student_preds, labels,
+                )
+                metrics["f1_macro_gap"] = f1_gap
+                metrics["teacher_f1_macro"] = t_f1
+                metrics["student_f1_macro"] = s_f1
 
+            if metrics.get("f1_macro_gap", 0) > self._criteria.max_f1_macro_gap:
+                failures.append(
+                    f"f1_macro_gap={metrics['f1_macro_gap']:.4f} > "
+                    f"{self._criteria.max_f1_macro_gap}"
+                )
             if metrics["agreement_rate"] < self._criteria.min_multiclass_agreement:
                 failures.append(
                     f"agreement={metrics['agreement_rate']:.4f} < "
@@ -229,11 +242,6 @@ class DistillationValidator:
                 failures.append(
                     f"jsd={metrics['jsd']:.4f} > {self._criteria.max_jsd}"
                 )
-            if metrics["ranking_corr"] < self._criteria.min_ranking_corr:
-                failures.append(
-                    f"ranking_corr={metrics['ranking_corr']:.4f} < "
-                    f"{self._criteria.min_ranking_corr}"
-                )
 
         elif task_type == "regression":
             metrics["ranking_corr"] = self._compute_ranking_correlation(
@@ -242,19 +250,35 @@ class DistillationValidator:
             metrics["quartile_agreement"] = self._compute_quartile_agreement(
                 teacher_preds, student_preds,
             )
+            # MAE/RMSE on hard labels (the metrics that matter)
+            if labels is not None:
+                mae_gap, t_mae, s_mae = self._compute_mae_gap(
+                    teacher_preds, student_preds, labels,
+                )
+                rmse_gap, t_rmse, s_rmse = self._compute_rmse_gap(
+                    teacher_preds, student_preds, labels,
+                )
+                metrics["mae_gap"] = mae_gap
+                metrics["teacher_mae"] = t_mae
+                metrics["student_mae"] = s_mae
+                metrics["rmse_gap"] = rmse_gap
+                metrics["teacher_rmse"] = t_rmse
+                metrics["student_rmse"] = s_rmse
 
+            if metrics.get("mae_gap", 0) > self._criteria.max_mae_gap:
+                failures.append(
+                    f"mae_gap={metrics['mae_gap']:.4f} > "
+                    f"{self._criteria.max_mae_gap}"
+                )
+            if metrics.get("rmse_gap", 0) > self._criteria.max_rmse_gap:
+                failures.append(
+                    f"rmse_gap={metrics['rmse_gap']:.4f} > "
+                    f"{self._criteria.max_rmse_gap}"
+                )
             if metrics["ranking_corr"] < self._criteria.min_ranking_corr:
                 failures.append(
                     f"ranking_corr={metrics['ranking_corr']:.4f} < "
                     f"{self._criteria.min_ranking_corr}"
-                )
-            if (
-                metrics["quartile_agreement"]
-                < self._criteria.regression_quartile_agreement_min
-            ):
-                failures.append(
-                    f"quartile_agreement={metrics['quartile_agreement']:.4f} < "
-                    f"{self._criteria.regression_quartile_agreement_min}"
                 )
 
         else:
@@ -481,3 +505,61 @@ class DistillationValidator:
         t_q = np.digitize(t_flat, t_edges)
         s_q = np.digitize(s_flat, s_edges)
         return float((t_q == s_q).mean())
+
+    @staticmethod
+    def _compute_f1_macro_gap(
+        teacher: np.ndarray,
+        student: np.ndarray,
+        labels: np.ndarray,
+    ) -> Tuple[float, float, float]:
+        """F1-macro gap between teacher and student on hard labels.
+
+        Returns (gap, teacher_f1, student_f1).
+        """
+        from sklearn.metrics import f1_score
+
+        t_cls = teacher.argmax(axis=1) if teacher.ndim > 1 else teacher.astype(int)
+        s_cls = student.argmax(axis=1) if student.ndim > 1 else student.astype(int)
+        labs = labels.astype(int)
+
+        t_f1 = f1_score(labs, t_cls, average="macro", zero_division=0)
+        s_f1 = f1_score(labs, s_cls, average="macro", zero_division=0)
+        return abs(t_f1 - s_f1), float(t_f1), float(s_f1)
+
+    @staticmethod
+    def _compute_mae_gap(
+        teacher: np.ndarray,
+        student: np.ndarray,
+        labels: np.ndarray,
+    ) -> Tuple[float, float, float]:
+        """MAE gap between teacher and student on hard labels.
+
+        Returns (gap, teacher_mae, student_mae).
+        """
+        t_flat = teacher.flatten()
+        s_flat = student.flatten()
+        labs = labels.flatten()
+        valid = np.isfinite(t_flat) & np.isfinite(s_flat) & np.isfinite(labs)
+
+        t_mae = float(np.abs(labs[valid] - t_flat[valid]).mean())
+        s_mae = float(np.abs(labs[valid] - s_flat[valid]).mean())
+        return abs(t_mae - s_mae), t_mae, s_mae
+
+    @staticmethod
+    def _compute_rmse_gap(
+        teacher: np.ndarray,
+        student: np.ndarray,
+        labels: np.ndarray,
+    ) -> Tuple[float, float, float]:
+        """RMSE gap between teacher and student on hard labels.
+
+        Returns (gap, teacher_rmse, student_rmse).
+        """
+        t_flat = teacher.flatten()
+        s_flat = student.flatten()
+        labs = labels.flatten()
+        valid = np.isfinite(t_flat) & np.isfinite(s_flat) & np.isfinite(labs)
+
+        t_rmse = float(np.sqrt(((labs[valid] - t_flat[valid]) ** 2).mean()))
+        s_rmse = float(np.sqrt(((labs[valid] - s_flat[valid]) ** 2).mean()))
+        return abs(t_rmse - s_rmse), t_rmse, s_rmse

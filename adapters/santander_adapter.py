@@ -1219,16 +1219,42 @@ if __name__ == "__main__":
                     _matched_indices.append(_idx)
         elif _fg_type == "generate":
             # Generated groups: match by prefix from generator_params or group name
+            # Exclude _log suffix columns (added by 3-stage normalization, placed at end)
             _gp = _fg.get("generator_params", {})
             _col_prefix = _gp.get("prefix", _fg_name)
             _prefix_with_underscore = _col_prefix + "_"
             for _idx, _col in enumerate(_feature_columns):
-                if _col.startswith(_prefix_with_underscore):
+                if _col.startswith(_prefix_with_underscore) and not _col.endswith("_log"):
                     _matched_indices.append(_idx)
         if _matched_indices:
-            _feature_group_ranges[_fg_name] = [
-                min(_matched_indices), max(_matched_indices) + 1,
-            ]
+            # Use contiguous block: find the first and last matched index,
+            # but verify the range is not inflated by non-contiguous columns.
+            _min_idx = min(_matched_indices)
+            _max_idx = max(_matched_indices) + 1
+            # If range is much larger than matched count, use only the contiguous block
+            if (_max_idx - _min_idx) > len(_matched_indices) * 1.5:
+                # Non-contiguous: find the largest contiguous block
+                _sorted = sorted(_matched_indices)
+                _best_start, _best_end = _sorted[0], _sorted[0] + 1
+                _cur_start = _sorted[0]
+                for _si in range(1, len(_sorted)):
+                    if _sorted[_si] != _sorted[_si - 1] + 1:
+                        if _sorted[_si - 1] + 1 - _cur_start > _best_end - _best_start:
+                            _best_start = _cur_start
+                            _best_end = _sorted[_si - 1] + 1
+                        _cur_start = _sorted[_si]
+                if _sorted[-1] + 1 - _cur_start > _best_end - _best_start:
+                    _best_start = _cur_start
+                    _best_end = _sorted[-1] + 1
+                _feature_group_ranges[_fg_name] = [_best_start, _best_end]
+                logger.debug(
+                    "Group '%s': non-contiguous indices (%d matched, range would be %d), "
+                    "using contiguous block [%d:%d] = %dD",
+                    _fg_name, len(_matched_indices), _max_idx - _min_idx,
+                    _best_start, _best_end, _best_end - _best_start,
+                )
+            else:
+                _feature_group_ranges[_fg_name] = [_min_idx, _max_idx]
     if _feature_group_ranges:
         logger.info(
             "feature_group_ranges built from feature_groups.yaml: %d groups -> %s",
@@ -1246,13 +1272,18 @@ if __name__ == "__main__":
         if _expert_target_map:
             _expert_routing = _expert_target_map
         else:
-            # Default: each expert receives all feature groups
-            # Format: {"expert_name": str, "input_groups": [str]}
-            all_groups = list(_group_ranges.keys())
+            # Build routing from feature_groups.yaml target_experts mapping
+            # Each feature group declares which experts it routes to.
+            _expert_to_groups: Dict[str, List[str]] = {}
+            for _fg in feature_groups:
+                _fg_name = _fg.get("name", "")
+                for _tgt in _fg.get("target_experts", []):
+                    _expert_to_groups.setdefault(_tgt, []).append(_fg_name)
             for expert_name in _shared_experts:
+                groups = _expert_to_groups.get(expert_name, list(_feature_group_ranges.keys()))
                 _expert_routing.append({
                     "expert_name": expert_name,
-                    "input_groups": all_groups,
+                    "input_groups": groups,
                 })
 
     _feature_schema = {

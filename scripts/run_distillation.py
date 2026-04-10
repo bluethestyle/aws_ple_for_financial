@@ -29,6 +29,7 @@ import logging
 import sys
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 
@@ -83,14 +84,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--temperature",
         type=float,
-        default=5.0,
-        help="Distillation temperature (higher = softer labels)",
+        default=None,
+        help="Distillation temperature (higher = softer labels). Overrides YAML config.",
     )
     parser.add_argument(
         "--alpha",
         type=float,
-        default=0.3,
-        help="Hard label weight (1-alpha = soft label weight)",
+        default=None,
+        help="Hard label weight (1-alpha = soft label weight). Overrides YAML config.",
     )
     parser.add_argument(
         "--tasks",
@@ -103,6 +104,25 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Continue even if fidelity check fails (for testing)",
     )
+    # LGBM hyperparameter CLI overrides (take precedence over YAML config)
+    parser.add_argument(
+        "--lgbm-num-leaves",
+        type=int,
+        default=None,
+        help="LGBM max number of leaves per tree. Overrides YAML distillation.lgbm_params.num_leaves.",
+    )
+    parser.add_argument(
+        "--lgbm-learning-rate",
+        type=float,
+        default=None,
+        help="LGBM learning rate. Overrides YAML distillation.lgbm_params.learning_rate.",
+    )
+    parser.add_argument(
+        "--lgbm-n-estimators",
+        type=int,
+        default=None,
+        help="LGBM number of boosting rounds. Overrides YAML distillation.lgbm_params.n_estimators.",
+    )
     return parser.parse_args()
 
 
@@ -112,28 +132,30 @@ def main() -> None:
 
     # Import here to avoid import errors if torch is not available
     # in LGBM-only mode
+    import yaml as _yaml
     from core.pipeline.config import load_config
     from core.training.student_trainer import StudentConfig, StudentTrainer
 
-    # Load pipeline config
+    # Load pipeline config (structured) and raw YAML (for distillation section)
     pipeline_config = load_config(args.config)
+    with open(args.config, encoding="utf-8") as _f:
+        _raw_yaml: dict = _yaml.safe_load(_f)
+    _distillation_cfg: dict = _raw_yaml.get("distillation", {})
 
     # Load data
     logger.info("Loading data from %s", args.data_path)
     data_path = Path(args.data_path)
     if data_path.is_dir():
-        # Read all parquet files in directory
+        # Read all parquet files in directory via DuckDB glob
         parquet_files = sorted(data_path.glob("*.parquet"))
         if not parquet_files:
             logger.error("No parquet files found in %s", args.data_path)
             sys.exit(1)
-        df = pd.concat(
-            [pd.read_parquet(f) for f in parquet_files],
-            ignore_index=True,
-        )
+        glob_pattern = str(data_path / "*.parquet")
+        df = duckdb.execute(f"SELECT * FROM read_parquet('{glob_pattern}')").df()
         logger.info("Loaded %d files, %d rows total", len(parquet_files), len(df))
     else:
-        df = pd.read_parquet(args.data_path)
+        df = duckdb.execute(f"SELECT * FROM read_parquet('{args.data_path}')").df()
         logger.info("Loaded %d rows", len(df))
 
     # Step 1.5: Quality gate — block pipeline on critical data issues
@@ -162,28 +184,99 @@ def main() -> None:
     id_cols = set(pipeline_config.features.id_cols)
     exclude_cols = label_cols | id_cols
 
-    feature_cols = [c for c in df.columns if c not in exclude_cols]
+    # Use teacher checkpoint's feature schema to guarantee column order and
+    # alignment with the teacher model's input_dim.
+    _teacher_schema_cols: list = []
+    if args.teacher_checkpoint:
+        _schema_path = Path(args.teacher_checkpoint).parent / "config.json"
+        if _schema_path.exists():
+            _schema = json.load(open(_schema_path))
+            _teacher_schema_cols = _schema.get("feature_schema", {}).get("columns", [])
+            logger.info(
+                "Teacher schema loaded: %d features from %s",
+                len(_teacher_schema_cols), _schema_path,
+            )
+
+    if _teacher_schema_cols:
+        # Align to teacher schema; fill missing columns with 0
+        feature_cols = _teacher_schema_cols
+        for c in feature_cols:
+            if c not in df.columns:
+                logger.warning("Column '%s' missing in data — filling with 0", c)
+                df[c] = 0.0
+    else:
+        feature_cols = [
+            c for c in df.columns
+            if c not in exclude_cols
+            and df[c].dtype in ("float64", "float32", "int64", "int32", "int8", "uint8")
+        ]
+
     logger.info(
         "Features: %d columns, Labels: %d tasks, IDs: %d columns",
-        len(feature_cols),
-        len(label_cols),
-        len(id_cols),
+        len(feature_cols), len(label_cols), len(id_cols),
     )
 
-    features = df[feature_cols].values.astype(np.float32)
+    features = df[feature_cols].fillna(0).values.astype(np.float32)
+    nan_count = int(np.isnan(features).sum())
+    if nan_count > 0:
+        logger.warning("NaN remaining after fillna: %d — filling with 0", nan_count)
+        np.nan_to_num(features, copy=False)
     hard_labels: dict[str, np.ndarray] = {}
     for t in pipeline_config.tasks:
         if t.label_col in df.columns:
             hard_labels[t.name] = df[t.label_col].values
 
-    # Build student config
-    student_config = StudentConfig(
-        teacher_checkpoint=args.teacher_checkpoint or "",
-        soft_label_path=args.soft_label_path,
-        student_output_dir=args.output_dir,
-        temperature=args.temperature,
-        alpha=args.alpha,
-        enabled_tasks=args.tasks,
+    # Build student config — YAML distillation section is the base,
+    # CLI args are optional overrides (None means "not provided by user").
+    # Priority: CLI arg > YAML distillation section > StudentConfig default.
+
+    # 1. Start from the full distillation dict so that lgbm_params,
+    #    task_lgbm_overrides, and any other fields are picked up from YAML.
+    _student_dict = dict(_distillation_cfg)
+    # YAML uses shorthand "lgbm:" but StudentConfig expects "lgbm_params:"
+    if "lgbm" in _student_dict and "lgbm_params" not in _student_dict:
+        _student_dict["lgbm_params"] = _student_dict.pop("lgbm")
+
+    # 2. Mandatory fields that come from other CLI args / top-level config.
+    _student_dict["teacher_checkpoint"] = args.teacher_checkpoint or _distillation_cfg.get(
+        "teacher_checkpoint", ""
+    )
+    _student_dict["soft_label_path"] = args.soft_label_path or _distillation_cfg.get(
+        "soft_label_path", ""
+    )
+    _student_dict["student_output_dir"] = args.output_dir
+
+    # 3. CLI scalar overrides (only applied when the user explicitly passed them).
+    if args.temperature is not None:
+        _student_dict["temperature"] = args.temperature
+    if args.alpha is not None:
+        _student_dict["alpha"] = args.alpha
+    if args.tasks is not None:
+        _student_dict["enabled_tasks"] = args.tasks
+
+    # 4. CLI LGBM param overrides — merge into the lgbm_params sub-dict so
+    #    that params NOT specified on the CLI still come from YAML.
+    _lgbm_overrides: dict = {}
+    if args.lgbm_num_leaves is not None:
+        _lgbm_overrides["num_leaves"] = args.lgbm_num_leaves
+    if args.lgbm_learning_rate is not None:
+        _lgbm_overrides["learning_rate"] = args.lgbm_learning_rate
+    if args.lgbm_n_estimators is not None:
+        _lgbm_overrides["n_estimators"] = args.lgbm_n_estimators
+
+    if _lgbm_overrides:
+        # Merge: YAML lgbm_params (if any) updated with CLI overrides.
+        _base_lgbm = dict(_distillation_cfg.get("lgbm_params", {}))
+        _base_lgbm.update(_lgbm_overrides)
+        _student_dict["lgbm_params"] = _base_lgbm
+
+    student_config = StudentConfig.from_dict(_student_dict)
+    logger.info(
+        "StudentConfig: temperature=%.1f alpha=%.2f lgbm_params=%s task_lgbm_overrides=%s",
+        student_config.temperature,
+        student_config.alpha,
+        student_config.lgbm_params,
+        list(student_config.task_lgbm_overrides.keys()) or "(none)",
     )
 
     # Create trainer
@@ -204,6 +297,13 @@ def main() -> None:
         logger.info("Generating soft labels from teacher...")
         import torch
         from torch.utils.data import DataLoader, TensorDataset
+
+        # Load teacher with pipeline config fallback for expert basket reconstruction
+        # (checkpoints may lack 'config' key — pipeline YAML fills the gap)
+        trainer.load_teacher(
+            checkpoint_path=args.teacher_checkpoint,
+            pipeline_config=_raw_yaml,
+        )
 
         # Build a simple DataLoader for teacher inference.
         # This yields raw tensor tuples; the StudentTrainer wraps them
@@ -247,8 +347,20 @@ def main() -> None:
 
         student_model = students[task_name]
 
-        # Student predictions on the same training features
-        student_preds = student_model.predict(features)
+        # Student predictions on the same training features.
+        # Custom fobj → predict() returns raw margins, not probabilities.
+        # Apply sigmoid (binary) or softmax (multiclass) to match teacher scale.
+        raw_preds = student_model.predict(features)
+
+        if task_spec.type == "binary" and student_config.use_custom_objective:
+            student_preds = 1.0 / (1.0 + np.exp(-raw_preds))
+        elif task_spec.type == "multiclass" and student_config.use_custom_objective:
+            n_classes = task_spec.num_classes
+            raw_2d = raw_preds.reshape(-1, n_classes)
+            exp_shifted = np.exp(raw_2d - raw_2d.max(axis=1, keepdims=True))
+            student_preds = exp_shifted / exp_shifted.sum(axis=1, keepdims=True)
+        else:
+            student_preds = raw_preds
 
         # Teacher predictions (soft labels)
         teacher_preds = soft_labels.get(task_name)
@@ -271,7 +383,7 @@ def main() -> None:
             logger.warning("Fidelity validation failed for %s: %s", task_name, e)
             from core.training.distillation_validator import FidelityResult
             result = FidelityResult(
-                task_name=task_name, passed=False,
+                task_name=task_name, task_type=task_spec.type, passed=False,
                 metrics={}, failures=[str(e)],
             )
         fidelity_results.append(result)
@@ -394,8 +506,10 @@ def main() -> None:
     summary = {
         "tasks_distilled": list(saved.keys()),
         "num_students": len(saved),
-        "temperature": args.temperature,
-        "alpha": args.alpha,
+        "temperature": student_config.temperature,
+        "alpha": student_config.alpha,
+        "lgbm_params": student_config.lgbm_params,
+        "task_lgbm_overrides": student_config.task_lgbm_overrides,
         "output_dir": args.output_dir,
         "feature_count": len(feature_cols),
         "sample_count": len(features),

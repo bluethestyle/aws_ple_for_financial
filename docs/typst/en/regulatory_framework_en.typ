@@ -530,7 +530,7 @@ The EU AI Act is likely to classify financial AI recommendation systems as *high
     [Disclose input data specification], [Feature schema auto-documentation (316D current / 734D full-bank design)\
     Training data source, scope, and pseudonymization status recorded],
     [Disclose performance level], [Model card auto-generation (architecture, performance, feature importance)\
-    Per-task independent AUC tracking (18 tasks)],
+    Per-task independent AUC tracking (14 tasks)],
     [Log generation obligation], [HMAC + hash chain audit log (S3 Object Lock WORM)\
     Full recommendation history Parquet archiving],
   )

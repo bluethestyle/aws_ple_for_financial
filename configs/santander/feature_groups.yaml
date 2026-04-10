@@ -180,7 +180,8 @@ feature_groups:
         dtype: continuous
         exclude_binary: true
         min_nunique: 20
-        exclude_columns: [customer_id]
+        exclude_columns: [customer_id, has_nba, churn_signal, product_stability]
+        exclude_prefix: ["label_"]  # prevent label columns leaking into TDA input
       max_homology_dim: 1
     output_dim: 36
     target_experts: [perslay]
@@ -282,19 +283,47 @@ feature_groups:
     generator: graph
     generator_params:
       input_filter:
-        include_prefix: ["prod_"]   # binary product holdings for hierarchy
+        include_prefix: ["prod_"]   # binary product holdings for co-holding graph
       use_poincare: true
       curvature: 1.0
       embedding_dim: 32
       prefix: product_hierarchy
       entity_column: customer_id
     output_dim: 32
-    target_experts: [hgcn, causal]
+    target_experts: [lightgcn, causal]  # LightGCN for collaborative filtering, not HGCN
     interpretation:
       category: product_structure
       template: "Position in product hierarchy suggests {insight} at depth {value}"
       narrative_lens: consumption
       primary_tasks: [nba_primary, has_nba, acquire_checking, acquire_funds]
+    distill: false
+
+  # -------------------------------------------------------------------------
+  # 13b. Merchant Hierarchy (generate) -- 27D
+  #      MCC tree Poincaré embeddings for HGCN expert.
+  #      L1 (10 categories) → L2 (30 subcategories) → MCC codes.
+  #      Follows on-prem design: hyperbolic space for tree structure.
+  # -------------------------------------------------------------------------
+  - name: merchant_hierarchy
+    group_type: generate
+    generator: merchant_hierarchy
+    generator_params:
+      mcc_hierarchy_path: configs/mcc_hierarchy.yaml
+      mcc_seq_column: txn_mcc_seq
+      amount_seq_column: txn_amount_seq
+      day_offset_seq_column: txn_day_offset_seq
+      truncate_seq_last: 1    # drop last MCC = next_mcc label, prevents leakage
+      l1_radius: 0.8
+      l2_radius: 0.5
+      time_decay_lambda: 0.01
+      prefix: merchant_hierarchy
+    output_dim: 27
+    target_experts: [hgcn]  # HGCN: MCC hierarchy in hyperbolic space
+    interpretation:
+      category: merchant_structure
+      template: "Merchant spending pattern indicates {direction} category preference"
+      narrative_lens: consumption
+      primary_tasks: [next_mcc, mcc_diversity_trend, top_mcc_shift, spend_level]
     distill: false
 
   # =========================================================================
@@ -312,7 +341,8 @@ feature_groups:
     generator_params:
       input_filter:
         dtype: all_numeric        # binary OK for bipartite graph
-        exclude_columns: [customer_id]
+        exclude_columns: [customer_id, has_nba, churn_signal, product_stability]
+        exclude_prefix: ["label_"]  # prevent label columns leaking into graph embedding
       embedding_dim: 64
       use_poincare: false
       prefix: graph_collab

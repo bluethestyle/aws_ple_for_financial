@@ -8,12 +8,12 @@
 따라서 CPU로 실시간 서빙 가능한 경량 모델로의 증류가 필수.
 
 ### Teacher-Student 구조
-- Teacher: PLE 18-task, 7 experts, 316 features (GPU, 주 1회 재학습)
-- Student: LGBM × 18 (태스크 헤드별 독립 LGBM, CPU, 일 1회 증류)
+- Teacher: PLE 14-task, 7 experts, 316 features (GPU, 주 1회 재학습)
+- Student: LGBM × 14 (태스크 헤드별 독립 LGBM, CPU, 일 1회 증류)
 - 증류 방식: teacher의 soft label(확률 출력)을 각 LGBM이 독립 학습
 
 ```
-선생 (PLE+adaTT, GPU)              학생 (LGBM × 18, CPU)
+선생 (PLE+adaTT, GPU)              학생 (LGBM × 14, CPU)
   ├── 주기: 주 1회 재학습              ├── 주기: 일 1회 증류
   ├── 환경: SageMaker GPU             ├── 환경: Lambda CPU
   ├── 추론: ~100ms                    ├── 추론: ~5ms
@@ -22,7 +22,7 @@
 
 ### 태스크 헤드별 독립 증류의 장점
 - 특정 태스크만 성능 저하 시 해당 LGBM만 재증류 (전체 재학습 불필요)
-- 금감원 모형 검증 대상이 "LGBM 18개" → 개별 설명 가능성 높음
+- 금감원 모형 검증 대상이 "LGBM 14개" → 개별 설명 가능성 높음
 - 선생 모델은 "학습 인프라"로 분류 → 검증 부담 낮음
 - 선생이 학습 중이어도 학생은 이전 버전으로 정상 서빙 → 무중단 운영
 
@@ -38,7 +38,7 @@
 
 ### 증류 품질 메트릭
 - teacher 대비 AUC drop 최소화 (목표: 2-5%p 이내)
-- 태스크별 독립 평가 (18개 태스크 각각)
+- 태스크별 독립 평가 (14개 태스크 각각)
 - 증류 후에도 설명 가능성 유지 (LGBM feature importance + 피처 역매핑)
 
 ## 2. 추천사유 생성

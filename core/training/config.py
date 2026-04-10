@@ -171,7 +171,7 @@ class DistillationPhaseConfig:
     """
 
     enabled: bool = False
-    temperature: float = 5.0
+    temperature: float = 1.0
     alpha: float = 0.3
     soft_label_path: str = ""
     student_output_dir: str = "student_models"
@@ -343,3 +343,67 @@ class TrainingConfig:
     def total_epochs(self) -> int:
         """Total epochs across both phases."""
         return self.phase1.epochs + self.phase2.epochs
+
+
+# ---------------------------------------------------------------------------
+# Student distillation config
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StudentConfig:
+    """Configuration for LGBM student training via knowledge distillation.
+
+    Controls teacher loading, soft label generation parameters, and
+    per-task LGBM hyperparameters.
+
+    Args:
+        teacher_checkpoint: S3 or local path to the teacher ``.pt`` checkpoint.
+        soft_label_path: S3 or local path to save/load soft labels parquet.
+        student_output_dir: Directory to save trained student models.
+        temperature: Soft label temperature (higher = softer distributions).
+        alpha: Hard label weight in blended target (1-alpha = soft label weight).
+        lgbm_params: Default LightGBM parameters applied to all tasks.
+        task_lgbm_overrides: Per-task LGBM parameter overrides.
+        enabled_tasks: Restrict distillation to these tasks (``None`` = all).
+    """
+
+    teacher_checkpoint: str = ""
+    soft_label_path: str = ""
+    student_output_dir: str = "student_models"
+    temperature: float = 1.0
+    alpha: float = 0.3  # hard label weight
+
+    # LGBM defaults
+    lgbm_params: Dict[str, Any] = field(default_factory=lambda: {
+        "objective": "binary",  # overridden per task
+        "num_leaves": 63,
+        "learning_rate": 0.05,
+        "n_estimators": 500,
+        "min_child_samples": 20,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "reg_alpha": 0.1,
+        "reg_lambda": 1.0,
+        "verbose": -1,
+    })
+
+    # Per-task LGBM overrides
+    task_lgbm_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    # Which tasks to distill (None = all)
+    enabled_tasks: Optional[List[str]] = None
+
+    # When True, use custom fobj (DistillationLossNumpy / make_multiclass_objective)
+    # which handles alpha-blending internally.  False = blended-target approach.
+    use_custom_objective: bool = True
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "StudentConfig":
+        """Build StudentConfig from a dict (e.g. YAML output).
+
+        Supports both flat and nested formats.  Unknown keys are ignored.
+        """
+        valid_keys = cls.__dataclass_fields__.keys()
+        filtered = {k: v for k, v in d.items() if k in valid_keys}
+        return cls(**filtered)

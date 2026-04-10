@@ -1,6 +1,7 @@
 # =============================================================================
 # Santander Customer Transactions Pipeline Configuration
-# 941,132 users x 89 columns x 18 tasks x 7 shared experts
+# 941,132 users x 89 columns x 14 tasks x 7 shared experts
+# (was 18 tasks; 4 deterministic-leakage tasks removed 2026-04-10)
 # =============================================================================
 # User-level synthetic dataset with product holdings, transaction sequences,
 # and demographic attributes.  Pre-aggregated -- no transaction-level joins.
@@ -15,12 +16,16 @@ adapter: santander
 feature_groups_file: configs/santander/feature_groups.yaml
 
 # ---------------------------------------------------------------------------
-# Tasks -- 18 tasks across 4 tiers
+# Tasks -- 14 tasks across 4 tiers  (was 18; 4 removed 2026-04-10)
 # ---------------------------------------------------------------------------
 # NOTE: fraud_risk excluded -- synth_fraud_ratio is ALL ZERO (useless label)
 # NOTE: has_nba is only 2.98% positive -- focal loss with high alpha
 # NOTE: Tier 4 per-product tasks dropped (redundant with Tier 3 groups)
 # NOTE: 3 txn-based NBA tasks added (Tier 5)
+# NOTE: 4 tasks removed for deterministic leakage (feature → bucket(feature)):
+#   income_tier, tenure_stage, spend_level, engagement_score
+#   These source features ARE model inputs, so the model trivially reconstructs
+#   the label. Including them produces artificially inflated multi-task metrics.
 # ---------------------------------------------------------------------------
 tasks:
 
@@ -68,36 +73,44 @@ tasks:
       filter_col: has_nba
       default: -1
 
-  # ===== Tier 2 — Derived targets (4 tasks) =====
+  # ===== Tier 2 — Derived targets (2 tasks active; 2 removed for leakage) =====
   # Derived from existing columns via rules
 
-  - name: tenure_stage
-    type: multiclass
-    loss: ce
-    loss_weight: 0.8
-    label_col: label_tenure_stage
-    num_classes: 5
-    description: "Tenure bucket (unknown_or_new/early/mid/mature/veteran) from tenure_months"
-    derive:
-      method: bucket
-      source_col: tenure_months
-      boundaries: [6, 24, 60, 120]
-      sentinel: -999999
-      sentinel_class: 0
-      class_names: [unknown_or_new, early, mid, mature, veteran]
+  # REMOVED: deterministic leakage — tenure_months is a model input feature.
+  # bucket(tenure_months) is perfectly reconstructable from the input itself.
+  # Keep tenure_months as a numeric feature; do NOT use as a prediction target.
+  #
+  # - name: tenure_stage
+  #   type: multiclass
+  #   loss: ce
+  #   loss_weight: 0.8
+  #   label_col: label_tenure_stage
+  #   num_classes: 5
+  #   description: "Tenure bucket (unknown_or_new/early/mid/mature/veteran) from tenure_months"
+  #   derive:
+  #     method: bucket
+  #     source_col: tenure_months
+  #     boundaries: [6, 24, 60, 120]
+  #     sentinel: -999999
+  #     sentinel_class: 0
+  #     class_names: [unknown_or_new, early, mid, mature, veteran]
 
-  - name: spend_level
-    type: multiclass
-    loss: ce
-    loss_weight: 0.8
-    label_col: label_spend_level
-    num_classes: 4
-    description: "Monthly spending tier from synth_monthly_spend"
-    derive:
-      method: bucket
-      source_col: synth_monthly_spend
-      boundaries: [1500, 3000, 5000]
-      class_names: [low, moderate, high, very_high]
+  # REMOVED: deterministic leakage — synth_monthly_spend is a model input feature.
+  # bucket(synth_monthly_spend) is perfectly reconstructable from the input itself.
+  # Keep synth_monthly_spend as a numeric feature; do NOT use as a prediction target.
+  #
+  # - name: spend_level
+  #   type: multiclass
+  #   loss: ce
+  #   loss_weight: 0.8
+  #   label_col: label_spend_level
+  #   num_classes: 4
+  #   description: "Monthly spending tier from synth_monthly_spend"
+  #   derive:
+  #     method: bucket
+  #     source_col: synth_monthly_spend
+  #     boundaries: [1500, 3000, 5000]
+  #     class_names: [low, moderate, high, very_high]
 
   - name: cross_sell_count
     type: regression
@@ -109,17 +122,21 @@ tasks:
       method: len_of_list
       source_col: nba_label
 
-  - name: engagement_score
-    type: regression
-    loss: huber
-    loss_weight: 1.0
-    label_col: label_engagement_score
-    description: "Composite engagement: is_active*0.3 + synth_frequency/max*0.4 + num_products/max*0.3"
-    derive:
-      method: weighted_sum
-      columns: [is_active, synth_frequency, num_products]
-      weights: [0.3, 0.4, 0.3]
-      normalize: true
+  # REMOVED: deterministic leakage — is_active, synth_frequency, num_products are all
+  # model input features. The weighted_sum label is an exact linear function of those
+  # inputs and is perfectly reconstructable. Use these columns as features only.
+  #
+  # - name: engagement_score
+  #   type: regression
+  #   loss: huber
+  #   loss_weight: 1.0
+  #   label_col: label_engagement_score
+  #   description: "Composite engagement: is_active*0.3 + synth_frequency/max*0.4 + num_products/max*0.3"
+  #   derive:
+  #     method: weighted_sum
+  #     columns: [is_active, synth_frequency, num_products]
+  #     weights: [0.3, 0.4, 0.3]
+  #     normalize: true
 
   # ===== Tier 3 — Product group + segmentation (7 tasks) =====
   # NOTE: fraud_risk excluded (synth_fraud_ratio is ALL ZERO)
@@ -206,21 +223,34 @@ tasks:
       source_col: segment
       mapping: {"01-TOP": 0, "02-PARTICULARES": 1, "03-UNIVERSITARIO": 2, "UNKNOWN": 3}
 
-  - name: income_tier
-    type: multiclass
-    loss: ce
-    loss_weight: 0.8
-    label_col: label_income_tier
-    num_classes: 4
-    description: "Income tier: low(<30k)=0, mid(30-80k)=1, high(80-200k)=2, very_high(200k+)=3"
-    derive:
-      method: bucket
-      source_col: income
-      boundaries: [30000, 80000, 200000]
-      class_names: [low, mid, high, very_high]
+  # REMOVED: deterministic leakage — income is a model input feature.
+  # bucket(income) is perfectly reconstructable from the input itself.
+  # Keep income as a numeric feature and income_group as a categorical embedding;
+  # do NOT use income bucketing as a prediction target.
+  #
+  # - name: income_tier
+  #   type: multiclass
+  #   loss: ce
+  #   loss_weight: 0.8
+  #   label_col: label_income_tier
+  #   num_classes: 4
+  #   description: "Income tier: low(<30k)=0, mid(30-80k)=1, high(80-200k)=2, very_high(200k+)=3"
+  #   derive:
+  #     method: bucket
+  #     source_col: income
+  #     boundaries: [30000, 80000, 200000]
+  #     class_names: [low, mid, high, very_high]
 
   # ===== Tier 5 — Transaction-based NBA (3 tasks) =====
   # Derived from txn_mcc_seq transaction sequences
+  #
+  # LEAKAGE NOTE (all 3 tasks below): txn_mcc_seq must be TRUNCATED before
+  # feature generation — exclude the last element of the sequence (i.e., use
+  # txn_mcc_seq[:-1] as the model input, txn_mcc_seq[-1] as the label target).
+  # Passing the full sequence to any feature generator (HMM, Mamba, TDA, etc.)
+  # leaks the label transaction into the input representation.
+  # Truncation must be applied BEFORE calling any sequence-based generator,
+  # and AFTER temporal split to avoid look-ahead from future rows.
 
   - name: next_mcc
     type: multiclass
@@ -229,6 +259,8 @@ tasks:
     label_col: label_next_mcc
     num_classes: 50
     description: "Predict next MCC category from txn sequence (top-50 MCCs)"
+    # LEAKAGE NOTE: txn_mcc_seq must be truncated (exclude last element) before
+    # feature generation. Label = txn_mcc_seq[-1]; Input = txn_mcc_seq[:-1].
     derive:
       method: sequence_next
       source_seq: txn_mcc_seq
@@ -240,6 +272,8 @@ tasks:
     loss_weight: 0.8
     label_col: label_mcc_diversity_trend
     description: "MCC diversity trend: change in unique MCC count over recent windows"
+    # LEAKAGE NOTE: txn_mcc_seq must be truncated (exclude last element) before
+    # feature generation. Trend is computed from txn_mcc_seq[:-1] only.
     derive:
       method: sequence_diversity_trend
       source_seq: txn_mcc_seq
@@ -254,6 +288,8 @@ tasks:
     loss_weight: 1.0
     label_col: label_top_mcc_shift
     description: "Did the customer's top MCC category change recently?"
+    # LEAKAGE NOTE: txn_mcc_seq must be truncated (exclude last element) before
+    # feature generation. Mode-shift is computed from txn_mcc_seq[:-1] only.
     derive:
       method: sequence_mode_shift
       source_seq: txn_mcc_seq
@@ -280,24 +316,28 @@ labels:
     default: -1
 
   # Tier 2: derived from profile/synth columns
-  label_tenure_stage:
-    source: tenure_months
-    type: bucket
-    boundaries: [6, 24, 60, 120]
-    sentinel: -999999
-    sentinel_class: 0
-  label_spend_level:
-    source: synth_monthly_spend
-    type: bucket
-    boundaries: [1500, 3000, 5000]
+  # REMOVED: deterministic leakage — tenure_months is a model input; bucket is reconstructable.
+  # label_tenure_stage:
+  #   source: tenure_months
+  #   type: bucket
+  #   boundaries: [6, 24, 60, 120]
+  #   sentinel: -999999
+  #   sentinel_class: 0
+  # REMOVED: deterministic leakage — synth_monthly_spend is a model input; bucket is reconstructable.
+  # label_spend_level:
+  #   source: synth_monthly_spend
+  #   type: bucket
+  #   boundaries: [1500, 3000, 5000]
   label_cross_sell_count:
     source: nba_label
     type: list_length
-  label_engagement_score:
-    source: [is_active, synth_frequency, num_products]
-    type: weighted_sum
-    weights: [0.3, 0.4, 0.3]
-    normalize: true
+  # REMOVED: deterministic leakage — is_active, synth_frequency, num_products are model inputs.
+  # The weighted_sum label is an exact linear function of those inputs.
+  # label_engagement_score:
+  #   source: [is_active, synth_frequency, num_products]
+  #   type: weighted_sum
+  #   weights: [0.3, 0.4, 0.3]
+  #   normalize: true
 
   # Tier 3: product group acquisition (from nba_label indices)
   label_acquire_deposits:
@@ -326,10 +366,11 @@ labels:
     source: segment
     type: string_map
     mapping: {"01-TOP": 0, "02-PARTICULARES": 1, "03-UNIVERSITARIO": 2, "UNKNOWN": 3}
-  label_income_tier:
-    source: income
-    type: bucket
-    boundaries: [30000, 80000, 200000]
+  # REMOVED: deterministic leakage — income is a model input feature; bucket is reconstructable.
+  # label_income_tier:
+  #   source: income
+  #   type: bucket
+  #   boundaries: [30000, 80000, 200000]
 
   # Tier 5: transaction-based NBA labels
   label_next_mcc:
@@ -420,19 +461,23 @@ sequences:
 task_groups:
   - name: engagement
     description: "고객이 반응하는가"
-    tasks: [has_nba, engagement_score, next_mcc, top_mcc_shift]
+    # REMOVED from tasks: engagement_score (deterministic leakage)
+    tasks: [has_nba, next_mcc, top_mcc_shift]
     adatt_intra_strength: 0.8
     adatt_inter_strength: 0.3
 
   - name: lifecycle
     description: "고객이 어디에 있는가"
-    tasks: [churn_signal, product_stability, tenure_stage, segment_prediction]
+    # REMOVED from tasks: tenure_stage (deterministic leakage)
+    tasks: [churn_signal, product_stability, segment_prediction]
     adatt_intra_strength: 0.7
     adatt_inter_strength: 0.3
 
   - name: value
     description: "언제/어디서 가치를 만드는가"
-    tasks: [spend_level, income_tier, mcc_diversity_trend]
+    # REMOVED from tasks: spend_level, income_tier (deterministic leakage)
+    # value group now contains only mcc_diversity_trend; merged into consumption if desired
+    tasks: [mcc_diversity_trend]
     adatt_intra_strength: 0.6
     adatt_inter_strength: 0.3
 
@@ -466,17 +511,21 @@ task_relationships:
     transfer_method: output_concat
     description: "이탈 → 상품 안정성"
 
-  - source: engagement_score
-    target: has_nba
-    type: sequential
-    transfer_method: output_concat
-    description: "활성도 → 가입 (선행지표)"
+  # REMOVED: engagement_score was removed (deterministic leakage).
+  # The relationship engagement_score → has_nba no longer applies.
+  # - source: engagement_score
+  #   target: has_nba
+  #   type: sequential
+  #   transfer_method: output_concat
+  #   description: "활성도 → 가입 (선행지표)"
 
-  - source: spend_level
-    target: cross_sell_count
-    type: causal
-    transfer_method: output_concat
-    description: "소비수준 → 교차판매"
+  # REMOVED: spend_level was removed (deterministic leakage).
+  # The relationship spend_level → cross_sell_count no longer applies.
+  # - source: spend_level
+  #   target: cross_sell_count
+  #   type: causal
+  #   transfer_method: output_concat
+  #   description: "소비수준 → 교차판매"
 
   - source: next_mcc
     target: nba_primary
@@ -497,7 +546,8 @@ scoring:
     cross_sell_count: 0.15
     churn_signal: 0.15
     product_stability: 0.10
-    engagement_score: 0.10
+    # engagement_score removed (deterministic leakage) — redistribute weight as needed
+    # engagement_score: 0.10
   dna_modifier:
     segment_weights:
       "01-TOP": 1.3
@@ -591,8 +641,9 @@ data:
   #                     (for future-action and sequence-prediction tasks)
   split_strategy:
     state_tasks:
-      tasks: [churn_signal, product_stability, tenure_stage, spend_level,
-              segment_prediction, income_tier, engagement_score]
+      # REMOVED from list: tenure_stage, spend_level, income_tier, engagement_score
+      # (all 4 were deterministic-leakage tasks removed 2026-04-10)
+      tasks: [churn_signal, product_stability, segment_prediction]
       val_method: random
     future_tasks:
       tasks: [has_nba, nba_primary, will_acquire_deposits, will_acquire_investments,
@@ -803,7 +854,7 @@ training:
 # Distillation
 # ---------------------------------------------------------------------------
 distillation:
-  temperature: 5.0
+  temperature: 1.0  # T=1: use teacher probabilities as-is (no temperature scaling for LGBM student)
   alpha: 0.3
   lgbm:
     num_leaves: 127
@@ -828,53 +879,57 @@ ablation:
   base_groups: [demographics, product_holdings]
 
   # Task tiers for Phase 3: task-scale ablation
+  # NOTE: tasks_8/tasks_15/tasks_18 renamed to tasks_6/tasks_11/tasks_14 because
+  # 4 deterministic-leakage tasks were removed (tenure_stage, spend_level,
+  # engagement_score, income_tier). Old tier names kept as comments for reference.
   task_tiers:
     tasks_4:
       - has_nba
       - churn_signal
       - product_stability
       - nba_primary
-    tasks_8:
+    tasks_6:  # was tasks_8; removed tenure_stage, spend_level, engagement_score
       - has_nba
       - churn_signal
       - product_stability
       - nba_primary
-      - tenure_stage
-      - spend_level
+      # REMOVED: tenure_stage (deterministic leakage)
+      # REMOVED: spend_level (deterministic leakage)
       - cross_sell_count
-      - engagement_score
-    tasks_15:
+      # REMOVED: engagement_score (deterministic leakage)
+      - segment_prediction
+    tasks_11:  # was tasks_15; removed tenure_stage, spend_level, engagement_score, income_tier
       - has_nba
       - churn_signal
       - product_stability
       - nba_primary
-      - tenure_stage
-      - spend_level
+      # REMOVED: tenure_stage (deterministic leakage)
+      # REMOVED: spend_level (deterministic leakage)
       - cross_sell_count
-      - engagement_score
+      # REMOVED: engagement_score (deterministic leakage)
       - will_acquire_deposits
       - will_acquire_investments
       - will_acquire_accounts
       - will_acquire_lending
       - will_acquire_payments
       - segment_prediction
-      - income_tier
-    tasks_18:
+      # REMOVED: income_tier (deterministic leakage)
+    tasks_14:  # was tasks_18; removed tenure_stage, spend_level, engagement_score, income_tier
       - has_nba
       - churn_signal
       - product_stability
       - nba_primary
-      - tenure_stage
-      - spend_level
+      # REMOVED: tenure_stage (deterministic leakage)
+      # REMOVED: spend_level (deterministic leakage)
       - cross_sell_count
-      - engagement_score
+      # REMOVED: engagement_score (deterministic leakage)
       - will_acquire_deposits
       - will_acquire_investments
       - will_acquire_accounts
       - will_acquire_lending
       - will_acquire_payments
       - segment_prediction
-      - income_tier
+      # REMOVED: income_tier (deterministic leakage)
       - next_mcc
       - mcc_diversity_trend
       - top_mcc_shift

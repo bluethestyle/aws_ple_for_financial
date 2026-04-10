@@ -91,7 +91,7 @@
   #line(length: 30%, stroke: 0.5pt + anthropic-rule)
   #v(0.3cm)
 
-  #text(size: 11pt, fill: anthropic-text)[941K Users × 18 Tasks × 7 Shared Experts]
+  #text(size: 11pt, fill: anthropic-text)[941K Users × 14 Tasks × 7 Shared Experts]
   #v(0.5em)
   #text(size: 10pt, fill: anthropic-muted)[대상: ML 엔지니어 (운영자)]
   #v(1cm)
@@ -360,7 +360,7 @@ PLE 2-Phase Training:
   - 7 shared experts: deepfm, temporal_ensemble, hgcn, perslay,
                       causal, lightgcn, optimal_transport
   - 1 task expert: mlp (태스크별)
-  - 18 tasks (4 tiers): binary/multiclass/regression
+  - 14 tasks (4 tiers): binary/multiclass/regression
   - Uncertainty weighting (Kendall et al.)
   - AMP (Mixed Precision) 필수 활성화
 ```
@@ -483,7 +483,7 @@ python scripts/run_santander_ablation.py \
 --removed-experts "hgcn,perslay"
 
 # 태스크 수 조절
---num-active-tasks 4  # 4/8/15/18
+--num-active-tasks 4  # 4/8/11/14
 
 # 구조 변형
 --disable-adatt          # adaTT 비활성화
@@ -525,7 +525,7 @@ ablation:
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
     spacing: (12pt, 18pt),
-    node((0,0), [PLE Teacher \ (GPU, 18 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
+    node((0,0), [PLE Teacher \ (GPU, 14 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
     edge((0,0), (0,1), "->", label: [Forward pass — soft labels (temperature=5.0) \ S3에 저장], label-side: right),
     node((0,1), [LGBM Students (CPU, per-task) \ loss = 0.3 × hard\_loss + 0.7 × soft\_loss \ num\_leaves: 127, n\_estimators: 500 \ Per-task fidelity validation (AUC gap < threshold)], fill: rgb("#e8f5e9"), width: 72mm),
     edge((0,1), (0,2), "->"),
@@ -800,13 +800,13 @@ cold_start:
 ```yaml
 task_groups:
   - name: engagement
-    tasks: [has_nba, engagement_score, next_mcc, top_mcc_shift]
+    tasks: [has_nba, next_mcc, top_mcc_shift]
     adatt_intra_strength: 0.8   # 그룹 내 전이 강도
     adatt_inter_strength: 0.3   # 그룹 간 전이 강도
   - name: lifecycle
-    tasks: [churn_signal, product_stability, tenure_stage, segment_prediction]
+    tasks: [churn_signal, product_stability, segment_prediction]
   - name: value
-    tasks: [spend_level, income_tier, mcc_diversity_trend]
+    tasks: [mcc_diversity_trend]
   - name: consumption
     tasks: [nba_primary, cross_sell_count, will_acquire_*]
 ```

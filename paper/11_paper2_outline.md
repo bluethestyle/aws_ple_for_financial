@@ -71,8 +71,9 @@
 ## 3. Knowledge Distillation (~2 pages)
 
 ### 3.1 Teacher-Student Architecture
-- Teacher: PLE 18-task, 7 experts, 316 features (논문 1)
-- Student: LGBM × 18 tasks, CPU 추론
+- Teacher: PLE 14-task, 7 experts, 316 features (논문 1)
+- Student: LGBM × 14 tasks, CPU 추론
+- 제외된 4개 태스크 (income_tier, tenure_stage, spend_level, engagement_score): 피처의 deterministic 변환이므로 레이블로 부적합 (모델이 입력에서 완벽 복원 가능 → 리키지)
 - [Figure 1: Teacher → Student 증류 구조]
 
 ### 3.2 IG-based Feature Selection

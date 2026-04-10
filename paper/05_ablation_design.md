@@ -43,7 +43,7 @@
 ### Phase 3: Task × Structure Cross Ablation (16 scenarios)
 
 **4 Task Tiers × 4 Structures:**
-- tasks_4 / tasks_8 / tasks_15 / tasks_18 (all)
+- tasks_4 / tasks_8 / tasks_12 / tasks_14 (all)
 - shared_bottom / ple_only / adatt_only / full (PLE + adaTT)
 
 → "태스크 수 증가 시 PLE/adaTT 구조가 얼마나 도움되는가" 측정
@@ -62,7 +62,7 @@ training_defaults:
   drop_last: true
 ```
 
-- 데이터: 1M customers, 316 features (전체 피처 공간), 18 tasks
+- 데이터: 1M customers, 316 features (전체 피처 공간), 14 tasks
 - **FeatureRouter 활성화**: 각 expert는 전체 316D가 아닌 지정된 피처 그룹만 수신
   - deepfm=109D, temporal_ensemble=129D, causal=103D, optimal_transport=69D
   - lightgcn=66D, hgcn=34D, perslay=32D

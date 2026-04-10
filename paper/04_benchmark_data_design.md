@@ -30,10 +30,10 @@
 
 | Tier | 레이블 | obs_frac | lat_frac | noise_frac | label_noise | XGB AUC ceiling |
 |------|--------|----------|----------|------------|-------------|-----------------|
-| Easy | segment, income_tier, tenure_stage | 결정론적 | - | - | - | 0.95-1.0 |
+| Easy | segment | 결정론적 | - | - | - | 0.95-1.0 |
 | Core | has_nba, churn_signal | 0.04 | 0.28 | 0.68 | 6% | 0.58-0.65 |
 | Hard | will_acquire_* (5개) | 0.03 | 0.25 | 0.72 | 8% | 0.50-0.56 |
-| Regression | product_stability, engagement_score | 연속 | - | 직접 가산 | - | R2 0.0-1.0 |
+| Regression | product_stability | 연속 | - | 직접 가산 | - | R2 0.0-1.0 |
 | Very Hard | next_mcc, top_mcc_shift | 0.02 | 0.20 | 0.78 | 5% | 0.50-0.51 |
 
 ### Label Noise (Post-hoc Flipping)
@@ -71,6 +71,6 @@ Per-group AUC (has_nba):
 
 - 고객 수: 1,000,000
 - 컬럼 수: 106 (raw) → 316 (Phase 0 후 features)
-- 레이블: 18 tasks
+- 레이블: 14 tasks
 - 파일 크기: ~1.1GB (raw), ~1.2GB (Phase 0 output)
 - 시퀀스: LIST 컬럼 (ragged tensor), 최대 12개월 × 30 거래

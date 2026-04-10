@@ -91,7 +91,7 @@
   #line(length: 30%, stroke: 0.5pt + anthropic-rule)
   #v(0.3cm)
 
-  #text(size: 11pt, fill: anthropic-text)[941K Users x 18 Tasks x 7 Shared Experts]
+  #text(size: 11pt, fill: anthropic-text)[941K Users x 14 Tasks x 7 Shared Experts]
   #v(0.5em)
   #text(size: 10pt, fill: anthropic-muted)[Target: ML Engineers (Operators)]
   #v(1cm)
@@ -337,7 +337,7 @@ Key components:
   - 7 shared experts: deepfm, temporal_ensemble, hgcn, perslay,
                       causal, lightgcn, optimal_transport
   - 1 task expert: mlp (per task)
-  - 18 tasks (4 tiers): binary/multiclass/regression
+  - 14 tasks (4 tiers): binary/multiclass/regression
   - Uncertainty weighting (Kendall et al.)
   - AMP (Mixed Precision) must be enabled
 ```
@@ -460,7 +460,7 @@ The following HPs can be overridden per scenario:
 --removed-experts "hgcn,perslay"
 
 # Adjust task count
---num-active-tasks 4  # 4/8/15/18
+--num-active-tasks 4  # 4/8/11/14
 
 # Structural variants
 --disable-adatt          # Disable adaTT
@@ -502,7 +502,7 @@ ablation:
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
     spacing: (12pt, 18pt),
-    node((0,0), [PLE Teacher \ (GPU, 18 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
+    node((0,0), [PLE Teacher \ (GPU, 14 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
     edge((0,0), (0,1), "->", label: [Forward pass — soft labels (temperature=5.0) \ Store in S3], label-side: right),
     node((0,1), [LGBM Students (CPU, per-task) \ loss = 0.3 × hard\_loss + 0.7 × soft\_loss \ num\_leaves: 127, n\_estimators: 500 \ Per-task fidelity validation (AUC gap < threshold)], fill: rgb("#e8f5e9"), width: 72mm),
     edge((0,1), (0,2), "->"),
@@ -777,13 +777,13 @@ Key fields per group:
 ```yaml
 task_groups:
   - name: engagement
-    tasks: [has_nba, engagement_score, next_mcc, top_mcc_shift]
+    tasks: [has_nba, next_mcc, top_mcc_shift]
     adatt_intra_strength: 0.8   # Intra-group transfer strength
     adatt_inter_strength: 0.3   # Inter-group transfer strength
   - name: lifecycle
-    tasks: [churn_signal, product_stability, tenure_stage, segment_prediction]
+    tasks: [churn_signal, product_stability, segment_prediction]
   - name: value
-    tasks: [spend_level, income_tier, mcc_diversity_trend]
+    tasks: [mcc_diversity_trend]
   - name: consumption
     tasks: [nba_primary, cross_sell_count, will_acquire_*]
 ```

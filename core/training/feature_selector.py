@@ -39,6 +39,8 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from core.evaluation.integrated_gradients import IntegratedGradients
+
 logger = logging.getLogger(__name__)
 
 
@@ -332,7 +334,7 @@ class FeatureSelector:
         return ig_result
 
     # ------------------------------------------------------------------
-    # Internal: Integrated Gradients
+    # Internal: Integrated Gradients (delegates to standalone class)
     # ------------------------------------------------------------------
 
     def _compute_ig(
@@ -343,7 +345,16 @@ class FeatureSelector:
     ) -> np.ndarray:
         """Compute Integrated Gradients for a task.
 
-        Uses mini-batching to avoid OOM on large feature matrices.
+        Delegates to :class:`~core.evaluation.integrated_gradients.IntegratedGradients`
+        for proper trapezoidal integration.  Processes in mini-batches of 64
+        samples to avoid OOM on large feature matrices.
+
+        The ``"median"`` baseline strategy is handled here (not supported by
+        the standalone class) by computing the median and passing it as a
+        custom ``torch.Tensor`` baseline.
+
+        Also populates ``self._last_signed_ig[task_name]`` with the mean
+        signed attributions for direction-of-effect interpretation.
 
         Args:
             model: PLE teacher model (torch.nn.Module).
@@ -354,91 +365,61 @@ class FeatureSelector:
             Array of shape ``(n_features,)`` with mean absolute IG per feature.
         """
         import torch
+        from core.model.ple.model import PLEInput
 
         device = next(model.parameters()).device
         features = features.to(device)
 
-        # Baseline
-        if self._config.ig_baseline == "zeros":
-            baseline = torch.zeros_like(features)
-        elif self._config.ig_baseline == "mean":
-            baseline = features.mean(dim=0, keepdim=True).expand_as(features)
-        else:  # median
-            baseline = (
-                features.median(dim=0).values.unsqueeze(0).expand_as(features)
-            )
+        # Resolve baseline tensor for "median" (not supported by standalone).
+        # For "zeros" and "mean" we pass the strategy string directly.
+        if self._config.ig_baseline == "median":
+            baseline_arg: Any = features.median(dim=0).values.unsqueeze(0)
+        else:
+            baseline_arg = self._config.ig_baseline  # "zeros" | "mean"
 
-        n_steps = self._config.ig_steps
+        ig_engine = IntegratedGradients(
+            model=model,
+            baseline=baseline_arg,
+            n_steps=self._config.ig_steps,
+            device=device,
+        )
 
-        # Interpolation alphas
-        alphas = torch.linspace(0, 1, n_steps, device=device).view(-1, 1, 1)
-
-        # Process in mini-batches to avoid OOM
         batch_size = min(64, features.shape[0])
-        all_grads: List[np.ndarray] = []
+        all_attrs: List[np.ndarray] = []
 
         for start in range(0, features.shape[0], batch_size):
             end = min(start + batch_size, features.shape[0])
-            batch_features = features[start:end]
-            batch_baseline = baseline[start:end]
+            batch_feat = features[start:end]
 
-            # Interpolated inputs: (n_steps, batch, n_features)
-            interp = batch_baseline.unsqueeze(0) + alphas * (
-                batch_features.unsqueeze(0) - batch_baseline.unsqueeze(0)
-            )
-            # Reshape: (n_steps * batch, n_features)
-            interp_flat = interp.reshape(-1, features.shape[1])
-            interp_flat = interp_flat.detach().requires_grad_(True)
-
-            # Forward pass -- get task-specific output
-            from core.model.ple.model import PLEInput
-
-            inputs = PLEInput(features=interp_flat)
-
+            # Validate task availability via a minimal probe (first step only)
+            # so we can emit the fallback warning before running full IG.
+            probe_inputs = PLEInput(features=batch_feat.detach())
             model.eval()
-            outputs = model(inputs, compute_loss=False)
-
-            # Get prediction for target task
-            if task_name in outputs.predictions:
-                pred = outputs.predictions[task_name]
-                if pred.dim() > 1:
-                    pred = pred.sum(dim=1)  # sum over classes for multiclass
-                target = pred.sum()
-            else:
-                # Fallback: use first available task
-                first_task = list(outputs.predictions.keys())[0]
+            with torch.no_grad():
+                probe_out = model(probe_inputs, compute_loss=False)
+            effective_task = task_name
+            if task_name not in probe_out.predictions:
+                first_task = next(iter(probe_out.predictions))
                 logger.warning(
                     "Task '%s' not in model outputs, using '%s' instead.",
                     task_name,
                     first_task,
                 )
-                pred = outputs.predictions[first_task]
-                target = pred.sum()
+                effective_task = first_task
 
-            # Backward
-            target.backward()
+            ple_inputs = PLEInput(features=batch_feat)
+            # attribute() returns (batch, n_features) signed attributions
+            attr = ig_engine.attribute(ple_inputs, target_task=effective_task)
+            all_attrs.append(attr.cpu().numpy())
 
-            if interp_flat.grad is not None:
-                grads = interp_flat.grad.reshape(n_steps, end - start, -1)
-                # Trapezoidal integration (approximate with mean)
-                avg_grads = grads.mean(dim=0)  # (batch, n_features)
-                ig = (batch_features.detach() - batch_baseline) * avg_grads
-                all_grads.append(ig.abs().detach().cpu().numpy())
-
-            model.zero_grad()
-
-        if all_grads:
-            all_ig = np.concatenate(all_grads, axis=0)
-            # Mean absolute IG per feature (for feature selection)
-            abs_ig = np.abs(all_ig).mean(axis=0)
-
-            # Also store signed IG (mean, not abs) for direction interpretation
+        if all_attrs:
+            all_ig = np.concatenate(all_attrs, axis=0)  # (n_samples, n_features)
+            abs_ig = np.abs(all_ig).mean(axis=0)         # (n_features,)
             self._last_signed_ig[task_name] = all_ig.mean(axis=0)
-
             return abs_ig
-        else:
-            # No gradients computed -- return uniform importance
-            return np.ones(features.shape[1]) / features.shape[1]
+
+        # No gradients computed — return uniform importance
+        return np.ones(features.shape[1]) / features.shape[1]
 
     def get_signed_ig(self, task_name: str) -> Optional[np.ndarray]:
         """Return signed IG values from the last compute_ig call.

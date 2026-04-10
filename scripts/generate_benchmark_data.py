@@ -614,12 +614,67 @@ class BenchmarkDataGenerator:
         # Shape: (n, MAX_TXN) — ~1M × 400 × 4B = ~1.6GB
         _total_txns = np.clip((base_lambda * 12).astype(int), 1, MAX_TXN)
 
-        # MCC indices: hash-based deterministic per (customer, txn_position)
+        # MCC indices: persona-based weighted distribution
         _cust_ids = np.arange(n, dtype=np.int64)
         _mcc_matrix = np.zeros((n, MAX_TXN), dtype=np.int32)
         _amt_matrix = np.zeros((n, MAX_TXN), dtype=np.float32)
         _hour_matrix = np.zeros((n, MAX_TXN), dtype=np.int32)
         _offset_matrix = np.zeros((n, MAX_TXN), dtype=np.int32)
+
+        # Persona → MCC preference weights (index over top_mccs slots 0..n_top_mccs-1)
+        # Groups map to index ranges in the sorted top_mccs list:
+        #   0-5:  grocery/food basics  (MCC ~5411,5499,5300,5310)
+        #   6-10: utilities/fuel       (MCC ~4900,5541,5533,4814)
+        #   11-15: dining/restaurants  (MCC ~5812,5813,5814,5815)
+        #   16-25: retail/clothing     (MCC ~5311,5651,5621,5661,5712,5719,5722)
+        #   26-30: entertainment       (MCC ~5816,7832,7922,7995,7996)
+        #   31-35: online/digital      (MCC ~5045,5094,5192,5193,4899)
+        #   36-40: subscriptions/svcs  (MCC ~7210,7230,7276,7349,7393)
+        #   41-45: travel/airline      (MCC ~3000-3132 airlines, 4511,4722)
+        #   46-48: luxury/finance      (MCC ~6300,8111,8931)
+        #   49:    miscellaneous       (last slot)
+        def _make_mcc_weights(n_mccs: int, persona_name: str) -> np.ndarray:
+            """Build a normalized MCC weight vector for a given persona."""
+            w = np.ones(n_mccs, dtype=np.float64)
+            # Clamp index ranges to available MCC slots
+            def _boost(lo: int, hi: int, factor: float) -> None:
+                lo_c, hi_c = min(lo, n_mccs), min(hi, n_mccs)
+                if lo_c < hi_c:
+                    w[lo_c:hi_c] *= factor
+
+            if persona_name == "conservative_saver":
+                _boost(0, 6, 4.0)   # grocery
+                _boost(6, 11, 3.0)  # utilities/fuel
+                _boost(11, 16, 1.5) # some dining
+                _boost(26, 49, 0.3) # minimal entertainment/digital/travel
+            elif persona_name == "active_spender":
+                _boost(11, 16, 3.0) # dining
+                _boost(16, 26, 2.5) # retail
+                _boost(26, 31, 2.0) # entertainment
+                _boost(0, 6, 1.5)   # some grocery
+            elif persona_name == "young_digital":
+                _boost(31, 36, 4.0) # online/digital
+                _boost(36, 41, 3.0) # subscriptions
+                _boost(26, 31, 2.5) # entertainment/gaming
+                _boost(11, 16, 1.5) # dining
+                _boost(0, 11, 0.4)  # less grocery/utilities
+            elif persona_name == "high_value":
+                _boost(41, 46, 4.0) # travel/airline
+                _boost(46, 49, 3.5) # luxury/finance
+                _boost(16, 26, 2.0) # retail
+                _boost(11, 16, 1.5) # dining
+            elif persona_name == "occasional_user":
+                _boost(0, 6, 5.0)   # concentrated grocery
+                _boost(6, 9, 3.0)   # fuel
+                _boost(9, 49, 0.2)  # minimal everything else
+            elif persona_name == "diversified":
+                # Roughly uniform with slight retail tilt
+                _boost(16, 26, 1.5) # retail
+            # Normalize to probability distribution
+            return w / w.sum()
+
+        # Sticky MCC probability: with this prob a transaction repeats the previous MCC
+        STICKY_PROB = 0.30
 
         # Vectorized generation per persona (bulk random)
         for pid in range(self.n_personas):
@@ -627,9 +682,51 @@ class BenchmarkDataGenerator:
             n_p = mask.sum()
             if n_p == 0:
                 continue
-            _mcc_matrix[mask] = self.rng.integers(0, n_top_mccs, size=(n_p, MAX_TXN))
-            _amt_matrix[mask] = np.exp(self.rng.normal(3.0, 1.0, size=(n_p, MAX_TXN))).astype(np.float32)
-            _hour_matrix[mask] = self.rng.integers(0, 24, size=(n_p, MAX_TXN))
+            pname = self.persona_names[pid]
+            mcc_weights = _make_mcc_weights(n_top_mccs, pname)
+
+            # Draw base MCC choices using persona weights
+            base_mccs = self.rng.choice(
+                n_top_mccs, size=(n_p, MAX_TXN), p=mcc_weights
+            ).astype(np.int32)
+
+            # Apply temporal stickiness: for each txn position > 0, with
+            # probability STICKY_PROB repeat the previous txn's MCC
+            sticky_mask = self.rng.random(size=(n_p, MAX_TXN)) < STICKY_PROB
+            sticky_mask[:, 0] = False  # first txn always uses base choice
+            for t in range(1, MAX_TXN):
+                base_mccs[sticky_mask[:, t], t] = base_mccs[sticky_mask[:, t], t - 1]
+
+            _mcc_matrix[mask] = base_mccs
+
+            # Persona-dependent amount distribution (log-normal)
+            amt_params = {
+                "conservative_saver": (2.5, 0.8),   # lower spend
+                "active_spender":     (3.5, 1.0),   # higher spend
+                "young_digital":      (2.8, 0.9),   # moderate, digital
+                "high_value":         (4.0, 1.2),   # highest spend
+                "occasional_user":    (2.3, 0.7),   # lowest spend
+                "diversified":        (3.2, 1.0),   # moderate
+            }
+            mu, sigma = amt_params.get(pname, (3.0, 1.0))
+            _amt_matrix[mask] = np.exp(
+                self.rng.normal(mu, sigma, size=(n_p, MAX_TXN))
+            ).astype(np.float32)
+
+            # Persona-dependent hour distribution (weighted, not uniform)
+            hour_weights = {
+                "conservative_saver": [0.01]*6 + [0.05]*3 + [0.08]*4 + [0.06]*5 + [0.02]*6,
+                "active_spender":     [0.01]*6 + [0.03]*3 + [0.06]*4 + [0.08]*5 + [0.05]*6,
+                "young_digital":      [0.03]*6 + [0.02]*3 + [0.04]*4 + [0.06]*5 + [0.08]*6,
+                "high_value":         [0.01]*6 + [0.04]*3 + [0.07]*4 + [0.07]*5 + [0.03]*6,
+                "occasional_user":    [0.01]*6 + [0.06]*3 + [0.09]*4 + [0.05]*5 + [0.01]*6,
+                "diversified":        [0.02]*6 + [0.04]*3 + [0.06]*4 + [0.06]*5 + [0.04]*6,
+            }
+            hw = np.array(hour_weights.get(pname, [1/24]*24), dtype=np.float64)
+            hw = hw / hw.sum()
+            _hour_matrix[mask] = self.rng.choice(
+                24, size=(n_p, MAX_TXN), p=hw
+            ).astype(np.int32)
             # Day offsets: spread across 360 days
             _offset_matrix[mask] = np.sort(
                 self.rng.integers(0, 360, size=(n_p, MAX_TXN)), axis=1
@@ -648,6 +745,20 @@ class BenchmarkDataGenerator:
         total_spend_arr = np.array([_amt_matrix[i, :_total_txns[i]].sum() for i in range(n)], dtype=np.float32)
         unique_mcc_arr = np.array([len(set(_mcc_matrix[i, :_total_txns[i]])) for i in range(n)], dtype=np.int32)
 
+        # Compute time-of-day ratios from actual hour sequences (before deleting matrices)
+        _morning = np.zeros(n, dtype=np.float64)   # 6-11
+        _afternoon = np.zeros(n, dtype=np.float64)  # 12-17
+        _evening = np.zeros(n, dtype=np.float64)    # 18-23
+        _night = np.zeros(n, dtype=np.float64)      # 0-5
+        for i in range(n):
+            t = _total_txns[i]
+            if t > 0:
+                hours = _hour_matrix[i, :t]
+                _morning[i] = np.mean((hours >= 6) & (hours < 12))
+                _afternoon[i] = np.mean((hours >= 12) & (hours < 18))
+                _evening[i] = np.mean((hours >= 18))
+                _night[i] = np.mean(hours < 6)
+
         del _mcc_matrix, _amt_matrix, _hour_matrix, _offset_matrix
         logger.info("  Transaction sequences generated (no row explosion)")
 
@@ -661,11 +772,11 @@ class BenchmarkDataGenerator:
         synth_unique_merchants = np.minimum(unique_mcc_arr + self.rng.integers(3, 15, size=n), 33).astype(np.int32)
         synth_frequency = total_txns_arr.astype(np.int32)
         synth_monetary = total_spend_arr.astype(np.float64)
-        # Time-of-day ratios: approximate from persona-conditioned distributions
-        synth_morning_ratio = np.where(z < 3, 0.25, 0.20).astype(np.float64)
-        synth_afternoon_ratio = np.where(z < 3, 0.35, 0.30).astype(np.float64)
-        synth_evening_ratio = np.where(z < 3, 0.30, 0.35).astype(np.float64)
-        synth_night_ratio = 1.0 - synth_morning_ratio - synth_afternoon_ratio - synth_evening_ratio
+        # Time-of-day ratios: computed from actual hour sequences (above)
+        synth_morning_ratio = _morning
+        synth_afternoon_ratio = _afternoon
+        synth_evening_ratio = _evening
+        synth_night_ratio = _night
         synth_recency_days = self.rng.uniform(1, 30, size=n).astype(np.float64)
         cv = np.maximum(np.abs(total_txns_arr / 12.0 - base_lambda) / np.maximum(base_lambda, 1), 0.01)
         synth_stability = (1.0 / cv).astype(np.float64)
@@ -980,12 +1091,24 @@ class BenchmarkDataGenerator:
         # ================================================================
 
         # --- spend_level (multiclass 4) ---
+        # Use RAW (pre-normalization) synth_monthly_spend from features dict.
+        # Boundaries are quantile-based (33rd/66th/90th pct) so class
+        # distribution is always meaningful regardless of the generated spend
+        # scale. This avoids hardcoded currency thresholds that only hold for
+        # specific amount distributions.
         spend = features["synth_monthly_spend"].astype(np.float64)
+        spend_q33 = np.nanpercentile(spend, 33)
+        spend_q66 = np.nanpercentile(spend, 66)
+        spend_q90 = np.nanpercentile(spend, 90)
         labels["label_spend_level"] = np.where(
-            spend < 1500, 0,
-            np.where(spend < 3000, 1,
-                     np.where(spend < 5000, 2, 3))
+            spend < spend_q33, 0,
+            np.where(spend < spend_q66, 1,
+                     np.where(spend < spend_q90, 2, 3))
         ).astype(np.int64)
+        logger.info(
+            "  spend_level boundaries (quantile-based): q33=%.1f, q66=%.1f, q90=%.1f",
+            spend_q33, spend_q66, spend_q90,
+        )
 
         # --- engagement_score (regression, 0-1) ---
         # weighted sum: is_active*0.3 + frequency_norm*0.4 + num_products_norm*0.3

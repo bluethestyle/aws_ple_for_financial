@@ -4,7 +4,7 @@
 
 This document describes how DuckDB became the foundational data processing layer
 in a production financial recommendation system. The system runs a
-Progressively-Learned Expert (PLE) architecture with 18 tasks, 7 heterogeneous
+Progressively-Learned Expert (PLE) architecture with 14 tasks, 7 heterogeneous
 expert networks, ~941K customers, and ~316 features — all developed and validated
 on a single workstation before deployment to SageMaker Training Jobs.
 
@@ -22,7 +22,7 @@ between "this works" and "this doesn't fit in memory."
 | Network | Air-gapped during development — no cloud access |
 | Infrastructure | No Spark, no Hadoop, no distributed compute |
 | Dataset | 941K customer rows x 316 features; 24M transaction rows |
-| pandas verdict | OOM on the full dataset; `.groupby().apply(lambda)` on 18 label columns took 40+ minutes |
+| pandas verdict | OOM on the full dataset; `.groupby().apply(lambda)` on 14 label columns took 40+ minutes |
 
 The project policy (documented in `CLAUDE.md`) codifies the data backend
 priority order: **cuDF (GPU) → DuckDB (CPU columnar) → pandas (fallback only
@@ -79,8 +79,8 @@ con.execute(f"COPY {table_name} TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)")
 
 ### 2. SQL Aggregation Replacing pandas groupby for Label Derivation
 
-The pipeline derives 18 binary and multi-class labels from the raw feature
-DataFrame. In the original pandas prototype, this was 18 sequential
+The pipeline derives 14 binary and multi-class labels from the raw feature
+DataFrame. In the original pandas prototype, this was 14 sequential
 `.apply(lambda)` calls over 941K rows — each one holding the full dataset in
 memory and serializing row-by-row through Python.
 
@@ -291,11 +291,11 @@ See `scripts/benchmark_duckdb_vs_pandas.py` for reproduction. Observed on the
 | Operation | pandas | DuckDB | Speedup |
 |---|---|---|---|
 | Load 941K x 316 Parquet | 18.4 s | 3.1 s | 5.9x |
-| 18-label derivation | 43 min | 2.1 min | ~20x |
+| 14-label derivation | 43 min | 2.1 min | ~20x |
 | 316-col imputation (one pass) | 8.7 s | 0.9 s | 9.7x |
 | Feature matrix POSITIONAL JOIN | 4.2 s | 0.3 s | 14x |
 
-The label derivation gap is large because the pandas path ran 18 sequential
+The label derivation gap is large because the pandas path ran 14 sequential
 `.apply(lambda)` calls, each holding the full DataFrame in memory.
 
 ---
@@ -308,8 +308,8 @@ The label derivation gap is large because the pandas path ran 18 sequential
 - **Sliding-window sequences over 24M transaction rows** — per-window `WHERE`
   filters over 24M rows are not feasible with pandas. DuckDB scans only the rows
   in each date range.
-- **18 labels without row-wise Python** — `pd.apply(lambda, axis=1)` on 941K
-  rows for 18 targets required 18 full-DataFrame passes. DuckDB runs all 18
+- **14 labels without row-wise Python** — `pd.apply(lambda, axis=1)` on 941K
+  rows for 14 targets required 14 full-DataFrame passes. DuckDB runs all 14
   derivations as SQL against one registered table.
 - **Parquet I/O without loading the full file** — `read_parquet()` with predicate
   pushdown; column-selective queries never materialize the full 316-column file.

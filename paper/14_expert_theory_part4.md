@@ -15,7 +15,7 @@
 
 **Key design decisions**:
 - **Cross-architecture distillation** (DNN -> GBDT): Possible because KD transfers knowledge through output distributions, not parameters. The paradigm of "train with deep learning, serve with GBDT" has become a de facto standard in recommendation, finance, and advertising domains (Borisov et al., NeurIPS 2022).
-- **Per-task independent LGBM models**: LightGBM does not natively support multi-output. Each of the 18 tasks gets an independent Student model, but indirectly benefits from multi-task knowledge through soft labels.
+- **Per-task independent LGBM models**: LightGBM does not natively support multi-output. Each of the 14 tasks gets an independent Student model, but indirectly benefits from multi-task knowledge through soft labels.
 - **IG-based feature selection**: 734D -> 200D via Integrated Gradients, then further to ~140D via LGBM importance filtering.
 
 ### 1.2 Mathematical Formulations

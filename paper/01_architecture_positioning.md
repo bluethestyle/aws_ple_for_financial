@@ -70,7 +70,7 @@ Phase 1-3: Ablation Study (48 scenarios)
   └── Task × Structure Cross (16): PLE/adaTT 구조 효과
 
 Phase 4: Knowledge Distillation
-  ├── PLE 18-task teacher → LGBM student
+  ├── PLE 14-task teacher → LGBM student
   ├── IG 기반 피처 선택 (top-k features)
   └── Soft label distillation
 
@@ -103,14 +103,14 @@ Phase 5: Deployment
 - "예금→투자"보다 "예금→대출"이 더 먼 거리라는 관계가 자연스럽게 보존
 
 ### 모델 구조
-- **PLE (Progressive Layered Extraction)**: 18 tasks, 7 heterogeneous experts, **~2.8M params**
+- **PLE (Progressive Layered Extraction)**: 14 tasks, 7 heterogeneous experts, **~2.8M params**
 - **FeatureRouter**: feature_groups.yaml의 target_experts 설정에 따라 각 expert에 해당 피처 그룹만 라우팅
   - deepfm=109D, temporal_ensemble=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, optimal_transport=69D
   - 전체 316 피처 중 expert별로 귀납적 편향에 부합하는 부분집합만 수신 (config-driven)
 - **adaTT (Adaptive Task Transfer)**: 4 task groups 간 knowledge transfer
-  - engagement: has_nba, engagement_score, next_mcc, top_mcc_shift
-  - lifecycle: churn_signal, tenure_stage, segment_prediction
-  - value: income_tier, spend_level, cross_sell_count, product_stability
+  - engagement: has_nba, next_mcc, top_mcc_shift
+  - lifecycle: churn_signal, segment_prediction
+  - value: cross_sell_count, product_stability
   - consumption: will_acquire_* (5개), nba_primary
 - **Expert Basket**: deepfm, temporal_ensemble, hgcn, perslay, causal, lightgcn, optimal_transport
 - **Feature Groups**: 12 groups (4 base + 8 generated), 316 features total → FeatureRouter가 expert별 부분집합으로 분배

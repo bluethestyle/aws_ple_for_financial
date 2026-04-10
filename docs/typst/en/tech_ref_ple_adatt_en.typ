@@ -254,7 +254,7 @@
 
 == 1.1 Motivation for Multi-Task Learning
 
-The AIOps recommendation system must simultaneously predict 18 tasks.
+The AIOps recommendation system must simultaneously predict 14 tasks.
 Leveraging shared patterns across tasks dramatically improves data efficiency.
 The total loss is defined as a weighted sum:
 
@@ -455,7 +455,7 @@ $ bold(h)_"hmm"^m = "SiLU"("LayerNorm"("Linear"_(16 arrow 32)(bold(x)_"hmm"^m)))
 
 == 3.1 Motivation: Negative Transfer
 
-When 18 tasks share Shared Expert parameters, gradient conflicts cause
+When 14 tasks share Shared Expert parameters, gradient conflicts cause
 Negative Transfer. Three limitations of fixed-tower MTL:
 
 + *Unidirectional sharing*: no mechanism to detect or regulate inter-task interference
@@ -593,7 +593,7 @@ only clearly opposing gradient directions are blocked.
 Setting to 0 would over-prune paths and weaken adaTT effectiveness.
 
 Diagnostic API: `detect_negative_transfer()` returns negative transfer pairs in the form
-`{"churn_signal": ["has_nba", "engagement_score"]}`.
+`{"churn_signal": ["has_nba", "nba_primary"]}`.
 
 == 3.9 Analogy to Attention Mechanism
 
@@ -623,14 +623,14 @@ enabling immediate adaptation to changes in task relationships.
 
 == 4.1 Four Financial DNA Groups
 
-Based on domain knowledge, 18 tasks are classified into 4 groups:
+Based on domain knowledge, 14 tasks are classified into 4 groups:
 
 #styled-table(
   (1fr, 2.5fr, 0.7fr, 0.7fr, 1.8fr),
   [*Group*], [*Members*], [*Intra*], [*Inter*], [*Business Meaning*],
-  [Engagement], [has\_nba, engagement\_score, cross\_sell\_count,\ will\_acquire\_deposits, will\_acquire\_investments,\ will\_acquire\_accounts, will\_acquire\_lending,\ will\_acquire\_payments], [0.8], [0.3], [Customer engagement/conversion],
-  [Lifecycle], [churn\_signal, product\_stability,\ tenure\_stage, segment\_prediction], [0.7], [0.3], [Customer lifecycle],
-  [Value], [income\_tier, spend\_level, nba\_primary], [0.6], [0.3], [Customer value/behavioral patterns],
+  [Engagement], [has\_nba, cross\_sell\_count,\ will\_acquire\_deposits, will\_acquire\_investments,\ will\_acquire\_accounts, will\_acquire\_lending,\ will\_acquire\_payments], [0.8], [0.3], [Customer engagement/conversion],
+  [Lifecycle], [churn\_signal, product\_stability,\ segment\_prediction], [0.7], [0.3], [Customer lifecycle],
+  [Value], [nba\_primary], [0.6], [0.3], [Customer value/behavioral patterns],
   [Consumption], [next\_mcc, mcc\_diversity\_trend, top\_mcc\_shift], [0.7], [0.3], [Spending pattern analysis],
 )
 
@@ -655,9 +655,7 @@ Three transfer methods for *explicit information passing* between tasks:
   [*Source*], [*Target*], [*Type*], [*Strength*], [*Business Meaning*],
   [has\_nba], [nba\_primary], [Sequential], [0.5], [NBA presence $arrow.r$ primary product decision],
   [churn\_signal], [product\_stability], [Inverse], [0.5], [Inverse of churn signal $approx$ product stability],
-  [engagement\_score], [cross\_sell\_count], [Feature], [0.5], [Engagement $arrow.r$ cross-sell opportunity],
   [next\_mcc], [mcc\_diversity\_trend], [Feature], [0.5], [Next spend category $arrow.r$ diversity trend],
-  [spend\_level], [income\_tier], [Feature], [0.5], [Spending level $arrow.r$ income bracket],
 )
 
 Transfer mechanism (residual form):
@@ -740,7 +738,7 @@ adaTT is always restored after Phase 2 ends (guaranteed even on exceptions via `
 
 Tasks with high uncertainty ($sigma_i^2$ large) automatically receive lower weight ($1/(2 sigma_i^2)$),
 and the $log sigma_i^2$ regularization term prevents uncertainty from growing unboundedly.
-This *automatic balancing* replaces the combinatorial explosion of manually tuning weights for 18 tasks.
+This *automatic balancing* replaces the combinatorial explosion of manually tuning weights for 14 tasks.
 
 Uncertainty Weighting is applied *before* adaTT.
 The `task_losses` input to adaTT already reflects uncertainty weighting.
@@ -815,7 +813,7 @@ Memory impact:
   [*Component*], [*Memory*], [*Notes*],
   [Forward pass graph], [1x], [baseline],
   [retain\_graph overhead], [$tilde$1x], [additional memory due to graph not being freed],
-  [18 task gradients], [$tilde$0.3x], [each gradient is shared\_param\_size],
+  [14 task gradients], [$tilde$0.3x], [each gradient is shared\_param\_size],
   [*Total*], [*$tilde$2.3x*], [batch 16384 possible on RTX 4070 12GB],
 )
 

@@ -1,354 +1,253 @@
 #!/usr/bin/env python
-"""Local ablation runner — executes all 47 scenarios from pipeline.yaml config.
-
-Phases 1-3 only (feature/expert/structure). Phase 4-5 (distillation/report) are SageMaker-only.
-Each scenario runs train.py with different SM_HPS and collects eval_metrics.json.
 """
+Local Ablation Runner: 14 tasks, 10 epochs (warmup=3)
+Delta measurement only — same epoch count for fair comparison.
+No Docker, no SageMaker local mode. Pure local Python.
+
+Usage:
+    python scripts/run_local_ablation.py                # full 10-epoch ablation
+    python scripts/run_local_ablation.py --dry-run      # 1-epoch verify settings
+    python scripts/run_local_ablation.py --scenario NAME # single scenario
+"""
+from __future__ import annotations
+
+import argparse
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, Dict, List
 
-import yaml
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-ROOT = Path(__file__).resolve().parent.parent
-TRAIN_SCRIPT = str(ROOT / "containers" / "training" / "train.py")
-PHASE0_DIR = str(ROOT / "outputs" / "phase0")
-RESULTS_DIR = ROOT / "outputs" / "ablation_results"
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+PHASE0 = "outputs/phase0_v3"
+RESULTS = "outputs/ablation_v3"
 CONFIG = "configs/santander/pipeline.yaml"
+EPOCHS = 10
+WARMUP = 3
+BATCH = 4096
+LR = 0.0005
+SEED = 42
+AMP = True
+PATIENCE = EPOCHS  # no early stop — run full epochs for fair delta comparison
 
-# Load training defaults from pipeline.yaml ablation.training_defaults
-def _load_training_defaults() -> dict:
-    """Read ablation.training_defaults from pipeline.yaml (config-driven, no hardcoding)."""
-    defaults = {
-        "epochs": 10,
-        "batch_size": 4096,
-        "learning_rate": 0.008,
-        "amp": True,
-        "early_stopping_patience": 3,
-        "seed": 42,
-    }
-    try:
-        with open(ROOT / CONFIG, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
-        td = cfg.get("ablation", {}).get("training_defaults", {})
-        for key in defaults:
-            if key in td:
-                defaults[key] = td[key]
-    except Exception:
-        pass
-    return defaults
-
-# Base hyperparameters (from pipeline.yaml ablation.training_defaults)
-_td = _load_training_defaults()
-BASE_HP = {
+BASE_HPS: Dict[str, Any] = {
     "config": CONFIG,
-    "epochs": _td["epochs"],
-    "batch_size": _td["batch_size"],
-    "learning_rate": _td["learning_rate"],
-    "seed": _td["seed"],
-    "amp": _td["amp"],
-    "early_stopping_patience": _td["early_stopping_patience"],
+    "epochs": EPOCHS,
+    "batch_size": BATCH,
+    "learning_rate": LR,
+    "seed": SEED,
+    "amp": AMP,
+    "early_stopping_patience": PATIENCE,
+    "warmup_epochs": WARMUP,
+    "num_workers": 0,
 }
 
-# ============================================================
-# Phase 1: Feature + Expert Joint Ablation
-# Baseline = DeepFM only (all features, single expert)
-# Each scenario adds ONE specialized expert + its matching features
-# ============================================================
-_ALL_EXPERTS = ["deepfm", "temporal_ensemble", "hgcn", "perslay", "causal", "lightgcn", "optimal_transport"]
+# ---------------------------------------------------------------------------
+# Scenario definitions — json.dumps handles escaping correctly
+# ---------------------------------------------------------------------------
+SCENARIOS: List[Dict[str, Any]] = [
+    # === Structure ablation (6) ===
+    {"name": "struct_14_shared_bottom",
+     "hp": {"use_ple": "false", "use_adatt": "false"}},
+    {"name": "struct_14_ple_softmax",
+     "hp": {"use_ple": "true", "use_adatt": "false", "gate_type": "softmax"}},
+    {"name": "struct_14_ple_sigmoid",
+     "hp": {"use_ple": "true", "use_adatt": "false", "gate_type": "sigmoid"}},
+    {"name": "struct_14_ple_softmax_adatt",
+     "hp": {"use_ple": "true", "use_adatt": "true", "gate_type": "softmax"}},
+    {"name": "struct_14_ple_sigmoid_adatt",
+     "hp": {"use_ple": "true", "use_adatt": "true", "gate_type": "sigmoid"}},
+    {"name": "struct_14_adatt_only",
+     "hp": {"use_ple": "false", "use_adatt": "true"}},
 
-def _experts_without(*remove):
-    return json.dumps([e for e in _ALL_EXPERTS if e not in remove])
-
-# Feature groups that are NOT base (to be removed in base-only scenarios)
-_ALL_GENERATED = ["tda_global", "tda_local", "hmm_states", "mamba_temporal",
-                  "product_hierarchy", "graph_collaborative", "gmm_clustering", "model_derived"]
-
-def _remove_except(*keep):
-    """Return JSON list of feature groups to remove, keeping only specified ones."""
-    return json.dumps([g for g in _ALL_GENERATED if g not in keep])
-
-FEATURE_EXPERT_SCENARIOS = {
-    # === Baselines ===
-    "deepfm_base": {
-        "shared_experts": '["deepfm"]',
-        "removed_feature_groups": json.dumps(_ALL_GENERATED),
-    },
-    "deepfm_all_features": {
-        "shared_experts": '["deepfm"]',
-    },
-    "full": {},  # all experts + all features
-
-    # === DeepFM + one expert (with matching features) ===
-    "deepfm+tda": {
-        "shared_experts": '["deepfm","perslay"]',
-        "removed_feature_groups": _remove_except("tda_global", "tda_local"),
-    },
-    "deepfm+temporal": {
-        "shared_experts": '["deepfm","temporal_ensemble"]',
-        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal"),
-    },
-    "deepfm+hgcn": {
-        "shared_experts": '["deepfm","hgcn"]',
-        "removed_feature_groups": _remove_except("product_hierarchy"),
-    },
-    "deepfm+lightgcn": {
-        "shared_experts": '["deepfm","lightgcn"]',
-        "removed_feature_groups": _remove_except("graph_collaborative"),
-    },
-    "deepfm+causal": {
-        "shared_experts": '["deepfm","causal"]',
-        "removed_feature_groups": _remove_except(),  # causal uses base features
-    },
-    "deepfm+ot": {
-        "shared_experts": '["deepfm","optimal_transport"]',
-        "removed_feature_groups": _remove_except(),  # OT uses base features
-    },
-    "deepfm+gmm": {
-        "shared_experts": '["deepfm"]',  # GMM is feature-only, no dedicated expert
-        "removed_feature_groups": _remove_except("gmm_clustering"),
-    },
-    "deepfm+model_derived": {
-        "shared_experts": '["deepfm"]',
-        "removed_feature_groups": _remove_except("model_derived"),
-    },
-
-    # === Cumulative: progressively adding experts ===
-    "cumul_1_deepfm+temporal": {
-        "shared_experts": '["deepfm","temporal_ensemble"]',
-        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal"),
-    },
-    "cumul_2_+hgcn": {
-        "shared_experts": '["deepfm","temporal_ensemble","hgcn"]',
-        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal", "product_hierarchy"),
-    },
-    "cumul_3_+lightgcn": {
-        "shared_experts": '["deepfm","temporal_ensemble","hgcn","lightgcn"]',
-        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal", "product_hierarchy", "graph_collaborative"),
-    },
-    "cumul_4_+tda": {
-        "shared_experts": '["deepfm","temporal_ensemble","hgcn","lightgcn","perslay"]',
-        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal", "product_hierarchy", "graph_collaborative", "tda_global", "tda_local"),
-    },
-    "cumul_5_+causal_ot": {
-        "shared_experts": '["deepfm","temporal_ensemble","hgcn","lightgcn","perslay","causal","optimal_transport"]',
-        "removed_feature_groups": _remove_except("hmm_states", "mamba_temporal", "product_hierarchy", "graph_collaborative", "tda_global", "tda_local"),
-    },
-    "cumul_6_+gmm_model": {},  # = full (all features + all experts)
-
-    # === Top-down: full minus one (expert + matching features together) ===
-    "full-tda_perslay": {
-        "shared_experts": _experts_without("perslay"),
-        "removed_feature_groups": '["tda_global","tda_local"]',
-    },
-    "full-temporal": {
-        "shared_experts": _experts_without("temporal_ensemble"),
-        "removed_feature_groups": '["hmm_states","mamba_temporal"]',
-    },
-    "full-hgcn_hierarchy": {
-        "shared_experts": _experts_without("hgcn"),
-        "removed_feature_groups": '["product_hierarchy"]',
-    },
-    "full-lightgcn_graph": {
-        "shared_experts": _experts_without("lightgcn"),
-        "removed_feature_groups": '["graph_collaborative"]',
-    },
-    "full-causal": {
-        "shared_experts": _experts_without("causal"),
-    },
-    "full-ot": {
-        "shared_experts": _experts_without("optimal_transport"),
-    },
-}
-
-# ============================================================
-# Phase 3: Task × Structure Cross Ablation (16 scenarios)
-# ============================================================
-TASK_TIERS = {
-    "tasks_4": '["has_nba","churn_signal","product_stability","nba_primary"]',
-    "tasks_8": '["has_nba","churn_signal","product_stability","nba_primary","tenure_stage","spend_level","cross_sell_count","engagement_score"]',
-    "tasks_15": '["has_nba","churn_signal","product_stability","nba_primary","tenure_stage","spend_level","cross_sell_count","engagement_score","will_acquire_deposits","will_acquire_investments","will_acquire_accounts","will_acquire_lending","will_acquire_payments","segment_prediction","income_tier"]',
-    "tasks_18": None,  # all tasks
-}
-
-STRUCTURES = {
-    "shared_bottom": {"use_ple": "false", "use_adatt": "false"},
-    "ple_only": {"use_ple": "true", "use_adatt": "false"},
-    "adatt_only": {"use_ple": "false", "use_adatt": "true"},
-    "full": {"use_ple": "true", "use_adatt": "true"},
-}
+    # === Feature + Expert joint ablation ===
+    # Full system baseline
+    {"name": "joint_full", "hp": {}},
+    # Base features only (demographics + product_holdings)
+    {"name": "joint_base_only",
+     "hp": {"removed_feature_groups": json.dumps([
+         "tda_global", "tda_local", "hmm_states", "mamba_temporal",
+         "product_hierarchy", "merchant_hierarchy", "graph_collaborative",
+         "gmm_clustering", "model_derived", "txn_behavior", "derived_temporal",
+     ])}},
+    # DeepFM only
+    {"name": "joint_deepfm_base",
+     "hp": {"shared_experts": json.dumps(["deepfm"])}},
+    # DeepFM + each advanced expert
+    {"name": "joint_deepfm+temporal",
+     "hp": {"shared_experts": json.dumps(["deepfm", "temporal_ensemble"])}},
+    {"name": "joint_deepfm+hgcn",
+     "hp": {"shared_experts": json.dumps(["deepfm", "hgcn"])}},
+    {"name": "joint_deepfm+tda",
+     "hp": {"shared_experts": json.dumps(["deepfm", "perslay"])}},
+    {"name": "joint_deepfm+lightgcn",
+     "hp": {"shared_experts": json.dumps(["deepfm", "lightgcn"])}},
+    {"name": "joint_deepfm+causal",
+     "hp": {"shared_experts": json.dumps(["deepfm", "causal"])}},
+    {"name": "joint_deepfm+ot",
+     "hp": {"shared_experts": json.dumps(["deepfm", "optimal_transport"])}},
+    # Full minus one expert
+    {"name": "joint_full-temporal",
+     "hp": {"removed_experts": json.dumps(["temporal_ensemble"])}},
+    {"name": "joint_full-hgcn",
+     "hp": {"removed_experts": json.dumps(["hgcn"])}},
+    {"name": "joint_full-tda",
+     "hp": {"removed_experts": json.dumps(["perslay"])}},
+    {"name": "joint_full-lightgcn",
+     "hp": {"removed_experts": json.dumps(["lightgcn"])}},
+    {"name": "joint_full-causal",
+     "hp": {"removed_experts": json.dumps(["causal"])}},
+    {"name": "joint_full-ot",
+     "hp": {"removed_experts": json.dumps(["optimal_transport"])}},
+]
 
 
-IMAGE = os.environ.get("ABLATION_IMAGE", "model_training:v3.3")
+def run_scenario(scenario: Dict[str, Any], dry_run: bool = False) -> Dict[str, Any]:
+    """Run one ablation scenario."""
+    name = scenario["name"]
+    out_dir = Path(RESULTS) / name
 
-
-def run_scenario(name: str, extra_hp: dict) -> dict:
-    """Run a single training scenario via Docker (SageMaker local mode)."""
-    out_dir = RESULTS_DIR / name
-    metrics_path = out_dir / "eval_metrics.json"
-
-    # Skip if already completed (eval_metrics.json exists with valid AUC)
-    if metrics_path.exists():
-        try:
-            with open(metrics_path) as f:
-                cached = json.load(f)
-            cached_auc = cached.get("auc", cached.get("final_metrics", {}).get("auc"))
-            if cached_auc is not None:
-                print(f"  [SKIP] {name}: AUC={cached_auc} (cached)")
-                return {"scenario": name, "status": "OK", "auc": str(cached_auc),
-                        "f1_macro": "cached", "time_s": 0, "metrics": cached}
-        except (json.JSONDecodeError, KeyError):
-            pass  # corrupted file, re-run
+    if (out_dir / "model" / "model.pth").exists() and not dry_run:
+        logger.info("[SKIP] %s: already completed", name)
+        return {"name": name, "status": "skipped"}
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    model_dir = out_dir / "model"
-    model_dir.mkdir(exist_ok=True)
+    (out_dir / "model").mkdir(exist_ok=True)
+    (out_dir / "logs").mkdir(exist_ok=True)
 
-    hp = {**BASE_HP, **extra_hp, "ablation_scenario": name}
+    hp = dict(BASE_HPS)
+    hp.update(scenario.get("hp", {}))
+    hp["ablation_scenario"] = name
+    if dry_run:
+        hp["epochs"] = 1
+        hp["early_stopping_patience"] = 1
+        hp["warmup_epochs"] = 0
 
-    env_args = [
-        "-e", f"SM_CHANNEL_TRAIN=/opt/ml/input/data/train",
-        "-e", f"SM_OUTPUT_DATA_DIR=/opt/ml/output/data",
-        "-e", f"SM_MODEL_DIR=/opt/ml/model",
-        "-e", f"SM_HPS={json.dumps(hp)}",
-        "-e", "PYTHONPATH=/opt/ml/code",
-    ]
+    env = dict(os.environ)
+    env["SM_CHANNEL_TRAIN"] = PHASE0
+    env["SM_OUTPUT_DATA_DIR"] = str(out_dir)
+    env["SM_MODEL_DIR"] = str(out_dir / "model")
+    env["SM_HPS"] = json.dumps(hp)
+    env["PYTHONPATH"] = str(Path.cwd())
 
-    phase0 = str(PHASE0_DIR).replace("\\", "/")
-    output = str(out_dir).replace("\\", "/")
-    model = str(model_dir).replace("\\", "/")
-    code = str(ROOT).replace("\\", "/")
+    # Log only scenario-specific HP (not the base ones everyone shares)
+    diff_hp = {k: v for k, v in hp.items() if k not in BASE_HPS}
+    logger.info("[%s] %s %s", "DRY" if dry_run else "RUN", name, diff_hp or "(baseline)")
 
-    # Docker SageMaker local mode (GPU passthrough)
-    use_docker = os.environ.get("ABLATION_USE_DOCKER", "1") == "1"
+    start = time.time()
+    stdout_path = out_dir / "logs" / "stdout.log"
+    stderr_path = out_dir / "logs" / "stderr.log"
 
-    if use_docker:
-        cmd = [
-            "docker", "run", "--rm", "--gpus", "all",
-            "-v", f"{phase0}:/opt/ml/input/data/train",
-            "-v", f"{output}:/opt/ml/output/data",
-            "-v", f"{model}:/opt/ml/model",
-            "-v", f"{code}:/opt/ml/code",
-            *env_args,
-            IMAGE,
-            "python", "/opt/ml/code/containers/training/train.py",
-        ]
-        env = {**os.environ, "MSYS_NO_PATHCONV": "1"}
-    else:
-        # Fallback: local Python (no Docker)
-        env = {
-            **os.environ,
-            "SM_CHANNEL_TRAIN": str(PHASE0_DIR),
-            "SM_OUTPUT_DATA_DIR": str(out_dir),
-            "SM_MODEL_DIR": str(model_dir),
-            "SM_HPS": json.dumps(hp),
-            "PYTHONPATH": str(ROOT),
-        }
-        cmd = [sys.executable, str(ROOT / "containers" / "training" / "train.py")]
-
-    t0 = time.time()
-    # Write stdout/stderr to files instead of capture_output to avoid pipe deadlock
-    log_dir = out_dir / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    stdout_log = log_dir / "stdout.log"
-    stderr_log = log_dir / "stderr.log"
-    with open(stdout_log, "w") as fout, open(stderr_log, "w") as ferr:
-        result = subprocess.run(
-            cmd,
-            env=env,
-            stdout=fout,
-            stderr=ferr,
-            timeout=14400,
+    with open(stdout_path, "w") as fout, open(stderr_path, "w") as ferr:
+        proc = subprocess.run(
+            [sys.executable, "-u", "containers/training/train.py"],
+            env=env, stdout=fout, stderr=ferr,
         )
-    elapsed = time.time() - t0
 
-    # Read eval_metrics.json (metrics may be nested under final_metrics)
-    metrics_path = out_dir / "eval_metrics.json"
-    metrics = {}
-    if metrics_path.exists():
-        with open(metrics_path) as f:
-            raw = json.load(f)
-        metrics = raw.get("final_metrics", raw)
+    elapsed = time.time() - start
+    stdout_text = stdout_path.read_text(errors="replace")
 
-    auc = metrics.get("auc", "N/A")
-    f1 = metrics.get("f1_macro_avg", "N/A")
-    # Consider success if eval_metrics exists with valid AUC, even if returncode != 0
-    # (Docker containers may return non-zero due to FutureWarnings on stderr)
-    status = "OK" if (auc != "N/A" or result.returncode == 0) else "FAIL"
+    epoch_count = stdout_text.count("val_loss=")
+    expected = 1 if dry_run else EPOCHS
 
-    print(f"  [{status}] {name}: AUC={auc}, F1_macro={f1}, time={elapsed:.1f}s")
-    if result.returncode != 0 and status == "FAIL":
-        # Print last 3 lines of stderr for debugging
-        try:
-            err_text = stderr_log.read_text(errors="replace").strip()
-            err_lines = err_text.split("\n")[-3:]
-            for line in err_lines:
-                print(f"    ERR: {line}")
-        except Exception:
-            print(f"    ERR: (see {stderr_log})")
+    # Extract final metrics
+    metrics: Dict[str, float] = {}
+    for line in reversed(stdout_text.splitlines()):
+        if "avg_auc=" in line:
+            for token in line.replace(",", " ").split():
+                if "=" in token:
+                    k, _, v = token.partition("=")
+                    if k in ("avg_auc", "avg_f1_macro", "avg_mae", "avg_accuracy"):
+                        try:
+                            metrics[k] = float(v)
+                        except ValueError:
+                            pass
+            break
+
+    # Verify scenario applied
+    applied: List[str] = []
+    for line in stdout_text.splitlines():
+        if any(kw in line for kw in (
+            "Ablation: shared experts",
+            "Expert ablation",
+            "Structure ablation",
+            "Feature ablation",
+        )):
+            applied.append(line.strip().split("] ")[-1] if "] " in line else line.strip())
+
+    success = proc.returncode == 0 and epoch_count >= expected
+
+    logger.info(
+        "[%s] %s: %d/%d epochs, %.0fs, AUC=%s F1=%s",
+        "OK" if success else "FAIL", name, epoch_count, expected,
+        elapsed, metrics.get("avg_auc", "?"), metrics.get("avg_f1_macro", "?"),
+    )
+    for a in applied:
+        logger.info("  → %s", a)
+
+    if not success and not dry_run:
+        # Show last error
+        stderr_text = stderr_path.read_text(errors="replace")
+        for line in stderr_text.splitlines()[-5:]:
+            if "FutureWarning" not in line and "UserWarning" not in line:
+                logger.error("  stderr: %s", line.rstrip())
 
     return {
-        "scenario": name,
-        "status": status,
-        "auc": auc,
-        "f1_macro": f1,
-        "time_s": round(elapsed, 1),
-        "metrics": metrics,
+        "name": name, "status": "OK" if success else "FAIL",
+        "epochs": epoch_count, "seconds": round(elapsed),
+        "metrics": metrics, "applied": applied,
     }
 
 
 def main():
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    all_results = []
-    t_start = time.time()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--scenario", type=str, default=None)
+    args = parser.parse_args()
 
-    # Phase 1: Feature + Expert Joint Ablation
-    print("=" * 60)
-    n_fe = len(FEATURE_EXPERT_SCENARIOS)
-    print(f"PHASE 1: Feature + Expert Joint Ablation ({n_fe} scenarios)")
-    print("  Baseline: DeepFM only → +expert(+features) → cumulative → top-down")
-    print("=" * 60)
-    for name, extra in FEATURE_EXPERT_SCENARIOS.items():
-        all_results.append(run_scenario(f"joint_{name}", extra))
+    scenarios = SCENARIOS
+    if args.scenario:
+        scenarios = [s for s in SCENARIOS if s["name"] == args.scenario]
+        if not scenarios:
+            logger.error("Unknown scenario '%s'. Available: %s",
+                         args.scenario, [s["name"] for s in SCENARIOS])
+            sys.exit(1)
 
-    # Phase 3: Task × Structure
-    print("\n" + "=" * 60)
-    print("PHASE 3: Task × Structure Cross Ablation (16 scenarios)")
-    print("=" * 60)
-    for tier_name, tasks_json in TASK_TIERS.items():
-        for struct_name, struct_hp in STRUCTURES.items():
-            scenario_name = f"struct_{tier_name}_{struct_name}"
-            extra = dict(struct_hp)
-            if tasks_json is not None:
-                extra["active_tasks"] = tasks_json
-            all_results.append(run_scenario(scenario_name, extra))
+    logger.info("=" * 60)
+    logger.info("LOCAL ABLATION: %d scenarios x %d epochs", len(scenarios), 1 if args.dry_run else EPOCHS)
+    logger.info("=" * 60)
+
+    results = []
+    for s in scenarios:
+        results.append(run_scenario(s, dry_run=args.dry_run))
 
     # Summary
-    total_time = time.time() - t_start
-    ok_count = sum(1 for r in all_results if r["status"] == "OK")
-    fail_count = sum(1 for r in all_results if r["status"] == "FAIL")
+    logger.info("\n" + "=" * 60)
+    ok = sum(1 for r in results if r["status"] == "OK")
+    skip = sum(1 for r in results if r["status"] == "skipped")
+    fail = sum(1 for r in results if r["status"] == "FAIL")
+    logger.info("DONE: OK=%d SKIP=%d FAIL=%d", ok, skip, fail)
+    for r in sorted(results, key=lambda x: x.get("metrics", {}).get("avg_auc", 0), reverse=True):
+        if r["status"] == "skipped":
+            continue
+        m = r.get("metrics", {})
+        logger.info("  %-35s AUC=%-7s F1=%-7s (%ds)",
+                     r["name"], m.get("avg_auc", "?"), m.get("avg_f1_macro", "?"), r.get("seconds", 0))
 
-    print("\n" + "=" * 60)
-    print(f"ABLATION COMPLETE: {ok_count}/{len(all_results)} OK, {fail_count} FAIL")
-    print(f"Total time: {total_time:.1f}s ({total_time/60:.1f} min)")
-    print("=" * 60)
-
-    # Save summary
-    summary_path = RESULTS_DIR / "ablation_summary.json"
-    with open(summary_path, "w") as f:
-        json.dump(all_results, f, indent=2, default=str)
-    print(f"Results saved to {summary_path}")
-
-    # Print comparison table
-    print("\n{:<40} {:>8} {:>10} {:>7}".format("Scenario", "AUC", "F1_macro", "Time"))
-    print("-" * 68)
-    for r in all_results:
-        auc_str = f"{r['auc']:.4f}" if isinstance(r['auc'], float) else str(r['auc'])
-        f1_str = f"{r['f1_macro']:.4f}" if isinstance(r['f1_macro'], float) else str(r['f1_macro'])
-        print(f"{r['scenario']:<40} {auc_str:>8} {f1_str:>10} {r['time_s']:>6.1f}s")
+    Path(RESULTS).mkdir(parents=True, exist_ok=True)
+    with open(Path(RESULTS) / "ablation_summary.json", "w") as f:
+        json.dump(results, f, indent=2, default=str)
 
 
 if __name__ == "__main__":

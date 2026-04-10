@@ -145,7 +145,7 @@ Multi-Task Learning (MTL) 계열을 검토:
 - 아이디어: 세그먼트마다 다른 예측 로직
 
 하지만 클러스터 수가 늘어날수록 복잡도가 K × T (클러스터 × 태스크)로 폭발.
-K=20, T=18이면 서브헤드 360개 → 관리 불가, 과적합 위험.
+K=20, T=14이면 서브헤드 280개 → 관리 불가, 과적합 위험.
 
 **방향 전환: 태스크 그룹 기반 서브헤드**
 클러스터가 아니라 **태스크를 그룹으로** 나누고, 그룹에 서브헤드를 부여.
@@ -153,9 +153,9 @@ K=20, T=18이면 서브헤드 360개 → 관리 불가, 과적합 위험.
 
 | Task Group | 금융 DNA | 포함 태스크 | 의미 |
 |------------|---------|-----------|------|
-| engagement | 고객이 무엇을 하는가 | has_nba, engagement_score, next_mcc, top_mcc_shift | 행동/활동 |
-| lifecycle | 고객이 어디에 있는가 | churn_signal, tenure_stage, segment_prediction | 생애주기 단계 |
-| value | 고객이 얼마나 가치있는가 | income_tier, spend_level, cross_sell_count, product_stability | 경제적 가치 |
+| engagement | 고객이 무엇을 하는가 | has_nba, next_mcc, top_mcc_shift | 행동/활동 |
+| lifecycle | 고객이 어디에 있는가 | churn_signal, segment_prediction | 생애주기 단계 |
+| value | 고객이 얼마나 가치있는가 | cross_sell_count, product_stability | 경제적 가치 |
 | consumption | 고객이 무엇을 살 것인가 | will_acquire_* (5개), nba_primary | 구매 의향 |
 
 이 그룹핑이 이후 모든 구조에 일관되게 적용:
@@ -178,8 +178,8 @@ adaTT(Adaptive Task Transfer)를 결합하여:
 
 **로짓 전이(logit transfer)**: 소비자 경험의 자연스러운 이전을 모델에 반영
 - has_nba → nba_primary: "가입 여부 → 어떤 상품" (순차적 경험)
-- engagement_score → has_nba: "활성도 → 가입 가능성" (선행 지표)
-- spend_level → will_acquire_*: "소비 수준 → 구매 의향" (구매력 전이)
+- engagement_score → has_nba: "활성도 → 가입 가능성" (선행 지표) (removed: deterministic leakage)
+- spend_level → will_acquire_*: "소비 수준 → 구매 의향" (구매력 전이) (removed: deterministic leakage)
 - 3가지 전이 방식: output_concat / hidden_concat / residual
 
 이것이 Black-Litterman이 외부에서 하려던 것(전문가 의견의 불확실성 기반 통합)을

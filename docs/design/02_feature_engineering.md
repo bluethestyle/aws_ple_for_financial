@@ -6,7 +6,7 @@ Feature Engineering은 Stage 4 ~ Stage 6을 담당한다:
 
 ```
 Stage 4:   FeatureGroupPipeline + Normalization (per axis generators + PowerLawAwareScaler)
-Stage 5:   LabelDeriver (18 tasks, config-driven derivation)
+Stage 5:   LabelDeriver (14 tasks, config-driven derivation)
 Stage 5.5: LeakageValidator (sequence/correlation/product/temporal)
 Stage 6:   SequenceBuilder (time-based + sliding window → sequences.npy, seq_lengths.npy)
 ```
@@ -331,15 +331,15 @@ class PowerLawAwareScaler:
 
 ---
 
-## 18-Task Label Architecture
+## 14-Task Label Architecture
 
 ### 4-Tier 태스크 구조
 
 | Tier | 설명 | 태스크 수 | 예시 |
 |------|------|----------|------|
 | **Tier 1** | Core targets (직접 레이블) | 4 | has_nba, churn_signal, product_stability, nba_primary |
-| **Tier 2** | Derived targets (규칙 유도) | 4 | tenure_stage, spend_level, cross_sell_count, engagement_score |
-| **Tier 3** | Product group + segmentation | 7 | will_acquire_{deposits,investments,accounts,lending,payments}, segment_prediction, income_tier |
+| **Tier 2** | Derived targets (규칙 유도) | 1 | cross_sell_count |
+| **Tier 3** | Product group + segmentation | 6 | will_acquire_{deposits,investments,accounts,lending,payments}, segment_prediction |
 | **Tier 5** | Transaction-based NBA | 3 | next_mcc, mcc_diversity_trend, top_mcc_shift |
 
 ### Per-task Focal Alpha Calibration
@@ -361,10 +361,10 @@ Binary 태스크의 `focal_alpha`는 positive rate에 따라 calibrated:
 
 ```yaml
 task_groups:
-  engagement:   [has_nba, engagement_score, next_mcc, top_mcc_shift]
-  lifecycle:    [churn_signal, product_stability, tenure_stage, segment_prediction]
-  value:        [spend_level, income_tier, mcc_diversity_trend]
-  consumption:  [nba_primary, cross_sell_count, will_acquire_deposits,
+  engagement:   [has_nba, next_mcc, top_mcc_shift]
+  lifecycle:    [churn_signal, product_stability, segment_prediction]
+  value:        [mcc_diversity_trend, cross_sell_count]
+  consumption:  [nba_primary, will_acquire_deposits,
                  will_acquire_investments, will_acquire_accounts,
                  will_acquire_lending, will_acquire_payments]
 ```
@@ -471,7 +471,7 @@ SageMaker Processing Job
 | HMM | 코드에 직접 구현 | Generator Registry (hmm_triple_mode) | 선택적 활성화 |
 | Graph | HGCN만 | **Poincare + LightGCN** (Hierarchy + Item 축) | 계층+협업 분리 |
 | Item Universe | 없음 | **고객x상품 bipartite graph** (24 금융 상품) | 상품 추천 핵심 |
-| 레이블 생성 | 코드 하드코딩 | **LabelDeriver** (config-driven 18 tasks) | 선언적, 재현 가능 |
+| 레이블 생성 | 코드 하드코딩 | **LabelDeriver** (config-driven 14 tasks) | 선언적, 재현 가능 |
 | 누수 방지 | 없음 | **LeakageValidator** (4-check) + temporal split | 자동 누수 감지 |
 | 피처 버전 | 없음 | features/v{version}/ | 재현성, 롤백 |
 | Cold Start | 없음 | **is_cold_start flag + sequence-derived feature zeroing** | cold start 고객 대응 |

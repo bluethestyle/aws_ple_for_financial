@@ -161,7 +161,7 @@
   계층 구조(Hyperbolic GCN), 위상 구조(PersLay/TDA), 협업 필터링(LightGCN),
   인과 추론(Causal/NOTEARS), 분포 매칭(Optimal Transport)이라는 고유한 수학적 관점을 제공하며,
   어떠한 단일 전문가도 다른 전문가의 역할을 대체할 수 없다.
-  추가로 adaTT(Adaptive Task-aware Transfer)를 통한 18개 태스크 간 동적 지식 전이 메커니즘과
+  추가로 adaTT(Adaptive Task-aware Transfer)를 통한 14개 태스크 간 동적 지식 전이 메커니즘과
   11개 학문 분야에서 도출된 316차원 피처 엔지니어링 체계를 기술한다.
   FeatureRouter 활성화로 각 전문가는 전체 316D 중 지정된 서브셋만 입력으로 받으며
   (deepfm=109D, temporal=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, ot=69D),
@@ -740,7 +740,7 @@ He et al. (SIGIR 2020), Rendle et al. (UAI 2009), Kipf & Welling (ICLR 2017).
 교란 변수(confounder)에 의한 것일 수 있다 --- 카드가 보험 가입을 _야기_하는 것이 아니다.
 
 A/B 테스트는 gold standard이지만 규모 확장이 불가능하다
-(18개 태스크 $times$ $N$개 전략 = 실행 불가), 느리고 (수 주 소요),
+(14개 태스크 $times$ $N$개 전략 = 실행 불가), 느리고 (수 주 소요),
 집단 수준 ATE만 제공한다.
 
 == 대안 비교
@@ -955,11 +955,11 @@ Cuturi (NeurIPS 2013), Kantorovich (1942).
 
 == 동기: Multi-Task Learning에서의 Negative Transfer
 
-18개 동시 태스크가 전문가 파라미터를 공유할 때
+14개 동시 태스크가 전문가 파라미터를 공유할 때
 gradient 충돌이 negative transfer를 야기한다.
 고정 타워 MTL의 세 가지 근본적 한계:
 (1) 공유 backbone이 모든 태스크에 동일하게 영향 --- 한 태스크의 최적화가 다른 태스크 예측을 악화시켜도 감지/방지 메커니즘 없음,
-(2) 18개 태스크 간 어떤 쌍이 서로 돕는지/해치는지 측정 불가,
+(2) 14개 태스크 간 어떤 쌍이 서로 돕는지/해치는지 측정 불가,
 (3) 고정 가중치로는 학습 단계에 따라 변하는 태스크 관계를 추적 불가.
 
 == Core Mechanism: Gradient Cosine Similarity
@@ -1087,7 +1087,7 @@ $tau_"neg" = -0.1$ (0이 아님)로 약한 음의 상관(noise 가능성)을 허
 - Hypernetworks (Ha et al., 2017)의 경량 변형: 학습된 task embedding 대신 관측된 gradient를
   conditioning signal로 사용하여 변화하는 태스크 관계에 zero-delay 적응.
 - `detect_negative_transfer()` API가 각 태스크의 적대적 태스크 목록을 반환
-  (예: `{"churn_signal": ["has_nba", "engagement_score"]}`).
+  (예: `{"churn_signal": ["has_nba", "nba_primary"]}`).
 
 *주요 참고문헌:*
 Tang et al. (RecSys 2020), Yu et al. (NeurIPS 2020), Fifty et al. (ICML 2021),

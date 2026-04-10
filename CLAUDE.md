@@ -18,6 +18,7 @@
 - **Temporal split 시 gap_days를 반드시 설정**한다 (최소 7일).
 - **시퀀스 데이터의 마지막 timestep이 레이블과 겹치지 않는지 반드시 검증**한다.
 - **LeakageValidator를 학습 전에 반드시 호출**한다.
+- **피처의 단순 변환(bucketing, 선형 결합)으로 파생되는 레이블은 태스크로 사용하지 않는다.** 모델이 입력에서 레이블을 완벽 복원할 수 있어 증류/학습이 무의미하다 (예: income_tier, tenure_stage, spend_level, engagement_score 등 deterministic 변환 결과).
 
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:

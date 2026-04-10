@@ -198,7 +198,7 @@ Extensive compliance modules aligned with Korean financial regulations:
 - `human_fallback_router.py` — Human review escalation
 - `marketing_consent.py` — Marketing consent filtering
 - `explanation_sla_tracker.py` — Explanation request SLA tracking
-- Per-task regulatory risk mapping matrix (18 tasks x regulatory requirements)
+- Per-task regulatory risk mapping matrix (14 tasks x regulatory requirements)
 
 ### 3.8 HMM Triple-Mode Routing
 
@@ -214,7 +214,7 @@ Each mode: base 10D + ODE dynamics bridge 6D = 16D
 - **Cluster Balanced Sampling**: Inverse-size weighted oversampling (power=0.5) to prevent minority cluster under-training
 - **COLDSTART→WARMSTART dynamic promotion**: GMM inference promotes customers with NaN<50% and max_prob>0.3
 - **GMM Health Gate**: 3-way judgment (proceed/retrain/rollback) with `.backup` model rollback
-- **Cluster x Task performance monitoring**: 18 tasks x 20 clusters, >10% deviation alerts
+- **Cluster x Task performance monitoring**: 14 tasks x 20 clusters, >10% deviation alerts
 
 ---
 
