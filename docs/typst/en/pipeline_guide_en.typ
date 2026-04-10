@@ -1091,3 +1091,12 @@ Step Functions (AWS): 5 state machines x 2/week -> ~$0.002/month (effectively fr
   }
 }
 ```
+
+// ============================================================
+= Ops/Audit Agent Integration
+
+Each pipeline stage completion triggers an event to OpsAgent via `_PipelineState.mark_complete()` callbacks. OpsAgent inspects 7 checkpoints (CP1 Ingestion through CP7 A/B Testing), while AuditAgent audits reason quality (3-Tier verification) and regulatory compliance.
+
+Changes (code, configuration, model, data) are detected via dual push/pull channels, automatically re-executing checklists for affected pipeline parts.
+
+Detailed design: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)

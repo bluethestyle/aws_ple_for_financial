@@ -473,3 +473,10 @@ For implementation details on each item, please refer to the corresponding secti
     ]
   ]
 ]
+
+// ============================================================
+= Ops/Audit Agents
+
+Practical enforcement of regulatory compliance is handled by two autonomous diagnostic agents. OpsAgent monitors pipeline performance and stability; AuditAgent audits fairness, regulatory compliance, and recommendation reason quality. 3-agent consensus with minority report preservation mitigates hallucination risk, and all diagnostic results accumulate in a case store for regulatory audit evidence.
+
+Detailed design: Design Document 11

@@ -871,3 +871,15 @@ Gemini Teacher로 동일 입력에 대해 3회 출력을 생성하고,
 각 단계는 Feature Serving Spec, IG 귀인, 역매핑 딕셔너리라는 공유 계약을 통해
 End-to-End 정합성을 유지한다. 어떤 단계에서든 이 계약이 깨지면 하류 단계 전체에
 오류가 전파되므로, 단계별 검증이 필수적이다.
+
+// ============================================================
+= 운영/감사 에이전트와의 연계
+
+추천사유 품질은 AuditAgent의 AV3 관점에서 3-Tier 체계로 모니터링된다:
+- *Tier 1* (전수): SelfChecker pass/revise/reject 비율 추이
+- *Tier 2* (샘플): 27개 스트라텀 층화추출 → GroundingValidator(사유↔IG 정합성)
+- *Tier 3* (전문가): 월 50~100건 수동 리뷰 → 피드백 루프
+
+InterpretationRegistry → 3-tuple enrichment → TemplateEngine 연결이 완료되어 L1 사유에도 한국어 IG 해석이 반영된다. ReverseMapper가 InterpretationRegistry의 Level RM fallback으로 통합되어 피처 해석 커버리지가 확대되었다.
+
+상세 설계: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)

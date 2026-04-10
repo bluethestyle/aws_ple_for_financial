@@ -450,4 +450,15 @@ Expert Basket은 1, 2, 3 모두 필요했기 때문에 먼저 구현했다. Feat
 - `evaluation` -- 그룹별 메트릭 집계
 - `active/disabled` -- 그룹 단위 실험 토글
 
+### 운영/감사 에이전트와의 관계
+
+3계층 아키텍처에서 운영/감사 에이전트는 Runtime 계층을 비동기로 감시하는 별도 계층이다:
+- **Pool 계층** (피처/전문가 정의) → AuditAgent가 피처 계보 추적 (AV5)
+- **Basket 계층** (태스크 그룹/라우팅) → OpsAgent가 학습/증류 품질 모니터링 (CP3, CP4)
+- **Runtime 계층** (서빙/추천) → OpsAgent CP5/CP6, AuditAgent AV1/AV3 감사
+
+에이전트는 3계층의 산출물을 읽기 전용으로 소비한다.
+
+상세 설계: `docs/design/11_ops_audit_agent.md`
+
 이 모든 모듈이 공통으로 참조해야 한다. 따라서 `TaskGroupConfig`를 `pipeline.yaml` 최상위로 승격시키는 것이 Phase 2의 핵심이다.

@@ -935,4 +935,17 @@ All system parameters are managed through 2 YAML files:
 - `target_experts`: List of experts that receive this group's features
 - `output_dim`: Output dimension
 
+// ============================================================
+= Ops/Audit Agent Layer
+
+Two autonomous diagnostic agents operate as a separate layer, asynchronously monitoring the entire pipeline:
+- *OpsAgent*: monitors 7 checkpoints (ingestion through A/B testing), performs cross-checkpoint correlation analysis
+- *AuditAgent*: audits 5 viewpoints (fairness, concentration, reason quality, regulatory compliance, data lineage)
+
+48 checklist items are automatically evaluated. WARN/FAIL items undergo 3-agent consensus (Sonnet×3) producing diagnostic results with minority report preservation. Diagnostic history accumulates in a LanceDB-based `DiagnosticCaseStore`.
+
+Fully decoupled from the serving path (3 serving agents) --- agent failures never degrade customer-facing service.
+
+Detailed design: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)
+
 When switching domains, replacing only these 2 files configures an entirely different recommendation system without any code changes.

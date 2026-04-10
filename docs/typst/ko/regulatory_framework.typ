@@ -1277,6 +1277,17 @@ SR 11-7 Pillar 2가 요구하는 *독립적 모델 검증*을 Champion-Challenge
 )
 ]
 
+// ============================================================
+= 운영/감사 에이전트 통합
+
+본 문서의 모든 규제 준수 컴포넌트(FairnessMonitor, HerdingDetector, ComplianceChecker, AuditLogger 등)는 AuditAgent의 도구(tool)로 래핑되어 48개 체크리스트 항목으로 자동 점검된다.
+
+3-에이전트 합의 메커니즘(Sonnet×3 독립 투표)이 할루시네이션을 구조적으로 완화하며, 마이너리티 리포트가 소수 의견을 보존한다. 진단 이력은 LanceDB 케이스 스토어에 축적되어 규제기관 감사 시 "지속적 개선 증명" 근거로 활용된다.
+
+핵심 설계 원칙: *"AI가 분석하고, 사람이 판단한다"* --- 에이전트는 권고만 하고 최종 의사결정은 담당자가 수행. EU AI Act Art.14(인간 감독), 금감원 AI 가이드라인(인간 개입), AI 기본법(킬스위치)을 구조적으로 충족.
+
+상세 설계: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)
+
 #v(1.5em)
 
 #align(center)[

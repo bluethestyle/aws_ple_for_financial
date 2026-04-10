@@ -1264,3 +1264,14 @@ A quarterly full check is automatically executed via the 36-item regulatory comp
     ]
   ]
 ]
+
+// ============================================================
+= Ops/Audit Agent Integration
+
+All regulatory compliance components documented herein (FairnessMonitor, HerdingDetector, ComplianceChecker, AuditLogger, etc.) are wrapped as tools in the AuditAgent's 48-item checklist for automated inspection.
+
+A 3-agent consensus mechanism (Sonnet×3 independent voting) structurally mitigates hallucination, and minority reports preserve dissenting opinions. Diagnostic history accumulates in a LanceDB case store, serving as "continuous improvement evidence" for regulatory audits.
+
+Core design principle: *"AI analyzes, humans decide"* --- agents recommend only; final decisions are made by operators. This structurally satisfies EU AI Act Art.14 (human oversight), Korean FSS AI guidelines (human intervention), and AI Basic Act (kill switch).
+
+Detailed design: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)

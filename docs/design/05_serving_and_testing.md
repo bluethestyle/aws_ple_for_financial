@@ -311,4 +311,10 @@ FastAPI
 | 피처 조회 | 로컬 파일 | 메모리 → DynamoDB → Redis | 규모별 자동 선택 |
 | A/B 테스트 | 없음 | API Gateway 가중 라우팅 | 안전한 모델 교체 |
 | 카나리 배포 | 없음 | 점진적 트래픽 전환 | 롤백 안전성 |
+
+### 운영/감사 에이전트 연계
+
+서빙 파이프라인의 주요 지표(p50/p95 latency, filter 통과율, A/B variant CTR)는 OpsAgent의 CP5(서빙 헬스), CP6(추천 응답), CP7(A/B 테스트) 체크포인트에서 자동 모니터링된다. SLA 초과나 A/B 유의미한 결과 발생 시 정형 리포트로 담당자에게 전달되며, AuditAgent가 추천 결과의 공정성 및 집중도를 감사한다.
+
+상세 설계: `docs/design/11_ops_audit_agent.md`
 | 스케일링 | 불가 | Lambda 자동 / ECS Auto-scaling | 트래픽 대응 |

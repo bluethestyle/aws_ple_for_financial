@@ -1114,3 +1114,12 @@ Step Functions (AWS): 5 상태 머신 × 주 2회 → ~$0.002/월 (사실상 무
   }
 }
 ```
+
+// ============================================================
+= 운영/감사 에이전트 연계
+
+파이프라인 각 스테이지 완료 시 `_PipelineState.mark_complete()` 콜백을 통해 OpsAgent에 이벤트가 전달된다. OpsAgent는 7개 체크포인트(CP1 인제스천 ~ CP7 A/B테스트)를 점검하고, AuditAgent는 추천사유 품질(3-Tier 검증)과 규제 적합성을 감사한다.
+
+변경 사항(코드, 설정, 모델, 데이터)은 Push/Pull 이중 채널로 감지되어 영향 받는 파트의 체크리스트가 자동 재실행된다.
+
+상세 설계: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)

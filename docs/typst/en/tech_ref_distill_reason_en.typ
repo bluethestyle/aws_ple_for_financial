@@ -871,3 +871,15 @@ Gemini Teacher로 동일 입력에 대해 3회 출력을 생성하고,
 각 Stage는 Feature Serving Spec, IG 귀인, 역매핑 딕셔너리라는 공유 계약을 통해
 End-to-End 정합성을 유지한다. 어떤 Stage에서든 이 계약이 깨지면 하류 Stage 전체에
 오류가 전파되므로, Stage별 검증이 필수적이다.
+
+// ============================================================
+= Ops/Audit Agent Integration
+
+Recommendation reason quality is monitored under AuditAgent's AV3 viewpoint via a 3-Tier system:
+- *Tier 1* (exhaustive): SelfChecker pass/revise/reject rate trends
+- *Tier 2* (sampled): stratified sampling across 27 strata → GroundingValidator (reason↔IG alignment)
+- *Tier 3* (expert): 50--100 monthly manual reviews → feedback loop
+
+InterpretationRegistry → 3-tuple enrichment → TemplateEngine integration is complete, embedding Korean IG interpretations into L1 reasons. ReverseMapper is integrated as Level RM fallback in InterpretationRegistry, expanding feature interpretation coverage.
+
+Detailed design: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)
