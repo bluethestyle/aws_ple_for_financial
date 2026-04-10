@@ -41,7 +41,7 @@
 #set heading(numbering: "1.1")
 #set math.equation(numbering: "(1)")
 
-// ─────────────────── 색상 팔레트 ────────────────────
+// ─────────────────── Color Palette ────────────────────
 // Legacy aliases for component compatibility
 #let navy   = anthropic-text
 #let teal   = anthropic-accent
@@ -50,7 +50,7 @@
 #let rose   = anthropic-accent
 #let slate  = anthropic-muted
 
-// ─────────────────── 제목 스타일 ────────────────────
+// ─────────────────── Heading Styles ────────────────────
 #show heading.where(level: 1): it => {
   v(0.6cm)
   set par(first-line-indent: 0pt)
@@ -78,7 +78,7 @@
   v(0.1cm)
 }
 
-// ─────────────────── 코드 블록 스타일 ────────────────
+// ─────────────────── Code Block Style ────────────────
 #show raw.where(block: true): it => {
   block(
     width: 100%,
@@ -96,14 +96,14 @@
   radius: 2pt,
 )
 
-// ─────────────────── 수식 블록 여백 ─────────────────
+// ─────────────────── Equation Block Spacing ─────────────────
 #show math.equation.where(block: true): it => {
   v(3pt)
   it
   v(3pt)
 }
 
-// ─────────────────── 커스텀 컴포넌트 ────────────────
+// ─────────────────── Custom Components ────────────────
 #let note-box(title, body, accent: anthropic-accent) = {
   block(
     width: 100%,
@@ -130,7 +130,7 @@
 
 #let dim(body) = text(size: 8.5pt, fill: anthropic-muted)[#body]
 
-// ─────────────── 테이블 스타일 함수 ─────────────────
+// ─────────────── Table Style Function ─────────────────
 #let stbl(cols, ..args) = {
   set text(size: 9pt)
   table(
@@ -184,9 +184,10 @@
 
   #block(width: 85%, stroke: (left: 2pt + anthropic-accent), inset: (left: 14pt, right: 14pt, top: 8pt, bottom: 8pt))[
     #text(size: 9.5pt, fill: anthropic-muted)[
-      본 문서는 Temporal Ensemble Expert를 구성하는 세 모델 --- Mamba (Selective State Space Model),
-      Liquid Neural Network, PatchTST (Patch Time Series Transformer) --- 의 수학적 구조,
-      Ensemble Gating Mechanism, 그리고 Project Implementation Specification을 기술한다.
+      This document describes the mathematical structure, Ensemble Gating Mechanism, and
+      Project Implementation Specification of the three models comprising the Temporal Ensemble Expert ---
+      Mamba (Selective State Space Model), Liquid Neural Network, and
+      PatchTST (Patch Time Series Transformer).
     ]
   ]
 ]
@@ -226,67 +227,68 @@
 
 == Static Features vs. Temporal Features
 
-전통적 추천 시스템에서 사용자 표현은 _정적(static)_ 벡터이다.
-나이, 직업, 선호 카테고리 등 시점에 무관한 Property으로 구성된다.
-그러나 실제 사용자 행동은 시간 축을 따라 끊임없이 변화하며,
-단일 스냅샷으로 축약하면 _주기성_, _트렌드_, _계절성_ 같은 핵심 행동 신호가 소멸한다.
+In traditional recommendation systems, user representations are _static_ vectors.
+They consist of time-independent properties such as age, occupation, and preferred categories.
+However, real user behavior changes continuously along the time axis,
+and reducing it to a single snapshot causes critical behavioral signals such as
+_periodicity_, _trends_, and _seasonality_ to disappear.
 
 #stbl(
   (1.5fr, 2.5fr, 2.5fr),
-  table.header[*Perspective*][*정적 피처*][*시간적 피처*],
-  [Representation], [고정 벡터 $bold(x) in RR^d$], [시퀀스 $bold(X) in RR^(T times d)$],
-  [Information Loss], [시간 축 평균화 $arrow.r$ 패턴 소멸], [순서, 간격, 추세 보존],
-  [Model Requirements], [MLP, Embedding 테이블], [SSM, ODE, Transformer 등 시퀀스 모델],
+  table.header[*Perspective*][*Static Features*][*Temporal Features*],
+  [Representation], [Fixed vector $bold(x) in RR^d$], [Sequence $bold(X) in RR^(T times d)$],
+  [Information Loss], [Averaging over time axis $arrow.r$ pattern loss], [Order, interval, and trend preserved],
+  [Model Requirements], [MLP, Embedding tables], [SSM, ODE, Transformer and other sequence models],
 )
 
-Temporal Expert는 거래와 세션 데이터를 시퀀스로 유지한 채,
-시간 차원에 내재된 패턴을 학습하여 64D 표현으로 압축한다.
+The Temporal Expert retains transaction and session data as sequences,
+learning patterns embedded in the temporal dimension and compressing them into a 64D representation.
 
 == Three Components of Time Series
 
-모든 시계열 $y(t)$는 근본적으로 세 가지 성분의 합으로 분해된다:
+Every time series $y(t)$ fundamentally decomposes into the sum of three components:
 
 #eq-box[
   $ y(t) = T(t) + S(t) + R(t) $
 
   #dim[
-    $T(t)$: 트렌드 (Trend) --- 장기적 방향성 \
-    $S(t)$: 계절성 (Seasonality) --- 반복적 주기 패턴 (요일, 월별, 연별) \
-    $R(t)$: 잔차 (Residual) --- 트렌드와 계절성으로 Description되지 않는 불규칙 변동
+    $T(t)$: Trend --- long-term directional movement \
+    $S(t)$: Seasonality --- repetitive periodic patterns (daily, monthly, yearly) \
+    $R(t)$: Residual --- irregular variation not explained by trend and seasonality
   ]
 ]
 
-Temporal Expert의 세 모델은 이 분해에 대응한다:
-- *Mamba*: 트렌드 (장기 의존성, 선택적 기억을 통한 방향성 포착)
-- *PatchTST*: 계절성 (패치 간 어텐션으로 글로벌 주기 포착)
-- *LNN*: 잔차 (적응적 시간 상수로 불규칙 변동 처리)
+The three models of the Temporal Expert correspond to this decomposition:
+- *Mamba*: Trend (long-range dependencies, capturing directional movement through selective memory)
+- *PatchTST*: Seasonality (capturing global periodicity through inter-patch attention)
+- *LNN*: Residual (handling irregular variation with adaptive time constants)
 
-== 금융 거래 데이터의 네 가지 Characteristics
+== Four Characteristics of Financial Transaction Data
 
-금융 시계열은 일반 시계열과 구별되는 고유한 Characteristics을 갖는다:
+Financial time series have unique characteristics that distinguish them from general time series:
 
 #stbl(
   (1.5fr, 3fr, 2fr),
-  table.header[*Characteristics*][*Description*][*Processing Model*],
-  [스냅샷 불연속], [월말 잔액, 분기 평가 등 이산적 관측], [Mamba 선택적 기억],
-  [일별 거래 다발], [하루 수십 건의 결제, 이체], [PatchTST 패치 집계],
-  [불규칙 간격], [거래일 vs 휴일, 활Motivation vs 휴면기], [LNN 적응적 $tau$],
-  [고빈도 이벤트], [카드 승인 실시간 스트림], [Mamba $O(L)$ 선형 처리],
+  table.header[*Characteristic*][*Description*][*Processing Model*],
+  [Snapshot discontinuity], [Discrete observations such as month-end balances and quarterly reviews], [Mamba selective memory],
+  [Daily transaction bursts], [Dozens of payments and transfers per day], [PatchTST patch aggregation],
+  [Irregular intervals], [Business days vs. holidays, active vs. dormant periods], [LNN adaptive $tau$],
+  [High-frequency events], [Real-time card authorization streams], [Mamba $O(L)$ linear processing],
 )
 
 == Window-Based vs. Event-Based Hybrid
 
-프로젝트에서는 거래 데이터를 일별 집계하여 _윈도우 기반 시퀀스_(180 타임스텝)로
-구성한다.
-이는 Mamba와 PatchTST에 입력된다.
-동시에 거래 간 _실제 시간 간격_ 정보가 LNN에 전달되어, 이벤트 기반의 시간 인식 보정을 수행한다.
+In this project, transaction data is aggregated daily to form _window-based sequences_ (180 timesteps).
+These are fed into Mamba and PatchTST.
+Simultaneously, _actual time interval_ information between transactions is passed to LNN,
+performing event-based temporal awareness correction.
 
 #stbl(
   (1.5fr, 2.5fr, 2.5fr),
-  table.header[*Approach*][*윈도우 기반 (고정 간격)*][*이벤트 기반 (불규칙 간격)*],
+  table.header[*Approach*][*Window-Based (Fixed Interval)*][*Event-Based (Irregular Interval)*],
   [Time Model], [$Delta t = "const"$], [$Delta t_i eq.not Delta t_j$],
-  [Data Shape], [$bold(X) in RR^(T times d)$], [${(t_i, bold(x)_i)}$ 이벤트 스트림],
-  [Suitable Model], [Mamba, PatchTST], [LNN (ODE 기반)],
+  [Data Shape], [$bold(X) in RR^(T times d)$], [${(t_i, bold(x)_i)}$ event stream],
+  [Suitable Model], [Mamba, PatchTST], [LNN (ODE-based)],
 )
 
 // =================================================================
@@ -295,141 +297,141 @@ Temporal Expert의 세 모델은 이 분해에 대응한다:
 
 == Theoretical Background
 
-#note-box(accent: indigo)[참조 논문][
+#note-box(accent: indigo)[Reference Paper][
   Gu & Dao, _"Mamba: Linear-Time Sequence Modeling with Selective State Spaces"_ (NeurIPS 2023). \
-  계보: HiPPO (Gu et al., NeurIPS 2020) $arrow.r$ S4 (ICLR 2022) $arrow.r$ Mamba (2023).
+  Lineage: HiPPO (Gu et al., NeurIPS 2020) $arrow.r$ S4 (ICLR 2022) $arrow.r$ Mamba (2023).
 ]
 
-SSM(State Space Model)을 입력 의존적 선택 메커니즘(S6)으로 확장하여,
-RNN의 선형 시간 복잡도와 Transformer의 콘텐츠 인식 능력을 결합한 아키텍처이다.
+An architecture that extends SSM (State Space Model) with an input-dependent selective mechanism (S6),
+combining the linear time complexity of RNNs with the content-aware capabilities of Transformers.
 
 == Continuous State Space Model
 
-선형 시불변(LTI) 시스템의 기본 형태:
+Basic form of a linear time-invariant (LTI) system:
 
 #eq-box[
   $ frac(d bold(x), d t) = bold(A) bold(x) + bold(B) u, quad y = bold(C) bold(x) + bold(D) u $
 
   #dim[
-    $bold(x) in RR^N$: 은닉 상태, $u in RR$: 입력 신호, $y in RR$: 출력 신호 \
-    $bold(A) in RR^(N times N)$: 상태 전이 행렬,
-    $bold(B) in RR^(N times 1)$: 입력 행렬,
-    $bold(C) in RR^(1 times N)$: 출력 행렬
+    $bold(x) in RR^N$: hidden state, $u in RR$: input signal, $y in RR$: output signal \
+    $bold(A) in RR^(N times N)$: state transition matrix,
+    $bold(B) in RR^(N times 1)$: input matrix,
+    $bold(C) in RR^(1 times N)$: output matrix
   ]
 ]
 
 == ZOH Discretization
 
-연속계를 이산 시간 스텝 $Delta$로 변환한다:
+Converting the continuous system to discrete time steps $Delta$:
 
 $ macron(bold(A)) = exp(Delta dot bold(A)), quad macron(bold(B)) approx Delta dot bold(B) $ <eq-zoh>
 
-$macron(bold(A))$는 "연속 시간 $Delta$만큼 정확히 전진시킨 상태 전이"를 의미한다.
-1차 근사 $exp(Delta bold(A)) approx bold(I) + Delta bold(A)$가 Euler method이며,
-정확한 행렬 지수는 무한 차수까지 고려한 것이다.
-$bold(A)$가 대각 행렬이면 $exp(bold(A) t) = "diag"(e^(a_1 t), dots, e^(a_N t))$로
-간소화되며, Mamba가 $bold(A)$를 대각으로 제한하는 이유이다.
+$macron(bold(A))$ represents "the state transition that advances exactly $Delta$ time units in continuous time."
+The first-order approximation $exp(Delta bold(A)) approx bold(I) + Delta bold(A)$ is the Euler method,
+while the exact matrix exponential accounts for infinitely many orders.
+When $bold(A)$ is diagonal, $exp(bold(A) t) = "diag"(e^(a_1 t), dots, e^(a_N t))$,
+which is why Mamba restricts $bold(A)$ to be diagonal.
 
 == Discrete Recurrence
 
 $ bold(h)_t = macron(bold(A)) dot bold(h)_(t-1) + macron(bold(B)) dot bold(x)_t, quad bold(y)_t = bold(C)_t dot bold(h)_t $ <eq-recurrence>
 
-직관적으로 "오늘의 상태 = 어제의 기억 $times$ 감쇠율 + 오늘의 새 정보"이다.
+Intuitively: "today's state = yesterday's memory $times$ decay rate + today's new information."
 
 == S6 Selective Mechanism
 
-기존 LTI SSM에서 $bold(A), bold(B), bold(C)$는 입력과 무관한 상수이다.
-Mamba의 S6는 $Delta, bold(B), bold(C)$를 _입력 의존적으로_ 생성하여 콘텐츠 인식 처리를 구현한다.
+In conventional LTI SSMs, $bold(A), bold(B), bold(C)$ are constants independent of input.
+Mamba's S6 generates $Delta, bold(B), bold(C)$ _input-dependently_ to achieve content-aware processing.
 
 #eq-box[
   $ Delta = "softplus"(bold(W)_Delta dot bold(x) + bold(b)_Delta) $ <eq-delta>
   $ bold(B) = bold(W)_B dot bold(x), quad bold(C) = bold(W)_C dot bold(x) $ <eq-bc>
 
   #dim[
-    $bold(W)_Delta in RR^(D times r)$: $Delta$ 프로젝션 ($r = ceil(D \/ 16)$, dt\_rank) \
-    softplus 보장: $Delta > 0$ (시간 스텝은 양수)
+    $bold(W)_Delta in RR^(D times r)$: $Delta$ projection ($r = ceil(D \/ 16)$, dt\_rank) \
+    softplus guarantees: $Delta > 0$ (time steps are positive)
   ]
 ]
 
-입력에 따라 $Delta$가 커지면 해당 타임스텝의 정보를 강하게 기억(인코딩)하고,
-$Delta$가 작아지면 이전 상태를 유지하며 현재 입력을 무시(망각)한다.
+When $Delta$ is large for a given input, the information at that timestep is strongly memorized (encoded);
+when $Delta$ is small, the previous state is retained and the current input is ignored (forgotten).
 
 === Selective Mechanism in Financial Domain
 
-- 대형 거래 $arrow.r$ 큰 $Delta$ $arrow.r$ 은닉 상태에 강하게 기록 (선택적 기억)
-- 소액 일상 거래 $arrow.r$ 작은 $Delta$ $arrow.r$ 이전 상태 유지, 배경 처리 (선택적 망각)
-- 이 메커니즘은 금융 이벤트의 _이질적 중요도_를 자연스럽게 모델링한다
+- Large transaction $arrow.r$ large $Delta$ $arrow.r$ strongly recorded in hidden state (selective memory)
+- Small daily transaction $arrow.r$ small $Delta$ $arrow.r$ previous state maintained, processed as background (selective forgetting)
+- This mechanism naturally models the _heterogeneous importance_ of financial events
 
 == Selective Sequential Scan
 
-각 타임스텝마다 $Delta_t, bold(B)_t, bold(C)_t$가 달라지므로:
+Since $Delta_t, bold(B)_t, bold(C)_t$ differ at each timestep:
 
 $ bold(h)_t = underbrace(exp(Delta_t dot bold(A)), macron(bold(A))_t) dot bold(h)_(t-1) + underbrace(Delta_t dot bold(B)_t, macron(bold(B))_t) dot bold(x)_t, quad bold(y)_t = bold(C)_t^top bold(h)_t $ <eq-s6-scan>
 
-전체 시퀀스에 대해 $O(L)$ 선형 시간 복잡도로 처리된다.
+The entire sequence is processed in $O(L)$ linear time complexity.
 
-== Gated MLP + Causal Conv1d 아키텍처
+== Gated MLP + Causal Conv1d Architecture
 
-MambaBlock은 SSM을 Gated MLP와 1D 인과 컨볼루션으로 감싸는 구조이다:
+MambaBlock wraps the SSM with a Gated MLP and 1D causal convolution:
 
 + *Input Projection*: `d_input` $arrow.r$ `d_model`
-+ *LayerNorm* $arrow.r$ *in\_proj*: `d_model` $arrow.r$ `2 * d_inner` (두 경로로 분기)
-+ *SSM 경로*: Causal Conv1d (kernel=4) $arrow.r$ SiLU $arrow.r$ SelectiveSSM (S6)
-+ *Gate 경로*: SiLU 활성화
-+ *Element-wise multiply* (SSM 출력 $circle.small$ Gate 출력)
++ *LayerNorm* $arrow.r$ *in\_proj*: `d_model` $arrow.r$ `2 * d_inner` (split into two paths)
++ *SSM path*: Causal Conv1d (kernel=4) $arrow.r$ SiLU $arrow.r$ SelectiveSSM (S6)
++ *Gate path*: SiLU activation
++ *Element-wise multiply* (SSM output $circle.small$ Gate output)
 + *out\_proj*: `d_inner` $arrow.r$ `d_model` + Residual connection
 
-인과 Conv1d (kernel=4)는 시점 $t$에서 $t-3, t-2, t-1, t$만 참조하여
-미래 정보 누출 없이 로컬 컨텍스트를 혼합한다.
+The causal Conv1d (kernel=4) references only $t-3, t-2, t-1, t$ at timestep $t$,
+mixing local context without leaking future information.
 
 == A Matrix Initialization and Stability
 
-$bold(A)$를 $log$ 공간에 저장하고, forward 시 $-exp("A"_"log")$로 복원한다.
-이는 모든 고유값이 _항상 음수_임을 보장하여 시스템의 안정성을 확보한다.
+$bold(A)$ is stored in $log$ space and restored as $-exp("A"_"log")$ during the forward pass.
+This guarantees that all eigenvalues are _always negative_, ensuring system stability.
 
-초기값은 HiPPO 스타일의 대각 $[1, 2, dots, N]$이다.
-더 큰 인덱스의 상태는 더 높은 주파수의 다항식 성분에 대응하므로,
-대각 원소 $-1, -2, dots, -N$이 되어 고주파 성분일수록 빠르게 감쇠한다.
+The initial value is a HiPPO-style diagonal $[1, 2, dots, N]$.
+States with larger indices correspond to higher-frequency polynomial components,
+so diagonal elements become $-1, -2, dots, -N$, causing higher-frequency components to decay faster.
 
 == Project Implementation Specification
 
-=== 거래용 Mamba (Transaction)
+=== Transaction Mamba
 
 #stbl(
   (1fr, 1fr, 2.5fr),
-  table.header[*파라미터*][*값*][*Description*],
-  [`d_model`], [128], [은닉 차원],
-  [`d_input`], [16], [card (8D) + deposit (8D) 거래 피처],
+  table.header[*Parameter*][*Value*][*Description*],
+  [`d_model`], [128], [hidden dimension],
+  [`d_input`], [16], [card (8D) + deposit (8D) transaction features],
   [`d_inner`], [256], [$128 times 2$ (expand=2)],
-  [`d_state`], [16], [SSM 상태 벡터 차원],
-  [`d_conv`], [4], [1D 인과 컨볼루션 커널 크기],
+  [`d_state`], [16], [SSM state vector dimension],
+  [`d_conv`], [4], [1D causal convolution kernel size],
   [`dt_rank`], [8], [$ceil(128 \/ 16) = 8$],
-  [`seq_len`], [180], [180일 거래 시퀀스],
-  [출력], [`[B, 128]`], [마지막 타임스텝 `[:, -1, :]`],
+  [`seq_len`], [180], [180-day transaction sequence],
+  [Output], [`[B, 128]`], [last timestep `[:, -1, :]`],
 )
 
-=== 세션용 Mamba (Session)
+=== Session Mamba
 
 #stbl(
   (1fr, 1fr, 2.5fr),
-  table.header[*파라미터*][*값*][*Description*],
-  [`d_model`], [64], [거래 대비 절반 차원],
-  [`d_input`], [8], [세션 피처 차원],
+  table.header[*Parameter*][*Value*][*Description*],
+  [`d_model`], [64], [half dimension compared to transaction],
+  [`d_input`], [8], [session feature dimension],
   [`d_inner`], [128], [$64 times 2$ (expand=2)],
-  [`seq_len`], [90], [90일 세션 시퀀스],
-  [출력], [`[B, 64]`], [마지막 타임스텝],
+  [`seq_len`], [90], [90-day session sequence],
+  [Output], [`[B, 64]`], [last timestep],
 )
 
-Mamba 총 Output Dimension: $128 + 64 = 192$D (txn + session concat).
+Total Mamba output dimension: $128 + 64 = 192$D (txn + session concat).
 
-== 복잡도 분석
+== Complexity Analysis
 
 #stbl(
   (1.5fr, 1.5fr, 2.5fr),
-  table.header[*연산*][*복잡도*][*Notes*],
-  [순차 스캔], [$O(L dot D dot N)$], [$L$: 시퀀스 길이, $D$: 모델 차원, $N$: 상태 차원],
-  [Transformer 대비], [$O(L)$ vs $O(L^2)$], [시퀀스 길이에 선형],
-  [메모리], [$O(D dot N)$], [은닉 상태만 유지 (시퀀스 길이 무관)],
+  table.header[*Operation*][*Complexity*][*Notes*],
+  [Sequential scan], [$O(L dot D dot N)$], [$L$: sequence length, $D$: model dimension, $N$: state dimension],
+  [vs. Transformer], [$O(L)$ vs $O(L^2)$], [linear in sequence length],
+  [Memory], [$O(D dot N)$], [only hidden state retained (independent of sequence length)],
 )
 
 // =================================================================
@@ -438,90 +440,90 @@ Mamba 총 Output Dimension: $128 + 64 = 192$D (txn + session concat).
 
 == Theoretical Background
 
-#note-box(accent: indigo)[참조 논문][
+#note-box(accent: indigo)[Reference Paper][
   Hasani et al., _"Liquid Time-constant Networks"_ (AAAI 2021). \
-  계보: Neural ODE (Chen et al., NeurIPS 2018) + 생물학적 뉴런 감쇠 모델 + Liquid State Machine (Maass et al., 2002).
+  Lineage: Neural ODE (Chen et al., NeurIPS 2018) + biological neuron decay model + Liquid State Machine (Maass et al., 2002).
 ]
 
-Neural ODE를 기반으로 하되, 시간 상수 $tau$가 입력에 따라 적응적으로 변하는
-연속 시간 신경망이다.
-불규칙 시간 간격(금융 거래의 본질적 Characteristics)을 자연스럽게 처리할 수 있다.
+A continuous-time neural network based on Neural ODE, where the time constant $tau$
+adapts dynamically according to the input.
+It can naturally handle irregular time intervals (an intrinsic characteristic of financial transactions).
 
-== 핵심 ODE
+== Core ODE
 
 #eq-box[
   $ frac(d bold(h), d t) = frac(-bold(h) + f(bold(x), bold(h)), tau(bold(x), bold(h))) $ <eq-lnn-ode>
 
   #dim[
-    $bold(h) in RR^H$: 은닉 상태, $bold(x)$: 외부 입력 \
-    $f(dot, dot)$: 상태 업데이트 함수 (목표 상태),
-    $tau(dot, dot) > 0$: 적응적 시간 상수
+    $bold(h) in RR^H$: hidden state, $bold(x)$: external input \
+    $f(dot, dot)$: state update function (target state),
+    $tau(dot, dot) > 0$: adaptive time constant
   ]
 ]
 
-=== 각 항의 물리적 의미
+=== Physical Interpretation of Each Term
 
 #stbl(
   (1fr, 3.5fr),
-  table.header[*항*][*의미*],
-  [$-bold(h)$], [감쇠 (leak): 입력 없이 은닉 상태가 0으로 수렴. 오래된 정보를 자연스럽게 잊음],
-  [$f(bold(x), bold(h))$], [구동력 (driving force): 새 입력과 현재 상태에 기반한 목표 상태. $f = tanh(bold(W)_f [bold(x); bold(h)] + bold(b)_f)$],
-  [$tau(bold(x), bold(h))$], [시간 상수: 클수록 변화가 느림 (관성, 상태 보존), 작을수록 빠르게 반응. $tau = "Softplus"("MLP"([bold(x); bold(h)])) + 0.1$],
+  table.header[*Term*][*Meaning*],
+  [$-bold(h)$], [Decay (leak): hidden state converges to 0 without input. Naturally forgets old information.],
+  [$f(bold(x), bold(h))$], [Driving force: target state based on new input and current state. $f = tanh(bold(W)_f [bold(x); bold(h)] + bold(b)_f)$],
+  [$tau(bold(x), bold(h))$], [Time constant: larger values mean slower change (inertia, state preservation), smaller values mean faster response. $tau = "Softplus"("MLP"([bold(x); bold(h)])) + 0.1$],
 )
 
-== Euler 이산화
+== Euler Discretization
 
-연속 ODE를 이산 타임스텝으로 변환:
+Converting the continuous ODE to discrete timesteps:
 
 $ bold(h)_(t+1) = bold(h)_t + Delta t dot frac(-bold(h)_t + f(bold(x)_t, bold(h)_t), tau(bold(x)_t, bold(h)_t)) $ <eq-euler>
 
-$Delta t$는 _실제 시간 간격_(일 단위)으로, 거래 간격이 불규칙하더라도 ODE가 자연스럽게 처리한다.
+$Delta t$ is the _actual time interval_ (in days), so the ODE naturally handles irregular transaction intervals.
 
-== 적응적 시간 상수의 금융 도메인 해석
+== Financial Domain Interpretation of the Adaptive Time Constant
 
-금융 거래 간격은 극도로 불규칙하다:
+Transaction intervals in finance are extremely irregular:
 
 #stbl(
   (2fr, 1.5fr, 2.5fr),
-  table.header[*상황*][*$Delta t$*][*$tau$의 Role*],
-  [당일 복수 거래], [$tilde 0.01$ 일], [작은 $tau$: 빠른 반응, 각 거래를 즉시 반영],
-  [주말 공백], [$2$ 일], [중간 $tau$: 상태 완만하게 유지],
-  [장기 휴면], [$> 30$ 일], [큰 $tau$: 상태 보존, 느린 감쇠],
+  table.header[*Situation*][*$Delta t$*][*Role of $tau$*],
+  [Multiple transactions on the same day], [$tilde 0.01$ days], [Small $tau$: fast response, immediately reflecting each transaction],
+  [Weekend gap], [$2$ days], [Medium $tau$: state maintained gradually],
+  [Long-term dormancy], [$> 30$ days], [Large $tau$: state preserved, slow decay],
 )
 
-고정 $tau$를 사용하는 RNN/LSTM은 모든 간격을 동일하게 처리한다.
-적응적 $tau$는 활발한 거래 시기에는 빠르게 반응하고,
-휴면 시기에는 상태를 보존하여 _고객 행동 리듬_에 자동 적응한다.
+RNNs/LSTMs with fixed $tau$ treat all intervals equally.
+The adaptive $tau$ responds quickly during active transaction periods
+and preserves state during dormant periods, automatically adapting to _customer behavioral rhythms_.
 
-== SingleStep 모드 설계
+== SingleStep Mode Design
 
-프로젝트에서 LNN은 *SingleStep 모드*로 운용된다.
-전체 시퀀스를 ODE로 처리하지 않고, Mamba의 최종 은닉 상태에 대해
-_단일 ODE 스텝_만 적용한다.
+In this project, LNN operates in *SingleStep mode*.
+Rather than processing the entire sequence through ODE,
+it applies only a _single ODE step_ to Mamba's final hidden state.
 
-=== 설계 근거
+=== Design Rationale
 
-- Mamba가 이미 $O(L)$로 전체 시퀀스 패턴을 포착
-- LNN은 _시간 스케일 보정_ Role만 수행 (중복 시퀀스 처리 회피)
-- 계산 비용: $O(1)$ 단일 스텝 vs $O(L)$ 전체 시퀀스 ODE
+- Mamba already captures the full sequence patterns in $O(L)$
+- LNN serves only as a _temporal scale correction_ role (avoiding redundant sequence processing)
+- Computational cost: $O(1)$ single step vs. $O(L)$ full sequence ODE
 
-#note-box[Mamba $arrow.r$ LNN 직렬 구조][
-  Mamba가 시퀀스 패턴을 학습한 후,
-  LNN이 최종 상태에 시간 인식 보정을 적용하는 직렬 구조이다.
-  이는 "트렌드 추출 $arrow.r$ 잔차 보정"의 분해에 대응한다.
+#note-box[Mamba $arrow.r$ LNN Serial Structure][
+  After Mamba learns sequence patterns,
+  LNN applies temporal-aware correction to the final state in a serial structure.
+  This corresponds to the decomposition of "trend extraction $arrow.r$ residual correction."
 ]
 
 == Project Implementation Specification
 
 #stbl(
   (1.5fr, 1.5fr, 1.5fr, 1.5fr),
-  table.header[*파라미터*][*LNN txn*][*LNN session*][*Description*],
-  [`input_dim`], [128], [64], [Mamba Output Dimension],
-  [`hidden_dim`], [64], [32], [LNN 은닉 차원],
-  [출력], [`[B, 64]`], [`[B, 32]`], [SingleStep 출력],
+  table.header[*Parameter*][*LNN txn*][*LNN session*][*Description*],
+  [`input_dim`], [128], [64], [Mamba output dimension],
+  [`hidden_dim`], [64], [32], [LNN hidden dimension],
+  [Output], [`[B, 64]`], [`[B, 32]`], [SingleStep output],
 )
 
-LNN 총 Output Dimension: $64 + 32 = 96$D (txn + session concat).
+Total LNN output dimension: $64 + 32 = 96$D (txn + session concat).
 
 // =================================================================
 = PatchTST: Patch Time Series Transformer
@@ -529,126 +531,126 @@ LNN 총 Output Dimension: $64 + 32 = 96$D (txn + session concat).
 
 == Theoretical Background
 
-#note-box(accent: indigo)[참조 논문][
+#note-box(accent: indigo)[Reference Paper][
   Nie et al., _"A Time Series is Worth 64 Words: Long-term Forecasting with Transformers"_ (ICLR 2023). \
-  ViT (Dosovitskiy et al., ICLR 2021)의 패치 개념을 시계열에 적용.
+  Applies the patch concept from ViT (Dosovitskiy et al., ICLR 2021) to time series.
 ]
 
-시계열을 고정 크기 패치로 분할한 뒤,
-각 패치를 토큰으로 취급하여 Self-Attention을 적용한다.
-이는 어텐션 비용을 $O(L^2)$에서 $O((L\/P)^2)$로 축소하면서도
-다중 스케일 주기 패턴을 효과적으로 포착한다.
+The time series is divided into fixed-size patches,
+and each patch is treated as a token with Self-Attention applied.
+This reduces the attention cost from $O(L^2)$ to $O((L\/P)^2)$
+while effectively capturing multi-scale periodic patterns.
 
-== 패치 임베딩
+== Patch Embedding
 
 $ bold(p)_i = bold(W)_"proj" dot "flatten"(bold(x)_[((i-1)P+1) : (i P)]) + bold(b)_"proj" $ <eq-patch>
 
-패치 크기 $P = 16$에서 180 타임스텝 거래 시퀀스는 $floor(180 \/ 16) = 11$개 패치로 변환된다.
-어텐션 비용: $O(180^2) = 32400$ $arrow.r$ $O(11^2) = 121$.
+With patch size $P = 16$, the 180-timestep transaction sequence is converted to $floor(180 \/ 16) = 11$ patches.
+Attention cost: $O(180^2) = 32400$ $arrow.r$ $O(11^2) = 121$.
 
-=== 패치 크기의 금융 도메인 해석
+=== Financial Domain Interpretation of Patch Size
 
-패치 크기 16은 약 2주에 해당하며, 급여 주기 (2주/4주)의 기본 단위와 자연스럽게 정렬된다.
-각 패치 내부에서 로컬 패턴 (일별 지출)을 집약하고,
-패치 간 어텐션으로 글로벌 주기성 (월간 급여, 분기 보너스)을 포착한다.
+A patch size of 16 corresponds to approximately 2 weeks, naturally aligning with the fundamental unit of payroll cycles (bi-weekly/monthly).
+Local patterns within each patch (daily spending) are aggregated,
+and inter-patch attention captures global periodicity (monthly salary, quarterly bonuses).
 
 == Multi-Head Self-Attention
 
 $ "Attention"(bold(Q), bold(K), bold(V)) = "softmax"(frac(bold(Q) bold(K)^top, sqrt(d_k))) bold(V) $ <eq-attention>
 
-$bold(Q) bold(K)^top$의 $(i,j)$ 원소는 두 패치 벡터의 내적으로, _코사인 유사도_에 비례한다.
-Softmax는 이를 확률 분포로 변환하여, 관련성 높은 패치의 정보를 가중합한다.
-$sqrt(d_k)$로 나누는 것은 내적 분산을 정규화하여 softmax gradient의 건전성을 유지하기 위함이다.
+The $(i,j)$ element of $bold(Q) bold(K)^top$ is the inner product of two patch vectors, proportional to _cosine similarity_.
+Softmax converts this to a probability distribution, computing a weighted sum of information from highly relevant patches.
+Division by $sqrt(d_k)$ normalizes the inner product variance to maintain healthy softmax gradients.
 
-== 위치 인코딩
+== Positional Encoding
 
-정현파(sinusoidal) 위치 인코딩을 사용한다.
-6--12개 패치 수준에서는 학습 가능 위치 인코딩 대비 충분한 성능을 제공하며,
-시퀀스 길이 일반화에 유리하다.
+Sinusoidal positional encoding is used.
+For 6--12 patches, it provides sufficient performance compared to learnable positional encoding
+and generalizes better to varying sequence lengths.
 
 == Project Implementation Specification
 
 #stbl(
   (1.5fr, 1.5fr, 1.5fr, 2fr),
-  table.header[*파라미터*][*PatchTST txn*][*PatchTST session*][*Description*],
-  [`d_model`], [64], [32], [Transformer 은닉 차원],
-  [`nhead`], [4], [2], [멀티헤드 어텐션 수],
-  [`num_layers`], [2], [2], [Transformer 인코더 레이어 수],
-  [`patch_size`], [16], [16], [패치 크기 (약 2주)],
-  [패치 수], [11], [5], [$floor(L \/ P)$],
-  [출력], [`[B, 64]`], [`[B, 32]`], [AdaptiveAvgPool1d],
+  table.header[*Parameter*][*PatchTST txn*][*PatchTST session*][*Description*],
+  [`d_model`], [64], [32], [Transformer hidden dimension],
+  [`nhead`], [4], [2], [number of multi-head attention heads],
+  [`num_layers`], [2], [2], [number of Transformer encoder layers],
+  [`patch_size`], [16], [16], [patch size (approximately 2 weeks)],
+  [Patch count], [11], [5], [$floor(L \/ P)$],
+  [Output], [`[B, 64]`], [`[B, 32]`], [AdaptiveAvgPool1d],
 )
 
-PatchTST 총 Output Dimension: $64 + 32 = 96$D (txn + session concat).
+Total PatchTST output dimension: $64 + 32 = 96$D (txn + session concat).
 
-== 복잡도 비교
+== Complexity Comparison
 
 #stbl(
   (2fr, 1.5fr, 2fr),
-  table.header[*모델*][*복잡도*][*L=180 기준*],
+  table.header[*Model*][*Complexity*][*At L=180*],
   [Vanilla Transformer], [$O(L^2)$], [$32,400$],
   [PatchTST ($P=16$)], [$O((L\/P)^2)$], [$121$],
   [Mamba (SSM)], [$O(L)$], [$180$],
 )
 
 // =================================================================
-= 앙상블 게이팅
+= Ensemble Gating
 // =================================================================
 
-== 게이트 아키텍처
+== Gate Architecture
 
-세 모델의 출력을 연결(concat)한 뒤, 학습 가능한 2-layer 게이트 네트워크가
-각 모델의 기여도를 동적으로 결정한다:
+After concatenating the outputs of three models, a learnable 2-layer gate network
+dynamically determines each model's contribution:
 
 #eq-box[
   $ bold(g) = "Softmax"(bold(W)_2 dot "ReLU"(bold(W)_1 dot bold(z)_"cat" + bold(b)_1) + bold(b)_2) in RR^3 $ <eq-gate>
   $ bold(y) = sum_(i=1)^3 g_i dot "Proj"_i (bold(z)_i) in RR^(64) $ <eq-ensemble>
 
   #dim[
-    $bold(z)_"cat"$: 세 모델 출력의 연결 (192 + 96 + 96 = 384D) \
-    $"Proj"_i$: 각 모델 출력을 공통 64D 공간으로 프로젝션 \
-    $g_i$: 모델 $i$의 가중치 ($sum g_i = 1$)
+    $bold(z)_"cat"$: concatenation of three model outputs (192 + 96 + 96 = 384D) \
+    $"Proj"_i$: projects each model output into a common 64D space \
+    $g_i$: weight of model $i$ ($sum g_i = 1$)
   ]
 ]
 
-== 입력 분리를 통한 앙상블 다양성
+== Ensemble Diversity Through Input Separation
 
 #stbl(
   (1.5fr, 2fr, 2.5fr),
-  table.header[*모델*][*입력 경로*][*다양성 확보 근거*],
-  [Mamba], [원본 시퀀스 직접 입력], [순차 상태 공간 Perspective],
-  [LNN], [Mamba 최종 상태 (직렬)], [시간 스케일 보정 Perspective],
-  [PatchTST], [원본 시퀀스 독립 입력], [글로벌 어텐션 Perspective],
+  table.header[*Model*][*Input Path*][*Basis for Diversity*],
+  [Mamba], [direct input of original sequence], [sequential state space perspective],
+  [LNN], [Mamba final state (serial)], [temporal scale correction perspective],
+  [PatchTST], [independent input of original sequence], [global attention perspective],
 )
 
-Mamba $arrow.r$ LNN 직렬 + PatchTST 독립 구조는
-입력 분리를 통해 앙상블 다양성을 확보한다.
-동일 입력을 사용하면 게이팅 차별화 효과가 감소하므로,
-독립 경로 설계가 필수적이다.
+The Mamba $arrow.r$ LNN serial + PatchTST independent structure
+ensures ensemble diversity through input separation.
+Using identical inputs reduces the differentiation effect of gating,
+making independent path design essential.
 
-== 게이트 엔트로피 모니터링
+== Gate Entropy Monitoring
 
-게이트 분포의 건전성을 Shannon 엔트로피로 감시한다:
+The health of the gate distribution is monitored using Shannon entropy:
 
 $ H(bold(g)) = -sum_(i=1)^3 g_i log_2(g_i) $ <eq-entropy>
 
 #stbl(
   (2fr, 1.5fr, 3fr),
-  table.header[*상태*][*엔트로피*][*해석*],
-  [균일 분포], [$log_2(3) approx 1.585$ bits], [세 모델이 균등하게 기여 (최대 엔트로피)],
-  [건전한 편중], [$0.5 tilde 1.2$ bits], [입력에 따른 적응적 가중치 (정상 작동)],
-  [Gate Collapse], [$< 0.3$ bits], [하나의 모델이 지배, 나머지 학습 중단 (경고)],
+  table.header[*State*][*Entropy*][*Interpretation*],
+  [Uniform distribution], [$log_2(3) approx 1.585$ bits], [Three models contribute equally (maximum entropy)],
+  [Healthy skew], [$0.5 tilde 1.2$ bits], [Adaptive weights according to input (normal operation)],
+  [Gate Collapse], [$< 0.3$ bits], [One model dominates, others stop learning (warning)],
 )
 
-#warn-box[Gate Collapse (Gate Collapse)][
-  $H < 0.3$ bits이면 하나의 모델이 거의 모든 가중치를 독점한다.
-  나머지 두 모델은 gradient가 차단되어 학습이 중단되므로
-  앙상블의 의미가 사라진다.
-  학습 중 엔트로피를 주기적으로 로깅하고,
-  붕괴 감지 시 게이트 온도 스케일링 또는 엔트로피 보너스 정규화를 적용한다.
+#warn-box[Gate Collapse][
+  When $H < 0.3$ bits, one model monopolizes almost all the weight.
+  The remaining two models have their gradients blocked and stop learning,
+  rendering the ensemble meaningless.
+  Log entropy periodically during training,
+  and apply gate temperature scaling or entropy bonus regularization when collapse is detected.
 ]
 
-== 최종 출력 흐름 Summary
+== Final Output Flow Summary
 
 $
 "txn\_seq" [B, 180, 16] &arrow.r "Mamba"_"txn" arrow.r [B, 128] \
@@ -659,88 +661,88 @@ $
 "sess\_seq" &arrow.r "PatchTST"_"sess" arrow.r [B, 32] \
 $
 
-Concat: $[192 + 96 + 96 = 384"D"]$ $arrow.r$ Gate $arrow.r$ Weighted sum $arrow.r$ *64D* 최종 출력.
+Concat: $[192 + 96 + 96 = 384"D"]$ $arrow.r$ Gate $arrow.r$ Weighted sum $arrow.r$ *64D* final output.
 
 // =================================================================
-= I/O Specification 및 Implementation Notes
+= I/O Specification and Implementation Notes
 // =================================================================
 
-== 전체 I/O Specification
+== Full I/O Specification
 
-=== 입력
+=== Inputs
 
 #stbl(
   (2fr, 1.5fr, 3fr),
-  table.header[*입력*][*Shape*][*Description*],
-  [`txn_seq`], [`[B, 180, 16]`], [180일 거래 시퀀스, card 8D + deposit 8D],
-  [`session_seq`], [`[B, 90, 8]`], [90일 세션 시퀀스, 8D 세션 피처],
+  table.header[*Input*][*Shape*][*Description*],
+  [`txn_seq`], [`[B, 180, 16]`], [180-day transaction sequence, card 8D + deposit 8D],
+  [`session_seq`], [`[B, 90, 8]`], [90-day session sequence, 8D session features],
 )
 
-=== 중간 표현
+=== Intermediate Representations
 
 #stbl(
   (2fr, 1fr, 1fr, 1fr),
-  table.header[*모델*][*txn 출력*][*session 출력*][*합계*],
+  table.header[*Model*][*txn output*][*session output*][*Total*],
   [Mamba (SSM)], [128D], [64D], [192D],
   [LNN (ODE)], [64D], [32D], [96D],
   [PatchTST (Attn)], [64D], [32D], [96D],
   [*Concat*], [], [], [*384D*],
 )
 
-=== 출력
+=== Outputs
 
 #stbl(
   (2fr, 1.5fr, 3fr),
-  table.header[*출력*][*Shape*][*Description*],
-  [Temporal Expert 출력], [`[B, 64]`], [게이팅 가중합 후 최종 표현],
-  [Gate weights], [`[B, 3]`], [Mamba, LNN, PatchTST 기여도 (모니터링용)],
+  table.header[*Output*][*Shape*][*Description*],
+  [Temporal Expert output], [`[B, 64]`], [final representation after gated weighted sum],
+  [Gate weights], [`[B, 3]`], [Mamba, LNN, PatchTST contributions (for monitoring)],
 )
 
-출력 64D 벡터는 PLE의 CGC Gate Attention으로 전달되어,
-다른 6개 Expert (PersLay, DeepFM, LightGCN, Unified H-GCN, Causal, OT)의 출력과
-태스크별로 동적 결합된다.
+The 64D output vector is passed to PLE's CGC Gate Attention,
+where it is dynamically combined per task with the outputs of the other 6 experts
+(PersLay, DeepFM, LightGCN, Unified H-GCN, Causal, OT).
 
-== 세 모델의 Role 비교 Summary
+== Summary: Role Comparison of the Three Models
 
 #stbl(
   (1.2fr, 2fr, 2fr, 1.5fr),
-  table.header[*모델*][*포착하는 시간 패턴*][*메커니즘*][*복잡도*],
-  [Mamba], [장기 순차 의존성 (트렌드)], [Selective State Space (S6)], [$O(L)$ 선형],
-  [LNN], [불규칙 시간 간격 (잔차)], [적응적 시간 상수 ODE], [$O(1)$ 단일 스텝],
-  [PatchTST], [글로벌 주기성 (계절성)], [패치 단위 Self-Attention], [$O((L\/P)^2)$],
+  table.header[*Model*][*Temporal Pattern Captured*][*Mechanism*][*Complexity*],
+  [Mamba], [Long-range sequential dependencies (trend)], [Selective State Space (S6)], [$O(L)$ linear],
+  [LNN], [Irregular time intervals (residual)], [Adaptive time constant ODE], [$O(1)$ single step],
+  [PatchTST], [Global periodicity (seasonality)], [Patch-level Self-Attention], [$O((L\/P)^2)$],
 )
 
-== 시계열 분석 세대별 발전과 본 프로젝트의 위치
+== Generational Progression of Time Series Analysis and This Project
 
 #stbl(
   (0.8fr, 2fr, 2fr, 1.5fr),
-  table.header[*세대*][*Approach*][*Limitation*][*극복 모델*],
-  [1세대], [ARIMA, Exponential Smoothing], [선형 가정, 수작업 차분], [LSTM, GRU],
-  [2세대], [LSTM, GRU (게이트 기반 RNN)], [$O(L)$ 순차 병목, vanishing gradient], [Transformer],
-  [3세대], [Transformer (Self-Attention)], [$O(L^2)$ 복잡도, 순서 정보 약함], [SSM, PatchTST],
-  [4세대], [SSM + ODE + Patch Transformer], [모델 복잡도, Gate Collapse 위험], [본 프로젝트],
+  table.header[*Generation*][*Approach*][*Limitation*][*Overcoming Model*],
+  [1st], [ARIMA, Exponential Smoothing], [linearity assumption, manual differencing], [LSTM, GRU],
+  [2nd], [LSTM, GRU (gated RNNs)], [$O(L)$ sequential bottleneck, vanishing gradient], [Transformer],
+  [3rd], [Transformer (Self-Attention)], [$O(L^2)$ complexity, weak ordering information], [SSM, PatchTST],
+  [4th], [SSM + ODE + Patch Transformer], [model complexity, Gate Collapse risk], [this project],
 )
 
-== 구현 시 유의사항
+== Implementation Considerations
 
-=== 데이터 리키지 방지
+=== Data Leakage Prevention
 
-- 시퀀스 데이터의 마지막 타임스텝이 레이블 산출 기간과 겹치지 않도록 `gap_days` 설정 필수 (최소 7일)
-- Mamba의 인과 Conv1d는 미래 정보를 참조하지 않음 (left-padding)
-- PatchTST의 어텐션은 causal mask 없이 전체 시퀀스를 참조하나, 입력 시퀀스 자체가 레이블 기간 이전으로 절단되어 있으므로 리키지 위험 없음
+- `gap_days` must be set so the last timestep of sequence data does not overlap with the label derivation period (minimum 7 days)
+- Mamba's causal Conv1d does not reference future information (left-padding)
+- PatchTST attention references the entire sequence without a causal mask, but since the input sequence is already truncated to before the label period, there is no leakage risk
 
-=== 수치 안정성
+=== Numerical Stability
 
-- Mamba $bold(A)$ 행렬: $-exp("A"_"log")$로 음수 보장 (발산 방지)
-- Mamba $Delta$: softplus로 양수 보장 ($Delta > 0$)
-- LNN $tau$: $"Softplus"(dot) + 0.1$ 하한 (영점 방지)
-- 게이트 엔트로피 $< 0.3$ bits 시 경고 로깅
+- Mamba $bold(A)$ matrix: negativity guaranteed by $-exp("A"_"log")$ (prevents divergence)
+- Mamba $Delta$: positivity guaranteed by softplus ($Delta > 0$)
+- LNN $tau$: lower bound of $"Softplus"(dot) + 0.1$ (prevents zero division)
+- Warning logged when gate entropy $< 0.3$ bits
 
-=== 성능 최적화
+=== Performance Optimization
 
-- Mamba sequential scan: 프로토타입은 Python 루프, 프로덕션은 `mamba-ssm` CUDA 커널 권장
-- AMP (Mixed Precision) 활성화: g4dn T4 GPU에서 약 2배 속도 향상
-- 배치 크기: VRAM과 데이터 규모에 따라 조정 (대규모 데이터 4096 권장)
+- Mamba sequential scan: prototype uses Python loop; production recommends `mamba-ssm` CUDA kernel
+- AMP (Mixed Precision) enabled: approximately 2x speed improvement on g4dn T4 GPU
+- Batch size: adjusted based on VRAM and data scale (4096 recommended for large-scale data)
 
 === References
 
@@ -751,7 +753,7 @@ Concat: $[192 + 96 + 96 = 384"D"]$ $arrow.r$ Gate $arrow.r$ Weighted sum $arrow.
   inset: 6pt,
   stroke: 0.4pt + rgb("#e2e8f0"),
   fill: (_, y) => if y == 0 { navy.lighten(88%) } else if calc.odd(y) { luma(252) },
-  table.header[*구성 요소*][*논문*][*발표*],
+  table.header[*Component*][*Paper*][*Venue*],
   [Mamba SSM], [Gu & Dao, "Mamba: Linear-Time Sequence Modeling with Selective State Spaces"], [NeurIPS 2023],
   [LNN], [Hasani et al., "Liquid Time-constant Networks"], [AAAI 2021],
   [PatchTST], [Nie et al., "A Time Series is Worth 64 Words"], [ICLR 2023],
