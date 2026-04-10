@@ -39,6 +39,7 @@
 #set text(font: "New Computer Modern", size: 10pt, fill: anthropic-text, lang: "en")
 #set heading(numbering: "1.1.")
 #set par(justify: true, leading: 0.8em, spacing: 1.5em)
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
 
 #show heading.where(level: 1): it => {
   pagebreak(weak: true)
@@ -494,17 +495,19 @@ ablation:
 
 == Teacher -> LGBM Student
 
-```
-PLE Teacher (GPU, 18 tasks)
-    | Forward pass -- soft labels (temperature=5.0)
-    | Store in S3
-    |
-LGBM Students (CPU, per-task)
-    +-- loss = 0.3 x hard_loss + 0.7 x soft_loss
-    +-- num_leaves: 127, n_estimators: 500
-    +-- Per-task fidelity validation (AUC gap < threshold)
-    +-- Save lightweight model (~5ms inference)
-```
+#align(center)[
+  #diagram(
+    node-stroke: 0.6pt + luma(80),
+    edge-stroke: 0.7pt + luma(80),
+    node-corner-radius: 3pt,
+    spacing: (12pt, 18pt),
+    node((0,0), [PLE Teacher \ (GPU, 18 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
+    edge((0,0), (0,1), "->", label: [Forward pass — soft labels (temperature=5.0) \ Store in S3], label-side: right),
+    node((0,1), [LGBM Students (CPU, per-task) \ loss = 0.3 × hard\_loss + 0.7 × soft\_loss \ num\_leaves: 127, n\_estimators: 500 \ Per-task fidelity validation (AUC gap < threshold)], fill: rgb("#e8f5e9"), width: 72mm),
+    edge((0,1), (0,2), "->"),
+    node((0,2), [Lightweight model saved (~5ms inference)], fill: rgb("#e8f5e9"), width: 52mm),
+  )
+]
 
 == Execution CLI
 

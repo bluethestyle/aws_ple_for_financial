@@ -49,6 +49,7 @@
 // ─────────────────────────── 기본 텍스트 ──────────────────────────
 #set text(font: ("Pretendard", "New Computer Modern"), size: 10pt, fill: anthropic-text, lang: "ko")
 #set par(justify: true, leading: 0.8em, spacing: 1.5em)
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
 
 // ─────────────────────────── 코드 블록 ───────────────────────────
 #show raw.where(block: true): it => {
@@ -1054,15 +1055,23 @@ MCC 계층 구조(Root -> L1 -> L2 -> Brand)를 반영한 좌표 및 임베딩. 
 
 == 정규화 파이프라인 흐름 요약
 
-```
-원본 피처 → [Stage 1] 멱법칙 감지 (skew+kurt → log-log R²)
-                       ↓ 멱법칙 → log1p 복사본 생성 (90D raw)
-         → [Stage 2] StandardScaler fit on TRAIN only
-                       ↓ continuous만 적용, binary 제외
-         → [Stage 3] raw power-law 복사본 그대로 보존
-                       ↓
-         → [최종] 644D normalized ⊕ 90D raw = 734D main tensor
-```
+#align(center)[
+  #diagram(
+    node-stroke: 0.6pt + luma(80),
+    edge-stroke: 0.7pt + luma(80),
+    node-corner-radius: 3pt,
+    spacing: (10pt, 16pt),
+    node((0,0), [원본 피처], fill: luma(245), width: 32mm),
+    edge((0,0), (0,1), "->"),
+    node((0,1), [\[Stage 1\] 멱법칙 감지 \ (skew+kurt → log-log R²)], fill: rgb("#d6e6f0"), width: 58mm),
+    edge((0,1), (0,2), "->", label: [멱법칙 → log1p 복사본 생성 (90D raw)], label-side: right),
+    node((0,2), [\[Stage 2\] StandardScaler \ fit on TRAIN only \ (continuous만 적용, binary 제외)], fill: rgb("#d6e6f0"), width: 58mm),
+    edge((0,2), (0,3), "->"),
+    node((0,3), [\[Stage 3\] raw power-law 복사본 \ 그대로 보존], fill: rgb("#d6e6f0"), width: 58mm),
+    edge((0,3), (0,4), "->"),
+    node((0,4), [\[최종\] 644D normalized ⊕ 90D raw \ = 734D main tensor], fill: rgb("#e8f5e9"), width: 62mm),
+  )
+]
 
 
 // =====================================================================

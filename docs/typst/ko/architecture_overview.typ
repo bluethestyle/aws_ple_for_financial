@@ -41,6 +41,8 @@
 #set par(justify: true, leading: 0.8em, spacing: 1.5em)
 #set block(spacing: 0.8em)
 
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
+
 #show heading.where(level: 1): it => {
   v(0.6cm)
   set par(first-line-indent: 0pt)
@@ -312,15 +314,28 @@ AWS 마이그레이션
 
 == Pool / Basket / Runtime 3계층
 
-```
-Pool (등록 목록)        Basket (Config 선택)       Runtime (가중 실행)
-┌─────────────────┐    ┌──────────────────┐      ┌──────────────────┐
-│ 모든 구성 요소가  │    │ YAML config으로   │      │ 실행 시점에       │
-│ Registry에 등록  │───▶│ 부분 집합 선택    │────▶│ 가중치 기반 결합  │
-│ (플러그인 방식)   │    │ (도메인별 교체)   │      │ (학습/추론)       │
-└─────────────────┘    └──────────────────┘      └──────────────────┘
-     코드 영역              Config 영역              모델 영역
-```
+#figure(
+  {
+    let pool-fill = rgb("#e3f2fd")
+    let basket-fill = rgb("#fff3e0")
+    let runtime-fill = rgb("#e8f5e9")
+
+    fletcher.diagram(
+      spacing: (12pt, 8pt),
+      node-stroke: 0.6pt + luma(80),
+      edge-stroke: 0.7pt + luma(80),
+      node-corner-radius: 3pt,
+
+      node((0, 0), [*Pool* \ #text(size: 7pt)[모든 구성 요소] \ #text(size: 7pt)[Registry 등록] \ #text(size: 6pt, fill: luma(120))[(코드 영역)]], width: 28mm, fill: pool-fill, name: <pool>),
+      node((1.5, 0), [*Basket* \ #text(size: 7pt)[YAML config으로] \ #text(size: 7pt)[부분 집합 선택] \ #text(size: 6pt, fill: luma(120))[(Config 영역)]], width: 28mm, fill: basket-fill, name: <basket>),
+      node((3, 0), [*Runtime* \ #text(size: 7pt)[가중치 기반 결합] \ #text(size: 7pt)[학습/추론 실행] \ #text(size: 6pt, fill: luma(120))[(모델 영역)]], width: 28mm, fill: runtime-fill, name: <runtime>),
+
+      edge(<pool>, <basket>, "->", label: [선택]),
+      edge(<basket>, <runtime>, "->", label: [실행]),
+    )
+  },
+  caption: [Pool / Basket / Runtime 3계층 아키텍처.],
+)
 
 #table(
   columns: (auto, 1fr, auto),
@@ -848,87 +863,85 @@ EncryptionPipeline.process_source()
 
 == 전체 데이터 흐름도
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Phase 0: Data Preparation                     │
-│                                                                  │
-│  S3 Raw Parquet                                                  │
-│       │                                                          │
-│       ▼                                                          │
-│  Stage 1: DataAdapter (DuckDB-native load)                       │
-│       │                                                          │
-│       ▼                                                          │
-│  Stage 1.5: TemporalPrep (시퀀스 절단, prod 재계산)                │
-│       │                                                          │
-│       ▼                                                          │
-│  Stage 2: SchemaClassifier (5-Axis 분류)                         │
-│       │                                                          │
-│       ▼                                                          │
-│  Stage 3: EncryptionPipeline (PII → SHA256 → INT32)             │
-│       │                                                          │
-│       ▼                                                          │
-│  Stage 4: FeatureGroupPipeline (8 Generators + Normalization)    │
-│       │         output: features.parquet (316D)                  │
-│       ▼                                                          │
-│  Stage 5: LabelDeriver (18 tasks, config-driven)                 │
-│       │         output: labels.parquet                           │
-│       ▼                                                          │
-│  Stage 5.5: LeakageValidator (4-check, auto-drop)               │
-│       │                                                          │
-│       ▼                                                          │
-│  Stage 6: SequenceBuilder (flat → 3D tensors)                    │
-│               output: event_seq.npy, session_seq.npy             │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                Phase 1-3: Ablation Training                      │
-│                                                                  │
-│  Stage 7: DataLoader (temporal split, gap_days)                  │
-│       │                                                          │
-│       ▼                                                          │
-│  Stage 8: PLETrainer                                             │
-│       │   PLE (3-layer CGC, 7 shared + 1 task expert)            │
-│       │   adaTT (4 groups, intra/inter transfer)                 │
-│       │   Logit Transfer (5 edges, 3 methods)                    │
-│       │   HMM Triple-Mode + Multidisciplinary Routing            │
-│       │   Evidential + SAE (config-gated)                        │
-│       │   Per-task Loss + Uncertainty Weighting                  │
-│       │   AMP FP16 forward + FP32 loss                           │
-│       │                                                          │
-│       ▼                                                          │
-│  Stage 8.5: Model Analysis                                       │
-│       │   IG, CCA, Gate, HGCN, Multi Interpreter                 │
-│       │   Template Engine, XAI Quality, Model Card               │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                Phase 4: Distillation                             │
-│                                                                  │
-│  Stage 9: StudentTrainer                                         │
-│       │   PLE teacher → LGBM students                            │
-│       │   Soft label (T=5.0, alpha=0.3)                          │
-│       │   IG 기반 피처 선택 + fidelity validation                  │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                Phase 5: Serving                                  │
-│                                                                  │
-│  Stage 9.5: Context Vector Store (RAG embedding)                 │
-│       │                                                          │
-│       ▼                                                          │
-│  Stage 10: CPE + Agentic Reason Orchestrator                     │
-│       │   FD-TVS scoring + DNA modifier                          │
-│       │   Constraint Engine (fatigue, eligibility, diversity)     │
-│       │   L1+L2a+L2b 추론 체인                                   │
-│       │                                                          │
-│       ▼                                                          │
-│  Lambda / ECS Fargate (서버리스 서빙)                             │
-│       output: 추천 상품 + 자연어 추천사유 + 불확실성 정량화          │
-└─────────────────────────────────────────────────────────────────┘
-```
+#figure(
+  {
+    let data-fill = luma(245)
+    let proc-fill = rgb("#d6e6f0")
+    let out-fill = rgb("#e8f5e9")
+    let valid-fill = rgb("#fce4ec")
+    let phase-fill = rgb("#ede7f6")
+
+    fletcher.diagram(
+      spacing: (4pt, 8pt),
+      node-stroke: 0.5pt + luma(100),
+      edge-stroke: 0.6pt + luma(100),
+      node-corner-radius: 3pt,
+
+      // Phase 0 header
+      node((0, 0), [*Phase 0: Data Preparation*], width: 60mm, fill: phase-fill, name: <ph0>),
+
+      // Stage nodes
+      node((0, 1), [*S3 Raw Parquet*], width: 55mm, fill: data-fill, name: <s3raw>),
+      node((0, 2), [*Stage 1: DataAdapter* #text(size: 6pt)[(DuckDB-native load)]], width: 55mm, fill: proc-fill, name: <s1>),
+      node((0, 3), [*Stage 1.5: TemporalPrep* #text(size: 6pt)[(시퀀스 절단, prod 재계산)]], width: 55mm, fill: proc-fill, name: <s15>),
+      node((0, 4), [*Stage 2: SchemaClassifier* #text(size: 6pt)[(5-Axis 분류)]], width: 55mm, fill: proc-fill, name: <s2>),
+      node((0, 5), [*Stage 3: EncryptionPipeline* #text(size: 6pt)[(PII → SHA256 → INT32)]], width: 55mm, fill: proc-fill, name: <s3e>),
+      node((0, 6), [*Stage 4: FeatureGroupPipeline* #text(size: 6pt)[(8 Generators + Normalization)]], width: 55mm, fill: proc-fill, name: <s4>),
+      node((0, 7), [*Stage 5: LabelDeriver* #text(size: 6pt)[(18 tasks, config-driven)]], width: 55mm, fill: proc-fill, name: <s5>),
+      node((0, 8), [*Stage 5.5: LeakageValidator* #text(size: 6pt)[(4-check, auto-drop)]], width: 55mm, fill: valid-fill, name: <s55>),
+      node((0, 9), [*Stage 6: SequenceBuilder* #text(size: 6pt)[(flat → 3D tensors)]], width: 55mm, fill: proc-fill, name: <s6>),
+
+      // Output nodes on the right
+      node((1.6, 6), [features.parquet \ #text(size: 6pt)[316D]], width: 24mm, fill: out-fill, name: <feat>),
+      node((1.6, 7), [labels.parquet], width: 24mm, fill: out-fill, name: <lab>),
+      node((1.6, 9), [sequences.npy], width: 24mm, fill: out-fill, name: <seq>),
+
+      // Phase 0 edges
+      edge(<ph0>, <s3raw>, "->"),
+      edge(<s3raw>, <s1>, "->"),
+      edge(<s1>, <s15>, "->"),
+      edge(<s15>, <s2>, "->"),
+      edge(<s2>, <s3e>, "->"),
+      edge(<s3e>, <s4>, "->"),
+      edge(<s4>, <s5>, "->"),
+      edge(<s5>, <s55>, "->"),
+      edge(<s55>, <s6>, "->"),
+      edge(<s4>, <feat>, "->", stroke: 0.4pt + luma(160)),
+      edge(<s5>, <lab>, "->", stroke: 0.4pt + luma(160)),
+      edge(<s6>, <seq>, "->", stroke: 0.4pt + luma(160)),
+
+      // Phase 1-3 header
+      node((0, 10), [*Phase 1--3: Ablation Training*], width: 60mm, fill: phase-fill, name: <ph13>),
+      node((0, 11), [*Stage 7: DataLoader* #text(size: 6pt)[(temporal split, gap\_days)]], width: 55mm, fill: proc-fill, name: <s7>),
+      node((0, 12), [*Stage 8: PLETrainer* \ #text(size: 6pt)[PLE (3-layer CGC, 7 shared + 1 task expert)] \ #text(size: 6pt)[adaTT (4 groups, intra/inter) · Logit Transfer (5 edges)] \ #text(size: 6pt)[HMM Triple-Mode · Evidential + SAE · AMP FP16]], width: 55mm, fill: proc-fill, name: <s8>),
+      node((0, 13), [*Stage 8.5: Model Analysis* \ #text(size: 6pt)[IG · CCA · Gate · HGCN · Multi Interpreter] \ #text(size: 6pt)[Template Engine · XAI Quality · Model Card]], width: 55mm, fill: proc-fill, name: <s85>),
+
+      edge(<s6>, <ph13>, "->"),
+      edge(<ph13>, <s7>, "->"),
+      edge(<s7>, <s8>, "->"),
+      edge(<s8>, <s85>, "->"),
+
+      // Phase 4 header
+      node((0, 14), [*Phase 4: Distillation*], width: 60mm, fill: phase-fill, name: <ph4>),
+      node((0, 15), [*Stage 9: StudentTrainer* \ #text(size: 6pt)[PLE teacher → LGBM students · Soft label (T=5.0, α=0.3)] \ #text(size: 6pt)[IG 기반 피처 선택 + fidelity validation]], width: 55mm, fill: proc-fill, name: <s9>),
+
+      edge(<s85>, <ph4>, "->"),
+      edge(<ph4>, <s9>, "->"),
+
+      // Phase 5 header
+      node((0, 16), [*Phase 5: Serving*], width: 60mm, fill: phase-fill, name: <ph5>),
+      node((0, 17), [*Stage 9.5: Context Vector Store* #text(size: 6pt)[(RAG embedding)]], width: 55mm, fill: proc-fill, name: <s95>),
+      node((0, 18), [*Stage 10: CPE + Agentic Reason Orchestrator* \ #text(size: 6pt)[FD-TVS scoring + DNA modifier · Constraint Engine] \ #text(size: 6pt)[L1+L2a+L2b 추론 체인]], width: 55mm, fill: proc-fill, name: <s10>),
+      node((0, 19), [*Lambda / ECS Fargate (서버리스 서빙)* \ #text(size: 6pt)[추천 상품 + 자연어 추천사유 + 불확실성 정량화]], width: 55mm, fill: out-fill, name: <serving>),
+
+      edge(<s9>, <ph5>, "->"),
+      edge(<ph5>, <s95>, "->"),
+      edge(<s95>, <s10>, "->"),
+      edge(<s10>, <serving>, "->"),
+    )
+  },
+  caption: [End-to-End 파이프라인: Phase 0 데이터 준비 → Phase 1--3 학습 → Phase 4 증류 → Phase 5 서빙.],
+)
 
 == 모델 내부 데이터 흐름
 

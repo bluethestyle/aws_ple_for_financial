@@ -49,6 +49,7 @@
 // ─────────────────────────── Base Text ──────────────────────────
 #set text(font: "New Computer Modern", size: 10pt, fill: anthropic-text, lang: "en")
 #set par(justify: true, leading: 0.8em, spacing: 1.5em)
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
 
 // ─────────────────────────── Code Blocks ───────────────────────────
 #show raw.where(block: true): it => {
@@ -1037,15 +1038,23 @@ The `_log` copies of power-law columns (generated in Stage 1) are preserved *wit
 
 == Normalization Pipeline Flow Summary
 
-```
-Raw features → [Stage 1] Power-Law Detection (skew+kurt → log-log R²)
-                         ↓ power-law → generate log1p copy (90D raw)
-             → [Stage 2] StandardScaler fit on TRAIN only
-                         ↓ applied to continuous only; binary excluded
-             → [Stage 3] raw power-law copy preserved as-is
-                         ↓
-             → [Final] 644D normalized ⊕ 90D raw = 734D main tensor
-```
+#align(center)[
+  #diagram(
+    node-stroke: 0.6pt + luma(80),
+    edge-stroke: 0.7pt + luma(80),
+    node-corner-radius: 3pt,
+    spacing: (10pt, 16pt),
+    node((0,0), [Raw features], fill: luma(245), width: 32mm),
+    edge((0,0), (0,1), "->"),
+    node((0,1), [\[Stage 1\] Power-Law Detection \ (skew+kurt → log-log R²)], fill: rgb("#d6e6f0"), width: 58mm),
+    edge((0,1), (0,2), "->", label: [power-law → generate log1p copy (90D raw)], label-side: right),
+    node((0,2), [\[Stage 2\] StandardScaler \ fit on TRAIN only \ (continuous only; binary excluded)], fill: rgb("#d6e6f0"), width: 58mm),
+    edge((0,2), (0,3), "->"),
+    node((0,3), [\[Stage 3\] raw power-law copy \ preserved as-is], fill: rgb("#d6e6f0"), width: 58mm),
+    edge((0,3), (0,4), "->"),
+    node((0,4), [\[Final\] 644D normalized ⊕ 90D raw \ = 734D main tensor], fill: rgb("#e8f5e9"), width: 62mm),
+  )
+]
 
 
 // =====================================================================

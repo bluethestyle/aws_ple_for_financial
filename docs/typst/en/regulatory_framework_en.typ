@@ -51,6 +51,7 @@
 #set text(font: "New Computer Modern", size: 10pt, fill: anthropic-text, lang: "en")
 #set par(justify: true, leading: 0.8em, spacing: 1.5em)
 #set heading(numbering: none)
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
 
 // ── Heading Styles ──
 #show heading.where(level: 1): it => {
@@ -910,17 +911,22 @@ The most critical regulatory issue when leveraging LLMs in financial AI systems 
 
 Data flow during recommendation reason generation and agent diagnostics:
 
-```
-Customer Features (S3, ap-northeast-2)
-  → VPC PrivateLink → Bedrock Endpoint (ap-northeast-2)
-    → Solar Pro / Claude Sonnet / Haiku (inference only, no training)
-  → Response → within VPC → DynamoDB Cache (ap-northeast-2)
-
-  ✗ No data transmitted to model providers
-  ✗ No internet traversal
-  ✗ No cross-region transfer
-  ✓ All calls logged in CloudTrail
-```
+#align(center)[
+  #diagram(
+    node-stroke: 0.6pt + luma(80),
+    edge-stroke: 0.7pt + luma(80),
+    node-corner-radius: 3pt,
+    spacing: (10pt, 16pt),
+    node((0,0), [Customer Features \ (S3, ap-northeast-2)], fill: luma(245), width: 44mm),
+    edge((0,0), (0,1), "->", label: [VPC PrivateLink], label-side: right),
+    node((0,1), [Bedrock Endpoint \ (ap-northeast-2)], fill: rgb("#d6e6f0"), width: 44mm),
+    edge((0,1), (0,2), "->"),
+    node((0,2), [Solar Pro / Claude Sonnet / Haiku \ (inference only, no training)], fill: rgb("#d6e6f0"), width: 58mm),
+    edge((0,2), (0,3), "->", label: [Response → within VPC], label-side: right),
+    node((0,3), [DynamoDB Cache \ (ap-northeast-2)], fill: rgb("#e8f5e9"), width: 44mm),
+    node((2,2), [✗ No data transmitted to model providers \ ✗ No internet traversal \ ✗ No cross-region transfer \ ✓ All calls logged in CloudTrail], fill: rgb("#fff3e0"), width: 72mm),
+  )
+]
 
 #pagebreak()
 

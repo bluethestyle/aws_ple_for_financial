@@ -51,6 +51,7 @@
 #set text(font: ("Pretendard", "New Computer Modern"), size: 10pt, fill: anthropic-text, lang: "ko")
 #set par(justify: true, leading: 0.8em, spacing: 1.5em)
 #set heading(numbering: none)
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
 
 // ── heading 스타일 ──
 #show heading.where(level: 1): it => {
@@ -910,17 +911,22 @@ S3 Lifecycle Rule으로 자동 적용합니다.
 
 추천사유 생성 및 에이전트 진단 시 데이터 흐름:
 
-```
-고객 피처 (S3, ap-northeast-2)
-  → VPC PrivateLink → Bedrock Endpoint (ap-northeast-2)
-    → Solar Pro / Claude Sonnet / Haiku (추론만, 학습 없음)
-  → 응답 → VPC 내부 → DynamoDB 캐시 (ap-northeast-2)
-
-  ✗ 모델 제공사로 데이터 전달 없음
-  ✗ 인터넷 경유 없음
-  ✗ 리전 외부 전송 없음
-  ✓ CloudTrail에 모든 호출 기록
-```
+#align(center)[
+  #diagram(
+    node-stroke: 0.6pt + luma(80),
+    edge-stroke: 0.7pt + luma(80),
+    node-corner-radius: 3pt,
+    spacing: (10pt, 16pt),
+    node((0,0), [고객 피처 \ (S3, ap-northeast-2)], fill: luma(245), width: 44mm),
+    edge((0,0), (0,1), "->", label: [VPC PrivateLink], label-side: right),
+    node((0,1), [Bedrock Endpoint \ (ap-northeast-2)], fill: rgb("#d6e6f0"), width: 44mm),
+    edge((0,1), (0,2), "->"),
+    node((0,2), [Solar Pro / Claude Sonnet / Haiku \ (추론만, 학습 없음)], fill: rgb("#d6e6f0"), width: 58mm),
+    edge((0,2), (0,3), "->", label: [응답 → VPC 내부], label-side: right),
+    node((0,3), [DynamoDB 캐시 \ (ap-northeast-2)], fill: rgb("#e8f5e9"), width: 44mm),
+    node((2,2), [✗ 모델 제공사로 데이터 전달 없음 \ ✗ 인터넷 경유 없음 \ ✗ 리전 외부 전송 없음 \ ✓ CloudTrail에 모든 호출 기록], fill: rgb("#fff3e0"), width: 72mm),
+  )
+]
 
 #pagebreak()
 

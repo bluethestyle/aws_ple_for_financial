@@ -8,6 +8,8 @@
 #set par(justify: true, leading: 0.65em)
 #set block(spacing: 0.8em)
 
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
+
 #show heading.where(level: 1): set text(size: 14pt, weight: "bold")
 #show heading.where(level: 2): set text(size: 12pt, weight: "bold")
 #show heading.where(level: 3): set text(size: 11pt, weight: "bold")
@@ -218,16 +220,28 @@ Our approach: shared expert = *7 heterogeneous experts*. Each expert processes t
 
 == Pool / Basket / Runtime 3-Tier
 
-```
-Pool (Registry)           Basket (Config Selection)     Runtime (Weighted Execution)
-+-----------------+      +------------------+          +------------------+
-| All components  |      | YAML config      |          | At execution     |
-| registered in   |----->| selects a subset |--------->| weight-based     |
-| Registry        |      | (per domain)     |          | combination      |
-| (plug-in)       |      |                  |          | (train/infer)    |
-+-----------------+      +------------------+          +------------------+
-     Code domain              Config domain              Model domain
-```
+#figure(
+  {
+    let pool-fill = rgb("#e3f2fd")
+    let basket-fill = rgb("#fff3e0")
+    let runtime-fill = rgb("#e8f5e9")
+
+    fletcher.diagram(
+      spacing: (12pt, 8pt),
+      node-stroke: 0.6pt + luma(80),
+      edge-stroke: 0.7pt + luma(80),
+      node-corner-radius: 3pt,
+
+      node((0, 0), [*Pool* \ #text(size: 7pt)[All components] \ #text(size: 7pt)[registered in Registry] \ #text(size: 6pt, fill: luma(120))[(Code domain)]], width: 28mm, fill: pool-fill, name: <pool>),
+      node((1.5, 0), [*Basket* \ #text(size: 7pt)[YAML config selects] \ #text(size: 7pt)[a subset (per domain)] \ #text(size: 6pt, fill: luma(120))[(Config domain)]], width: 28mm, fill: basket-fill, name: <basket>),
+      node((3, 0), [*Runtime* \ #text(size: 7pt)[Weight-based combination] \ #text(size: 7pt)[at execution] \ #text(size: 6pt, fill: luma(120))[(Model domain)]], width: 28mm, fill: runtime-fill, name: <runtime>),
+
+      edge(<pool>, <basket>, "->", label: [select]),
+      edge(<basket>, <runtime>, "->", label: [execute]),
+    )
+  },
+  caption: [Pool / Basket / Runtime 3-tier architecture.],
+)
 
 #table(
   columns: (auto, 1fr, auto),
@@ -737,123 +751,122 @@ EncryptionPipeline.process_source()
 
 == Full Data Flow Diagram
 
-```
-+---------------------------------------------------------------+
-|                    Phase 0: Data Preparation                    |
-|                                                                 |
-|  S3 Raw Parquet                                                 |
-|       |                                                         |
-|       v                                                         |
-|  Stage 1: DataAdapter (DuckDB-native load)                      |
-|       |                                                         |
-|       v                                                         |
-|  Stage 1.5: TemporalPrep (sequence truncation, prod recalc)    |
-|       |                                                         |
-|       v                                                         |
-|  Stage 2: SchemaClassifier (5-Axis classification)              |
-|       |                                                         |
-|       v                                                         |
-|  Stage 3: EncryptionPipeline (PII -> SHA256 -> INT32)           |
-|       |                                                         |
-|       v                                                         |
-|  Stage 4: FeatureGroupPipeline (8 Generators + Normalization)   |
-|       |         output: features.parquet (316D)                 |
-|       v                                                         |
-|  Stage 5: LabelDeriver (18 tasks, config-driven)                |
-|       |         output: labels.parquet                          |
-|       v                                                         |
-|  Stage 5.5: LeakageValidator (4-check, auto-drop)              |
-|       |                                                         |
-|       v                                                         |
-|  Stage 6: SequenceBuilder (flat -> 3D tensors)                  |
-|               output: event_seq.npy, session_seq.npy            |
-+----------------------------+------------------------------------+
-                             |
-                             v
-+---------------------------------------------------------------+
-|                Phase 1-3: Ablation Training                     |
-|                                                                 |
-|  Stage 7: DataLoader (temporal split, gap_days)                 |
-|       |                                                         |
-|       v                                                         |
-|  Stage 8: PLETrainer                                            |
-|       |   PLE (3-layer CGC, 7 shared + 1 task expert)           |
-|       |   adaTT (4 groups, intra/inter transfer)                |
-|       |   Logit Transfer (5 edges, 3 methods)                   |
-|       |   HMM Triple-Mode + Multidisciplinary Routing           |
-|       |   Evidential + SAE (config-gated)                       |
-|       |   Per-task Loss + Uncertainty Weighting                 |
-|       |   AMP FP16 forward + FP32 loss                          |
-|       |                                                         |
-|       v                                                         |
-|  Stage 8.5: Model Analysis                                      |
-|       |   IG, CCA, Gate, HGCN, Multi Interpreter                |
-|       |   Template Engine, XAI Quality, Model Card              |
-+----------------------------+------------------------------------+
-                             |
-                             v
-+---------------------------------------------------------------+
-|                Phase 4: Distillation                            |
-|                                                                 |
-|  Stage 9: StudentTrainer                                        |
-|       |   PLE teacher -> LGBM students                          |
-|       |   Soft label (T=5.0, alpha=0.3)                         |
-|       |   IG-based feature selection + fidelity validation      |
-+----------------------------+------------------------------------+
-                             |
-                             v
-+---------------------------------------------------------------+
-|                Phase 5: Serving                                 |
-|                                                                 |
-|  Stage 9.5: Context Vector Store (RAG embedding)                |
-|       |                                                         |
-|       v                                                         |
-|  Stage 10: CPE + Agentic Reason Orchestrator                    |
-|       |   FD-TVS scoring + DNA modifier                         |
-|       |   Constraint Engine (fatigue, eligibility, diversity)    |
-|       |   L1+L2a+L2b inference chain                            |
-|       |                                                         |
-|       v                                                         |
-|  Lambda / ECS Fargate (serverless serving)                      |
-|       output: Recommended products + NL rationale + uncertainty |
-+---------------------------------------------------------------+
-```
+#figure(
+  {
+    let data-fill = luma(245)
+    let proc-fill = rgb("#d6e6f0")
+    let out-fill = rgb("#e8f5e9")
+    let valid-fill = rgb("#fce4ec")
+    let phase-fill = rgb("#ede7f6")
+
+    fletcher.diagram(
+      spacing: (4pt, 8pt),
+      node-stroke: 0.5pt + luma(100),
+      edge-stroke: 0.6pt + luma(100),
+      node-corner-radius: 3pt,
+
+      // Phase 0 header
+      node((0, 0), [*Phase 0: Data Preparation*], width: 60mm, fill: phase-fill, name: <ph0>),
+
+      // Stage nodes
+      node((0, 1), [*S3 Raw Parquet*], width: 55mm, fill: data-fill, name: <s3raw>),
+      node((0, 2), [*Stage 1: DataAdapter* #text(size: 6pt)[(DuckDB-native load)]], width: 55mm, fill: proc-fill, name: <s1>),
+      node((0, 3), [*Stage 1.5: TemporalPrep* #text(size: 6pt)[(sequence truncation, prod recalc)]], width: 55mm, fill: proc-fill, name: <s15>),
+      node((0, 4), [*Stage 2: SchemaClassifier* #text(size: 6pt)[(5-Axis classification)]], width: 55mm, fill: proc-fill, name: <s2>),
+      node((0, 5), [*Stage 3: EncryptionPipeline* #text(size: 6pt)[(PII → SHA256 → INT32)]], width: 55mm, fill: proc-fill, name: <s3e>),
+      node((0, 6), [*Stage 4: FeatureGroupPipeline* #text(size: 6pt)[(8 Generators + Normalization)]], width: 55mm, fill: proc-fill, name: <s4>),
+      node((0, 7), [*Stage 5: LabelDeriver* #text(size: 6pt)[(18 tasks, config-driven)]], width: 55mm, fill: proc-fill, name: <s5>),
+      node((0, 8), [*Stage 5.5: LeakageValidator* #text(size: 6pt)[(4-check, auto-drop)]], width: 55mm, fill: valid-fill, name: <s55>),
+      node((0, 9), [*Stage 6: SequenceBuilder* #text(size: 6pt)[(flat → 3D tensors)]], width: 55mm, fill: proc-fill, name: <s6>),
+
+      // Output nodes on the right
+      node((1.6, 6), [features.parquet \ #text(size: 6pt)[316D]], width: 24mm, fill: out-fill, name: <feat>),
+      node((1.6, 7), [labels.parquet], width: 24mm, fill: out-fill, name: <lab>),
+      node((1.6, 9), [sequences.npy], width: 24mm, fill: out-fill, name: <seq>),
+
+      // Phase 0 edges
+      edge(<ph0>, <s3raw>, "->"),
+      edge(<s3raw>, <s1>, "->"),
+      edge(<s1>, <s15>, "->"),
+      edge(<s15>, <s2>, "->"),
+      edge(<s2>, <s3e>, "->"),
+      edge(<s3e>, <s4>, "->"),
+      edge(<s4>, <s5>, "->"),
+      edge(<s5>, <s55>, "->"),
+      edge(<s55>, <s6>, "->"),
+      edge(<s4>, <feat>, "->", stroke: 0.4pt + luma(160)),
+      edge(<s5>, <lab>, "->", stroke: 0.4pt + luma(160)),
+      edge(<s6>, <seq>, "->", stroke: 0.4pt + luma(160)),
+
+      // Phase 1-3 header
+      node((0, 10), [*Phase 1--3: Ablation Training*], width: 60mm, fill: phase-fill, name: <ph13>),
+      node((0, 11), [*Stage 7: DataLoader* #text(size: 6pt)[(temporal split, gap\_days)]], width: 55mm, fill: proc-fill, name: <s7>),
+      node((0, 12), [*Stage 8: PLETrainer* \ #text(size: 6pt)[PLE (3-layer CGC, 7 shared + 1 task expert)] \ #text(size: 6pt)[adaTT (4 groups, intra/inter) · Logit Transfer (5 edges)] \ #text(size: 6pt)[HMM Triple-Mode · Evidential + SAE · AMP FP16]], width: 55mm, fill: proc-fill, name: <s8>),
+      node((0, 13), [*Stage 8.5: Model Analysis* \ #text(size: 6pt)[IG · CCA · Gate · HGCN · Multi Interpreter] \ #text(size: 6pt)[Template Engine · XAI Quality · Model Card]], width: 55mm, fill: proc-fill, name: <s85>),
+
+      edge(<s6>, <ph13>, "->"),
+      edge(<ph13>, <s7>, "->"),
+      edge(<s7>, <s8>, "->"),
+      edge(<s8>, <s85>, "->"),
+
+      // Phase 4 header
+      node((0, 14), [*Phase 4: Distillation*], width: 60mm, fill: phase-fill, name: <ph4>),
+      node((0, 15), [*Stage 9: StudentTrainer* \ #text(size: 6pt)[PLE teacher → LGBM students · Soft label (T=5.0, α=0.3)] \ #text(size: 6pt)[IG-based feature selection + fidelity validation]], width: 55mm, fill: proc-fill, name: <s9>),
+
+      edge(<s85>, <ph4>, "->"),
+      edge(<ph4>, <s9>, "->"),
+
+      // Phase 5 header
+      node((0, 16), [*Phase 5: Serving*], width: 60mm, fill: phase-fill, name: <ph5>),
+      node((0, 17), [*Stage 9.5: Context Vector Store* #text(size: 6pt)[(RAG embedding)]], width: 55mm, fill: proc-fill, name: <s95>),
+      node((0, 18), [*Stage 10: CPE + Agentic Reason Orchestrator* \ #text(size: 6pt)[FD-TVS scoring + DNA modifier · Constraint Engine] \ #text(size: 6pt)[L1+L2a+L2b inference chain]], width: 55mm, fill: proc-fill, name: <s10>),
+      node((0, 19), [*Lambda / ECS Fargate (Serverless Serving)* \ #text(size: 6pt)[Recommended products + NL rationale + uncertainty quantification]], width: 55mm, fill: out-fill, name: <serving>),
+
+      edge(<s9>, <ph5>, "->"),
+      edge(<ph5>, <s95>, "->"),
+      edge(<s95>, <s10>, "->"),
+      edge(<s10>, <serving>, "->"),
+    )
+  },
+  caption: [End-to-End pipeline: Phase 0 data preparation → Phase 1--3 training → Phase 4 distillation → Phase 5 serving.],
+)
 
 == Internal Model Data Flow
 
 FeatureRouter is *active*: each expert receives only its designated feature group subset, not the full 316D tensor. Per-expert input dims: deepfm=109D, temporal_ensemble=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, optimal_transport=69D. This reduced model parameters from 4.77M to ~2.8M.
 
-```
-5-Axis Features (316D total)
-    |
-    v FeatureRouter (slices per-expert subsets via feature_group_ranges)
-+----------------------------------+
-|  Expert Basket (7 shared)        |
-|  DeepFM <- 109D (State axis)     |
-|  Temporal <- 129D (Timeseries)   |
-|  HGCN <- 34D (Hierarchy axis)    |
-|  PersLay <- 32D (Snapshot axis)  |
-|  Causal <- 103D (Snapshot axis)  |
-|  LightGCN <- 66D (Item axis)     |
-|  OT <- 69D (Snapshot axis)       |
-+----------+-----------------------+
-           |
-           v CGC Layer x 3 (dim_normalize, entropy reg.)
-           |
-           v HMM Triple-Mode Projection (16D x 3 modes)
-           |
-           v Multidisciplinary Routing (24D -> 4 x 6D)
-           |
-           v adaTT (intra 0.6-0.8, inter 0.3)
-           |
-           v Logit Transfer (5 edges, strength=0.5)
-           |
-           v Task Towers x 18 (TowerRegistry)
-           |
-           +-- Evidential Layer (regression tasks)
-           +-- SAE Regularization (detached sidecar)
-           +-- Per-task Loss + Uncertainty Weighting
-```
+#figure(
+  {
+    let input-fill = luma(245)
+    let expert-fill = rgb("#d6e6f0")
+    let proc-fill = rgb("#e8f5e9")
+    let out-fill = rgb("#ede7f6")
+
+    fletcher.diagram(
+      spacing: (4pt, 10pt),
+      node-stroke: 0.6pt + luma(80),
+      edge-stroke: 0.7pt + luma(80),
+      node-corner-radius: 3pt,
+
+      node((0, 0), [*5-Axis Features (316D)* \ #text(size: 6pt)[State / Snapshot / Timeseries / Hierarchy / Item]], width: 68mm, fill: input-fill, name: <feat>),
+      edge(<feat>, <router>, "->", label: [FeatureRouter], label-side: right),
+      node((0, 1), [*Expert Basket (7 shared)* \ #text(size: 6pt)[DeepFM ← 109D (State)] \ #text(size: 6pt)[Temporal ← 129D (Timeseries)] \ #text(size: 6pt)[HGCN ← 34D (Hierarchy)] \ #text(size: 6pt)[PersLay ← 32D (Snapshot)] \ #text(size: 6pt)[Causal ← 103D (Snapshot)] \ #text(size: 6pt)[LightGCN ← 66D (Item)] \ #text(size: 6pt)[OT ← 69D (Snapshot)]], width: 68mm, fill: expert-fill, name: <router>),
+      edge(<router>, <cgc>, "->"),
+      node((0, 2), [*CGC Layer × 3* \ #text(size: 6pt)[dim\_normalize · entropy regularization]], width: 68mm, fill: proc-fill, name: <cgc>),
+      edge(<cgc>, <hmm>, "->"),
+      node((0, 3), [*HMM Triple-Mode Projection* \ #text(size: 6pt)[16D × 3 modes (journey / lifecycle / behavior)]], width: 68mm, fill: proc-fill, name: <hmm>),
+      edge(<hmm>, <multi>, "->"),
+      node((0, 4), [*Multidisciplinary Routing* \ #text(size: 6pt)[24D → 4 × 6D per task group]], width: 68mm, fill: proc-fill, name: <multi>),
+      edge(<multi>, <adatt>, "->"),
+      node((0, 5), [*adaTT* \ #text(size: 6pt)[intra 0.6--0.8 · inter 0.3 · negative transfer detection]], width: 68mm, fill: proc-fill, name: <adatt>),
+      edge(<adatt>, <logit>, "->"),
+      node((0, 6), [*Logit Transfer* \ #text(size: 6pt)[5 edges · strength=0.5]], width: 68mm, fill: proc-fill, name: <logit>),
+      edge(<logit>, <towers>, "->"),
+      node((0, 7), [*Task Towers × 18 (TowerRegistry)* \ #text(size: 6pt)[Evidential Layer (regression) · SAE sidecar] \ #text(size: 6pt)[Per-task Loss + Uncertainty Weighting]], width: 68mm, fill: out-fill, name: <towers>),
+    )
+  },
+  caption: [Internal model data flow: FeatureRouter slices per-expert subsets from the 316D feature tensor.],
+)
 
 == GPU/CPU Acceleration Mapping
 
