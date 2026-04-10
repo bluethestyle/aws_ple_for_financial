@@ -446,7 +446,7 @@ ops_report:
   all_checkpoints:
     CP1: {status: GREEN, rows: 941132, delta: "+0.2%"}
     CP2: {status: GREEN, duration: "4m32s", zero_var: 0}
-    CP3: {status: YELLOW, detail: "1/18 tasks degrading"}
+    CP3: {status: YELLOW, detail: "1/14 tasks degrading"}
     CP4: {status: GREEN, max_fidelity_gap: "2.1%"}
     CP5: {status: GREEN, latency_p50: "12ms"}
     CP6: {status: YELLOW, detail: "p95 trending up"}
@@ -1017,6 +1017,48 @@ configs/financial/              # 신규
 scripts/hooks/                  # 신규
     post_commit.py
 ```
+
+---
+
+## PaperClip 선택적 차용
+
+PaperClip (@dotta, 2026.3, GitHub 30K stars)은 에이전트를 "직원"으로 조직화하는 오픈소스 프레임워크. "zero-human company" 철학은 우리의 "AI가 분석하고 사람이 판단한다" 원칙과 충돌하므로 전면 도입은 부적합하지만, 3가지 메커니즘을 선택적으로 차용.
+
+### 차용 1: Heartbeat 패턴
+
+PaperClip: 매 30분마다 에이전트를 깨워 `HEARTBEAT.md` 체크리스트 실행. 조치 불필요 시 `HEARTBEAT_OK` → 무동작.
+
+우리 적용: CP5(5분), CP6(1시간), AV1~5(일/주) 주기 점검에 적용. 정상이면 skip, 이상 시에만 체크리스트 실행. **자율성이 아니라 효율성**을 위한 차용 — 고정된 체크리스트만 실행.
+
+### 차용 2: 에이전트별 예산 캡
+
+PaperClip "선불 직불카드" 모델: 에이전트마다 월간 토큰 예산, 80% 소프트 경고, 100% 하드 정지.
+
+우리 적용:
+```yaml
+budget:
+  ops: {monthly_token_limit: 500000, soft_warning_pct: 0.80, hard_stop_pct: 1.00}
+  audit: {monthly_token_limit: 800000, soft_warning_pct: 0.80, hard_stop_pct: 1.00}
+  consensus: {per_session_limit: 10000, daily_limit: 50000}
+```
+
+> **예산 초과 시 graceful degradation**: LLM 호출만 차단, 룰 엔진은 계속 동작. 예산 초과 = 임시 온프렘 모드.
+
+### 차용 3: 전체 도구 호출 추적 (Full Trace)
+
+PaperClip: 모든 instruction/response/tool call이 불변 감사 로그에 기록.
+
+우리 적용: `ToolRegistry.call()` 호출 전후 자동 로깅. 도구명, 파라미터, 결과 요약, 토큰 비용을 추적. 에이전트 활동 로그로 "이 진단이 어떤 도구 호출을 거쳐 생성되었는가"를 완전 재현 가능.
+
+### 차용하지 않는 것
+
+| PaperClip 메커니즘 | 미차용 이유 | 우리의 대안 |
+|---|---|---|
+| 에이전트가 에이전트를 고용 | 감사 관점에서 자율 생성 위험 | 고정 2개 에이전트 + YAML 체크리스트 |
+| SOUL.md 페르소나 | "성격" 부여 시 일관성 깨짐 | 시스템 프롬프트로 관점 정의 |
+| 자율 의사결정 | EU AI Act Art.14 인간 감독 위반 | 에이전트는 권고만, 사람이 결정 |
+| Node.js 서버 | Python 생태계 불일치 | Python 네이티브 구현 |
+| PARA 메모리 | 파일 기반은 구조화 검색 어려움 | LanceDB DiagnosticCaseStore |
 
 ---
 

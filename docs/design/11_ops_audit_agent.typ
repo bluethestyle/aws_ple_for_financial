@@ -1299,7 +1299,7 @@ ops_report:
   all_checkpoints:
     CP1: {status: GREEN, rows: 941132, delta: "+0.2%"}
     CP2: {status: GREEN, duration: "4m32s", zero_var: 0}
-    CP3: {status: YELLOW, detail: "1/18 tasks degrading"}
+    CP3: {status: YELLOW, detail: "1/14 tasks degrading"}
     CP4: {status: GREEN, max_fidelity_gap: "2.1%"}
     CP5: {status: GREEN, latency_p50: "12ms"}
     CP6: {status: YELLOW, detail: "p95 trending up"}
@@ -3275,6 +3275,152 @@ scripts/hooks/
   [Phase 5], [End-to-end],
   [Ops 실행 → Audit 트리거 → 케이스 저장 → 거버넌스 리포트 생성. \
    Bedrock 연동은 실 API 테스트 (비용 발생).],
+)
+
+#v(0.8em)
+
+// ============================================================
+= PaperClip 선택적 차용
+// ============================================================
+
+PaperClip (dotta, 2026.3, 3주 만에 GitHub 30K stars)은
+에이전트를 "직원"으로 조직화하는 오픈소스 프레임워크이다.
+"zero-human company" 철학은 우리의 *"AI가 분석하고 사람이 판단한다"* 원칙과 충돌하므로
+전면 도입은 부적합하지만, 3가지 메커니즘을 선택적으로 차용한다.
+
+== 차용 1: Heartbeat 패턴 — 에이전트 주기 실행
+
+PaperClip의 핵심 메커니즘: 매 30분(설정 가능)마다 Gateway 데몬이 에이전트를 깨우고,
+에이전트는 `HEARTBEAT.md` 체크리스트를 읽어 조치가 필요한 항목만 처리한다.
+조치가 불필요하면 `HEARTBEAT_OK`를 반환하고 다시 잠든다.
+
+*우리 시스템에 적용*: OpsAgent의 CP5(5분 주기 서빙 헬스)와 CP6(1시간 집계)가
+정확히 이 패턴이다. 현재 구현:
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  stroke: 0.4pt + luma(180),
+  inset: 5pt,
+  table.header([*체크포인트*], [*현재 방식*], [*Heartbeat 적용 후*]),
+  [CP5 서빙 헬스],
+  [외부 스케줄러(EventBridge/cron)가 호출],
+  [에이전트 자체 heartbeat (5분). 정상이면 `HEARTBEAT_OK` → 무동작. \
+   이상 시에만 체크리스트 실행 → 리포트 생성.],
+
+  [CP6 추천 응답],
+  [1시간 집계 배치],
+  [heartbeat 간 누적 메트릭 → 1시간마다 집계 판정. \
+   변동 없으면 skip.],
+
+  [AV1~AV5 감사],
+  [일/주 단위 외부 트리거],
+  [감사 에이전트 heartbeat (일 1회). \
+   전일 변경 없으면 `HEARTBEAT_OK` → skip.],
+)
+
+핵심 차이: PaperClip은 에이전트가 *자율적으로* 무엇을 할지 결정하지만,
+우리는 heartbeat가 *고정된 체크리스트*를 실행한다 — 자율성이 아니라 효율성을 위한 차용.
+
+== 차용 2: 에이전트별 예산 캡 — "선불 직불카드" 모델
+
+PaperClip의 예산 관리: 에이전트마다 월간 토큰 예산을 부여.
+80% 도달 시 소프트 경고, 100% 도달 시 에이전트 자동 정지.
+이상 소비 패턴 감지 시 예산 소진 전 회로 차단.
+
+*우리 시스템에 적용*: Bedrock 비용 제어에 직접 적용 가능.
+
+```yaml
+# agent.yaml에 추가
+budget:
+  ops:
+    monthly_token_limit: 500000    # ~$5/월
+    soft_warning_pct: 0.80         # 80%에서 경고
+    hard_stop_pct: 1.00            # 100%에서 정지
+  audit:
+    monthly_token_limit: 800000    # ~$8/월 (사유 품질 검증 포함)
+    soft_warning_pct: 0.80
+    hard_stop_pct: 1.00
+  consensus:
+    per_session_limit: 10000       # 합의 1회당 상한
+    daily_limit: 50000             # 일 합의 상한
+```
+
+구현:
+- `ToolRegistry.call()` 호출 시 `BudgetTracker`가 토큰 사용량 누적
+- 80% 도달 → `send_notification("WARNING", "OpsAgent 예산 80% 도달")`
+- 100% 도달 → 에이전트 정지, 룰 엔진만 동작 (LLM 호출 차단)
+- 관리자가 수동 리셋할 때까지 LLM 기능 일시 중단
+
+#infobox("예산 초과 시 graceful degradation")[
+  예산 한도 도달 시 에이전트가 완전히 멈추는 것이 아니라, \
+  *LLM 호출만 차단*되고 룰 엔진 기반 판정은 계속 동작한다. \
+  이것은 우리 아키텍처의 "온프렘 baseline이 LLM 없이 완결" 설계와 정확히 일치한다 --- \
+  예산 초과 = 임시 온프렘 모드.
+]
+
+== 차용 3: 전체 도구 호출 추적 (Full Trace)
+
+PaperClip의 감사: 모든 instruction, response, tool call, decision이
+불변 감사 로그에 기록된다. "어둠 속에서 일어나는 일은 없다."
+
+*우리 시스템에 이미 있는 것*: `AuditLogger` (HMAC 해시체인).
+*추가할 것*: 에이전트의 *모든 도구 호출*을 자동 추적.
+
+현재 `ToolRegistry.call()`은 도구를 실행만 한다.
+PaperClip 차용으로 *호출 전후 자동 로깅*을 추가:
+
+```python
+# ToolRegistry.call() 확장
+def call(self, name, params=None):
+    # Before: log intent
+    trace = {"tool": name, "params": params, "timestamp": now()}
+
+    result = tool.func(**(params or {}))
+
+    # After: log result
+    trace["result_summary"] = summarize(result)
+    trace["token_cost"] = estimate_tokens(params, result)
+    self._trace_log.append(trace)
+    self._budget_tracker.add(trace["token_cost"])
+
+    return result
+```
+
+이 추적 데이터는 DiagnosticCaseStore와 별도로 *에이전트 활동 로그*로 저장되어,
+"이 진단 결과가 어떤 도구 호출을 거쳐 생성되었는가"를 완전히 재현 가능하게 한다.
+
+== 차용하지 않는 것과 그 이유
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  stroke: 0.4pt + luma(180),
+  inset: 5pt,
+  table.header([*PaperClip 메커니즘*], [*미차용 이유*], [*우리의 대안*]),
+  [에이전트가 에이전트를 고용],
+  [감사 관점에서 자율 에이전트 생성은 위험. \
+   "누가 이 에이전트를 만들었는가"에 답할 수 없다.],
+  [고정된 2개 에이전트(Ops/Audit) + YAML 체크리스트],
+
+  [SOUL.md 페르소나],
+  [에이전트에 "성격"을 부여하면 일관성이 깨질 수 있다.],
+  [시스템 프롬프트가 역할(보수적/통계적/비즈니스)을 정의 — \
+   체크리스트 판정에만 영향],
+
+  [자율 의사결정],
+  [EU AI Act Art.14 인간 감독 위반. \
+   에이전트의 자율 조치는 금융 규제에서 허용 불가.],
+  [에이전트는 권고만, 최종 결정은 사람. \
+   Action 도구도 승인 후 실행.],
+
+  [Node.js 서버],
+  [Python 생태계와 불일치. \
+   PyTorch/DuckDB/LanceDB 모두 Python.],
+  [Python 네이티브 구현 (`core/agent/`)],
+
+  [PARA 메모리 시스템],
+  [파일 기반 메모리는 구조화 검색이 어렵다.],
+  [LanceDB DiagnosticCaseStore — \
+   벡터 검색 + 구조화 쿼리 동시 지원],
 )
 
 #v(0.8em)
