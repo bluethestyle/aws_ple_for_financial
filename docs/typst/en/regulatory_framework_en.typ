@@ -922,6 +922,80 @@ Customer Features (S3, ap-northeast-2)
   ✓ All calls logged in CloudTrail
 ```
 
+#pagebreak()
+
+// ═══════════════════════════════════════════════════════════
+//  On-Premises Regulatory Compliance
+// ═══════════════════════════════════════════════════════════
+
+= On-Premises Regulatory Compliance
+
+Air-gapped on-premises environments are *structurally stronger* than cloud deployments from a data protection perspective, as external network access is architecturally impossible.
+
+== Data Protection
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  inset: 5pt,
+  stroke: 0.5pt,
+  [*Item*], [*On-Premises*], [*AWS (Bedrock)*],
+  [External data transfer], [*Impossible* — air-gapped], [In-region via VPC PrivateLink],
+  [Model provider data access], [*N/A* — local open-source models], [Contractually prohibited by Bedrock ToS],
+  [Audit trail], [Local HMAC hash-chain (JSONL)], [S3 Object Lock + CloudTrail],
+  [Cross-border transfer], [*Cannot occur*], [Processed within ap-northeast-2],
+)
+
+== Model Configuration
+
+All on-premises models are open-source:
+
+#table(
+  columns: (auto, auto, 1fr),
+  inset: 5pt,
+  stroke: 0.5pt,
+  [*Purpose*], [*Model*], [*License & Notes*],
+  [Reason generation/critique], [Exaone 3.5 7.8B], [Apache 2.0 (LG AI Research). Korean-specialized.],
+  [Agent consensus], [Qwen 2.5 14B Q4], [Apache 2.0 (Alibaba). Logical reasoning.],
+  [Embeddings], [all-MiniLM-L6-v2], [Apache 2.0 (sentence-transformers).],
+)
+
+Sequential loading on RTX 4070 (12GB VRAM). Zero vendor lock-in; model replacement requires only config changes.
+
+== Ops/Audit Agents
+
+On-premises agents use the *same rule engine, checklist, and tool catalog* as AWS. Differences:
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  inset: 5pt,
+  stroke: 0.5pt,
+  [*Feature*], [*On-Premises*], [*AWS*],
+  [Checklist evaluation], [Identical (48 items)], [Identical],
+  [Consensus mechanism], [2-Round hybrid (Qwen 14B × 5+2)], [Independent voting (Sonnet × 3)],
+  [Minority report], [Identical — locked at Round 1], [Identical],
+  [Operator dialog], [Not available — structured reports only], [Sonnet Tool Use conversation],
+  [Case store], [Identical (LanceDB)], [Identical],
+  [Notifications], [Email/Slack], [SNS + Slack],
+)
+
+== Regulatory Compliance Comparison
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  inset: 5pt,
+  stroke: 0.5pt,
+  [*Requirement*], [*On-Premises*], [*AWS*],
+  [PIPA cross-border transfer], [Impossible (air-gapped)], [In-region processing],
+  [FSS data governance], [Local HMAC audit logs], [CloudTrail + S3 Object Lock],
+  [EU AI Act human oversight], [Agent recommendation + human decision (same)], [Same + dialog interface],
+  [AI Basic Act kill switch], [Local kill switch (same)], [DynamoDB kill switch],
+  [Explainability], [IG-based reasons + Exaone rewrite], [IG-based reasons + Solar rewrite],
+)
+
+On-premises lacks conversational agent capabilities but offers structurally perfect data protection. From a regulatory perspective, "customer data never leaves the premises" is the strongest possible safeguard.
+
+#pagebreak()
+
 == Model Risk Management (MRM) Framework
 
 Full-lifecycle model governance aligned with *SR 11-7* (Federal Reserve/OCC), *EBA ML Guidelines*, and *NIST AI RMF 1.0*.
@@ -1053,7 +1127,7 @@ The serving agents (L1 Rule / L2a Retrieval / L2b Generation) reside on the real
   columns: (0.8fr, 1fr, 1fr),
   align: (center, left, left),
   [Environment], [Model], [Rationale],
-  [Air-gapped (on-prem)], [Qwen3 8B or Gemma 4 E4B, vLLM serving], [GPU instance shared with L2b recommendation rationale agent],
+  [Air-gapped (on-prem)], [Exaone 3.5 7.8B (reason gen.) + Qwen 2.5 14B Q4 (agent consensus)], [Apache 2.0 open-source. Sequential loading on RTX 4070.],
   [Cloud (AWS)], [Claude Haiku 4.5 API], [Cost-efficient (\$0.25/1M input), reliable structured output],
 )
 ]

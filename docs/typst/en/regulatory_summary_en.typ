@@ -49,7 +49,7 @@
 )
 
 #set text(font: "New Computer Modern", size: 10pt, fill: anthropic-text, lang: "en")
-#set par(justify: true, leading: 0.8em, spacing: 1.5em)
+#set par(justify: true, leading: 0.5em, spacing: 1.0em)
 #set heading(numbering: none)
 
 // ── Heading Styles ──
@@ -102,7 +102,7 @@
 #let card(title: none, accent: anthropic-accent, body) = {
   block(
     stroke: (left: 2pt + accent),
-    inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
+    inset: (left: 8pt, right: 8pt, top: 6pt, bottom: 6pt),
     width: 100%,
     breakable: true,
   )[
@@ -159,8 +159,6 @@
       text(size: 9.5pt, fill: anthropic-text, weight: "bold")[April 2026],
       text(fill: anthropic-muted, size: 9.5pt)[Version],
       text(size: 9.5pt, fill: anthropic-text, weight: "bold")[v1.0],
-      text(fill: anthropic-muted, size: 9.5pt)[Audience],
-      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[FSS Executives / Team Leaders],
       text(fill: anthropic-muted, size: 9.5pt)[Detailed Reference],
       text(size: 9.5pt, fill: anthropic-text, weight: "bold")[Regulatory Compliance Framework Technical Reference v1.0],
     )
@@ -172,7 +170,7 @@
     #block(
       width: 85%,
       stroke: (left: 2pt + anthropic-accent),
-      inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
+      inset: (left: 8pt, right: 8pt, top: 6pt, bottom: 6pt),
     )[
       #text(fill: anthropic-text, size: 9.5pt)[
         *This document is an executive summary designed to be read in 3--5 minutes.* For implementation details, code-level architecture, and clause-by-clause mappings, please refer to the separate 'Regulatory Compliance Framework Technical Reference.'
@@ -452,19 +450,19 @@ For implementation details on each item, please refer to the corresponding secti
 )
 ]
 
-#v(1.5em)
+#v(0.5em)
 
 #card(title: "Governance Reporting Framework", accent: anthropic-accent)[
   Governance reports are automatically generated on a monthly/quarterly basis. They comprise *9 sections*: fairness summary, drift summary, incident status, model change history, kill switch history, recommendation quality, risk trends, audit store summary, and executive summary. A 36-item regulatory compliance registry enables full automated checks on a quarterly cycle.
 ]
 
-#v(1.5em)
+#v(0.5em)
 
 #align(center)[
   #block(
     fill: gray-bg,
     stroke: 0.5pt + gray-ln,
-    inset: 14pt,
+    inset: 8pt,
     radius: 4pt,
     width: 90%,
   )[

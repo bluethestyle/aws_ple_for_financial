@@ -98,8 +98,7 @@
   ]
   #v(2cm)
   #text(size: 10pt, fill: anthropic-muted)[
-    Version 1.0 --- 2026-04-01 \
-    대상 독자: 개발자, 아키텍트, 코드 리뷰어
+    Version 1.0 --- 2026-04-01
   ]
 ]
 

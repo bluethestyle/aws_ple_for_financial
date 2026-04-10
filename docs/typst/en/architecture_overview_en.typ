@@ -27,8 +27,7 @@
   ]
   #v(2cm)
   #text(size: 10pt, fill: rgb("#888"))[
-    Version 1.0 --- 2026-04-01 \
-    Target Audience: Developers, Architects, Code Reviewers
+    Version 1.0 --- 2026-04-01
   ]
   #v(4cm)
 ]
