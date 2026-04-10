@@ -494,3 +494,9 @@ class DataAdapter(ABC):
 | [08_recommendation_intelligence](08_recommendation_intelligence.md) | FD-TVS 스코어링, 추천 사유 3계층, 규제 준수 |
 | [09_compliance_governance](09_compliance_governance.md) | 감사 불변성, 36항목 레지스트리, 공정성, 쏠림, 킬스위치 |
 | [10_pool_basket_architecture](10_pool_basket_architecture.md) | Pool/Basket/Runtime 3계층, Expert 11종, Feature Generator, Task Group |
+
+---
+
+### 온프레미스 환경
+
+동일한 파이프라인이 로컬 GPU(RTX 4070, 64GB RAM)에서 실행된다. Bedrock 대신 Exaone 3.5 7.8B(사유 생성) + Qwen 2.5 14B Q4(에이전트 합의) 오픈소스 모델을 사용하며, 데이터가 외부로 전송되지 않아 데이터 보호가 구조적으로 보장된다. 코드와 config는 AWS와 동일하고 환경 변수로 자동 분기.

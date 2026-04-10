@@ -180,6 +180,13 @@ docker build -t ple-training:latest -f containers/training/Dockerfile .
 docker run --rm --gpus all ple-training:latest nvidia-smi
 ```
 
+== Deployment Environments
+
+The pipeline operates identically in two environments:
+- *AWS*: SageMaker Training Job (training) + Lambda/ECS (serving) + Bedrock (reasons/agents)
+- *On-premises (air-gapped)*: Local GPU (RTX 4070, 64GB RAM) + Docker + vLLM (Exaone/Qwen)
+Code and config are identical; environment detection (`SM_MODEL_DIR` presence) handles auto-switching.
+
 == Directory Structure (Key)
 
 ```

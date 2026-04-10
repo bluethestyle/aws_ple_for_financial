@@ -560,3 +560,16 @@ general:
 
 - SNS: CRITICAL/FAIL 자동 에스컬레이션
 - Slack: 일일 `ops_report` / 주간 `audit_report` 전달
+
+---
+
+### 온프레미스 배포
+
+온프레미스에서는 Bedrock/SageMaker 대신 로컬 환경을 사용:
+- **학습**: 로컬 GPU (RTX 4070) + PyTorch
+- **서빙**: Docker 컨테이너 + vLLM
+- **모델**: Exaone 3.5 7.8B (사유) + Qwen 2.5 14B Q4 (에이전트)
+- **에이전트**: 동일한 룰 엔진 + 2-Round 합의 (Sonnet 대신 Qwen)
+- **알림**: SNS 대신 이메일/Slack
+
+상세: `docs/design/11_ops_audit_agent_onprem_handoff.md`

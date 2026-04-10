@@ -318,3 +318,7 @@ FastAPI
 
 상세 설계: `docs/design/11_ops_audit_agent.md`
 | 스케일링 | 불가 | Lambda 자동 / ECS Auto-scaling | 트래픽 대응 |
+
+### 온프레미스 서빙
+
+온프레미스에서는 Lambda/ECS 대신 Docker 컨테이너로 서빙하며, 추천사유 L2a는 Exaone 3.5 7.8B로 배치 생성한다. A/B 테스트는 동일한 해시 기반 분배를 사용하되, CloudWatch 대신 로컬 메트릭 파일로 수집한다.

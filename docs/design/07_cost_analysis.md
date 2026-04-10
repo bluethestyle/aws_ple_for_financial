@@ -261,3 +261,7 @@ L2a 사유 생성과 에이전트는 Bedrock 쿼터를 공유하므로 시간대
 
 상세 설계: `docs/design/11_ops_audit_agent.md` §Bedrock 인프라 공유
 ```
+
+### 온프레미스 비용
+
+온프레미스에서는 Bedrock 비용이 발생하지 않는다. GPU 전력 비용(RTX 4070 ~200W)과 서버 유지비만 해당. 오픈소스 모델(Exaone, Qwen)은 라이선스 비용 없음(Apache 2.0). 에이전트 합의(WARN/FAIL 10건)는 로컬 GPU에서 ~45분, 추가 비용 $0.

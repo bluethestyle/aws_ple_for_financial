@@ -878,6 +878,23 @@ models:
 | `deep_audit` | Claude Opus | 고비용 — `apply_to` 조건 충족 시만 실행 |
 | `embeddings` | Titan Embeddings V2 | AWS Bedrock 네이티브 임베딩 |
 
+### 온프레미스 모델 설정
+
+온프레미스에서는 `agent.yaml`의 models 섹션이 다르다:
+
+```yaml
+models:
+  reason_generation: exaone_7b    # Exaone 3.5 7.8B
+  reason_critique: exaone_7b
+  agent_consensus: qwen_14b_q4    # Qwen 2.5 14B Q4
+  embeddings: minilm_v2           # sentence-transformers
+model_paths:
+  exaone_7b: "/models/exaone-3.5-7.8b-instruct"
+  qwen_14b_q4: "/models/qwen2.5-14b-instruct-q4_k_m.gguf"
+gpu:
+  sequential_loading: true  # 12GB VRAM — 동시 로딩 불가
+```
+
 ---
 
 ## Checklist Configuration (`configs/financial/checklist.yaml`)

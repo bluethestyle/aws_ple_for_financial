@@ -947,4 +947,8 @@ Fully decoupled from the serving path (3 serving agents) --- agent failures neve
 
 Detailed design: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)
 
+== On-Premises (Air-Gapped) Deployment
+
+In air-gapped on-premises environments, the same pipeline runs on local GPU (RTX 4070), using Exaone 3.5 7.8B (reason generation) and Qwen 2.5 14B Q4 (agent consensus) instead of Bedrock. Data never leaves the premises, providing structural data protection.
+
 When switching domains, replacing only these 2 files configures an entirely different recommendation system without any code changes.

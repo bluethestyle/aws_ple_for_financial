@@ -180,6 +180,13 @@ docker build -t ple-training:latest -f containers/training/Dockerfile .
 docker run --rm --gpus all ple-training:latest nvidia-smi
 ```
 
+== 배포 환경
+
+본 파이프라인은 두 가지 환경에서 동일하게 작동한다:
+- *AWS*: SageMaker Training Job (학습) + Lambda/ECS (서빙) + Bedrock (추천사유/에이전트)
+- *온프레미스(폐쇄망)*: 로컬 GPU(RTX 4070, 64GB RAM) + Docker + vLLM(Exaone/Qwen)
+코드와 config는 동일하며, 환경 변수(`SM_MODEL_DIR` 유무)로 자동 분기된다.
+
 == 디렉터리 구조 (핵심)
 
 ```
