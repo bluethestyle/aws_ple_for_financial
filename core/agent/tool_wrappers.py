@@ -402,6 +402,174 @@ def generate_governance_report(period: str = "monthly", **kwargs) -> Dict[str, A
         return {"error": str(e)}
 
 
+def archive_governance_report(report: Optional[Dict] = None, **kwargs) -> Dict[str, Any]:
+    """Archive governance report to S3."""
+    try:
+        from core.monitoring.governance_report import GovernanceReportGenerator, GovernanceReport
+        gen = GovernanceReportGenerator()
+        uri = gen.archive_report(report)
+        return {"archived": True, "uri": uri}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def save_compliance_report(report: Optional[Dict] = None, **kwargs) -> Dict[str, Any]:
+    """Save compliance report to S3."""
+    try:
+        from core.monitoring.compliance_checker import ComplianceChecker
+        checker = ComplianceChecker()
+        uri = checker.save_report(report or {})
+        return {"saved": True, "uri": uri}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def save_lineage(lineage: Optional[Dict] = None, lineage_type: str = "single", **kwargs) -> Dict[str, Any]:
+    """Save data lineage to S3."""
+    try:
+        from core.monitoring.lineage_tracker import DataLineageTracker
+        tracker = DataLineageTracker()
+        record = tracker.save_lineage(lineage or {}, lineage_type)
+        return {"saved": True, "execution_id": record.execution_id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def send_notification(subject: str = "", body: Optional[Dict] = None, channels: Optional[List[str]] = None, severity: str = "INFO", **kwargs) -> Dict[str, Any]:
+    """Send notification via Slack/SNS."""
+    try:
+        from core.agent.notification import NotificationService
+        service = NotificationService(kwargs.get("config", {}))
+        return service.send(subject, body or {}, channels, severity)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ======================================================================
+# Category 2 additional: Monitoring Query
+# ======================================================================
+
+def query_cloudwatch_metrics(namespace: str = "PLE/ABTest", metric_names: Optional[List[str]] = None, **kwargs) -> Dict[str, Any]:
+    """Query CloudWatch metrics — A/B test, latency (AWS only)."""
+    try:
+        import boto3
+        client = boto3.client("cloudwatch", region_name=kwargs.get("region", "ap-northeast-2"))
+        # Simplified — return latest datapoints for requested metrics
+        results = {}
+        for metric in (metric_names or ["CTR", "Latency_p95"]):
+            resp = client.get_metric_statistics(
+                Namespace=namespace,
+                MetricName=metric,
+                Period=3600,
+                Statistics=["Average"],
+                StartTime=kwargs.get("start_time", "2026-01-01"),
+                EndTime=kwargs.get("end_time", "2026-12-31"),
+            )
+            datapoints = resp.get("Datapoints", [])
+            if datapoints:
+                latest = sorted(datapoints, key=lambda d: d["Timestamp"])[-1]
+                results[metric] = latest.get("Average")
+        return results
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_consecutive_drift_days(monitoring_dir: str = "outputs/monitoring", **kwargs) -> Dict[str, Any]:
+    """Get consecutive critical drift days."""
+    try:
+        from core.monitoring.drift_detector import ConsecutiveDriftTracker
+        tracker = ConsecutiveDriftTracker(monitoring_dir=monitoring_dir)
+        return tracker.get_consecutive_critical_days()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def detect_task_herding(task_contribution_map: Optional[Dict] = None, **kwargs) -> Dict[str, Any]:
+    """Detect per-task contribution herding."""
+    HerdingDetector = _lazy_import_monitoring()[2]
+    detector = HerdingDetector()
+    if not task_contribution_map:
+        return {"error": "No task_contribution_map provided"}
+    return detector.detect_task_herding(task_contribution_map)
+
+
+def check_explanation_consistency(task_name: str = "", attributions_a: Optional[Any] = None, attributions_b: Optional[Any] = None, **kwargs) -> Dict[str, Any]:
+    """Check SHAP vs IG explanation consistency."""
+    try:
+        from core.monitoring.xai_quality_evaluator import XAIQualityEvaluator
+        evaluator = XAIQualityEvaluator()
+        if attributions_a is None or attributions_b is None:
+            return {"error": "Both attributions_a and attributions_b required"}
+        result = evaluator.check_explanation_consistency(task_name, attributions_a, attributions_b)
+        return {
+            "rank_correlation": result.rank_correlation,
+            "top_k_overlap": result.top_k_overlap,
+            "is_consistent": result.is_consistent,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ======================================================================
+# Category: Case Store tools
+# ======================================================================
+
+# Note: These require a DiagnosticCaseStore instance to be passed via kwargs
+# or a singleton pattern. The wrapper creates a default instance.
+
+def _get_case_store(**kwargs):
+    """Get or create DiagnosticCaseStore instance."""
+    from core.agent.case_store import DiagnosticCaseStore
+    store_path = kwargs.get("store_path", "outputs/diagnostic_cases")
+    return DiagnosticCaseStore(store_path=store_path)
+
+
+def search_similar_cases(finding: str = "", pipeline_part: Optional[str] = None, k: int = 5, **kwargs) -> Dict[str, Any]:
+    """Search similar diagnostic cases by text similarity."""
+    try:
+        store = _get_case_store(**kwargs)
+        # Embedding would normally come from a model — simplified here
+        import numpy as np
+        # Create a simple hash-based vector as placeholder
+        vec = np.array([hash(finding + str(i)) % 1000 / 1000.0 for i in range(384)], dtype=np.float32)
+        results = store.search_similar(vec, k=k, pipeline_part=pipeline_part)
+        return {
+            "similar_cases": [{"case": case, "score": score} for case, score in results],
+            "count": len(results),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_case_statistics(pipeline_part: Optional[str] = None, check_item: Optional[str] = None, period_days: Optional[int] = None, **kwargs) -> Dict[str, Any]:
+    """Get diagnostic case statistics."""
+    try:
+        store = _get_case_store(**kwargs)
+        return store.get_statistics(pipeline_part, check_item, period_days)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def save_case(case: Optional[Dict] = None, **kwargs) -> Dict[str, Any]:
+    """Save a diagnostic case to the case store."""
+    try:
+        store = _get_case_store(**kwargs)
+        case_id = store.save_case(case or {})
+        return {"saved": True, "case_id": case_id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def update_case_resolution(case_id: str = "", resolution: str = "", resolved_at: Optional[str] = None, post_resolution_verdict: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+    """Update case resolution information."""
+    try:
+        store = _get_case_store(**kwargs)
+        success = store.update_resolution(case_id, resolution, resolved_at, post_resolution_verdict)
+        return {"updated": success, "case_id": case_id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ======================================================================
 # Registration
 # ======================================================================
@@ -423,13 +591,17 @@ def register_all_tools(registry) -> int:
         "read_audit_archive": read_audit_archive,
         "read_checklist_config": read_checklist_config,
         "read_git_diff": read_git_diff,
+        "query_cloudwatch_metrics": query_cloudwatch_metrics,
         # Category 2: Monitoring Query
         "detect_drift": detect_drift,
+        "get_consecutive_drift_days": get_consecutive_drift_days,
         "evaluate_fairness": evaluate_fairness,
         "detect_herding": detect_herding,
+        "detect_task_herding": detect_task_herding,
         "check_feature_store_health": check_feature_store_health,
         "evaluate_data_quality": evaluate_data_quality,
         "verify_audit_chain": verify_audit_chain,
+        "check_explanation_consistency": check_explanation_consistency,
         # Category 3: Regulatory/Quality Query
         "run_regulatory_checks": run_regulatory_checks,
         "run_compliance_check": run_compliance_check,
@@ -439,10 +611,19 @@ def register_all_tools(registry) -> int:
         "evaluate_xai_quality": evaluate_xai_quality,
         "trace_feature_lineage": trace_feature_lineage,
         "generate_lineage_report": generate_lineage_report,
-        # Category 4: Action
+        # Category 4: Case Store
+        "search_similar_cases": search_similar_cases,
+        "get_case_statistics": get_case_statistics,
+        "save_case": save_case,
+        "update_case_resolution": update_case_resolution,
+        # Category 5: Action
         "create_incident": create_incident,
         "log_audit_event": log_audit_event,
         "generate_governance_report": generate_governance_report,
+        "archive_governance_report": archive_governance_report,
+        "save_compliance_report": save_compliance_report,
+        "save_lineage": save_lineage,
+        "send_notification": send_notification,
     }
 
     count = 0
