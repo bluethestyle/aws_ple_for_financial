@@ -872,6 +872,56 @@ S3 Lifecycle Rule으로 자동 적용합니다.
   [MINOR], [24시간], [드리프트 경고, 품질 저하, 쏠림 high], [ML팀],
 )
 
+== Bedrock 데이터 보호 아키텍처
+
+금융 AI 시스템에서 LLM을 활용할 때 가장 중요한 규제 이슈는 고객 데이터의 외부 유출이다. Amazon Bedrock은 다음 5가지 구조적 보호 장치를 통해 이 문제를 해결한다:
+
+#text(size: 9pt)[
+#table(
+  columns: (auto, 1fr),
+  inset: 5pt,
+  stroke: 0.5pt,
+  [*보호 장치*], [*상세*],
+  [데이터 미학습], [입출력 데이터가 모델 제공사(Anthropic, Upstage, Meta 등)에 전달되지 않으며, 모델 재학습(fine-tuning 포함)에 사용되지 않는다. AWS가 이를 서비스 약관으로 보장한다.],
+  [전송 암호화], [TLS 1.2+ 암호화로 전송 중 데이터를 보호한다.],
+  [VPC PrivateLink], [인터넷을 경유하지 않고 VPC 내부 엔드포인트를 통해 Bedrock API를 호출한다. 고객 데이터가 공개 네트워크에 노출되지 않는다.],
+  [리전 내 처리], [모든 추론이 ap-northeast-2(서울) 리전에서 처리된다. 고객 데이터가 한국 밖으로 전송되지 않는다.],
+  [CloudTrail 감사], [모든 Bedrock API 호출(InvokeModel, Converse 등)이 CloudTrail에 자동 기록된다. 누가 언제 어떤 모델을 호출했는지 완전한 감사 추적이 가능하다.],
+)
+]
+
+=== 규제 매핑
+
+#text(size: 9pt)[
+#table(
+  columns: (auto, auto, 1fr),
+  inset: 5pt,
+  stroke: 0.5pt,
+  [*규제*], [*요구사항*], [*Bedrock 충족 방식*],
+  [개인정보보호법], [제3자 제공 vs 위탁 처리 구분], [Bedrock은 AWS 인프라 내 위탁 처리에 해당. 데이터가 모델 제공사에 전달되지 않으므로 제3자 제공이 아님.],
+  [개인정보보호법], [국외 이전 제한], [ap-northeast-2 리전 내 처리. 국외 이전 불발생.],
+  [금감원 AI 가이드라인], [데이터 거버넌스], [CloudTrail 감사 로그 + VPC 격리 + 전송 암호화로 데이터 흐름 완전 추적.],
+  [EU AI Act Art.10], [데이터 거버넌스], [학습 데이터 미사용 보장. 추론 데이터 처리 위치 문서화.],
+  [AI 기본법], [고영향 AI 데이터 관리], [HMAC 감사 로그와 CloudTrail 이중 기록으로 데이터 처리 이력 증명.],
+)
+]
+
+=== 데이터 흐름도
+
+추천사유 생성 및 에이전트 진단 시 데이터 흐름:
+
+```
+고객 피처 (S3, ap-northeast-2)
+  → VPC PrivateLink → Bedrock Endpoint (ap-northeast-2)
+    → Solar Pro / Claude Sonnet / Haiku (추론만, 학습 없음)
+  → 응답 → VPC 내부 → DynamoDB 캐시 (ap-northeast-2)
+
+  ✗ 모델 제공사로 데이터 전달 없음
+  ✗ 인터넷 경유 없음
+  ✗ 리전 외부 전송 없음
+  ✓ CloudTrail에 모든 호출 기록
+```
+
 #pagebreak()
 
 // ═══════════════════════════════════════════════════════════

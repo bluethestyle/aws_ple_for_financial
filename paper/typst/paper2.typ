@@ -466,6 +466,7 @@ Upstream of the 3-agent pipeline, the `ConstraintAwareEngine` applies eligibilit
 Customer-facing recommendation reasons require natural, professional Korean text. The optimal model differs by deployment environment:
 *On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.
 *Cloud (AWS)*: L2a rewriting uses Solar Pro 22B (Upstage, Bedrock Marketplace) --- top performance on Korean benchmarks (KMMLU). L2b self-critique also uses Solar (generator $<=$ critic model principle). SelfChecker factuality scoring uses Claude Haiku.
+Bedrock ensures that input/output data is never transmitted to model providers (Anthropic, Upstage) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet, ensuring that financial customer data never leaves the AWS Region (ap-northeast-2) --- structurally satisfying the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
 
 == Caching Strategy and Asynchronous L2a Architecture
 

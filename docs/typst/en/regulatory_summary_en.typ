@@ -475,6 +475,11 @@ For implementation details on each item, please refer to the corresponding secti
 ]
 
 // ============================================================
+== Bedrock Data Protection
+
+Customer data is processed exclusively within the AWS Region (ap-northeast-2) during LLM invocation. Bedrock never transmits input/output data to model providers and never uses it for model training. VPC PrivateLink enables invocation without internet traversal, and CloudTrail audits all API calls. This structurally satisfies PIPA cross-border transfer restrictions and FSS data governance requirements.
+
+// ============================================================
 = Ops/Audit Agents
 
 Practical enforcement of regulatory compliance is handled by two autonomous diagnostic agents. OpsAgent monitors pipeline performance and stability; AuditAgent audits fairness, regulatory compliance, and recommendation reason quality. 3-agent consensus with minority report preservation mitigates hallucination risk, and all diagnostic results accumulate in a case store for regulatory audit evidence.

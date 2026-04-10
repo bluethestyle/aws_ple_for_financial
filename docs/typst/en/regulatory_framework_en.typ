@@ -872,6 +872,56 @@ Automated classification and response system by severity.
   [MINOR], [24 hours], [Drift warning, quality degradation, herding high], [ML Team],
 )
 
+== Bedrock Data Protection Architecture
+
+The most critical regulatory issue when leveraging LLMs in financial AI systems is the prevention of customer data leakage. Amazon Bedrock addresses this through five structural safeguards:
+
+#text(size: 9pt)[
+#table(
+  columns: (auto, 1fr),
+  inset: 5pt,
+  stroke: 0.5pt,
+  [*Safeguard*], [*Details*],
+  [No Data Training], [Input/output data is never transmitted to model providers (Anthropic, Upstage, Meta, etc.) and is never used for model retraining (including fine-tuning). AWS guarantees this contractually in its Terms of Service.],
+  [Transit Encryption], [TLS 1.2+ encryption protects data in transit.],
+  [VPC PrivateLink], [Bedrock API is invoked through VPC-internal endpoints without traversing the public internet. Customer data is never exposed to public networks.],
+  [In-Region Processing], [All inference is processed in the ap-northeast-2 (Seoul) Region. Customer data never leaves Korea.],
+  [CloudTrail Audit], [Every Bedrock API call (InvokeModel, Converse, etc.) is automatically recorded in CloudTrail. Complete audit trail of who called which model when.],
+)
+]
+
+=== Regulatory Mapping
+
+#text(size: 9pt)[
+#table(
+  columns: (auto, auto, 1fr),
+  inset: 5pt,
+  stroke: 0.5pt,
+  [*Regulation*], [*Requirement*], [*Bedrock Compliance*],
+  [PIPA (Korea)], [Third-party provision vs. delegated processing], [Bedrock constitutes delegated processing within AWS infrastructure. Data is not transmitted to model providers, thus not third-party provision.],
+  [PIPA (Korea)], [Cross-border transfer restriction], [In-region processing in ap-northeast-2. No cross-border transfer occurs.],
+  [Korean FSS AI Guidelines], [Data governance], [CloudTrail audit logs + VPC isolation + transit encryption enable complete data flow tracking.],
+  [EU AI Act Art.10], [Data governance], [No-training-use guarantee. Inference data processing location documented.],
+  [AI Basic Act (Korea)], [High-impact AI data management], [HMAC audit logs and CloudTrail dual-recording prove data processing history.],
+)
+]
+
+=== Data Flow Diagram
+
+Data flow during recommendation reason generation and agent diagnostics:
+
+```
+Customer Features (S3, ap-northeast-2)
+  → VPC PrivateLink → Bedrock Endpoint (ap-northeast-2)
+    → Solar Pro / Claude Sonnet / Haiku (inference only, no training)
+  → Response → within VPC → DynamoDB Cache (ap-northeast-2)
+
+  ✗ No data transmitted to model providers
+  ✗ No internet traversal
+  ✗ No cross-region transfer
+  ✓ All calls logged in CloudTrail
+```
+
 == Model Risk Management (MRM) Framework
 
 Full-lifecycle model governance aligned with *SR 11-7* (Federal Reserve/OCC), *EBA ML Guidelines*, and *NIST AI RMF 1.0*.
