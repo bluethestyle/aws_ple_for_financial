@@ -13,6 +13,8 @@ Complete reference for all YAML configuration files in the platform.
 5. [Serving Config](#serving-config)
 6. [Training Config](#training-config)
 7. [PLE Model Config](#ple-model-config)
+8. [Agent Configuration (agent.yaml)](#agent-configuration-configsfinancialagent-yaml)
+9. [Checklist Configuration (checklist.yaml)](#checklist-configuration-configsfinancialchecklist-yaml)
 
 ---
 
@@ -785,3 +787,162 @@ model:
       activation: null
       task_type: regression
 ```
+
+---
+
+## Agent Configuration (`configs/financial/agent.yaml`)
+
+**File:** `configs/financial/agent.yaml`
+**Purpose:** AIOps 에이전트 오케스트레이션 설정. 운영 체크포인트(ops), 감사 관점(audit), 다중 에이전트 합의(consensus), 모델 할당(models)의 4개 섹션으로 구성된다.
+
+### ops
+
+운영 파이프라인의 체크포인트(CP) 목록과 각 체크포인트의 실행 주기를 선언한다.
+
+```yaml
+ops:
+  checkpoints: [CP1, CP2, CP3, CP4, CP5, CP6, CP7]
+  schedule:
+    CP1: event       # 이벤트 트리거 (데이터 도착 즉시)
+    CP2: 5min        # 5분 주기
+    CP3: 1h          # 1시간 주기
+    CP4: 1h
+    CP5: daily       # 일 1회
+    CP6: daily
+    CP7: event
+```
+
+- `checkpoints`: 실행할 CP ID 목록. 순서대로 등록되며, 비활성화할 CP는 목록에서 제거한다.
+- `schedule`: CP ID → 실행 주기. 허용 값: `event` | `5min` | `1h` | `daily`.
+
+### audit
+
+감사 관점(Audit Viewpoint, AV) 목록과 각 관점의 실행 주기를 선언한다.
+
+```yaml
+audit:
+  viewpoints: [AV1, AV2, AV3, AV4, AV5]
+  schedule:
+    AV1: daily
+    AV2: daily
+    AV3: 1h
+    AV4: daily
+    AV5: daily
+```
+
+- `viewpoints`: 활성화할 AV ID 목록 (AV1-AV5).
+- `schedule`: AV ID → 실행 주기.
+
+### consensus
+
+다중 에이전트 합의(Multi-Agent Consensus) 동작을 제어한다.
+
+```yaml
+consensus:
+  model: sonnet          # 합의에 사용할 기반 모델
+  agents: 3              # 독립 에이전트 수
+  parallel: true         # 병렬 실행 여부 (false = 순차)
+  apply_to:              # 합의를 적용할 CP/AV 목록
+    - CP4
+    - AV3
+    - AV5
+```
+
+- `model`: 합의 에이전트에 사용할 모델 식별자. `sonnet` = Claude Sonnet.
+- `agents`: 몇 개의 독립 에이전트가 각각 판단한 뒤 다수결/가중 합의를 수행할지 결정.
+- `parallel`: `true`면 `agents`개를 동시 실행(비용 절감), `false`면 순차 실행(디버깅 용이).
+- `apply_to`: 합의를 적용할 대상 CP/AV ID 목록. 여기에 없는 CP/AV는 단일 에이전트로 실행.
+
+### models
+
+파이프라인 단계별 모델 할당을 선언한다. 각 키는 역할(role)이며, 값은 모델 식별자이다.
+
+```yaml
+models:
+  reason_generation: solar-pro      # 한국어 특화 추론 생성 (L2a)
+  reason_critique:   solar-pro      # 생성된 추론 자기 검증 (self-critique)
+  factuality_check:  claude-haiku   # 사실성 검사 (빠르고 저렴)
+  agent_dialog:      claude-sonnet  # 에이전트 간 대화/협의
+  agent_consensus:   claude-sonnet  # 다중 에이전트 합의 (× agents 수)
+  deep_audit:        claude-opus    # 심층 감사 (분기 실행, 고비용)
+  embeddings:        titan-embed-v2 # AWS Titan Embeddings V2
+```
+
+| 역할 | 모델 | 비고 |
+|---|---|---|
+| `reason_generation` | Solar Pro | 한국어 금융 설명문 생성에 특화 |
+| `reason_critique` | Solar Pro | 동일 모델로 self-critique 수행 |
+| `factuality_check` | Claude Haiku | 저지연/저비용 사실성 검사 |
+| `agent_dialog` | Claude Sonnet | 에이전트 간 협의 대화 |
+| `agent_consensus` | Claude Sonnet | 합의 투표 (병렬 × 3 기본) |
+| `deep_audit` | Claude Opus | 고비용 — `apply_to` 조건 충족 시만 실행 |
+| `embeddings` | Titan Embeddings V2 | AWS Bedrock 네이티브 임베딩 |
+
+---
+
+## Checklist Configuration (`configs/financial/checklist.yaml`)
+
+**File:** `configs/financial/checklist.yaml`
+**Purpose:** 파이프라인 6파트(P1-P6)에 걸친 48+ 개 점검 항목을 정의한다. 각 항목은 어떤 도구를 실행하고, 어떤 임계값을 기준으로, 어떤 판정 로직을 적용할지를 선언한다.
+
+### 파트 구성 (P1-P6)
+
+| 파트 | 범위 | 예시 항목 수 |
+|---|---|---|
+| P1 | 데이터 품질 (입력 무결성, NaN/이상치, 스키마) | ~10 |
+| P2 | 피처 엔지니어링 (zero-variance, 분포, 리키지) | ~8 |
+| P3 | 레이블 파생 (class balance, positive rate) | ~6 |
+| P4 | 모델 학습 (loss 수렴, gradient, AUC) | ~10 |
+| P5 | 추론/추천 (필터, 스코어 분포, 피로도) | ~8 |
+| P6 | 감사/컴플라이언스 (공정성, 드리프트, 규정) | ~8 |
+
+### 항목 구조
+
+각 점검 항목은 3개 필드로 구성된다.
+
+```yaml
+checklist:
+  P1:
+    - id: P1-01
+      description: "NaN 비율 점검"
+      tool_name: nan_ratio_checker       # 실행할 도구(함수/클래스) 이름
+      threshold:                         # 판정 기준값
+        max_nan_ratio: 0.05              # 5% 초과 시 FAIL
+      verdict_logic: threshold_le        # 판정 방식 (아래 참조)
+
+    - id: P1-02
+      description: "스키마 컬럼 수 일치 확인"
+      tool_name: schema_column_checker
+      threshold:
+        expected_min_columns: 30
+      verdict_logic: threshold_ge
+
+  P4:
+    - id: P4-03
+      description: "AUC 최소 기준"
+      tool_name: auc_evaluator
+      threshold:
+        min_auc: 0.70
+      verdict_logic: threshold_ge
+
+    - id: P4-07
+      description: "NaN/Inf loss 감지"
+      tool_name: loss_nan_detector
+      threshold: null                    # 발생 즉시 FAIL (binary 판정)
+      verdict_logic: no_occurrence
+```
+
+### verdict_logic 허용 값
+
+| 값 | 의미 |
+|---|---|
+| `threshold_le` | 측정값 ≤ threshold → PASS |
+| `threshold_ge` | 측정값 ≥ threshold → PASS |
+| `threshold_between` | lower ≤ 측정값 ≤ upper → PASS |
+| `no_occurrence` | 이벤트 미발생 → PASS |
+| `all_pass` | 하위 항목 전체 PASS → PASS |
+| `custom` | `tool_name`이 반환한 `verdict` 필드를 직접 사용 |
+
+### 전체 항목 수 및 확장 방법
+
+기본 제공 항목은 48개이며, 새 항목 추가 시 `checklist.yaml`에만 항목을 추가하면 된다. Python 코드 수정 없이 `tool_name`에 등록된 도구를 자동 디스패치한다. 도구 등록은 `core/audit/tool_registry.py`의 `@register_tool` 데코레이터로 수행한다.

@@ -557,3 +557,19 @@ class SelfChecker:
 | 역매핑 | 644D 범위 하드코딩 | config 기반 범위 정의 | 피처 구조 변경 시 자동 반영 |
 | 규제 준수 | 금소법 패턴 코드 내장 | compliance_rules.yaml | 규제 변경 시 코드 수정 불필요 |
 | 태스크 해석 | Phase 5 코드 내장 | task_frames config | 태스크 추가 시 해석도 추가 |
+
+---
+
+### 운영/감사 에이전트와의 연계
+
+추천사유 품질은 AuditAgent의 AV3 관점에서 3-Tier 체계로 모니터링된다:
+- **Tier 1** (전수): SelfChecker pass/revise/reject 비율 추이 → Tier1Aggregator
+- **Tier 2** (샘플): 27개 스트라텀 층화추출 → GroundingValidator (사유↔IG 정합성)
+- **Tier 3** (전문가): 월 50~100건 수동 리뷰 → 피드백 루프
+
+L2b 품질 점수(faithfulness, grounding, compliance, readability)는 감사 리포트의 `reason_quality_dashboard` 섹션으로 통합된다.
+
+InterpretationRegistry → 3-tuple enrichment → TemplateEngine 연결이 완료되어
+L1 사유에도 한국어 IG 해석이 반영된다.
+
+상세 설계: `docs/design/11_ops_audit_agent.md` §추천사유 품질 검증 전략

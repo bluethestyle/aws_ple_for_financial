@@ -5,10 +5,12 @@ LLM Provider Abstraction
 Unified interface to call various LLM backends.
 
 Implementations:
-    BedrockProvider  -- AWS Bedrock (Claude / Titan / etc.)
-    OpenAIProvider   -- OpenAI API (GPT-4, etc.)
-    GeminiProvider   -- Google Gemini API (gemini-2.0-flash, gemini-2.5-pro)
-    DummyProvider    -- Deterministic stub for unit tests.
+    BedrockProvider   -- AWS Bedrock (Claude / Titan / etc.)
+    OpenAIProvider    -- OpenAI API (GPT-4, etc.)
+    GeminiProvider    -- Google Gemini API (gemini-2.0-flash, gemini-2.5-pro)
+    SolarProvider     -- Upstage Solar via Bedrock Marketplace
+    LocalLLMProvider  -- Stub for future on-prem LLM (NotImplemented)
+    DummyProvider     -- Deterministic stub for unit tests.
 
 Usage::
 
@@ -18,7 +20,7 @@ Usage::
 Config example::
 
     llm_provider:
-      backend: bedrock       # bedrock | openai | gemini | dummy
+      backend: bedrock       # bedrock | openai | gemini | solar | local | dummy
       bedrock:
         model_id: anthropic.claude-3-haiku-20240307-v1:0
         region: us-east-1
@@ -34,6 +36,11 @@ Config example::
         max_tokens: 500
         temperature: 0.3
         api_key_env: GEMINI_API_KEY
+      solar:
+        model_id: upstage.solar-pro-241216
+        region: us-east-1
+        max_tokens: 1024
+        temperature: 0.2
       dummy:
         response: "This is a dummy LLM response."
 """
@@ -53,6 +60,8 @@ __all__ = [
     "BedrockProvider",
     "OpenAIProvider",
     "GeminiProvider",
+    "SolarProvider",
+    "LocalLLMProvider",
     "DummyProvider",
     "LLMProviderFactory",
 ]
@@ -296,6 +305,119 @@ class GeminiProvider(AbstractLLMProvider):
 
 
 # ---------------------------------------------------------------------------
+# Upstage Solar via Bedrock Marketplace
+# ---------------------------------------------------------------------------
+
+class SolarProvider(AbstractLLMProvider):
+    """Upstage Solar LLM via AWS Bedrock Marketplace.
+
+    Uses the same ``invoke_model`` pattern as :class:`BedrockProvider` but
+    targets the Upstage Solar model available through Bedrock Marketplace.
+
+    The request/response envelope follows the Upstage Solar schema (OpenAI-style
+    chat messages), which differs from the Anthropic Messages API.
+
+    Config::
+
+        solar:
+          model_id: upstage.solar-pro-241216
+          region: us-east-1
+          max_tokens: 1024
+          temperature: 0.2
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        self.model_id: str = config.get("model_id", "upstage.solar-pro-241216")
+        self.region: str = config.get("region", "us-east-1")
+        self.max_tokens: int = config.get("max_tokens", 1024)
+        self.temperature: float = config.get("temperature", 0.2)
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            try:
+                import boto3
+                self._client = boto3.client(
+                    "bedrock-runtime", region_name=self.region,
+                )
+            except Exception as exc:
+                logger.error("Failed to create Bedrock client for SolarProvider: %s", exc)
+                raise
+        return self._client
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        client = self._get_client()
+        max_tokens = kwargs.get("max_tokens", self.max_tokens)
+        temperature = kwargs.get("temperature", self.temperature)
+
+        # Solar uses OpenAI-style chat messages envelope
+        body = json.dumps({
+            "model": self.model_id,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [{"role": "user", "content": prompt}],
+        })
+
+        response = client.invoke_model(
+            modelId=self.model_id,
+            body=body,
+            contentType="application/json",
+        )
+        response_body = json.loads(response["body"].read())
+
+        # Extract text from OpenAI-style choices response
+        choices = response_body.get("choices", [])
+        if choices:
+            return choices[0].get("message", {}).get("content", "")
+        # Fallback: try direct output field
+        return response_body.get("output", str(response_body))
+
+    def is_available(self) -> bool:
+        try:
+            self._get_client()
+            return True
+        except Exception:
+            return False
+
+
+# ---------------------------------------------------------------------------
+# Local LLM (on-prem stub)
+# ---------------------------------------------------------------------------
+
+class LocalLLMProvider(AbstractLLMProvider):
+    """Stub for future on-premises LLM integration.
+
+    Intended for vLLM / Ollama / TGI deployments running on local GPU servers.
+    Not implemented — raises :class:`NotImplementedError` on all calls.
+
+    Config::
+
+        local:
+          endpoint: http://localhost:8000/v1
+          model: llama-3-8b-instruct
+          max_tokens: 1024
+          temperature: 0.2
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        self.endpoint: str = config.get("endpoint", "http://localhost:8000/v1")
+        self.model: str = config.get("model", "llama-3-8b-instruct")
+        self.max_tokens: int = config.get("max_tokens", 1024)
+        self.temperature: float = config.get("temperature", 0.2)
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        raise NotImplementedError(
+            "LocalLLMProvider is not yet implemented. "
+            "Planned for vLLM/Ollama/TGI on-prem deployment."
+        )
+
+    def is_available(self) -> bool:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -311,6 +433,8 @@ class LLMProviderFactory:
         "bedrock": BedrockProvider,
         "openai": OpenAIProvider,
         "gemini": GeminiProvider,
+        "solar": SolarProvider,
+        "local": LocalLLMProvider,
         "dummy": DummyProvider,
     }
 

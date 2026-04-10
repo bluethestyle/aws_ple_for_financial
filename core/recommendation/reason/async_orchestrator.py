@@ -45,7 +45,10 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from core.recommendation.reason.interpretation_registry import InterpretationRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +145,7 @@ class AsyncReasonOrchestrator:
         self_checker=None,
         audit_store=None,
         prompt_sanitizer=None,
+        interpretation_registry: Optional["InterpretationRegistry"] = None,
     ) -> None:
         self._config = config or {}
         ao_cfg = self._config.get("reason", {}).get("async_orchestrator", {})
@@ -151,6 +155,7 @@ class AsyncReasonOrchestrator:
         self._llm_provider = llm_provider
         self._self_checker = self_checker
         self._audit_store = audit_store
+        self._interpretation_registry = interpretation_registry
 
         # In-memory cache (local); production overrides with DynamoDB
         self._cache: Dict[str, ReasonResult] = {}
@@ -277,12 +282,29 @@ class AsyncReasonOrchestrator:
         template_hash = hashlib.md5(hash_key.encode()).hexdigest()[:8]
         template_id = f"L1-{template_hash}"
 
+        # Enrich features with InterpretationRegistry Korean text if available
+        ig_top_features = features  # default: original 2-tuples
+        if self._interpretation_registry is not None and features:
+            try:
+                interpreted = self._interpretation_registry.interpret_batch(
+                    features=features, task=task_type or ""
+                )
+                if interpreted:
+                    enriched = [
+                        (entry.get("name", f[0]), entry.get("ig_value", f[1]), entry.get("text", ""))
+                        for entry, f in zip(interpreted, features)
+                        if entry.get("text")
+                    ]
+                    ig_top_features = enriched if enriched else features  # fallback if all texts empty
+            except Exception:
+                ig_top_features = features  # fallback on any error
+
         # Use existing TemplateEngine if available
         if self._template_engine is not None:
             reason_output = self._template_engine.generate_reason(
                 customer_id=customer_id,
                 item_id=item_id,
-                ig_top_features=features,
+                ig_top_features=ig_top_features,
                 segment=segment,
                 task_type=task_type,
                 item_info=item_info,

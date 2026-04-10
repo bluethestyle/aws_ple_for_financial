@@ -50,7 +50,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from core.recommendation.reason.reverse_mapper import ReverseMapper
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,19 @@ _DEFAULT_PREFIX_TO_GROUP: Dict[str, str] = {
     "hmm_": "hmm_states",
     "graph_": "graph_embeddings",
     "merchant_": "merchant_hierarchy",
+    # Additional prefixes for broader feature coverage
+    "spend_": "base_txn_stats",
+    "amount_": "base_txn_stats",
+    "avg_txn_": "base_txn_stats",
+    "total_": "base_txn_stats",
+    "freq_": "base_txn_stats",
+    "count_": "base_txn_stats",
+    "age_": "demographics",
+    "tenure_": "demographics",
+    "reward_": "economics",
+    "cashback_": "economics",
+    "product_": "product_holdings",
+    "card_": "product_holdings",
 }
 
 
@@ -145,6 +161,7 @@ class InterpretationRegistry:
         prefix_to_group: Optional[Dict[str, str]] = None,
         feature_medians: Optional[Dict[str, float]] = None,
         ig_sign_blacklist: Optional[Dict[str, set]] = None,
+        reverse_mapper: Optional["ReverseMapper"] = None,
     ) -> None:
         # Level 1: feature_group × task_group → text
         self._level1: Dict[str, Dict[str, str]] = level1 or {}
@@ -156,7 +173,12 @@ class InterpretationRegistry:
         self._glossary: Dict[str, Dict[str, Any]] = glossary or {}
 
         self._task_to_group = task_to_group or dict(_DEFAULT_TASK_TO_GROUP)
-        self._prefix_to_group = prefix_to_group or dict(_DEFAULT_PREFIX_TO_GROUP)
+        raw_prefix = prefix_to_group or dict(_DEFAULT_PREFIX_TO_GROUP)
+        # Sort longest prefix first to avoid shorter prefix shadowing longer ones
+        # (e.g. "product_" must be checked before "prod_" would if both existed)
+        self._prefix_to_group = dict(
+            sorted(raw_prefix.items(), key=lambda x: len(x[0]), reverse=True)
+        )
 
         # Per-feature median from training data (for high/low classification)
         # Loaded from DatasetRegistry.feature_stats or passed directly.
@@ -165,6 +187,9 @@ class InterpretationRegistry:
         # Features whose IG sign flipped between model versions.
         # {task_name: {feature_name, ...}}  — IG interpretation disabled for these.
         self._ig_sign_blacklist: Dict[str, set] = ig_sign_blacklist or {}
+
+        # Level RM: optional ReverseMapper for glossary template-based fallback
+        self._reverse_mapper: Optional["ReverseMapper"] = reverse_mapper
 
         logger.info(
             "InterpretationRegistry: L1=%d groups, L2=%d entries, "
@@ -233,6 +258,15 @@ class InterpretationRegistry:
                     text = self._lookup_level1(feature_group, task_group)
                     if text:
                         return text
+
+        # Level RM: ReverseMapper glossary template (Korean, value-substituted)
+        if self._reverse_mapper is not None:
+            try:
+                rm_text = self._reverse_mapper.interpret_financial(feature_name, value, task)
+                if rm_text and len(rm_text) > 5:  # non-trivial result
+                    return rm_text
+            except Exception:
+                pass  # fall through to glossary fallback
 
         # Fallback: glossary template
         return self._glossary_fallback(feature_name, value)
@@ -544,6 +578,7 @@ class InterpretationRegistry:
         pipeline_path: str = "",
         glossary_path: str = "",
         matrix_path: str = "",
+        reverse_mapper: Optional["ReverseMapper"] = None,
     ) -> "InterpretationRegistry":
         """Build from config files.
 
@@ -552,6 +587,8 @@ class InterpretationRegistry:
             pipeline_path: Path to pipeline.yaml.
             glossary_path: Path to feature_glossary.yaml.
             matrix_path: Path to interpretation_matrix.yaml (Level 1 + 2).
+            reverse_mapper: Optional ReverseMapper instance used as Level RM
+                fallback (between Level 1 and the glossary fallback).
 
         Missing files are silently skipped — the registry works with
         whatever is available.
@@ -568,6 +605,23 @@ class InterpretationRegistry:
         glossary: Dict[str, Dict[str, Any]] = {}
         task_to_group: Dict[str, str] = dict(_DEFAULT_TASK_TO_GROUP)
         prefix_to_group: Dict[str, str] = dict(_DEFAULT_PREFIX_TO_GROUP)
+        feature_groups_config: Optional[Dict[str, Any]] = None
+
+        # 0. Feature groups: load for prefix_to_group overrides
+        if feature_groups_path:
+            try:
+                with open(feature_groups_path, "r", encoding="utf-8") as f:
+                    feature_groups_config = yaml.safe_load(f) or {}
+                if "prefix_to_group" in feature_groups_config:
+                    custom_prefixes = feature_groups_config["prefix_to_group"]
+                    # YAML-defined prefixes take priority over defaults
+                    prefix_to_group = {**_DEFAULT_PREFIX_TO_GROUP, **custom_prefixes}
+                    logger.info(
+                        "Loaded %d custom prefix_to_group entries from feature_groups config",
+                        len(custom_prefixes),
+                    )
+            except Exception as e:
+                logger.warning("Failed to load feature_groups config: %s", e)
 
         # 1. Pipeline: task → task_group mapping
         if pipeline_path:
@@ -630,6 +684,7 @@ class InterpretationRegistry:
             glossary=glossary,
             task_to_group=task_to_group,
             prefix_to_group=prefix_to_group,
+            reverse_mapper=reverse_mapper,
         )
 
     @staticmethod
@@ -647,19 +702,21 @@ class InterpretationRegistry:
         group_semantics: Dict[str, str] = {
             "base_rfm": "고객 거래 빈도/금액 패턴",
             "base_category": "카테고리별 소비 비중",
-            "base_txn_stats": "거래 통계 지표",
+            "base_txn_stats": "고객 거래 빈도/금액 패턴",
             "base_temporal": "시간대별 거래 패턴",
             "multi_source": "다채널 금융 활동",
             "extended_source": "확장 금융 서비스 이용",
             "tda_topology": "소비 구조의 위상적 패턴",
             "gmm_clustering": "고객 세그먼트 소속 특성",
             "mamba_temporal": "시계열 거래 동향",
-            "economics": "경제 행동 및 재무 상태",
+            "economics": "고객 경제적 혜택 및 보상 패턴",
             "multidisciplinary": "다학제 소비 동태 분석",
             "model_derived": "모델 기반 파생 지표",
             "hmm_states": "행동 상태 전이 패턴",
             "graph_embeddings": "거래 네트워크 위치",
             "merchant_hierarchy": "가맹점 이용 구조",
+            "demographics": "고객 인구통계학적 특성 (연령, 재직기간 등)",
+            "product_holdings": "고객 상품 보유 현황",
         }
 
         # Task group → interpretation perspective
@@ -740,6 +797,14 @@ class InterpretationRegistry:
             tg = self._task_to_group.get(task, "")
             if tg and self._lookup_level1(fg, tg):
                 return "L1"
+        # Level RM: check if ReverseMapper would produce a non-trivial result
+        if self._reverse_mapper is not None:
+            try:
+                rm_text = self._reverse_mapper.interpret_financial(feature_name, 0.0, task)
+                if rm_text and len(rm_text) > 5:
+                    return "RM"
+            except Exception:
+                pass
         return "fallback"
 
     def _glossary_fallback(self, feature_name: str, value: float) -> str:

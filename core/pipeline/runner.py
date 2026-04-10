@@ -36,7 +36,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import numpy as np
@@ -55,9 +55,10 @@ logger = logging.getLogger(__name__)
 class _PipelineState:
     """Tracks completed stages for pipeline resume capability."""
 
-    def __init__(self, output_dir: str) -> None:
+    def __init__(self, output_dir: str, callbacks: Optional[List[Callable]] = None) -> None:
         self.path = Path(output_dir) / "pipeline_state.json"
         self.state = self._load()
+        self._callbacks = callbacks or []
 
     def _load(self) -> dict:
         if self.path.exists():
@@ -71,6 +72,12 @@ class _PipelineState:
         if artifacts:
             self.state["artifacts"][stage] = artifacts
         self._save()
+        # Notify callbacks
+        for cb in self._callbacks:
+            try:
+                cb(stage, artifacts or {})
+            except Exception as e:
+                logger.warning("Pipeline state callback failed: %s", e)
 
     def mark_failed(self, stage: str, error: str) -> None:
         self.state["failed_stage"] = stage
@@ -2003,7 +2010,7 @@ class PipelineRunner:
         distill_cfg = self._config_to_dict().get("distillation", {})
         student_config = StudentConfig(
             teacher_checkpoint=teacher_checkpoint,
-            temperature=distill_cfg.get("temperature", 5.0),
+            temperature=distill_cfg.get("temperature", 1.0),
             alpha=distill_cfg.get("alpha", 0.5),
             lgbm_params=distill_cfg.get("lgbm_params", {}),
         )

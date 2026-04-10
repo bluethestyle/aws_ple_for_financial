@@ -684,3 +684,24 @@ CloudWatch 대시보드:
 | 인시던트 알림 | 로그만 | SNS → Slack/Email 자동 | 즉시 대응 |
 | 거버넌스 보고서 | 로컬 JSON/HTML | S3 + 자동 배포 | 위원회 접근성 |
 | API 감사 | 없음 | CloudTrail (자동) | 전체 API 호출 기록 |
+
+---
+
+### 운영/감사 에이전트 통합
+
+09장의 모든 감사/거버넌스 컴포넌트는 AuditAgent의 도구(tool)로 래핑되어 자동 점검에 사용된다:
+
+| 컴포넌트 | 에이전트 도구 | 역할 |
+|---|---|---|
+| FairnessMonitor | `evaluate_fairness` | AV1 공정성 (단일+교차 보호속성) |
+| HerdingDetector | `detect_herding` | AV2 집중도 |
+| SelfChecker + XAIQualityEvaluator | `check_reason_quality` + `evaluate_xai_quality` | AV3 추천사유 품질 |
+| RegulatoryComplianceChecker + EUAIActMapper + FRIAEvaluator | `run_regulatory_checks` + `evaluate_eu_ai_act` + `evaluate_fria` | AV4 규제 적합성 |
+| DataLineageTracker | `trace_feature_lineage` | AV5 데이터 계보 |
+| AuditLogger | `verify_audit_chain` | 감사 로그 무결성 검증 |
+| GovernanceReportGenerator | 9개 섹션에 에이전트 결과 공급 | 월간 통합 리포트 |
+
+48개 체크리스트 항목이 주기적으로 자동 실행되며, WARN/FAIL 항목은 3-에이전트 합의(Sonnet×3)를 거쳐 마이너리티 리포트를 포함한 진단 결과를 산출한다. 진단 이력은 DiagnosticCaseStore(LanceDB)에 축적되어 유사 케이스 검색과 대응 효과 추적에 활용된다.
+
+상세 설계: `docs/design/11_ops_audit_agent.md`
+구현: `core/agent/` 패키지

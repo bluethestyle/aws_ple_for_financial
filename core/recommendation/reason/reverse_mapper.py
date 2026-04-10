@@ -149,11 +149,11 @@ class ReverseMapper:
         self.interpretation_templates: Dict[str, str] = rm_cfg.get(
             "interpretation_templates",
             {
-                "very_low": "{feature_label} is notably low for this customer.",
-                "low": "{feature_label} is below average.",
-                "medium": "{feature_label} is at a moderate level.",
-                "high": "{feature_label} is above average.",
-                "very_high": "{feature_label} is exceptionally high.",
+                "very_low": "해당 지표({feature_label})가 매우 낮은 수준입니다.",
+                "low": "해당 지표({feature_label})가 평균보다 낮은 수준입니다.",
+                "medium": "해당 지표({feature_label})가 보통 수준입니다.",
+                "high": "해당 지표({feature_label})가 평균보다 높은 수준입니다.",
+                "very_high": "해당 지표({feature_label})가 매우 높은 수준입니다.",
             },
         )
 
@@ -536,7 +536,7 @@ class ReverseMapper:
             except ValueError:
                 pass
 
-        return "unknown", "Unknown"
+        return "unknown", "미분류 그룹"
 
     def get_glossary_task_weights(
         self,
@@ -652,7 +652,7 @@ class ReverseMapper:
             if start <= idx < end:
                 label = group_cfg.get("label", group_name)
                 return group_name, label
-        return "unknown", "Unknown"
+        return "unknown", "미분류 그룹"
 
     def _classify_range(self, value: float) -> str:
         """Classify a feature value into a range label using config bins."""
@@ -686,7 +686,7 @@ class ReverseMapper:
         # Fallback: generic range-label template
         template = self.interpretation_templates.get(
             range_label,
-            "{feature_label} has a {range_label} value.",
+            "해당 지표({feature_label})의 수준이 {range_label}입니다.",
         )
         feature_label = f"{group_label}/{feature_name}"
         try:
@@ -697,7 +697,7 @@ class ReverseMapper:
                 range_label=range_label,
             )
         except (KeyError, IndexError):
-            return f"{feature_label}: {range_label}"
+            return f"해당 지표의 수준: {range_label}"
 
     def _apply_task_weights(
         self,

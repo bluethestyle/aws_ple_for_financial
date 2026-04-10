@@ -15,6 +15,7 @@ through SageMaker training to production serving.
 6. [A/B Testing](#ab-testing)
 7. [Kill Switch](#kill-switch)
 8. [Monitoring and Alerts](#monitoring-and-alerts)
+9. [운영/감사 에이전트 배포](#운영감사-에이전트-배포)
 
 ---
 
@@ -519,3 +520,43 @@ general:
     include_herding: true
     output_format: json
 ```
+
+---
+
+## 운영/감사 에이전트 배포
+
+### 사전 요구사항
+
+- Bedrock 모델 접근 권한: Claude Sonnet, Claude Haiku, Titan Embeddings V2
+- Bedrock Marketplace: Upstage Solar Pro (선택, L2a 사유 생성용)
+- IAM 역할: `bedrock:InvokeModel`, `s3:GetObject/PutObject`, `dynamodb:*`, `sns:Publish`
+
+### 에이전트 설정
+
+- `configs/financial/agent.yaml`: 에이전트 설정 (모델, 스케줄, 합의)
+- `configs/financial/checklist.yaml`: 48개 체크리스트 항목
+
+### 실행 모드
+
+1. **이벤트 기반**: 파이프라인 스테이지 완료 시 자동 트리거
+   - `_PipelineState.mark_complete()` 콜백 → ChangeDetector → 에이전트 실행
+2. **주기적**: CloudWatch Events / EventBridge 스케줄
+   - CP5 서빙 헬스: 5분 주기
+   - CP6 추천 응답: 1시간 집계
+   - AV4 규제 적합성: 주 1회
+
+### Bedrock 합의 메커니즘
+
+- 3개 Sonnet 세션 병렬 호출 (독립 투표)
+- WARN/FAIL 항목에만 적용 (비용 효율)
+- 마이너리티 리포트 보존
+
+### 케이스 스토어
+
+- LanceDB on S3 (`DiagnosticCaseStore`)
+- 진단 이력 영구 보존 — 유사 케이스 검색, 통계, 대응 효과 추적
+
+### 알림
+
+- SNS: CRITICAL/FAIL 자동 에스컬레이션
+- Slack: 일일 `ops_report` / 주간 `audit_report` 전달

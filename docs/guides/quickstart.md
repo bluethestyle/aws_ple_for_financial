@@ -190,6 +190,16 @@ Add custom generators, transformers, experts, task heads, scorers, or filters
 via the plugin registry pattern. See the
 [Plugin Development Guide](plugin_development.md).
 
+### 운영/감사 에이전트
+
+파이프라인 실행 완료 후, 2개의 자율 진단 에이전트가 비동기로 작동합니다:
+
+- **운영 에이전트 (OpsAgent)**: 7개 체크포인트(인제스천~A/B테스트)를 모니터링하고, 이상 징후 간 연쇄 영향을 분석하여 `finding + likely_cause + suggested_action` 형식으로 리포트를 생성합니다.
+- **감사 에이전트 (AuditAgent)**: 공정성, 추천사유 품질, 규제 적합성을 5개 관점에서 점검하고, 교차 보호속성 분석 및 3-Tier 추천사유 품질 검증을 수행합니다.
+
+에이전트 설정: `configs/financial/agent.yaml`
+상세 설계: `docs/design/11_ops_audit_agent.md`
+
 ---
 
 ## Project Structure Overview

@@ -65,6 +65,12 @@ Store (RAG)        Reason Orchestrator
 │ retrieval    │  │ DNA modifier │
 └──────────────┘  │ Constraints  │
                   └──────────────┘
+
+비동기 감시 계층 (Async Monitoring Layer) — 순차 스테이지와 무관하게 파이프라인 전체를 병렬 관측
+┌─────────────────────────────────────────────────────────────────────┐
+│  ├── OpsAgent    — 파이프라인 성능/안정성/비용 진단 (7 체크포인트)     │
+│  └── AuditAgent  — 규제 준수/공정성/추천사유 품질 감사 (5 관점)        │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Stage별 상세
@@ -122,6 +128,7 @@ Great Expectations (로컬)              CloudWatch + SageMaker Monitor
 | **데이터 검증** | Great Expectations (로컬) | SageMaker Processing + GX | 동일 로직, 실행 환경만 변경 |
 | **감사/리니지** | 커스텀 audit_logger + DVC | CloudTrail + S3 버전관리 + SageMaker Lineage | AWS 네이티브 통합 |
 | **모니터링** | 커스텀 drift_monitor | SageMaker Model Monitor + CloudWatch | 관리형 서비스, 알림 자동화 |
+| **감시 에이전트** | 룰 엔진 전용 (결정론적), LLM 없음 | 룰 엔진 + Bedrock Sonnet 다이얼로그 + 3-에이전트 합의 + Solar 추천사유 | LLM 기반 자동 진단·규제 감사 |
 | **암호화** | encryption_config.yaml 별도 | `core/security/` 통합 파이프라인 (SHA256 + INT32) | Stage 3에서 자동 처리 |
 
 ---
@@ -291,6 +298,15 @@ audit/
 ├── leakage/         ← LeakageValidator 결과
 └── fidelity/        ← 증류 fidelity 검증
 ```
+
+위 아티팩트들은 두 자율 에이전트에 의해 실시간으로 해석된다.
+
+- **OpsAgent**: Collect → Diagnose → Report (finding + cause + action) 3단계 루프로 파이프라인 성능·안정성·비용을 7개 체크포인트에서 진단한다.
+- **AuditAgent**: 공정성(fairness), 추천사유 품질(reason quality), 규제 준수(regulatory compliance) 등 5개 관점에서 감사 아티팩트를 검토한다.
+- **3-에이전트 합의 (Sonnet×3)**: 환각(hallucination) 완화를 위해 동일 진단을 독립적으로 3회 실행 후 다수결로 결론을 확정한다.
+- **DiagnosticCaseStore (LanceDB)**: 과거 진단 사례를 벡터 DB에 누적하여 유사 장애 패턴의 자동 검색 및 재사용을 지원한다.
+
+→ 상세 설계: `docs/design/11_ops_audit_agent.md`
 
 ### Analysis Artifacts
 ```

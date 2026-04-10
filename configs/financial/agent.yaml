@@ -1,0 +1,49 @@
+# Agent Configuration (AWS)
+# Ops Agent:   operational health checks at pipeline checkpoints (CP1-CP7)
+# Audit Agent: compliance, fairness, XAI, regulatory viewpoints (AV1-AV5)
+# Consensus:   multi-agent voting for ambiguous/high-stakes judgments
+
+agent:
+  ops:
+    checkpoints: [CP1, CP2, CP3, CP4, CP5, CP6, CP7]
+    schedule:
+      CP1: event  # on ingestion complete
+      CP2: event  # on Phase 0 complete
+      CP3: event  # on training complete
+      CP4: event  # on distillation complete
+      CP5: 5min   # periodic health check
+      CP6: 1h     # hourly aggregation
+      CP7: daily  # daily A/B check
+
+  audit:
+    viewpoints: [AV1, AV2, AV3, AV4, AV5]
+    schedule:
+      AV1: daily
+      AV2: daily
+      AV3: mixed  # Tier1 realtime, Tier2 daily, Tier3 monthly
+      AV4: weekly
+      AV5: on_change
+
+  consensus:
+    model: sonnet
+    agents: 3
+    parallel: true
+    apply_to:
+      - checklist_warn_fail  # WARN/FAIL item interpretation
+      - impact_review        # change impact assessment
+      - regulatory_judgment  # regulatory compliance judgment
+    skip_for:
+      - casual_dialog        # daily Q&A with operator
+      - case_search          # deterministic search results
+
+  models:
+    reason_generation: solar_pro  # Upstage Solar Pro for Korean L2a
+    reason_critique: solar_pro    # same model for self-critique
+    factuality_check: haiku       # Claude Haiku for score judgment
+    agent_dialog: sonnet          # Claude Sonnet for interpretation
+    agent_consensus: sonnet       # Claude Sonnet x 3 for voting
+    deep_audit: opus              # Claude Opus for quarterly review
+    embeddings: titan_v2          # Amazon Titan Embeddings V2
+
+  checklist_path: configs/financial/checklist.yaml
+  tools_path: configs/financial/agent_tools.yaml

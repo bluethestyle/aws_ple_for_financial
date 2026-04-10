@@ -347,3 +347,14 @@ monitoring:
 | PII 처리 | encryption_config.yaml 별도 | 스키마 내 pii 선언 → 자동 | 누락 방지 |
 | 비용 모니터링 | 없음 | CloudWatch + Budgets | 비용 폭탄 방지 |
 | DAG 의존성 | ExternalTaskSensor (일부 오류) | Step Functions 내장 흐름 | 의존성 명시적 |
+
+---
+
+### 운영/감사 에이전트 연계
+
+파이프라인 오케스트레이션 완료 후, 2개의 자율 진단 에이전트가 비동기로 실행된다:
+- **OpsAgent**: 파이프라인 성능/안정성/비용 진단 (7개 체크포인트)
+- **AuditAgent**: 규제 준수/공정성/추천사유 품질 감사 (5개 관점)
+
+`_PipelineState.mark_complete()` 콜백을 통해 각 스테이지 완료 시 에이전트에 이벤트가 전달된다.
+상세 설계: `docs/design/11_ops_audit_agent.md`

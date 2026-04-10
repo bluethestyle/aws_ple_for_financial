@@ -171,6 +171,17 @@ class RecommendationPipeline:
         if self.enable_reverse_mapping:
             self.reverse_mapper = ReverseMapper(config)
 
+        # Wire ReverseMapper into InterpretationRegistry as Level RM fallback.
+        # Only wired when both components are present and registry was injected
+        # without a pre-existing reverse_mapper.
+        if self.interpretation_registry is not None and self.reverse_mapper is not None:
+            if self.interpretation_registry._reverse_mapper is None:
+                self.interpretation_registry._reverse_mapper = self.reverse_mapper
+                logger.debug(
+                    "RecommendationPipeline: wired ReverseMapper into "
+                    "InterpretationRegistry as Level RM fallback",
+                )
+
         # ---- Self-checker ----
         self.enable_self_check: bool = pipe_cfg.get("enable_self_check", True)
         self.self_checker: Optional[SelfChecker] = None
@@ -201,6 +212,7 @@ class RecommendationPipeline:
                 llm_provider=llm_provider,
                 self_checker=self.self_checker,
                 audit_store=audit_store,
+                interpretation_registry=self.interpretation_registry,
             )
 
         logger.info(

@@ -1,0 +1,569 @@
+# Pipeline Inspection Checklist
+# 48 items across 6 pipeline parts (P1-P6)
+# Each item maps to a tool in ToolRegistry and a threshold for judgment
+#
+# agent: "ops"   — operational health checks (pipeline correctness, data quality, model performance)
+# agent: "audit" — compliance, fairness, explainability, regulatory checks
+#
+# verdict_logic (informational): describes the judgment rule in plain text
+# threshold:
+#   field       — key to extract from tool result dict
+#   warn/fail   — upper bound (WARN/FAIL when value >= threshold)
+#   warn_below/fail_below — lower bound (WARN/FAIL when value < threshold)
+#   expect      — exact match (FAIL when value != expected)
+
+checklist:
+
+  # =========================================================
+  # P1. Ingestion — 7 items
+  # =========================================================
+
+  - item_id: "1.1"
+    pipeline_part: P1
+    agent: ops
+    description: "도메인별 row count 변동률 ±20% 이내"
+    tool_name: read_ingestion_manifest
+    tool_params: {}
+    threshold: {field: "row_count_delta_pct", warn: 0.15, fail: 0.20}
+    verdict_logic: "abs(current_rows - prev_rows) / prev_rows < 0.20"
+    enabled: true
+
+  - item_id: "1.2"
+    pipeline_part: P1
+    agent: ops
+    description: "필수 컬럼 누락 없음 (schema contract)"
+    tool_name: read_ingestion_manifest
+    tool_params: {}
+    threshold: {field: "missing_required_cols", fail: 1}
+    verdict_logic: "missing_required_cols == 0"
+    enabled: true
+
+  - item_id: "1.3"
+    pipeline_part: P1
+    agent: ops
+    description: "중복 row 비율 1% 이하"
+    tool_name: evaluate_data_quality
+    tool_params: {check: "duplicates"}
+    threshold: {field: "duplicate_rate", warn: 0.005, fail: 0.01}
+    verdict_logic: "duplicate_rate < 0.01"
+    enabled: true
+
+  - item_id: "1.4"
+    pipeline_part: P1
+    agent: ops
+    description: "NaN 비율 전체 5% 이하, 레이블 컬럼 0%"
+    tool_name: evaluate_data_quality
+    tool_params: {check: "nulls"}
+    threshold: {field: "overall_null_rate", warn: 0.03, fail: 0.05}
+    verdict_logic: "overall_null_rate < 0.05 AND label_null_rate == 0"
+    enabled: true
+
+  - item_id: "1.5"
+    pipeline_part: P1
+    agent: ops
+    description: "날짜 범위 이상치 없음 (미래 날짜, 1900년 이전)"
+    tool_name: evaluate_data_quality
+    tool_params: {check: "date_range"}
+    threshold: {field: "date_anomaly_count", fail: 1}
+    verdict_logic: "date_anomaly_count == 0"
+    enabled: true
+
+  - item_id: "1.6"
+    pipeline_part: P1
+    agent: ops
+    description: "Parquet 파일 무결성 (checksum 일치)"
+    tool_name: read_ingestion_manifest
+    tool_params: {check: "checksum"}
+    threshold: {field: "checksum_passed", expect: true}
+    verdict_logic: "checksum_passed == true"
+    enabled: true
+
+  - item_id: "1.7"
+    pipeline_part: P1
+    agent: ops
+    description: "S3 ingestion 완료 이벤트 수신 여부"
+    tool_name: read_pipeline_state
+    tool_params: {phase: "ingestion", event: "complete"}
+    threshold: {field: "event_received", expect: true}
+    verdict_logic: "event_received == true"
+    enabled: true
+
+  # =========================================================
+  # P2. Feature Engineering — 9 items
+  # =========================================================
+
+  - item_id: "2.1"
+    pipeline_part: P2
+    agent: ops
+    description: "생성된 피처 컬럼 수가 스키마 기대값 ±5% 이내"
+    tool_name: read_feature_stats
+    tool_params: {}
+    threshold: {field: "feature_count_delta_pct", warn: 0.03, fail: 0.05}
+    verdict_logic: "abs(actual_cols - expected_cols) / expected_cols < 0.05"
+    enabled: true
+
+  - item_id: "2.2"
+    pipeline_part: P2
+    agent: ops
+    description: "Zero-variance 컬럼 없음"
+    tool_name: read_feature_stats
+    tool_params: {}
+    threshold: {field: "zero_variance_count", fail: 1}
+    verdict_logic: "zero_variance_count == 0"
+    enabled: true
+
+  - item_id: "2.3"
+    pipeline_part: P2
+    agent: ops
+    description: "피처 NaN 비율 전체 1% 이하 (생성 후)"
+    tool_name: read_feature_stats
+    tool_params: {}
+    threshold: {field: "post_gen_null_rate", warn: 0.005, fail: 0.01}
+    verdict_logic: "post_gen_null_rate < 0.01"
+    enabled: true
+
+  - item_id: "2.4"
+    pipeline_part: P2
+    agent: ops
+    description: "GMM 합성 피처 분포 검증 (KL divergence < 0.3)"
+    tool_name: read_feature_stats
+    tool_params: {generator: "gmm"}
+    threshold: {field: "kl_divergence_max", warn: 0.2, fail: 0.3}
+    verdict_logic: "gmm_kl_divergence < 0.3"
+    enabled: true
+
+  - item_id: "2.5"
+    pipeline_part: P2
+    agent: ops
+    description: "시계열 피처 lag 경계 누수 없음"
+    tool_name: read_leakage_report
+    tool_params: {check: "temporal_lag"}
+    threshold: {field: "lag_leakage_detected", expect: false}
+    verdict_logic: "lag_leakage_detected == false"
+    enabled: true
+
+  - item_id: "2.6"
+    pipeline_part: P2
+    agent: ops
+    description: "Scaler가 TRAIN split에서만 fit되었는지 검증"
+    tool_name: read_leakage_report
+    tool_params: {check: "scaler_fit"}
+    threshold: {field: "scaler_leakage_detected", expect: false}
+    verdict_logic: "scaler fitted on train split only"
+    enabled: true
+
+  - item_id: "2.7"
+    pipeline_part: P2
+    agent: ops
+    description: "멱법칙 피처 log1p 변환 적용 여부 (skew > 2인 컬럼)"
+    tool_name: read_feature_stats
+    tool_params: {check: "power_law_transform"}
+    threshold: {field: "untransformed_skewed_cols", fail: 1}
+    verdict_logic: "all high-skew cols have log1p copy"
+    enabled: true
+
+  - item_id: "2.8"
+    pipeline_part: P2
+    agent: ops
+    description: "피처 그룹별 컬럼 수 스키마 계약 일치"
+    tool_name: read_feature_stats
+    tool_params: {check: "group_schema"}
+    threshold: {field: "group_schema_violations", fail: 1}
+    verdict_logic: "group_schema_violations == 0"
+    enabled: true
+
+  - item_id: "2.9"
+    pipeline_part: P2
+    agent: ops
+    description: "Phase 0 텐서 저장 완료 (feature_schema.json 존재)"
+    tool_name: read_pipeline_state
+    tool_params: {phase: "phase0", artifact: "feature_schema"}
+    threshold: {field: "artifact_exists", expect: true}
+    verdict_logic: "feature_schema.json present in S3"
+    enabled: true
+
+  # =========================================================
+  # P3. Training — 9 items
+  # =========================================================
+
+  - item_id: "3.1"
+    pipeline_part: P3
+    agent: ops
+    description: "레이블 분포 positive rate 0.5%–50% 범위"
+    tool_name: read_feature_stats
+    tool_params: {check: "label_distribution"}
+    threshold: {field: "positive_rate_out_of_range", expect: false}
+    verdict_logic: "0.005 <= positive_rate <= 0.50"
+    enabled: true
+
+  - item_id: "3.2"
+    pipeline_part: P3
+    agent: ops
+    description: "학습 loss 수렴 (마지막 10 epoch delta < 1%)"
+    tool_name: read_experiment_metrics
+    tool_params: {metric: "train_loss_delta_last10ep"}
+    threshold: {field: "train_loss_delta_last10ep", warn: 0.005, fail: 0.01}
+    verdict_logic: "loss_delta_last10 < 0.01"
+    enabled: true
+
+  - item_id: "3.3"
+    pipeline_part: P3
+    agent: ops
+    description: "Val AUC ≥ 0.70 (최소 성능 기준)"
+    tool_name: read_experiment_metrics
+    tool_params: {metric: "val_auc"}
+    threshold: {field: "val_auc", fail_below: 0.70, warn_below: 0.75}
+    verdict_logic: "val_auc >= 0.70"
+    enabled: true
+
+  - item_id: "3.4"
+    pipeline_part: P3
+    agent: ops
+    description: "NaN/Inf loss 발생 없음"
+    tool_name: read_experiment_metrics
+    tool_params: {metric: "nan_loss_count"}
+    threshold: {field: "nan_loss_count", fail: 1}
+    verdict_logic: "nan_loss_count == 0"
+    enabled: true
+
+  - item_id: "3.5"
+    pipeline_part: P3
+    agent: ops
+    description: "Gradient norm 폭발 없음 (clip 임계값 10배 초과 경고 0건)"
+    tool_name: read_experiment_metrics
+    tool_params: {metric: "grad_explosion_warnings"}
+    threshold: {field: "grad_explosion_warnings", warn: 1, fail: 5}
+    verdict_logic: "grad_explosion_warnings == 0"
+    enabled: true
+
+  - item_id: "3.6"
+    pipeline_part: P3
+    agent: ops
+    description: "GPU 메모리 OOM 없이 학습 완료"
+    tool_name: query_cloudwatch_metrics
+    tool_params: {metric: "gpu_oom_count", namespace: "SageMaker/Training"}
+    threshold: {field: "gpu_oom_count", fail: 1}
+    verdict_logic: "gpu_oom_count == 0"
+    enabled: true
+
+  - item_id: "3.7"
+    pipeline_part: P3
+    agent: ops
+    description: "Spot 인스턴스 중단 재개 성공 여부"
+    tool_name: read_pipeline_state
+    tool_params: {phase: "training", check: "spot_recovery"}
+    threshold: {field: "spot_unrecovered_count", fail: 1}
+    verdict_logic: "spot interruptions fully recovered"
+    enabled: true
+
+  - item_id: "3.8"
+    pipeline_part: P3
+    agent: ops
+    description: "Task별 loss 균형 (최대/최소 ratio < 10x)"
+    tool_name: read_experiment_metrics
+    tool_params: {metric: "task_loss_ratio"}
+    threshold: {field: "task_loss_ratio", warn: 5.0, fail: 10.0}
+    verdict_logic: "max_task_loss / min_task_loss < 10"
+    enabled: true
+
+  - item_id: "3.9"
+    pipeline_part: P3
+    agent: ops
+    description: "LeakageValidator 학습 전 호출 확인"
+    tool_name: read_leakage_report
+    tool_params: {check: "validator_called"}
+    threshold: {field: "leakage_validator_called", expect: true}
+    verdict_logic: "LeakageValidator.validate() called before training"
+    enabled: true
+
+  # =========================================================
+  # P4. Distillation — 10 items
+  # =========================================================
+
+  - item_id: "4.1"
+    pipeline_part: P4
+    agent: ops
+    description: "Teacher → Student KL divergence < 0.1 (소프트 레이블 충실도)"
+    tool_name: read_distillation_fidelity
+    tool_params: {metric: "kl_divergence"}
+    threshold: {field: "kl_divergence_mean", warn: 0.07, fail: 0.10}
+    verdict_logic: "mean KL(teacher || student) < 0.10"
+    enabled: true
+
+  - item_id: "4.2"
+    pipeline_part: P4
+    agent: ops
+    description: "Student AUC ≥ Teacher AUC × 0.97 (성능 저하 3% 이내)"
+    tool_name: read_distillation_fidelity
+    tool_params: {metric: "auc_retention"}
+    threshold: {field: "auc_retention_ratio", fail_below: 0.97, warn_below: 0.98}
+    verdict_logic: "student_auc / teacher_auc >= 0.97"
+    enabled: true
+
+  - item_id: "4.3"
+    pipeline_part: P4
+    agent: ops
+    description: "IG 기반 피처 선택 — 선택된 피처 수 스키마 범위 내"
+    tool_name: read_distillation_fidelity
+    tool_params: {metric: "selected_feature_count"}
+    threshold: {field: "feature_count_out_of_range", expect: false}
+    verdict_logic: "min_features <= selected_count <= max_features"
+    enabled: true
+
+  - item_id: "4.4"
+    pipeline_part: P4
+    agent: ops
+    description: "Student 모델 크기 Teacher 대비 50% 이하"
+    tool_name: read_distillation_fidelity
+    tool_params: {metric: "model_size_ratio"}
+    threshold: {field: "model_size_ratio", warn: 0.45, fail: 0.50}
+    verdict_logic: "student_params / teacher_params <= 0.50"
+    enabled: true
+
+  - item_id: "4.5"
+    pipeline_part: P4
+    agent: ops
+    description: "증류 온도(temperature) 설정값 config와 일치"
+    tool_name: read_distillation_fidelity
+    tool_params: {check: "temperature_config"}
+    threshold: {field: "temperature_mismatch", expect: false}
+    verdict_logic: "runtime temperature == config temperature"
+    enabled: true
+
+  - item_id: "4.6"
+    pipeline_part: P4
+    agent: ops
+    description: "Task별 증류 loss 균형 (최대/최소 ratio < 5x)"
+    tool_name: read_distillation_fidelity
+    tool_params: {metric: "task_distill_loss_ratio"}
+    threshold: {field: "task_distill_loss_ratio", warn: 3.0, fail: 5.0}
+    verdict_logic: "max_task_kl / min_task_kl < 5"
+    enabled: true
+
+  - item_id: "4.7"
+    pipeline_part: P4
+    agent: ops
+    description: "피처 그룹별 IG 점수 단조성 검증 (상위 그룹이 하위 그룹보다 높음)"
+    tool_name: read_distillation_fidelity
+    tool_params: {metric: "ig_monotonicity"}
+    threshold: {field: "ig_monotonicity_violation", expect: false}
+    verdict_logic: "top-ranked feature groups have higher IG"
+    enabled: true
+
+  - item_id: "4.8"
+    pipeline_part: P4
+    agent: ops
+    description: "증류 완료 아티팩트 S3 저장 확인 (student_model.pt)"
+    tool_name: read_pipeline_state
+    tool_params: {phase: "distillation", artifact: "student_model"}
+    threshold: {field: "artifact_exists", expect: true}
+    verdict_logic: "student_model.pt present in S3"
+    enabled: true
+
+  - item_id: "4.9"
+    pipeline_part: P4
+    agent: ops
+    description: "Calibration 곡선 Student vs Teacher 일치 (ECE < 0.05)"
+    tool_name: read_distillation_fidelity
+    tool_params: {metric: "ece"}
+    threshold: {field: "ece_student", warn: 0.03, fail: 0.05}
+    verdict_logic: "expected_calibration_error < 0.05"
+    enabled: true
+
+  - item_id: "4.10"
+    pipeline_part: P4
+    agent: ops
+    description: "증류 후 추론 지연시간 Teacher 대비 ≤ 60%"
+    tool_name: read_distillation_fidelity
+    tool_params: {metric: "latency_ratio"}
+    threshold: {field: "inference_latency_ratio", warn: 0.55, fail: 0.60}
+    verdict_logic: "student_latency / teacher_latency <= 0.60"
+    enabled: true
+
+  # =========================================================
+  # P5. Serving / Monitoring — 10 items
+  # =========================================================
+
+  - item_id: "5.1"
+    pipeline_part: P5
+    agent: ops
+    description: "실시간 추론 P99 지연시간 < 200ms"
+    tool_name: query_cloudwatch_metrics
+    tool_params: {metric: "p99_latency_ms", namespace: "AIOps/Serving"}
+    threshold: {field: "p99_latency_ms", warn: 150, fail: 200}
+    verdict_logic: "p99_latency < 200ms"
+    enabled: true
+
+  - item_id: "5.2"
+    pipeline_part: P5
+    agent: ops
+    description: "추론 에러율 < 0.1%"
+    tool_name: query_cloudwatch_metrics
+    tool_params: {metric: "error_rate", namespace: "AIOps/Serving"}
+    threshold: {field: "error_rate", warn: 0.005, fail: 0.01}
+    verdict_logic: "error_rate < 0.001"
+    enabled: true
+
+  - item_id: "5.3"
+    pipeline_part: P5
+    agent: ops
+    description: "피처 드리프트 PSI < 0.25 (주요 피처 전체)"
+    tool_name: detect_drift
+    tool_params: {method: "psi", scope: "all_features"}
+    threshold: {field: "psi_max", warn: 0.10, fail: 0.25}
+    verdict_logic: "max PSI across all features < 0.25"
+    enabled: true
+
+  - item_id: "5.4"
+    pipeline_part: P5
+    agent: ops
+    description: "점수 분포 드리프트 KS p-value > 0.05"
+    tool_name: detect_drift
+    tool_params: {method: "ks_test", target: "score_distribution"}
+    threshold: {field: "ks_pvalue", fail_below: 0.01, warn_below: 0.05}
+    verdict_logic: "KS p-value > 0.05 (no significant distribution shift)"
+    enabled: true
+
+  - item_id: "5.5"
+    pipeline_part: P5
+    agent: ops
+    description: "피처 스토어 최신 스냅샷 24시간 이내"
+    tool_name: check_feature_store_health
+    tool_params: {check: "staleness_hours"}
+    threshold: {field: "staleness_hours", warn: 20, fail: 24}
+    verdict_logic: "feature_store_age < 24h"
+    enabled: true
+
+  - item_id: "5.6"
+    pipeline_part: P5
+    agent: ops
+    description: "피처 스토어 조회 실패율 < 0.01%"
+    tool_name: check_feature_store_health
+    tool_params: {check: "read_error_rate"}
+    threshold: {field: "read_error_rate", warn: 0.00005, fail: 0.0001}
+    verdict_logic: "feature_store_read_errors < 0.01%"
+    enabled: true
+
+  - item_id: "5.7"
+    pipeline_part: P5
+    agent: ops
+    description: "Herding 현상 탐지 (상위 10% 고객 점수 집중도 < 40%)"
+    tool_name: detect_herding
+    tool_params: {threshold: 0.40}
+    threshold: {field: "top10pct_score_concentration", warn: 0.35, fail: 0.40}
+    verdict_logic: "herding_score_concentration < 0.40"
+    enabled: true
+
+  - item_id: "5.8"
+    pipeline_part: P5
+    agent: ops
+    description: "NBA 추천 다양성 지수 > 0.3 (Shannon entropy)"
+    tool_name: query_cloudwatch_metrics
+    tool_params: {metric: "nba_diversity_entropy", namespace: "AIOps/Serving"}
+    threshold: {field: "nba_diversity_entropy", fail_below: 0.3, warn_below: 0.4}
+    verdict_logic: "recommendation_diversity_entropy > 0.3"
+    enabled: true
+
+  - item_id: "5.9"
+    pipeline_part: P5
+    agent: ops
+    description: "A/B 실험 SRM 검증 (traffic split 오차 < 1%)"
+    tool_name: read_experiment_metrics
+    tool_params: {check: "srm_test"}
+    threshold: {field: "srm_violation", expect: false}
+    verdict_logic: "no sample ratio mismatch in A/B split"
+    enabled: true
+
+  - item_id: "5.10"
+    pipeline_part: P5
+    agent: ops
+    description: "모델 가중치 파일 S3 체크섬 일치 (배포 무결성)"
+    tool_name: read_pipeline_state
+    tool_params: {phase: "serving", check: "model_checksum"}
+    threshold: {field: "checksum_passed", expect: true}
+    verdict_logic: "deployed model checksum matches S3 artifact"
+    enabled: true
+
+  # =========================================================
+  # P6. Audit / Compliance — 8 items (agent: audit)
+  # =========================================================
+
+  - item_id: "6.1"
+    pipeline_part: P6
+    agent: audit
+    description: "공정성 — 보호 속성별 AUC gap < 0.05 (성별, 연령대)"
+    tool_name: evaluate_fairness
+    tool_params: {protected_attrs: ["gender", "age_group"], metric: "auc_gap"}
+    threshold: {field: "max_auc_gap", warn: 0.03, fail: 0.05}
+    verdict_logic: "max AUC gap across protected groups < 0.05"
+    enabled: true
+
+  - item_id: "6.2"
+    pipeline_part: P6
+    agent: audit
+    description: "EU AI Act — 고위험 AI 시스템 문서화 완료"
+    tool_name: evaluate_eu_ai_act
+    tool_params: {check: "documentation"}
+    threshold: {field: "documentation_completeness", fail_below: 1.0, warn_below: 1.0}
+    verdict_logic: "all required EU AI Act docs present"
+    enabled: true
+
+  - item_id: "6.3"
+    pipeline_part: P6
+    agent: audit
+    description: "FRIA — 기본권 영향 평가 완료 (분기 1회 이상)"
+    tool_name: evaluate_fria
+    tool_params: {}
+    threshold: {field: "fria_days_since_last", warn: 90, fail: 120}
+    verdict_logic: "FRIA completed within last 90 days"
+    enabled: true
+
+  - item_id: "6.4"
+    pipeline_part: P6
+    agent: audit
+    description: "설명 품질 — L2a 이유 설명 BLEU > 0.4 (한국어)"
+    tool_name: evaluate_xai_quality
+    tool_params: {metric: "bleu_score", lang: "ko"}
+    threshold: {field: "bleu_score", fail_below: 0.35, warn_below: 0.40}
+    verdict_logic: "explanation BLEU score > 0.40"
+    enabled: true
+
+  - item_id: "6.5"
+    pipeline_part: P6
+    agent: audit
+    description: "이유 설명 Faithfulness — top-3 피처가 SHAP 상위 5개와 겹침"
+    tool_name: check_reason_quality
+    tool_params: {check: "faithfulness", top_k: 3, shap_top_k: 5}
+    threshold: {field: "faithfulness_overlap_rate", fail_below: 0.60, warn_below: 0.80}
+    verdict_logic: "reason top-3 overlaps SHAP top-5 at >= 60%"
+    enabled: true
+
+  - item_id: "6.6"
+    pipeline_part: P6
+    agent: audit
+    description: "규제 준수 검사 — GDPR 데이터 보유 기간 정책 위반 없음"
+    tool_name: run_regulatory_checks
+    tool_params: {regulation: "gdpr", check: "retention_policy"}
+    threshold: {field: "gdpr_violation_count", fail: 1}
+    verdict_logic: "no GDPR retention violations"
+    enabled: true
+
+  - item_id: "6.7"
+    pipeline_part: P6
+    agent: audit
+    description: "감사 체인 무결성 — audit_archive 해시 체인 검증"
+    tool_name: verify_audit_chain
+    tool_params: {}
+    threshold: {field: "chain_integrity_passed", expect: true}
+    verdict_logic: "audit log hash chain unbroken"
+    enabled: true
+
+  - item_id: "6.8"
+    pipeline_part: P6
+    agent: audit
+    description: "모델 카드 최신화 — 마지막 업데이트 30일 이내"
+    tool_name: read_audit_archive
+    tool_params: {artifact: "model_card", check: "staleness_days"}
+    threshold: {field: "model_card_days_since_update", warn: 21, fail: 30}
+    verdict_logic: "model card updated within last 30 days"
+    enabled: true
