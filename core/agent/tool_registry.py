@@ -73,9 +73,15 @@ class ToolRegistry:
         self,
         config_path: Optional[str] = None,
         approval_callback: Optional[Callable[[str, Dict], bool]] = None,
+        tracer: Optional[Any] = None,           # ToolTracer
+        budget_tracker: Optional[Any] = None,   # BudgetTracker
+        agent_id: str = "unknown",
     ) -> None:
         self._tools: Dict[str, ToolDefinition] = {}
         self._approval_callback = approval_callback
+        self._tracer = tracer
+        self._budget_tracker = budget_tracker
+        self._agent_id = agent_id
 
         if config_path and Path(config_path).exists():
             self._load_from_yaml(config_path)
@@ -134,6 +140,13 @@ class ToolRegistry:
             PermissionError: Action tool without approval.
             RuntimeError: Tool has no callable registered.
         """
+        # Budget pre-check
+        if self._budget_tracker:
+            status = self._budget_tracker.check_budget(self._agent_id)
+            if status.status == "HARD_STOP":
+                logger.warning("Budget hard stop: tool '%s' blocked for agent '%s'", name, self._agent_id)
+                return {"status": "budget_exceeded", "agent": self._agent_id, "tool": name}
+
         if name not in self._tools:
             raise KeyError(f"Tool '{name}' not found in registry")
 
@@ -151,12 +164,16 @@ class ToolRegistry:
                 logger.warning("Action tool '%s' denied by approval callback", name)
                 return {"status": "denied", "tool": name}
 
-        try:
-            result = tool.func(**(params or {}))
-            return result
-        except Exception as e:
-            logger.error("Tool '%s' execution failed: %s", name, e, exc_info=True)
-            raise
+        # Execute: via tracer if available, else direct
+        if self._tracer:
+            return self._tracer.trace(name, params, tool.func)
+        else:
+            try:
+                result = tool.func(**(params or {}))
+                return result
+            except Exception as e:
+                logger.error("Tool '%s' execution failed: %s", name, e, exc_info=True)
+                raise
 
     def get_tools(self, agent: Optional[str] = None, category: Optional[str] = None) -> List[ToolDefinition]:
         """Get tool definitions filtered by agent and/or category."""

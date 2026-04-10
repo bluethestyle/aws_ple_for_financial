@@ -47,3 +47,53 @@ agent:
 
   checklist_path: configs/financial/checklist.yaml
   tools_path: configs/financial/agent_tools.yaml
+
+# --- Heartbeat Configuration (PaperClip-inspired) ---
+heartbeat:
+  enabled: true
+  state_path: outputs/heartbeat_state.json
+  intervals:
+    CP5: 5min
+    CP6: 1h
+    CP7: daily
+    AV1: daily
+    AV2: daily
+    AV3: 1h
+    AV4: weekly
+    AV5: event
+  checkpoint_parts:
+    CP1: [P1]
+    CP2: [P2]
+    CP3: [P3]
+    CP4: [P3]
+    CP5: [P4]
+    CP6: [P5]
+    CP7: [P5]
+    AV1: [P3, P4]
+    AV2: [P3, P4]
+    AV3: [P4, P5]
+    AV4: [P6]
+    AV5: [P2, P3]
+
+# --- Budget Cap (PaperClip "prepaid debit card" model) ---
+budget:
+  enabled: true
+  storage_path: outputs/budget_state.json
+  ops:
+    monthly_token_limit: 500000
+    soft_warning_pct: 0.80
+    hard_stop_pct: 1.00
+  audit:
+    monthly_token_limit: 800000
+    soft_warning_pct: 0.80
+    hard_stop_pct: 1.00
+  consensus:
+    per_session_limit: 10000
+    daily_limit: 50000
+
+# --- Tool Trace (PaperClip "full trace" pattern) ---
+tracer:
+  enabled: true
+  trace_dir: outputs/traces
+  ring_buffer_size: 1000
+  flush_interval_calls: 50

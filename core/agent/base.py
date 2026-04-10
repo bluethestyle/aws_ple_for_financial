@@ -197,6 +197,40 @@ class BaseAgent(ABC):
 
         return report
 
+    def heartbeat_run(
+        self,
+        parts: Optional[List[str]] = None,
+        budget_tracker: Optional[Any] = None,
+    ) -> AgentReport:
+        """Heartbeat-aware run. If budget is HARD_STOP, runs in degraded mode.
+
+        When budget is OK, delegates to self.run(parts).
+        """
+        if budget_tracker is not None:
+            status = budget_tracker.check_budget(self.agent_type)
+            if status.status == "HARD_STOP":
+                logger.warning(
+                    "Agent %s running in degraded mode (budget hard stop)",
+                    self.agent_type,
+                )
+                return self._run_degraded(parts)
+        return self.run(parts)
+
+    def _run_degraded(self, parts: Optional[List[str]] = None) -> AgentReport:
+        """Rule-engine-only run. LLM tools return budget_exceeded."""
+        items = self._checklist
+        if parts:
+            items = [it for it in items if it.pipeline_part in parts]
+
+        results = []
+        for item in items:
+            result = self._evaluate_item(item)
+            results.append(result)
+
+        report = self._build_report(results)
+        report.metadata["degraded_mode"] = True
+        return self.post_process(report)
+
     def _evaluate_item(self, item: ChecklistItem) -> CheckResult:
         """Evaluate a single checklist item via tool call + threshold judgment."""
         if not item.tool_name:
