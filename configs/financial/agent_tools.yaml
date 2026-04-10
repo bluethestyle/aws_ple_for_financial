@@ -1,0 +1,1085 @@
+# Agent Tool Definitions
+# 38 tools: 29 Query + 9 Action
+# Loaded by ToolRegistry at startup
+#
+# category: "query"  — 읽기 전용, 승인 불필요
+# category: "action" — 쓰기/알림/아카이브, approval_callback 필요
+#
+# agents: ["ops"]          — OpsAgent 전용
+#         ["audit"]        — AuditAgent 전용
+#         ["ops", "audit"] — 양 에이전트 접근 가능
+#
+# parameters: JSON Schema (Bedrock converse API inputSchema.json 형식)
+# returns: 반환값 간단 설명
+
+tools:
+
+  # ===========================================================================
+  # Category 1: Infrastructure Query (10)
+  # ===========================================================================
+
+  - name: read_pipeline_state
+    description: "pipeline_state.json 읽기 — 스테이지별 완료 상태, 소요시간, artifact 메타데이터 반환"
+    category: query
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        output_dir:
+          type: string
+          description: "파이프라인 출력 디렉토리 (S3 prefix 또는 로컬 경로)"
+          default: "outputs"
+        phase:
+          type: string
+          description: "조회할 파이프라인 단계 (예: ingestion, phase0, training, distillation, serving)"
+          enum: [ingestion, phase0, training, distillation, serving]
+        artifact:
+          type: string
+          description: "특정 아티팩트 존재 여부 확인 (예: feature_schema, student_model)"
+        event:
+          type: string
+          description: "확인할 이벤트 유형 (예: complete, spot_recovery)"
+        check:
+          type: string
+          description: "세부 체크 항목 (예: spot_recovery, model_checksum)"
+      required: []
+    returns: "Dict — completed_stages: List[str], artifacts: Dict[str, str], start_time: str, event_received: bool, artifact_exists: bool, spot_unrecovered_count: int, checksum_passed: bool"
+
+  - name: read_feature_stats
+    description: "feature_stats.json 읽기 — zero-variance 컬럼 수, NaN 비율, 피처 컬럼 수, 그룹 스키마 검증 결과 반환"
+    category: query
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        output_dir:
+          type: string
+          description: "Phase 0 출력 디렉토리 (feature_stats.json 위치)"
+          default: "outputs"
+        generator:
+          type: string
+          description: "특정 generator 결과 필터링 (예: gmm, tda, seq)"
+        check:
+          type: string
+          description: "세부 체크 항목 (예: power_law_transform, group_schema, label_distribution)"
+      required: []
+    returns: "Dict — zero_variance_count: int, nan_ratio_max: float, total_features: int, feature_count_delta_pct: float, post_gen_null_rate: float, kl_divergence_max: float, untransformed_skewed_cols: int, group_schema_violations: int, positive_rate_out_of_range: bool"
+
+  - name: read_experiment_metrics
+    description: "실험 메트릭 파일 읽기 — 학습 loss 곡선, val AUC, gradient norm, NaN loss 발생 수, A/B SRM 검증 결과 반환"
+    category: query
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        output_dir:
+          type: string
+          description: "실험 출력 디렉토리 (eval_metrics.json 위치)"
+          default: "outputs"
+        metric:
+          type: string
+          description: "조회할 메트릭 이름 (예: val_auc, train_loss_delta_last10ep, nan_loss_count, grad_explosion_warnings, task_loss_ratio)"
+        run_id:
+          type: string
+          description: "특정 실험 run ID (미지정 시 최신 run)"
+        check:
+          type: string
+          description: "세부 체크 항목 (예: srm_test)"
+      required: []
+    returns: "Dict — final_loss: float, best_val_auc: float, epochs_completed: int, grad_norm_max: float, nan_loss_count: int, train_loss_delta_last10ep: float, task_loss_ratio: float, grad_explosion_warnings: int, srm_violation: bool"
+
+  - name: read_ingestion_manifest
+    description: "ingestion manifest 파일 읽기 — 도메인별 row count, 필수 컬럼 누락 여부, Parquet 체크섬, PII 암호화 완료 여부 반환"
+    category: query
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        manifest_path:
+          type: string
+          description: "manifest 파일 경로 (S3 URI 또는 로컬 경로)"
+        check:
+          type: string
+          description: "세부 체크 항목 (예: checksum, row_count, schema)"
+        domain:
+          type: string
+          description: "특정 도메인 필터 (미지정 시 전체 도메인 집계)"
+      required: []
+    returns: "Dict — total_domains: int, domains_passed: int, domains_failed: int, total_rows: int, row_count_delta_pct: float, missing_required_cols: int, checksum_passed: bool, total_pii_encrypted: int, total_duration_seconds: float"
+
+  - name: read_leakage_report
+    description: "LeakageValidator 보고서 읽기 — temporal lag 누수, scaler fit 위반, 레이블-시퀀스 겹침, validator 호출 여부 반환"
+    category: query
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        report_path:
+          type: string
+          description: "LeakageValidator 보고서 경로"
+        check:
+          type: string
+          description: "체크 항목: temporal_lag | scaler_fit | label_overlap | validator_called"
+          enum: [temporal_lag, scaler_fit, label_overlap, validator_called]
+      required: []
+    returns: "Dict — lag_leakage_detected: bool, scaler_leakage_detected: bool, label_overlap_detected: bool, leakage_validator_called: bool, violations: List[Dict]"
+
+  - name: read_distillation_fidelity
+    description: "증류 충실도 보고서 읽기 — KL divergence, AUC retention ratio, 모델 크기 비율, ECE, 추론 지연시간 비율, IG 단조성 검증 결과 반환"
+    category: query
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        report_path:
+          type: string
+          description: "distillation_fidelity.json 경로"
+        metric:
+          type: string
+          description: "조회할 메트릭 (예: kl_divergence, auc_retention, model_size_ratio, ece, latency_ratio, ig_monotonicity, task_distill_loss_ratio, selected_feature_count)"
+        check:
+          type: string
+          description: "세부 체크 항목 (예: temperature_config)"
+      required: []
+    returns: "Dict — kl_divergence_mean: float, auc_retention_ratio: float, model_size_ratio: float, ece_student: float, inference_latency_ratio: float, task_distill_loss_ratio: float, ig_monotonicity_violation: bool, temperature_mismatch: bool, feature_count_out_of_range: bool, task_fidelity: Dict, max_fidelity_gap: float"
+
+  - name: query_cloudwatch_metrics
+    description: "CloudWatch 메트릭 조회 — GPU OOM 횟수, P99 지연시간, 추론 에러율, NBA 다양성 엔트로피, A/B 실험 variant 메트릭 반환"
+    category: query
+    agents: [ops]
+    parameters:
+      type: object
+      properties:
+        metric:
+          type: string
+          description: "조회할 메트릭 이름 (예: gpu_oom_count, p99_latency_ms, error_rate, nba_diversity_entropy)"
+        namespace:
+          type: string
+          description: "CloudWatch 네임스페이스 (예: SageMaker/Training, AIOps/Serving)"
+        period_seconds:
+          type: integer
+          description: "집계 기간 (초, 기본값 300)"
+          default: 300
+        stat:
+          type: string
+          description: "통계 유형: Sum | Average | Maximum | Minimum | p99"
+          default: "Maximum"
+        start_time:
+          type: string
+          description: "조회 시작 시각 (ISO 8601, 미지정 시 최근 1시간)"
+        end_time:
+          type: string
+          description: "조회 종료 시각 (ISO 8601)"
+        dimensions:
+          type: object
+          description: "CloudWatch 차원 필터 (key-value 쌍)"
+          additionalProperties:
+            type: string
+      required: [metric, namespace]
+    returns: "Dict — metric: str, value: float, unit: str, timestamp: str, gpu_oom_count: int, p99_latency_ms: float, error_rate: float, nba_diversity_entropy: float, active_experiment: str, variant_metrics: Dict, significance_test: Dict"
+
+  - name: read_audit_archive
+    description: "감사 아카이브 읽기 — 거버넌스 보고서, 모델 카드, 규제 준수 기록, 추천 응답 지연시간 통계 반환"
+    category: query
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        archive_path:
+          type: string
+          description: "감사 아카이브 디렉토리 경로"
+        artifact:
+          type: string
+          description: "조회할 아티팩트 유형 (예: model_card, governance_report, compliance_record)"
+        check:
+          type: string
+          description: "세부 체크 항목 (예: staleness_days)"
+        start_date:
+          type: string
+          description: "조회 시작 날짜 (YYYY-MM-DD)"
+        end_date:
+          type: string
+          description: "조회 종료 날짜 (YYYY-MM-DD)"
+      required: []
+    returns: "Dict — model_card_days_since_update: int, p50_latency_ms: float, p95_latency_ms: float, filter_pass_rate: float, total_requests: int, archive_entries: List[Dict]"
+
+  - name: read_git_diff
+    description: "Git diff 읽기 — 최근 커밋 변경 파일 목록, 추가/삭제 라인 수, 변경된 config 파일 목록 반환"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        base_ref:
+          type: string
+          description: "비교 기준 ref (예: HEAD~1, main, commit hash)"
+          default: "HEAD~1"
+        head_ref:
+          type: string
+          description: "비교 대상 ref (기본값 HEAD)"
+          default: "HEAD"
+        path_filter:
+          type: string
+          description: "파일 경로 필터 (glob 패턴, 예: configs/**/*.yaml)"
+        stat_only:
+          type: boolean
+          description: "통계만 반환 (true) 또는 전체 diff 포함 (false)"
+          default: true
+      required: []
+    returns: "Dict — changed_files: List[str], added_lines: int, deleted_lines: int, config_changes: List[str], py_changes: List[str], has_breaking_change: bool"
+
+  - name: read_checklist_config
+    description: "checklist.yaml 읽기 — 파이프라인 단계별 체크 항목, 임계값, 활성화 여부 반환"
+    category: query
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        config_path:
+          type: string
+          description: "checklist.yaml 파일 경로"
+          default: "configs/financial/checklist.yaml"
+        pipeline_part:
+          type: string
+          description: "특정 파이프라인 파트 필터 (예: P1, P2, P3, P4, P5, P6)"
+          enum: [P1, P2, P3, P4, P5, P6]
+        agent:
+          type: string
+          description: "에이전트 필터 (ops 또는 audit)"
+          enum: [ops, audit]
+        enabled_only:
+          type: boolean
+          description: "활성화된 항목만 반환"
+          default: true
+      required: []
+    returns: "Dict — items: List[Dict], total_count: int, enabled_count: int, by_part: Dict[str, List[Dict]]"
+
+  # ===========================================================================
+  # Category 2: Monitoring Query (7)
+  # ===========================================================================
+
+  - name: detect_drift
+    description: "피처/점수 분포 드리프트 탐지 — PSI, KS 검정, JS divergence 중 선택한 방법으로 분포 이동 감지"
+    category: query
+    agents: [ops]
+    parameters:
+      type: object
+      properties:
+        method:
+          type: string
+          description: "드리프트 탐지 방법: psi | ks_test | js_divergence | wasserstein"
+          enum: [psi, ks_test, js_divergence, wasserstein]
+        scope:
+          type: string
+          description: "분석 범위: all_features | selected_features | score_distribution | label_distribution"
+          default: "all_features"
+        target:
+          type: string
+          description: "분석 대상 (method=ks_test 시 예: score_distribution)"
+        reference_date:
+          type: string
+          description: "기준 날짜 (YYYY-MM-DD, 미지정 시 30일 전)"
+        current_date:
+          type: string
+          description: "비교 날짜 (YYYY-MM-DD, 미지정 시 오늘)"
+        feature_names:
+          type: array
+          description: "분석할 피처 이름 목록 (미지정 시 전체)"
+          items:
+            type: string
+        threshold_warn:
+          type: number
+          description: "경고 임계값 (PSI 기본 0.08)"
+          default: 0.08
+        threshold_critical:
+          type: number
+          description: "위험 임계값 (PSI 기본 0.20)"
+          default: 0.20
+      required: [method]
+    returns: "Dict — psi_max: float, psi_per_feature: Dict[str, float], ks_pvalue: float, ks_statistic: float, drifted_features: List[str], drift_level: str"
+
+  - name: get_consecutive_drift_days
+    description: "연속 드리프트 일수 조회 — 특정 피처 또는 전체 피처의 PSI가 임계값을 초과한 연속 일수 반환"
+    category: query
+    agents: [ops]
+    parameters:
+      type: object
+      properties:
+        feature_name:
+          type: string
+          description: "대상 피처 이름 (미지정 시 any 피처 기준)"
+        threshold:
+          type: number
+          description: "드리프트 임계값 (기본값 0.08)"
+          default: 0.08
+        as_of_date:
+          type: string
+          description: "기준 날짜 (YYYY-MM-DD, 미지정 시 오늘)"
+        lookback_days:
+          type: integer
+          description: "최대 소급 일수"
+          default: 30
+      required: []
+    returns: "Dict — consecutive_drift_days: int, feature_name: str, first_drift_date: str, threshold_used: float, daily_psi: List[Dict]"
+
+  - name: evaluate_fairness
+    description: "공정성 평가 — 보호 속성별 Disparate Impact, Statistical Parity Difference, Equal Opportunity Difference, AUC gap 계산"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        protected_attrs:
+          type: array
+          description: "보호 속성 목록 (예: [gender, age_group, region_type, income_bracket, credit_grade])"
+          items:
+            type: string
+        metric:
+          type: string
+          description: "공정성 메트릭: auc_gap | di | spd | eod | all"
+          default: "all"
+        positive_label:
+          type: integer
+          description: "양성 레이블 값 (기본값 1)"
+          default: 1
+        prediction_col:
+          type: string
+          description: "예측 점수 컬럼명 (config에서 읽음)"
+        label_col:
+          type: string
+          description: "실제 레이블 컬럼명 (config에서 읽음)"
+        data_path:
+          type: string
+          description: "평가 데이터 경로 (S3 URI 또는 로컬 Parquet)"
+      required: [protected_attrs]
+    returns: "Dict — max_auc_gap: float, auc_gap_per_attr: Dict[str, float], di_per_attr: Dict[str, float], spd_per_attr: Dict[str, float], eod_per_attr: Dict[str, float], violations: List[Dict]"
+
+  - name: detect_herding
+    description: "허딩(herding) 현상 탐지 — 상위 N% 고객의 점수 집중도와 NBA 추천 다양성 지수(Shannon entropy) 계산"
+    category: query
+    agents: [ops]
+    parameters:
+      type: object
+      properties:
+        threshold:
+          type: number
+          description: "집중도 경보 임계값 (기본값 0.40 = 상위 10%가 전체 점수의 40% 차지)"
+          default: 0.40
+        top_pct:
+          type: number
+          description: "상위 N% 기준 (기본값 0.10 = 상위 10%)"
+          default: 0.10
+        score_col:
+          type: string
+          description: "점수 컬럼명 (config에서 읽음)"
+        data_path:
+          type: string
+          description: "추론 결과 데이터 경로"
+        as_of_date:
+          type: string
+          description: "분석 기준 날짜 (YYYY-MM-DD)"
+      required: []
+    returns: "Dict — top10pct_score_concentration: float, herding_detected: bool, score_entropy: float, score_gini: float, top_n_customers: int, threshold_used: float"
+
+  - name: detect_task_herding
+    description: "태스크별 허딩 탐지 — 멀티태스크 모델에서 특정 태스크 점수가 다른 태스크와 과도하게 상관된 허딩 패턴 감지"
+    category: query
+    agents: [ops]
+    parameters:
+      type: object
+      properties:
+        task_names:
+          type: array
+          description: "분석할 태스크 목록 (미지정 시 config의 모든 태스크)"
+          items:
+            type: string
+        correlation_threshold:
+          type: number
+          description: "태스크 간 상관계수 경보 임계값 (기본값 0.95)"
+          default: 0.95
+        score_data_path:
+          type: string
+          description: "태스크별 점수 데이터 경로"
+        as_of_date:
+          type: string
+          description: "분석 기준 날짜 (YYYY-MM-DD)"
+      required: []
+    returns: "Dict — task_correlations: Dict[str, float], herding_task_pairs: List[Dict], max_correlation: float, herding_detected: bool, entropy_per_task: Dict[str, float]"
+
+  - name: check_feature_store_health
+    description: "피처 스토어 헬스 체크 — 최신 스냅샷 신선도, 조회 실패율, 레코드 수, 백엔드 상태 반환"
+    category: query
+    agents: [ops]
+    parameters:
+      type: object
+      properties:
+        check:
+          type: string
+          description: "체크 항목: staleness_hours | read_error_rate | record_count | all"
+          default: "all"
+        feature_group:
+          type: string
+          description: "특정 피처 그룹 이름 (미지정 시 전체)"
+        sla_hours:
+          type: number
+          description: "신선도 SLA (시간 단위, 기본값 24)"
+          default: 24
+      required: []
+    returns: "Dict — healthy: bool, backend: str, record_count: int, staleness_hours: float, read_error_rate: float, last_snapshot_time: str, error: str"
+
+  - name: evaluate_data_quality
+    description: "데이터 품질 평가 — 중복 row 비율, NaN 비율, 날짜 범위 이상치, 레이블 컬럼 NaN 검사"
+    category: query
+    agents: [ops]
+    parameters:
+      type: object
+      properties:
+        check:
+          type: string
+          description: "체크 항목: duplicates | nulls | date_range | schema | all"
+          enum: [duplicates, nulls, date_range, schema, all]
+        data_path:
+          type: string
+          description: "검사할 데이터 경로 (S3 URI 또는 로컬 Parquet)"
+        label_cols:
+          type: array
+          description: "레이블 컬럼 목록 (NaN=0 검증 대상)"
+          items:
+            type: string
+        date_cols:
+          type: array
+          description: "날짜 컬럼 목록 (범위 이상치 검사 대상)"
+          items:
+            type: string
+        min_date:
+          type: string
+          description: "유효 날짜 하한 (YYYY-MM-DD, 기본값 1900-01-01)"
+          default: "1900-01-01"
+        max_date:
+          type: string
+          description: "유효 날짜 상한 (YYYY-MM-DD, 미지정 시 오늘)"
+      required: [check]
+    returns: "Dict — duplicate_rate: float, overall_null_rate: float, label_null_rate: float, date_anomaly_count: int, schema_violations: List[str], quality_score: float"
+
+  # ===========================================================================
+  # Category 3: Regulatory / Quality Query (10)
+  # ===========================================================================
+
+  - name: run_regulatory_checks
+    description: "규제 준수 검사 실행 — GDPR, FCRA, ECOA, 공정대출법 등 지정 규제 프레임워크의 위반 항목 감지"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        regulation:
+          type: string
+          description: "적용 규제: gdpr | fcra | ecoa | fair_lending | all"
+          enum: [gdpr, fcra, ecoa, fair_lending, all]
+        check:
+          type: string
+          description: "세부 체크 항목 (예: retention_policy, data_minimization, adverse_action)"
+        data_path:
+          type: string
+          description: "검사 대상 데이터 경로"
+        report_date:
+          type: string
+          description: "보고 기준 날짜 (YYYY-MM-DD)"
+      required: [regulation]
+    returns: "Dict — gdpr_violation_count: int, fcra_violation_count: int, ecoa_violation_count: int, violations: List[Dict], compliant: bool, checked_at: str"
+
+  - name: run_compliance_check
+    description: "종합 컴플라이언스 체크 실행 — 내부 거버넌스 정책, 데이터 보유기간, 접근 제어, 암호화 정책 준수 여부 검사"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        policy_path:
+          type: string
+          description: "내부 정책 정의 파일 경로"
+          default: "configs/financial/checklist.yaml"
+        scope:
+          type: string
+          description: "검사 범위: data_governance | access_control | encryption | all"
+          default: "all"
+        as_of_date:
+          type: string
+          description: "기준 날짜 (YYYY-MM-DD)"
+      required: []
+    returns: "Dict — overall_compliant: bool, passed_checks: int, failed_checks: int, warnings: int, check_results: List[Dict], policy_version: str"
+
+  - name: evaluate_eu_ai_act
+    description: "EU AI Act 준수 평가 — 고위험 AI 시스템 문서화 완료도, 인간 감독 체계, 투명성 요건 충족 여부 반환"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        check:
+          type: string
+          description: "체크 항목: documentation | human_oversight | transparency | risk_management | all"
+          default: "all"
+        system_id:
+          type: string
+          description: "AI 시스템 식별자 (미지정 시 config의 기본값 사용)"
+        archive_path:
+          type: string
+          description: "EU AI Act 문서 아카이브 경로"
+      required: []
+    returns: "Dict — documentation_completeness: float, human_oversight_score: float, transparency_score: float, risk_management_score: float, overall_compliant: bool, missing_docs: List[str]"
+
+  - name: evaluate_fria
+    description: "기본권 영향 평가(FRIA) 상태 조회 — 마지막 FRIA 완료 날짜, 다음 FRIA 예정일, 평가 완료 여부 반환"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        archive_path:
+          type: string
+          description: "FRIA 보고서 아카이브 경로"
+        as_of_date:
+          type: string
+          description: "기준 날짜 (YYYY-MM-DD, 미지정 시 오늘)"
+        max_interval_days:
+          type: integer
+          description: "최대 허용 FRIA 주기 (일, 기본값 90)"
+          default: 90
+      required: []
+    returns: "Dict — fria_days_since_last: int, last_fria_date: str, next_fria_due: str, fria_completed: bool, assessor: str, findings_count: int"
+
+  - name: check_reason_quality
+    description: "이유 설명 품질 검사 — top-K 피처와 SHAP 상위 K 피처의 overlap rate(faithfulness), 설명 일관성, 문장 품질 검사"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        check:
+          type: string
+          description: "체크 항목: faithfulness | consistency | completeness | all"
+          default: "faithfulness"
+        top_k:
+          type: integer
+          description: "이유 설명에서 추출할 상위 피처 수 (기본값 3)"
+          default: 3
+        shap_top_k:
+          type: integer
+          description: "SHAP 기준 상위 피처 수 (기본값 5)"
+          default: 5
+        sample_size:
+          type: integer
+          description: "평가 샘플 수 (기본값 1000)"
+          default: 1000
+        data_path:
+          type: string
+          description: "이유 설명 데이터 경로"
+        shap_path:
+          type: string
+          description: "SHAP 값 파일 경로"
+      required: [check]
+    returns: "Dict — faithfulness_overlap_rate: float, consistency_score: float, completeness_score: float, avg_feature_overlap: float, low_quality_samples: int, quality_passed: bool"
+
+  - name: evaluate_xai_quality
+    description: "XAI 설명 품질 평가 — BLEU 점수(한국어), ROUGE-L, 설명 길이 분포, 어휘 다양성(TTR) 계산"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        metric:
+          type: string
+          description: "평가 메트릭: bleu_score | rouge_l | ttr | all"
+          default: "all"
+        lang:
+          type: string
+          description: "언어 코드: ko | en"
+          default: "ko"
+        sample_size:
+          type: integer
+          description: "평가 샘플 수 (기본값 500)"
+          default: 500
+        reference_path:
+          type: string
+          description: "참조 설명 파일 경로 (BLEU 계산용)"
+        candidate_path:
+          type: string
+          description: "생성된 설명 파일 경로"
+      required: []
+    returns: "Dict — bleu_score: float, rouge_l: float, ttr: float, avg_length_chars: float, length_std: float, quality_passed: bool"
+
+  - name: check_explanation_consistency
+    description: "설명 일관성 검사 — 동일 고객 프로파일에 대해 반복 생성된 설명의 일관성 점수, 핵심 피처 안정성 지수 반환"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        n_repeats:
+          type: integer
+          description: "일관성 측정을 위한 반복 생성 횟수 (기본값 5)"
+          default: 5
+        sample_size:
+          type: integer
+          description: "테스트 샘플 수 (기본값 100)"
+          default: 100
+        similarity_metric:
+          type: string
+          description: "유사도 측정 방법: cosine | bleu | rouge | jaccard"
+          default: "cosine"
+        data_path:
+          type: string
+          description: "테스트 케이스 데이터 경로"
+      required: []
+    returns: "Dict — consistency_score: float, feature_stability_index: float, low_consistency_count: int, consistency_passed: bool, per_task_consistency: Dict[str, float]"
+
+  - name: trace_feature_lineage
+    description: "피처 계보 추적 — 특정 피처의 원본 소스, 변환 단계, 의존 피처, 생성 시각 반환"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        feature_name:
+          type: string
+          description: "계보를 추적할 피처 이름"
+        lineage_store_path:
+          type: string
+          description: "lineage_store.json 경로"
+        depth:
+          type: integer
+          description: "추적 깊이 (기본값 5단계)"
+          default: 5
+        include_transforms:
+          type: boolean
+          description: "변환 단계 상세 포함 여부"
+          default: true
+      required: [feature_name]
+    returns: "Dict — feature_name: str, source_cols: List[str], transform_steps: List[Dict], created_at: str, generator: str, group: str, lineage_depth: int"
+
+  - name: generate_lineage_report
+    description: "전체 피처 계보 보고서 생성 — 피처 그룹별 계보 요약, 미추적 피처 목록, 계보 완전성 점수 반환"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        lineage_store_path:
+          type: string
+          description: "lineage_store.json 경로"
+        output_format:
+          type: string
+          description: "보고서 형식: summary | full | json"
+          default: "summary"
+        feature_groups:
+          type: array
+          description: "포함할 피처 그룹 목록 (미지정 시 전체)"
+          items:
+            type: string
+      required: []
+    returns: "Dict — total_features: int, tracked_features: int, completeness_score: float, untracked_features: List[str], group_summary: Dict[str, Dict], generated_at: str"
+
+  - name: verify_audit_chain
+    description: "감사 로그 해시 체인 무결성 검증 — 체인 내 모든 항목의 해시 연결 유효성, 누락/변조 항목 감지"
+    category: query
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        archive_path:
+          type: string
+          description: "감사 아카이브 디렉토리 경로"
+        start_entry_id:
+          type: string
+          description: "검증 시작 항목 ID (미지정 시 체인 처음부터)"
+        end_entry_id:
+          type: string
+          description: "검증 종료 항목 ID (미지정 시 체인 끝까지)"
+        hash_algorithm:
+          type: string
+          description: "해시 알고리즘: sha256 | sha512"
+          default: "sha256"
+      required: []
+    returns: "Dict — chain_integrity_passed: bool, total_entries: int, verified_entries: int, tampered_entries: List[str], missing_entries: List[str], verified_at: str"
+
+  # ===========================================================================
+  # Category 4: Case Store (4)
+  # ===========================================================================
+
+  - name: search_similar_cases
+    description: "유사 진단 케이스 검색 — 현재 이상 상황과 유사한 과거 케이스를 벡터 유사도로 검색하여 해결 방법 참조"
+    category: query
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        query_text:
+          type: string
+          description: "검색 쿼리 텍스트 (현재 이상 상황 설명)"
+        top_k:
+          type: integer
+          description: "반환할 유사 케이스 수 (기본값 5)"
+          default: 5
+        min_similarity:
+          type: number
+          description: "최소 유사도 임계값 (0~1, 기본값 0.6)"
+          default: 0.6
+        filter_category:
+          type: string
+          description: "카테고리 필터 (예: drift, fairness, model_degradation, infrastructure)"
+        filter_status:
+          type: string
+          description: "상태 필터: resolved | open | all"
+          default: "resolved"
+        store_path:
+          type: string
+          description: "DiagnosticCaseStore 경로"
+          default: "diagnostic_cases/"
+      required: [query_text]
+    returns: "Dict — cases: List[Dict], count: int, avg_similarity: float, query_text: str"
+
+  - name: get_case_statistics
+    description: "진단 케이스 통계 조회 — 카테고리별 케이스 수, 평균 해결 시간, 재발 빈도, 미해결 케이스 목록 반환"
+    category: query
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        store_path:
+          type: string
+          description: "DiagnosticCaseStore 경로"
+          default: "diagnostic_cases/"
+        period_days:
+          type: integer
+          description: "통계 집계 기간 (일, 기본값 30)"
+          default: 30
+        group_by:
+          type: string
+          description: "집계 기준: category | severity | status | agent | all"
+          default: "all"
+        include_open:
+          type: boolean
+          description: "미해결 케이스 포함 여부"
+          default: true
+      required: []
+    returns: "Dict — total_cases: int, resolved_cases: int, open_cases: int, avg_resolution_hours: float, by_category: Dict[str, int], by_severity: Dict[str, int], recurrence_rate: float"
+
+  - name: save_case
+    description: "새 진단 케이스 저장 — 이상 상황, 진단 결과, 에이전트 분석 내용을 DiagnosticCaseStore에 기록"
+    category: action
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        case_id:
+          type: string
+          description: "케이스 고유 ID (미지정 시 자동 생성)"
+        title:
+          type: string
+          description: "케이스 제목 (간결한 이상 상황 요약)"
+        description:
+          type: string
+          description: "케이스 상세 설명 (증상, 영향 범위, 관련 메트릭)"
+        category:
+          type: string
+          description: "케이스 카테고리: drift | fairness | model_degradation | infrastructure | regulatory | other"
+          enum: [drift, fairness, model_degradation, infrastructure, regulatory, other]
+        severity:
+          type: string
+          description: "심각도: critical | high | medium | low"
+          enum: [critical, high, medium, low]
+        agent:
+          type: string
+          description: "생성한 에이전트: ops | audit"
+          enum: [ops, audit]
+        checkpoint:
+          type: string
+          description: "발생 체크포인트 (예: CP1, AV2)"
+        measurements:
+          type: object
+          description: "관련 측정값 딕셔너리"
+          additionalProperties: true
+        embedding_text:
+          type: string
+          description: "벡터 임베딩용 텍스트 (미지정 시 title+description 자동 결합)"
+        store_path:
+          type: string
+          description: "DiagnosticCaseStore 경로"
+          default: "diagnostic_cases/"
+      required: [title, description, category, severity, agent]
+    returns: "Dict — case_id: str, saved: bool, store_path: str, created_at: str"
+
+  - name: update_case_resolution
+    description: "케이스 해결 정보 업데이트 — 조치 내용, 해결 시각, 검증 결과, 재발 방지 조치를 기존 케이스에 추가"
+    category: action
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        case_id:
+          type: string
+          description: "업데이트할 케이스 ID"
+        resolution:
+          type: string
+          description: "해결 조치 내용 상세 설명"
+        resolved_by:
+          type: string
+          description: "해결 주체 (에이전트 이름 또는 운영자 ID)"
+        resolved_at:
+          type: string
+          description: "해결 시각 (ISO 8601, 미지정 시 현재 시각)"
+        verification_result:
+          type: string
+          description: "해결 검증 결과: confirmed | partial | failed"
+          enum: [confirmed, partial, failed]
+        prevention_actions:
+          type: array
+          description: "재발 방지 조치 목록"
+          items:
+            type: string
+        store_path:
+          type: string
+          description: "DiagnosticCaseStore 경로"
+          default: "diagnostic_cases/"
+      required: [case_id, resolution]
+    returns: "Dict — case_id: str, updated: bool, status: str, resolved_at: str"
+
+  # ===========================================================================
+  # Category 5: Action (7)
+  # ===========================================================================
+
+  - name: create_incident
+    description: "인시던트 생성 — OpsAgent/AuditAgent가 감지한 이상 상황을 PagerDuty/SNS/내부 인시던트 시스템에 등록"
+    category: action
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        title:
+          type: string
+          description: "인시던트 제목 (간결한 이상 상황 요약)"
+        severity:
+          type: string
+          description: "심각도: critical | high | medium | low"
+          enum: [critical, high, medium, low]
+        source:
+          type: string
+          description: "발생 소스 (예: CP3, AV2, detect_drift)"
+        description:
+          type: string
+          description: "인시던트 상세 설명"
+        affected_components:
+          type: array
+          description: "영향받는 시스템 컴포넌트 목록"
+          items:
+            type: string
+        metrics:
+          type: object
+          description: "관련 측정값 스냅샷"
+          additionalProperties: true
+        alert_channel:
+          type: string
+          description: "알림 채널: pagerduty | sns | slack | all"
+          default: "all"
+        runbook_url:
+          type: string
+          description: "대응 절차 문서 URL"
+      required: [title, severity, source, description]
+    returns: "Dict — incident_id: str, created: bool, alert_sent: bool, channel: str, created_at: str"
+
+  - name: log_audit_event
+    description: "감사 이벤트 기록 — 에이전트 판단, 체크리스트 결과, 규제 검사 결과를 불변(append-only) 감사 로그에 기록"
+    category: action
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        event_type:
+          type: string
+          description: "이벤트 유형: checkpoint_result | compliance_check | fairness_eval | xai_eval | incident_created | case_saved | regulatory_check"
+          enum: [checkpoint_result, compliance_check, fairness_eval, xai_eval, incident_created, case_saved, regulatory_check]
+        agent:
+          type: string
+          description: "기록 주체 에이전트: ops | audit"
+          enum: [ops, audit]
+        payload:
+          type: object
+          description: "이벤트 상세 데이터 (체크리스트 결과, 측정값 등)"
+          additionalProperties: true
+        checkpoint:
+          type: string
+          description: "관련 체크포인트 (예: CP1, AV2)"
+        severity:
+          type: string
+          description: "이벤트 심각도: info | warn | error | critical"
+          default: "info"
+        archive_path:
+          type: string
+          description: "감사 아카이브 저장 경로"
+          default: "audit_archive/"
+      required: [event_type, agent, payload]
+    returns: "Dict — entry_id: str, logged: bool, chain_hash: str, logged_at: str"
+
+  - name: archive_governance_report
+    description: "거버넌스 보고서 아카이브 — 생성된 거버넌스/컴플라이언스 보고서를 S3 감사 버킷에 불변 저장하고 해시 체인 연결"
+    category: action
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        report_type:
+          type: string
+          description: "보고서 유형: governance | compliance | fairness | xai | fria | model_card"
+          enum: [governance, compliance, fairness, xai, fria, model_card]
+        report_data:
+          type: object
+          description: "보고서 내용 딕셔너리"
+          additionalProperties: true
+        report_date:
+          type: string
+          description: "보고 기준 날짜 (YYYY-MM-DD)"
+        archive_path:
+          type: string
+          description: "S3 아카이브 prefix 또는 로컬 경로"
+          default: "governance_archive/"
+        encrypt:
+          type: boolean
+          description: "AES-256 암호화 여부 (기본값 true)"
+          default: true
+      required: [report_type, report_data]
+    returns: "Dict — archive_id: str, archived: bool, s3_path: str, chain_hash: str, archived_at: str"
+
+  - name: save_compliance_report
+    description: "규제 준수 보고서 저장 — GDPR, EU AI Act, FCRA, ECOA 준수 검사 결과를 구조화된 형식으로 저장하고 다음 검사 일정 등록"
+    category: action
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        regulation:
+          type: string
+          description: "해당 규제: gdpr | eu_ai_act | fcra | ecoa | fair_lending | internal"
+          enum: [gdpr, eu_ai_act, fcra, ecoa, fair_lending, internal]
+        check_results:
+          type: object
+          description: "규제 체크 결과 딕셔너리 (run_regulatory_checks 반환값)"
+          additionalProperties: true
+        compliant:
+          type: boolean
+          description: "전체 준수 여부"
+        report_date:
+          type: string
+          description: "보고 기준 날짜 (YYYY-MM-DD)"
+        next_check_date:
+          type: string
+          description: "다음 검사 예정 날짜 (YYYY-MM-DD)"
+        archive_path:
+          type: string
+          description: "보고서 저장 경로"
+          default: "compliance_reports/"
+      required: [regulation, check_results, compliant]
+    returns: "Dict — report_id: str, saved: bool, report_path: str, next_check_date: str, saved_at: str"
+
+  - name: save_lineage
+    description: "피처 계보 저장 — 피처 생성 단계의 계보 정보(소스, 변환, 생성시각)를 lineage_store에 기록하고 감사 추적 연결"
+    category: action
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        feature_name:
+          type: string
+          description: "저장할 피처 이름"
+        source_cols:
+          type: array
+          description: "원본 소스 컬럼 목록"
+          items:
+            type: string
+        transform_steps:
+          type: array
+          description: "변환 단계 목록 (각 항목: {step, func, params})"
+          items:
+            type: object
+            additionalProperties: true
+        generator:
+          type: string
+          description: "피처를 생성한 generator 이름 (예: gmm, tda, seq_encoder)"
+        group:
+          type: string
+          description: "피처 그룹 (예: state, snapshot, timeseries, hierarchy, item)"
+        run_id:
+          type: string
+          description: "생성 실험 run ID"
+        lineage_store_path:
+          type: string
+          description: "lineage_store.json 저장 경로"
+          default: "outputs/lineage_store.json"
+      required: [feature_name, source_cols]
+    returns: "Dict — feature_name: str, saved: bool, lineage_id: str, saved_at: str"
+
+  - name: generate_governance_report
+    description: "거버넌스 보고서 생성 — 파이프라인 체크리스트 결과, 공정성, XAI 품질, 규제 준수 현황을 통합한 거버넌스 보고서 작성"
+    category: action
+    agents: [audit]
+    parameters:
+      type: object
+      properties:
+        report_date:
+          type: string
+          description: "보고 기준 날짜 (YYYY-MM-DD)"
+        include_sections:
+          type: array
+          description: "포함할 섹션 목록: checklist | fairness | xai | regulatory | lineage | drift | all"
+          items:
+            type: string
+            enum: [checklist, fairness, xai, regulatory, lineage, drift, all]
+          default: [all]
+        output_format:
+          type: string
+          description: "출력 형식: json | markdown | pdf"
+          default: "json"
+        output_path:
+          type: string
+          description: "보고서 저장 경로 (미지정 시 자동 생성)"
+        pipeline_run_id:
+          type: string
+          description: "대상 파이프라인 run ID"
+      required: []
+    returns: "Dict — report_id: str, report_path: str, summary: Dict, overall_status: str, sections_included: List[str], generated_at: str"
+
+  - name: send_notification
+    description: "알림 전송 — Slack, SNS, 이메일 등 설정된 채널로 에이전트 판단 결과 또는 인시던트 알림 발송"
+    category: action
+    agents: [ops, audit]
+    parameters:
+      type: object
+      properties:
+        channel:
+          type: string
+          description: "알림 채널: slack | sns | email | pagerduty | all"
+          enum: [slack, sns, email, pagerduty, all]
+        message:
+          type: string
+          description: "알림 메시지 본문"
+        subject:
+          type: string
+          description: "알림 제목 (이메일/SNS용)"
+        severity:
+          type: string
+          description: "심각도 레벨: info | warn | error | critical"
+          default: "info"
+        recipients:
+          type: array
+          description: "수신자 목록 (이메일 주소 또는 SNS 토픽 ARN)"
+          items:
+            type: string
+        incident_id:
+          type: string
+          description: "연관된 인시던트 ID (있는 경우)"
+        metadata:
+          type: object
+          description: "추가 컨텍스트 정보 (메트릭 스냅샷 등)"
+          additionalProperties: true
+      required: [channel, message]
+    returns: "Dict — sent: bool, channel: str, message_id: str, recipients_count: int, sent_at: str"
