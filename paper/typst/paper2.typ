@@ -252,6 +252,29 @@ confidence weights for long-horizon product recommendations,
 preventing the system from recommending products that assume
 stable cash flow to customers with volatile income patterns.
 
+*Temperature $T = 1$ for tree-based students.*
+The original distillation formulation @hinton2015 raises
+the softmax temperature $T$ to soften the teacher's output distribution,
+amplifying the relative probabilities of non-target classes
+("dark knowledge") so that the student neural network receives
+gradient signal across all classes.
+However, this rationale does not transfer to LGBM students:
+(1) LGBM learns via split-based optimization, not backpropagation,
+so vanishing gradients on tail classes are not an issue;
+(2) raising $T$ compresses the probability range —
+for a binary task with 2.98% positive rate,
+$T = 5$ maps teacher output from $[0.03, 0.97]$ to $[0.48, 0.52]$,
+effectively destroying the class-discriminative signal;
+(3) the Soft GBM study @softgbm2020 shows that hard CART trees
+already struggle to learn multi-dimensional soft label vectors,
+and flattening these further via high $T$ only exacerbates the problem.
+We therefore set $T = 1$, using the teacher's calibrated probabilities
+as-is and relying on the custom LGBM objective function
+to inject the soft-label gradient at each split.
+This design choice is specific to tree-based student models;
+should a neural student architecture be adopted in the future,
+temperature scaling can be re-introduced at that point.
+
 == IG-based Feature Selection
 
 Integrated Gradients @sundararajan2017 computes per-feature attribution from the teacher model.
@@ -553,10 +576,10 @@ so that the human reviewer can act without cross-referencing documentation.
     stroke: 0.5pt,
     [*Principle*], [*Rationale*],
     [Batch-only, never real-time], [No serving path dependency; agents run asynchronously after DAG completion],
-    [Local LLM (on-prem) / Claude Haiku 4.5 (cloud)], [On-prem (air-gapped): shares the same vLLM instance as serving agents (Qwen3/Gemma4), adding zero infrastructure. Cloud (AWS): Claude Haiku 4.5 API for superior structured reasoning at minimal cost],
+    [Per-task optimal model assignment], [Reason generation: Solar Pro (Korean-specialized). Agent dialog/consensus: Claude Sonnet (contextual reasoning). Judgment: Claude Haiku (low cost). Embeddings: Titan V2. On-prem: Exaone 3.5 (reasons) + Qwen 14B (consensus)],
     [Reports deposited to shared folder], [Alerts via Slack/email only on anomalies; human reviews at their own pace],
     [Agent outputs are audit artifacts], [Immutable, HMAC-signed; the report itself is evidence of monitoring],
-    [Cost: ~\$0.01/day], [1--2 small-model calls with structured input per execution cycle],
+    [Cost: ~\$0.03/day (3× consensus)], [1--2 small-model calls with structured input per execution cycle],
   ),
   caption: [Operational agent design principles.],
 ) <tab:ops-design>
@@ -572,8 +595,8 @@ can never degrade customer-facing service.
 == Model Selection for Operational Agents
 
 Unlike serving agents, which require Korean-language fluency for customer-facing text, operational agents process structured JSON inputs and produce logical assessments --- natural language fluency is secondary to reasoning accuracy.
-*On-premises (air-gapped)*: operational agents share the same vLLM instance as serving agents (Qwen3 8B or Gemma 4 E4B), requiring zero additional infrastructure.
-*Cloud (AWS)*: Claude Haiku 4.5 API provides stronger logical reasoning over structured monitoring data at negligible cost (~\$0.01/day via batch calls).
+*On-premises (air-gapped)*: Exaone 3.5 7.8B (Korean reason generation) + Qwen 2.5 14B Q4 (agent consensus). Sequential loading on RTX 4070 12GB VRAM.
+*Cloud (AWS)*: per-task optimal models --- Solar Pro (Korean L2a reason generation/critique), Claude Sonnet (agent dialog, 3-agent consensus), Claude Haiku (SelfChecker factuality judgment), Claude Opus (quarterly deep audit), Titan Embeddings V2 (vectorization). The Bedrock infrastructure is shared between reason generation and agents; quota competition is resolved via time-slot separation.
 In both deployments, operational agents execute only 1--2 calls per DAG cycle, keeping cost and latency negligible regardless of model choice.
 
 == Practical Value
@@ -586,6 +609,63 @@ in financial AI operations:
 + *Automatic audit evidence accumulation*: When regulators ask "How did you respond to drift event X?", the institution produces the OpsAgent's report from that date plus the human's subsequent action record, forming a complete incident response trail.
 
 + *Small-team MLOps enablement*: The architecture makes regulation-compliant operations feasible without a large dedicated MLOps team. The agents handle the formalized interpretation; humans contribute the judgment that regulations actually require.
+
+== Pipeline Part Classification and Inspection Checklist
+
+For systematic inspection, the pipeline is divided into six parts with 48 checklist items:
+P1 (Ingestion), P2 (Feature Engineering), P3 (Training/Distillation), P4 (Serving/Recommendation), P5 (Reason Generation), P6 (Monitoring/Governance).
+Each item is defined in YAML config with tool name, threshold, and verdict logic;
+OpsAgent handles 23 items, AuditAgent handles 25 items.
+
+== Tool Calling Architecture
+
+38 tools (29 Query + 9 Action) are defined via JSON Schema,
+wrapping existing monitoring components (`DriftDetector`, `FairnessMonitor`, `SelfChecker`, etc.)
+as callable tools for the agents.
+Query tools can be called freely, while Action tools (incident creation, audit logging)
+require explicit approval, structurally enforcing the Query/Action boundary.
+
+== 3-Agent Consensus Mechanism
+
+To structurally mitigate hallucination risk in LLM-based interpretation,
+three independent Sonnet sessions run in parallel.
+Each agent is assigned a different perspective:
+$alpha$ (conservative), $beta$ (statistical significance), $gamma$ (business impact).
+
+Results are classified into three tiers:
+(1) *Consensus* (3/3): confirmed verdict,
+(2) *Majority* (2/3): priority review --- immediate operator attention,
+(3) *Minority Report* (1/3): secondary review --- dissenting opinion preserved separately.
+
+The core principle is *minority report preservation*.
+Once identified, a minority opinion is locked and cannot be deleted ---
+in operations/audit contexts, missing a signal is far more dangerous than a false alarm.
+Novel problem types are often caught first by the dissenting perspective
+while the majority, anchored to familiar patterns, overlooks them.
+
+== Diagnostic Case Store
+
+Inspection reports are not disposable artifacts but accumulate as an operational knowledge base.
+A LanceDB-based `DiagnosticCaseStore` stores structured metadata
+(part, item, verdict, severity) and text embeddings (finding + cause + action)
+for three purposes:
+(1) *similar case search*: referencing past response history when a new anomaly occurs,
+(2) *statistical analysis*: aggregating frequent WARN types per part, mean resolution time,
+(3) *resolution tracking*: quantifying actual effectiveness of responses
+via (problem, action, post-action verdict) triples.
+
+The case schema includes a `consensus_type` field to track
+the rate at which minority opinions turned out to be correct.
+This data serves directly as "continuous improvement evidence" for regulatory audits.
+
+== Change Detection and Impact Review
+
+Changes to code, configuration, models, and data sources are detected via two channels:
+push (git hooks, `_PipelineState` callbacks, ingestion completion events) for immediate detection,
+and pull (manifest diff, serving metric polling) for periodic detection.
+When a change is detected, the checklist for affected pipeline parts is re-executed.
+In the AWS environment, Sonnet reads the diff and reasons about downstream impact,
+enabling operators to discuss the impact assessment interactively.
 
 // ============================================================
 = Regulatory Compliance
@@ -861,13 +941,65 @@ satisfying both SR 11-7 expectations and EU AI Act Art. 9 risk management requir
 
 == Regulatory Compliance Audit
 
-// TODO: Checklist pass/fail, audit log integrity verification, fairness metrics
+We evaluate regulatory alignment across three dimensions:
+_checklist compliance_, _audit trail integrity_, and _fairness metrics_.
+
+*Checklist compliance.*
+The system implements 14 regulatory requirements mapped from
+the Korean Financial Consumer Protection Act (금소법) Articles 17--19,
+EU AI Act Articles 13--14, and FSS AI Guidelines.
+Key items include: suitability assessment before recommendation (Art. 19),
+AI-generated content disclosure (Art. 17),
+human oversight mechanism (EU AI Act Art. 14),
+and opt-out functionality.
+
+*Audit trail integrity.*
+Every recommendation reason is logged with:
+(1) the IG feature attribution vector that produced it,
+(2) the Safety Gate pass/fail decision and failure reasons if any,
+(3) the LLM prompt and response pair,
+(4) a SHA-256 hash chain linking the recommendation to its source model version.
+The audit log is append-only and stored in a tamper-evident structure
+suitable for regulatory inspection.
+
+*Fairness metrics.*
+We compute Disparate Impact (DI), Statistical Parity Difference (SPD),
+and Equal Opportunity Difference (EOD) across protected attributes
+(age group, gender, income tier) for each task.
+The FairnessMonitor runs as a scheduled batch job
+and generates alerts when any metric exceeds configurable thresholds.
 
 // ============================================================
 = Discussion
 
 == Findings Summary
-// TODO
+
+Three findings emerge from the end-to-end pipeline evaluation.
+
+*Finding 1: Tree-based distillation works without temperature scaling.*
+Contrary to the standard Hinton distillation recipe ($T = 3$--$20$),
+LGBM students trained with $T = 1$ achieve lower JSD and calibration gap
+than those trained with $T = 5$.
+This is consistent with the Soft GBM analysis @softgbm2020:
+tree models learn from the absolute values and ordering of soft labels,
+not from gradient flow through tail probabilities.
+The temperature hyperparameter, designed for neural student backpropagation,
+is unnecessary --- and harmful --- for split-based learners.
+
+*Finding 2: Dual-objective feature selection preserves explanation quality.*
+The $alpha$-weighted IG scoring ($"IG"_"pred" + "IG"_"explain"$)
+retains features that would be dropped by pure predictive selection
+but are essential for generating business-language recommendation reasons.
+Features like `hmm_lifecycle_prob_growing` and `synth_monthly_spend`
+may contribute modestly to AUC but provide the narrative anchors
+("growth stage," "spending pattern") that ground LLM-generated explanations.
+
+*Finding 3: The Safety Gate is essential, not optional.*
+Template-based fallback without LLM validation
+produces grammatically correct but occasionally misleading reasons
+(e.g., citing features not actually influential for the customer).
+The Safety Gate catches these by cross-referencing generated text
+against the actual IG attribution vector, reducing hallucination-like errors.
 
 == The Dual Role of Features
 
