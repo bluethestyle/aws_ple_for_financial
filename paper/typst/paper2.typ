@@ -17,6 +17,8 @@
 #set par(justify: true, leading: 0.6em)
 #set heading(numbering: "1.1")
 
+#import "@preview/fletcher:0.5.8" as fletcher: diagram, node, edge
+
 // Title
 #align(center)[
   #text(size: 16pt, weight: "bold")[
@@ -201,14 +203,36 @@ enabling independent improvement of each component.
 == Teacher-Student Architecture
 
 #figure(
-  rect(width: 100%, height: 5cm, stroke: 0.5pt)[
-    #align(center + horizon)[
-      _Distillation diagram placeholder_ \
-      PLE Teacher (GPU, weekly) → Soft Labels → LGBM Students (CPU, daily) \
-      + IG feature selection
-    ]
-  ],
-  caption: [Teacher-student distillation architecture.],
+  {
+    let gray-fill = luma(245)
+    let teacher-fill = rgb("#d6e6f0")
+    let student-fill = rgb("#e8f5e9")
+    let ig-fill = rgb("#fff3e0")
+
+    fletcher.diagram(
+      spacing: (8pt, 12pt),
+      node-stroke: 0.6pt + luma(80),
+      edge-stroke: 0.7pt + luma(80),
+      node-corner-radius: 3pt,
+
+      node((0, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 18 Task, 318D] \ #text(size: 6pt)[GPU, weekly training]], width: 35mm, fill: teacher-fill, name: <teacher>),
+
+      node((2, 0), [*Soft Labels* \ #text(size: 6pt)[Per-task probability dist.]], width: 30mm, fill: gray-fill, name: <soft>),
+
+      node((1, 1.2), [*IG Feature Selection* \ #text(size: 6pt)[Dual prediction + explanation] \ #text(size: 6pt)[$"IG"_"dual" = alpha dot "IG"_"pred" + (1-alpha) dot "IG"_"explain"$]], width: 45mm, fill: ig-fill, name: <ig>),
+
+      node((0, 2.4), [*LGBM Student ×18* \ #text(size: 6pt)[Per-task independent] \ #text(size: 6pt)[CPU, daily inference]], width: 35mm, fill: student-fill, name: <student>),
+
+      node((2, 2.4), [*Lambda Serving* \ #text(size: 6pt)[GPU-free real-time inference] \ #text(size: 6pt)[+ explainable features preserved]], width: 35mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
+
+      edge(<teacher>, <soft>, "->", label: [soft probs]),
+      edge(<teacher>, <ig>, "->", label: [IG attribution]),
+      edge(<soft>, <student>, "->"),
+      edge(<ig>, <student>, "->", label: [feature subset]),
+      edge(<student>, <serve>, "->"),
+    )
+  },
+  caption: [Teacher-student distillation architecture. PLE teacher's soft labels and IG-based feature selection distill into per-task LGBM student models.],
 ) <fig:distillation>
 
 The teacher model (PLE with 7 heterogeneous experts, 18 tasks, 318 features;
@@ -374,23 +398,41 @@ Level IG (IG sign direction + task context) → Level 3 (feature×task manual ov
 == 3-Agent Pipeline Architecture
 
 #figure(
-  rect(width: 100%, height: 7cm, stroke: 0.5pt)[
-    #align(center + horizon)[
-      _3-Agent pipeline diagram placeholder_ \
-      \
-      Agent 1: Feature Selector \
-      (IG attribution → top features → explanation-worthy supplementation) \
-      ↓ \
-      Agent 2: Reason Generator \
-      (reverse-mapped contexts → natural language reason) \
-      ↓ \
-      Agent 3: Safety Gate \
-      (regulatory check → hallucination check → appropriateness check) \
-      ↓ \
-      Pass → Serve | Fail → Template fallback
-    ]
-  ],
-  caption: [Three-agent recommendation reason generation pipeline.],
+  {
+    let gray-fill = luma(245)
+    let agent-fill = rgb("#d6e6f0")
+    let safety-fill = rgb("#fce4ec")
+    let pass-fill = rgb("#e8f5e9")
+
+    fletcher.diagram(
+      spacing: (8pt, 14pt),
+      node-stroke: 0.6pt + luma(80),
+      edge-stroke: 0.7pt + luma(80),
+      node-corner-radius: 3pt,
+
+      node((1, 0), [*Model Predictions* \ #text(size: 6pt)[18 tasks × top-K products]], width: 35mm, fill: gray-fill, name: <pred>),
+
+      node((1, 1.3), [*Feature Selector* \ #text(size: 6pt)[IG contribution + business mapping richness] \ #text(size: 6pt)[Customer context-based selection]], width: 45mm, fill: agent-fill, name: <a1>),
+
+      node((1, 2.6), [*Reason Generator* \ #text(size: 6pt)[Reverse-mapped features → NL reason] \ #text(size: 6pt)[Financial DNA narrative structure]], width: 45mm, fill: agent-fill, name: <a2>),
+
+      node((1, 3.9), [*Safety Gate* \ #text(size: 6pt)[Hallucination · Regulation · Suitability · Tone · Factuality] \ #text(size: 6pt)[5-stage validation]], width: 45mm, fill: safety-fill, name: <a3>),
+
+      node((0, 5), [*Pass* → Serve], width: 22mm, fill: pass-fill, name: <pass>),
+      node((2, 5), [*Fail* → Template fallback], width: 25mm, fill: gray-fill, name: <fail>),
+
+      node((2.5, 2.6), [*Audit Log* \ #text(size: 6pt)[HMAC signed]], width: 18mm, fill: luma(240), name: <audit>),
+
+      edge(<pred>, <a1>, "->"),
+      edge(<a1>, <a2>, "->", label: [selected features]),
+      edge(<a2>, <a3>, "->", label: [generated reason]),
+      edge(<a3>, <pass>, "->", label: [pass]),
+      edge(<a3>, <fail>, "->", label: [fail]),
+      edge(<a2>, <audit>, "->", stroke: 0.4pt + luma(160)),
+      edge(<a3>, <audit>, "->", stroke: 0.4pt + luma(160)),
+    )
+  },
+  caption: [3-agent recommendation reason generation pipeline. Feature Selector → Reason Generator → Safety Gate.],
 ) <fig:3agent>
 
 === Agent 1: Feature Selector
@@ -740,18 +782,42 @@ suitable for regulatory submission.
 == Monitoring and Governance
 
 #figure(
-  rect(width: 100%, height: 5cm, stroke: 0.5pt)[
-    #align(center + horizon)[
-      _Monitoring architecture placeholder_ \
-      \
-      DriftDetector (PSI) → FairnessMonitor (DI/SPD/EOD) → HerdingDetector (HHI/Gini) \
-      ↓ \
-      IncidentReporter → GovernanceReportGenerator \
-      ↓ \
-      Monthly/quarterly automated report
-    ]
-  ],
-  caption: [Monitoring and governance architecture.],
+  {
+    let gray-fill = luma(245)
+    let ops-fill = rgb("#d6e6f0")
+    let audit-fill = rgb("#f3e5f5")
+    let report-fill = rgb("#fff9c4")
+
+    fletcher.diagram(
+      spacing: (6pt, 12pt),
+      node-stroke: 0.6pt + luma(80),
+      edge-stroke: 0.7pt + luma(80),
+      node-corner-radius: 3pt,
+
+      node((0, 0), [*DriftDetector* \ #text(size: 6pt)[PSI]], width: 22mm, fill: gray-fill, name: <drift>),
+      node((1, 0), [*FairnessMonitor* \ #text(size: 6pt)[DI/SPD/EOD]], width: 24mm, fill: gray-fill, name: <fair>),
+      node((2, 0), [*HerdingDetector* \ #text(size: 6pt)[HHI/Gini]], width: 22mm, fill: gray-fill, name: <herd>),
+
+      node((0, 1.5), [*OpsAgent* \ #text(size: 6pt)[7 checkpoints] \ #text(size: 6pt)[cross-checkpoint analysis]], width: 28mm, fill: ops-fill, name: <ops>),
+      node((2, 1.5), [*AuditAgent* \ #text(size: 6pt)[5 viewpoints] \ #text(size: 6pt)[3-Tier reason quality]], width: 28mm, fill: audit-fill, name: <aud>),
+
+      node((1, 2.8), [*3-Agent Consensus* \ #text(size: 6pt)[Sonnet × 3 independent voting] \ #text(size: 6pt)[Minority report preservation]], width: 38mm, fill: luma(240), name: <consensus>),
+
+      node((1, 4), [*Governance Report* \ #text(size: 6pt)[Monthly auto-generated]], width: 30mm, fill: report-fill, name: <gov>),
+
+      node((1, 5), [*Human Review and Decision*], width: 30mm, shape: fletcher.shapes.pill, fill: rgb("#e8f5e9"), name: <human>),
+
+      edge(<drift>, <ops>, "->"),
+      edge(<fair>, <aud>, "->"),
+      edge(<herd>, <aud>, "->"),
+      edge(<ops>, <consensus>, "->"),
+      edge(<aud>, <consensus>, "->"),
+      edge(<consensus>, <gov>, "->"),
+      edge(<gov>, <human>, "->"),
+      edge(<ops>, <aud>, "-->", stroke: 0.4pt + luma(140), label: [cross-trigger], label-size: 6pt),
+    )
+  },
+  caption: [Monitoring and governance architecture. Monitoring components → Ops/Audit agents → Consensus → Governance report → Human review.],
 ) <fig:monitoring>
 
 === Human-in-the-Loop
