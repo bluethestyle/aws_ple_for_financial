@@ -315,6 +315,7 @@ AWS 마이그레이션
 == Pool / Basket / Runtime 3계층
 
 #figure(
+  placement: auto,
   {
     let pool-fill = rgb("#e3f2fd")
     let basket-fill = rgb("#fff3e0")
@@ -864,6 +865,7 @@ EncryptionPipeline.process_source()
 == 전체 데이터 흐름도
 
 #figure(
+  placement: auto,
   {
     let data-fill = luma(245)
     let proc-fill = rgb("#d6e6f0")
@@ -910,29 +912,53 @@ EncryptionPipeline.process_source()
       edge(<s5>, <lab>, "->", stroke: 0.4pt + luma(160)),
       edge(<s6>, <seq>, "->", stroke: 0.4pt + luma(160)),
 
-      // Phase 1-3 header
-      node((0, 10), [*Phase 1--3: Ablation Training*], width: 60mm, fill: phase-fill, name: <ph13>),
-      node((0, 11), [*Stage 7: DataLoader* #text(size: 6pt)[(temporal split, gap\_days)]], width: 55mm, fill: proc-fill, name: <s7>),
-      node((0, 12), [*Stage 8: PLETrainer* \ #text(size: 6pt)[PLE (3-layer CGC, 7 shared + 1 task expert)] \ #text(size: 6pt)[adaTT (4 groups, intra/inter) · Logit Transfer (5 edges)] \ #text(size: 6pt)[HMM Triple-Mode · Evidential + SAE · AMP FP16]], width: 55mm, fill: proc-fill, name: <s8>),
-      node((0, 13), [*Stage 8.5: Model Analysis* \ #text(size: 6pt)[IG · CCA · Gate · HGCN · Multi Interpreter] \ #text(size: 6pt)[Template Engine · XAI Quality · Model Card]], width: 55mm, fill: proc-fill, name: <s85>),
+      // Output arrow indicating continuation
+      node((0, 10), [#text(size: 7pt, fill: luma(100))[▼ Phase 1--5 (다음 그림 참조)]], width: 60mm, fill: luma(250), name: <cont>),
+      edge(<s6>, <cont>, "->", stroke: 0.4pt + luma(150)),
+    )
+  },
+  caption: [End-to-End 파이프라인 (1/2): Phase 0 데이터 준비 — S3 원본 수집부터 피처/레이블/시퀀스 텐서 저장까지.],
+)
 
-      edge(<s6>, <ph13>, "->"),
+#figure(
+  placement: auto,
+  {
+    let proc-fill = rgb("#d6e6f0")
+    let out-fill = rgb("#e8f5e9")
+    let phase-fill = rgb("#ede7f6")
+
+    fletcher.diagram(
+      spacing: (4pt, 8pt),
+      node-stroke: 0.5pt + luma(100),
+      edge-stroke: 0.6pt + luma(100),
+      node-corner-radius: 3pt,
+
+      // Continuation note
+      node((0, 0), [#text(size: 7pt, fill: luma(100))[▲ Phase 0 출력 (sequences.npy 등)]], width: 60mm, fill: luma(250), name: <prev>),
+
+      // Phase 1-3 header
+      node((0, 1), [*Phase 1--3: Ablation Training*], width: 60mm, fill: phase-fill, name: <ph13>),
+      node((0, 2), [*Stage 7: DataLoader* #text(size: 6pt)[(temporal split, gap\_days)]], width: 55mm, fill: proc-fill, name: <s7>),
+      node((0, 3), [*Stage 8: PLETrainer* \ #text(size: 6pt)[PLE (3-layer CGC, 7 shared + 1 task expert)] \ #text(size: 6pt)[adaTT (4 groups, intra/inter) · Logit Transfer (5 edges)] \ #text(size: 6pt)[HMM Triple-Mode · Evidential + SAE · AMP FP16]], width: 55mm, fill: proc-fill, name: <s8>),
+      node((0, 4), [*Stage 8.5: Model Analysis* \ #text(size: 6pt)[IG · CCA · Gate · HGCN · Multi Interpreter] \ #text(size: 6pt)[Template Engine · XAI Quality · Model Card]], width: 55mm, fill: proc-fill, name: <s85>),
+
+      edge(<prev>, <ph13>, "->", stroke: 0.4pt + luma(150)),
       edge(<ph13>, <s7>, "->"),
       edge(<s7>, <s8>, "->"),
       edge(<s8>, <s85>, "->"),
 
       // Phase 4 header
-      node((0, 14), [*Phase 4: Distillation*], width: 60mm, fill: phase-fill, name: <ph4>),
-      node((0, 15), [*Stage 9: StudentTrainer* \ #text(size: 6pt)[PLE teacher → LGBM students · Soft label (T=5.0, α=0.3)] \ #text(size: 6pt)[IG 기반 피처 선택 + fidelity validation]], width: 55mm, fill: proc-fill, name: <s9>),
+      node((0, 5), [*Phase 4: Distillation*], width: 60mm, fill: phase-fill, name: <ph4>),
+      node((0, 6), [*Stage 9: StudentTrainer* \ #text(size: 6pt)[PLE teacher → LGBM students · Soft label (T=5.0, α=0.3)] \ #text(size: 6pt)[IG 기반 피처 선택 + fidelity validation]], width: 55mm, fill: proc-fill, name: <s9>),
 
       edge(<s85>, <ph4>, "->"),
       edge(<ph4>, <s9>, "->"),
 
       // Phase 5 header
-      node((0, 16), [*Phase 5: Serving*], width: 60mm, fill: phase-fill, name: <ph5>),
-      node((0, 17), [*Stage 9.5: Context Vector Store* #text(size: 6pt)[(RAG embedding)]], width: 55mm, fill: proc-fill, name: <s95>),
-      node((0, 18), [*Stage 10: CPE + Agentic Reason Orchestrator* \ #text(size: 6pt)[FD-TVS scoring + DNA modifier · Constraint Engine] \ #text(size: 6pt)[L1+L2a+L2b 추론 체인]], width: 55mm, fill: proc-fill, name: <s10>),
-      node((0, 19), [*Lambda / ECS Fargate (서버리스 서빙)* \ #text(size: 6pt)[추천 상품 + 자연어 추천사유 + 불확실성 정량화]], width: 55mm, fill: out-fill, name: <serving>),
+      node((0, 7), [*Phase 5: Serving*], width: 60mm, fill: phase-fill, name: <ph5>),
+      node((0, 8), [*Stage 9.5: Context Vector Store* #text(size: 6pt)[(RAG embedding)]], width: 55mm, fill: proc-fill, name: <s95>),
+      node((0, 9), [*Stage 10: CPE + Agentic Reason Orchestrator* \ #text(size: 6pt)[FD-TVS scoring + DNA modifier · Constraint Engine] \ #text(size: 6pt)[L1+L2a+L2b 추론 체인]], width: 55mm, fill: proc-fill, name: <s10>),
+      node((0, 10), [*Lambda / ECS Fargate (서버리스 서빙)* \ #text(size: 6pt)[추천 상품 + 자연어 추천사유 + 불확실성 정량화]], width: 55mm, fill: out-fill, name: <serving>),
 
       edge(<s9>, <ph5>, "->"),
       edge(<ph5>, <s95>, "->"),
@@ -940,7 +966,7 @@ EncryptionPipeline.process_source()
       edge(<s10>, <serving>, "->"),
     )
   },
-  caption: [End-to-End 파이프라인: Phase 0 데이터 준비 → Phase 1--3 학습 → Phase 4 증류 → Phase 5 서빙.],
+  caption: [End-to-End 파이프라인 (2/2): Phase 1--3 학습 → Phase 4 증류 → Phase 5 서빙.],
 )
 
 == 모델 내부 데이터 흐름

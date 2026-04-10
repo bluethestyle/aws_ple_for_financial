@@ -911,8 +911,9 @@ S3 Lifecycle Rule으로 자동 적용합니다.
 
 추천사유 생성 및 에이전트 진단 시 데이터 흐름:
 
-#align(center)[
-  #diagram(
+#figure(
+  placement: auto,
+  diagram(
     node-stroke: 0.6pt + luma(80),
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
@@ -925,8 +926,9 @@ S3 Lifecycle Rule으로 자동 적용합니다.
     edge((0,2), (0,3), "->", label: [응답 → VPC 내부], label-side: right),
     node((0,3), [DynamoDB 캐시 \ (ap-northeast-2)], fill: rgb("#e8f5e9"), width: 44mm),
     node((2,2), [✗ 모델 제공사로 데이터 전달 없음 \ ✗ 인터넷 경유 없음 \ ✗ 리전 외부 전송 없음 \ ✓ CloudTrail에 모든 호출 기록], fill: rgb("#fff3e0"), width: 72mm),
-  )
-]
+  ),
+  caption: [AWS Bedrock 데이터 흐름: VPC PrivateLink로 리전 외부 전송 없이 처리.],
+)
 
 #pagebreak()
 

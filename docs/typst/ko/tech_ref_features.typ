@@ -1055,8 +1055,9 @@ MCC 계층 구조(Root -> L1 -> L2 -> Brand)를 반영한 좌표 및 임베딩. 
 
 == 정규화 파이프라인 흐름 요약
 
-#align(center)[
-  #diagram(
+#figure(
+  placement: auto,
+  diagram(
     node-stroke: 0.6pt + luma(80),
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
@@ -1070,8 +1071,9 @@ MCC 계층 구조(Root -> L1 -> L2 -> Brand)를 반영한 좌표 및 임베딩. 
     node((0,3), [\[Stage 3\] raw power-law 복사본 \ 그대로 보존], fill: rgb("#d6e6f0"), width: 58mm),
     edge((0,3), (0,4), "->"),
     node((0,4), [\[최종\] 644D normalized ⊕ 90D raw \ = 734D main tensor], fill: rgb("#e8f5e9"), width: 62mm),
-  )
-]
+  ),
+  caption: [3단계 정규화 파이프라인: 멱법칙 감지 → StandardScaler → raw 복사본 보존.],
+)
 
 
 // =====================================================================

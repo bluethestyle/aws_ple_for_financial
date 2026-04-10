@@ -495,8 +495,9 @@ ablation:
 
 == Teacher -> LGBM Student
 
-#align(center)[
-  #diagram(
+#figure(
+  placement: auto,
+  diagram(
     node-stroke: 0.6pt + luma(80),
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
@@ -506,8 +507,9 @@ ablation:
     node((0,1), [LGBM Students (CPU, per-task) \ loss = 0.3 × hard\_loss + 0.7 × soft\_loss \ num\_leaves: 127, n\_estimators: 500 \ Per-task fidelity validation (AUC gap < threshold)], fill: rgb("#e8f5e9"), width: 72mm),
     edge((0,1), (0,2), "->"),
     node((0,2), [Lightweight model saved (~5ms inference)], fill: rgb("#e8f5e9"), width: 52mm),
-  )
-]
+  ),
+  caption: [Teacher → LGBM Student knowledge distillation flow.],
+)
 
 == Execution CLI
 

@@ -911,8 +911,9 @@ The most critical regulatory issue when leveraging LLMs in financial AI systems 
 
 Data flow during recommendation reason generation and agent diagnostics:
 
-#align(center)[
-  #diagram(
+#figure(
+  placement: auto,
+  diagram(
     node-stroke: 0.6pt + luma(80),
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
@@ -925,8 +926,9 @@ Data flow during recommendation reason generation and agent diagnostics:
     edge((0,2), (0,3), "->", label: [Response → within VPC], label-side: right),
     node((0,3), [DynamoDB Cache \ (ap-northeast-2)], fill: rgb("#e8f5e9"), width: 44mm),
     node((2,2), [✗ No data transmitted to model providers \ ✗ No internet traversal \ ✗ No cross-region transfer \ ✓ All calls logged in CloudTrail], fill: rgb("#fff3e0"), width: 72mm),
-  )
-]
+  ),
+  caption: [AWS Bedrock data flow: processed via VPC PrivateLink with no cross-region data transfer.],
+)
 
 #pagebreak()
 

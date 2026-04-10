@@ -1038,8 +1038,9 @@ The `_log` copies of power-law columns (generated in Stage 1) are preserved *wit
 
 == Normalization Pipeline Flow Summary
 
-#align(center)[
-  #diagram(
+#figure(
+  placement: auto,
+  diagram(
     node-stroke: 0.6pt + luma(80),
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
@@ -1053,8 +1054,9 @@ The `_log` copies of power-law columns (generated in Stage 1) are preserved *wit
     node((0,3), [\[Stage 3\] raw power-law copy \ preserved as-is], fill: rgb("#d6e6f0"), width: 58mm),
     edge((0,3), (0,4), "->"),
     node((0,4), [\[Final\] 644D normalized ⊕ 90D raw \ = 734D main tensor], fill: rgb("#e8f5e9"), width: 62mm),
-  )
-]
+  ),
+  caption: [3-stage normalization pipeline: power-law detection → StandardScaler → raw copy preservation.],
+)
 
 
 // =====================================================================
