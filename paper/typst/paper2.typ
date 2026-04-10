@@ -165,7 +165,7 @@ requiring explainability, fairness monitoring, and audit trails.
 The EU AI Act @euaiact2024 classifies financial credit/recommendation as high-risk AI,
 mandating transparency (Art. 13), human oversight (Art. 14), and accuracy (Art. 15).
 The EBA @eba2025ml calls for "interpretable" models in internal risk assessments.
-Korea's AI Basic Act @koreaaiact2024 (December 2024) adds domestic high-impact AI classification.
+Korea's AI Basic Act @koreaaiact2024 (passed December 2024, promulgated January 2025) adds domestic high-impact AI classification.
 
 Pearl @pearl2009causality argues that true explanation requires causal understanding,
 not mere statistical association --- a position increasingly echoed by financial regulators
@@ -685,6 +685,8 @@ enabling operators to discuss the impact assessment interactively.
 
 == Korean FSS Guidelines Mapping
 
+@tab:fss-mapping maps the key requirements of Korean FSS AI guidelines to the corresponding system components and verification methods.
+
 #figure(placement: top, scope: "parent",
   table(
     columns: (1fr, 1.2fr, 1fr),
@@ -706,6 +708,8 @@ enabling operators to discuss the impact assessment interactively.
 
 == EU AI Act Mapping
 
+@tab:euai-mapping maps the core EU AI Act provisions to system compliance mechanisms. Financial recommendation systems are classified as high-risk AI under Annex III Section 5, requiring compliance with Title III Chapter 2 obligations.
+
 #figure(placement: top, scope: "parent",
   table(
     columns: (auto, 1fr, 1.5fr),
@@ -722,9 +726,9 @@ enabling operators to discuss the impact assessment interactively.
   caption: [EU AI Act article-level compliance mapping.],
 ) <tab:euai-mapping>
 
-== Korean AI Basic Act (2024.12)
+== Korean AI Basic Act (passed 2024.12, effective 2026.1)
 
-Korea's AI Basic Act (enacted December 2024) @koreaaiact2024 introduces a domestic
+Korea's AI Basic Act (passed by the National Assembly December 2024, promulgated January 2025, effective January 2026) @koreaaiact2024 introduces a domestic
 high-risk AI classification framework.
 Financial product recommendation falls within the high-risk category,
 requiring impact assessment, transparency obligations, and human oversight.

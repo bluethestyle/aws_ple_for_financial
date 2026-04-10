@@ -165,7 +165,7 @@ Amazon과 Netflix는 이 접근법의 변형을 대규모로 사용한다.
 EU AI Act @euaiact2024 는 금융 신용/추천을 고위험 AI로 분류하며,
 투명성(제13조), 인간 감독(제14조), 정확성(제15조)을 의무화한다.
 EBA @eba2025ml 는 내부 리스크 평가에서 "해석 가능한" 모델을 요구한다.
-한국 AI 기본법 @koreaaiact2024 (2024년 12월)은 국내 고영향 AI 분류를 추가한다.
+한국 AI 기본법 @koreaaiact2024 (2024년 12월 국회 통과, 2025년 1월 공포)은 국내 고영향 AI 분류를 추가한다.
 
 #cite(<pearl2009causality>) 은 진정한 설명에는 단순한 통계적 연관이 아닌
 인과적 이해가 필요하다고 주장하며 --- 이는 실제 의사결정 메커니즘을 반영하는
@@ -677,6 +677,8 @@ AWS 환경에서는 Sonnet이 diff를 읽고 하류 영향을 추론하여
 
 == 한국 금감원 가이드라인 매핑
 
+@tab:fss-mapping 은 한국 금감원 AI 가이드라인의 주요 요구사항과 본 시스템의 대응 구성요소를 매핑한다. 각 요구사항에 대해 시스템 구성요소와 검증 방법을 명시한다.
+
 #figure(placement: top, scope: "parent",
   table(
     columns: (auto, auto, auto),
@@ -698,6 +700,8 @@ AWS 환경에서는 Sonnet이 diff를 읽고 하류 영향을 추론하여
 
 == EU AI Act 매핑
 
+@tab:euai-mapping 은 EU AI Act의 핵심 조항과 본 시스템의 준수 방식을 매핑한다. 금융 추천 시스템은 Annex III Section 5에 의해 고위험 AI로 분류되어 Title III Chapter 2의 요구사항을 충족해야 한다.
+
 #figure(placement: top, scope: "parent",
   table(
     columns: (auto, auto, auto),
@@ -714,9 +718,9 @@ AWS 환경에서는 Sonnet이 diff를 읽고 하류 영향을 추론하여
   caption: [EU AI Act 조항별 준수 매핑.],
 ) <tab:euai-mapping>
 
-== 한국 AI 기본법 (2024.12)
+== 한국 AI 기본법 (2024.12 통과, 2026.1 시행)
 
-2024년 12월 제정된 한국 인공지능 기본법은
+2024년 12월 국회를 통과하고 2025년 1월 공포된(시행: 2026년 1월) 한국 인공지능 기본법은
 AI 시스템을 위험 수준에 따라 분류하고,
 "고영향 AI"에 대해 강화된 의무를 부과한다.
 
