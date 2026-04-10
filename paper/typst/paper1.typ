@@ -301,12 +301,14 @@ each capturing a fundamentally different aspect of customer identity:
     stroke: 0.5pt,
     [*DNA*], [*Question*], [*Tasks*],
     [Engagement], [What do they _do_?], [has_nba #linebreak() engagement #linebreak() next_mcc #linebreak() mcc_trend #linebreak() top_mcc_shift],
-    [Lifecycle], [Where _are_ they?], [churn #linebreak() tenure_stage #linebreak() segment],
-    [Value], [How much are they _worth_?], [income_tier #linebreak() spend_level #linebreak() cross_sell #linebreak() stability],
+    [Lifecycle], [Where _are_ they?], [churn #linebreak() segment],
+    [Value], [How much are they _worth_?], [cross_sell #linebreak() stability],
     [Consumption], [What _will_ they buy?], [will_acquire\_\* (5), nba_primary],
   ),
   caption: [Financial DNA decomposition (Axis 1). Four irreducible dimensions of customer identity.],
 ) <tab:dna-axis>
+
+#footnote[Four tasks present in early development (income tier, tenure stage, spend level, engagement score) were removed after identifying them as deterministic feature transformations that do not constitute genuine prediction objectives.]
 
 *Axis 2: What form does the information take? (Data Modality)*
 
@@ -431,7 +433,7 @@ Four principles guide the architecture:
 + *Graceful Degradation*: Removing any single expert does not cause catastrophic performance loss.
   The remaining experts redistribute gate weights to compensate.
 + *Flexible Extensibility*: New features, tasks, or experts are added via YAML configuration,
-  not code changes. The system has been extended from 4 to 18 tasks without architectural modification.
+  not code changes. The system has been extended from 4 to 14 tasks without architectural modification.
 + *Unified Manageability*: The entire pipeline (feature engineering → training → distillation → serving → monitoring)
   is controlled by two configuration files (`pipeline.yaml` and `feature_groups.yaml`),
   reducing operational overhead for teams with limited ML engineering resources.
@@ -513,10 +515,10 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
       node((5, 6), [*Consume*], width: 19mm, fill: task-fill, name: <tg4>),
 
       // === Row 6: Task Towers ===
-      node((3, 7), [*18 Task Towers* → Predictions], width: 50mm, fill: gray-fill, name: <towers>),
+      node((3, 7), [*14 Task Towers* → Predictions], width: 50mm, fill: gray-fill, name: <towers>),
 
       // === Row 7: Knowledge Distillation ===
-      node((3, 8), [*Knowledge Distillation* → LGBM ×18], width: 50mm, fill: gray-fill, name: <kd>),
+      node((3, 8), [*Knowledge Distillation* → LGBM ×14], width: 50mm, fill: gray-fill, name: <kd>),
 
       // === Row 8: Serving ===
       node((3, 9), [*Lambda Serving* + Reason Generation], shape: fletcher.shapes.pill, width: 50mm, fill: gray-fill, name: <serve>),
@@ -856,7 +858,7 @@ that reflect the natural sequence of customer experience:
     [*Source → Target*], [*Method*], [*Customer Experience*], [*Causal Direction*],
     [has_nba → nba_primary], [output_concat], [Purchase decision → product selection], [Sequential],
     [engagement → has_nba], [hidden_concat], [Activity level → purchase probability], [Leading indicator],
-    [spend_level → will_acquire\_\*], [residual], [Spending capacity → category intent], [Enabling factor],
+    // [spend_level → will_acquire\_\*], [residual], [Spending capacity → category intent], [Enabling factor],  // removed: spend_level is a deterministic feature transformation
     [churn → has_nba], [output_concat], [Retention risk → acquisition opportunity], [Inverse correlation],
   ),
   caption: [Logit transfer relationships reflecting natural customer experience flow.],
@@ -1007,7 +1009,7 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
     align: center,
     stroke: 0.5pt,
     [*Tier*], [*Labels*], [$f_"obs"$], [$f_"noise"$], [*XGB AUC*],
-    [Easy], [segment, income_tier], [determ.], [--], [0.95--1.0],
+    [Easy], [segment], [determ.], [--], [0.95--1.0],
     [Core], [has_nba, churn_signal], [0.04], [0.68], [0.58--0.65],
     [Hard], [will_acquire\_\*], [0.03], [0.72], [0.50--0.56],
     [V.Hard], [next_mcc, top_mcc_shift], [0.02], [0.78], [0.50--0.51],
@@ -1021,7 +1023,7 @@ The ablation validates whether each expert provides a distinct "why" for differe
 confirming that heterogeneous experts are not merely a performance trick
 but a structural requirement for multi-faceted persuasion.
 
-- *Data*: 1M customers, 316 features (total), 18 tasks.
+- *Data*: 1M customers, 316 features (total), 14 tasks.
 - *Hardware*: NVIDIA RTX 4070 (12GB) local; AWS g4dn.xlarge Spot (T4 16GB) cloud.
 - *Training*: 10 epochs (single phase), batch 4096, lr 0.008 (shared-bottom: lr 0.003, batch 2048), FP32, no early stopping. adaTT scenarios use warmup=3 epochs, freeze at epoch 8, gradient extraction every 10 steps.
 - *Metrics*: AUC (binary), F1 macro (classification), MAE/R² (regression).
@@ -1117,7 +1119,7 @@ Removing Temporal or TDA _improves_ aggregate AUC, indicating negative transfer 
 
 == Explainability Analysis (RQ5)
 
-The sigmoid CGC gate produces sparse, interpretable routing weights: each expert receives a non-negative weight independent of other experts, enabling direct attribution of "which expert contributed how much" per task. Unlike softmax gates where weights are coupled through the normalization denominator, sigmoid weights allow a task to strongly activate multiple experts simultaneously or suppress all but one. We examine per-task gate weight distributions across all 18 tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition (e.g., temporal expert weighted highly for churn prediction, causal expert for intervention-sensitive tasks).
+The sigmoid CGC gate produces sparse, interpretable routing weights: each expert receives a non-negative weight independent of other experts, enabling direct attribution of "which expert contributed how much" per task. Unlike softmax gates where weights are coupled through the normalization denominator, sigmoid weights allow a task to strongly activate multiple experts simultaneously or suppress all but one. We examine per-task gate weight distributions across all 14 tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition (e.g., temporal expert weighted highly for churn prediction, causal expert for intervention-sensitive tasks).
 
 // TODO: Extract gate weight examples from ple_sigmoid checkpoints
 
@@ -1134,7 +1136,7 @@ Maximum entropy $log K$ (K=7 experts, $log 7 approx 1.95$) indicates
 uniform expert utilization; entropy near zero indicates routing collapse.
 
 We compare gate entropy between softmax and sigmoid CGC gates
-across all 18 tasks, reporting mean entropy, minimum entropy (worst-case task),
+across all 14 tasks, reporting mean entropy, minimum entropy (worst-case task),
 and expert utilization rate (fraction of experts with $w > 0.05$).
 
 // TODO: Compare ple_softmax vs ple_sigmoid checkpoints
@@ -1427,7 +1429,7 @@ and 6 top-down scenarios (full minus one expert-feature pair).
 *Phase 2 --- Task x Structure Cross Ablation (6 scenarios):*
 Six structural variants --- shared-bottom (no PLE/adaTT), PLE-softmax, PLE-sigmoid,
 adaTT-only, PLE-softmax+adaTT, PLE-sigmoid+adaTT ---
-all using the full 18 tasks and 7 heterogeneous experts with 20 epochs.
+all using the full 14 tasks and 7 heterogeneous experts with 10 epochs.
 
 #heading(numbering: none, level: 3)[C. Benchmark Data Generation]
 

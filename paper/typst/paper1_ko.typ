@@ -299,12 +299,14 @@ EU AI Act #cite(<euaiact2024>) 는 금융 추천을 고위험 AI로 분류하여
     stroke: 0.5pt,
     [*DNA*], [*질문*], [*태스크*],
     [활동(Engagement)], [고객이 무엇을 _하는가_?], [has_nba #linebreak() engagement #linebreak() next_mcc #linebreak() mcc_trend #linebreak() top_mcc_shift],
-    [생애주기(Lifecycle)], [고객이 어디에 _있는가_?], [churn #linebreak() tenure_stage #linebreak() segment],
-    [가치(Value)], [고객의 _가치_는 얼마인가?], [income_tier #linebreak() spend_level #linebreak() cross_sell #linebreak() stability],
+    [생애주기(Lifecycle)], [고객이 어디에 _있는가_?], [churn #linebreak() segment],
+    [가치(Value)], [고객의 _가치_는 얼마인가?], [cross_sell #linebreak() stability],
     [소비(Consumption)], [고객이 무엇을 _구매할 것인가_?], [will_acquire\_\* (5), nba_primary],
   ),
   caption: [금융 DNA 분해 (축 1). 고객 정체성의 4개 환원 불가능한 차원.],
 ) <tab:dna-axis>
+
+#footnote[초기 개발 단계에 포함되었던 4개 태스크(소득 구간, 재직 단계, 소비 수준, 참여 점수)는 결정론적 피처 변환으로 확인되어 진정한 예측 목표가 아니므로 제거하였다.]
 
 *축 2: 정보는 어떤 형태를 가지는가? (데이터 모달리티)*
 
@@ -421,7 +423,7 @@ Google의 PageRank는 마르코프 체인 정상 분포의 응용이다.
 + *우아한 성능 저하*: 단일 전문가를 제거해도 치명적 성능 하락이 발생하지 않는다.
   나머지 전문가가 게이트 가중치를 재분배하여 보상한다.
 + *유연한 확장성*: 새로운 피처, 태스크, 전문가는 코드 변경이 아닌 YAML 설정으로 추가된다.
-  시스템은 4개에서 18개 태스크로 아키텍처 수정 없이 확장되었다.
+  시스템은 4개에서 14개 태스크로 아키텍처 수정 없이 확장되었다.
 + *통합 관리성*: 전체 파이프라인(피처 엔지니어링 → 학습 → 증류 → 서빙 → 모니터링)이
   2개의 설정 파일(`pipeline.yaml` 및 `feature_groups.yaml`)로 제어되어,
   제한된 ML 엔지니어링 리소스를 가진 팀의 운영 부담을 줄인다.
@@ -504,10 +506,10 @@ Google의 PageRank는 마르코프 체인 정상 분포의 응용이다.
       node((5, 6), [*소비*], width: 19mm, fill: task-fill, name: <tg4>),
 
       // === Row 6: 태스크 타워 ===
-      node((3, 7), [*18 태스크 타워* → 예측], width: 50mm, fill: gray-fill, name: <towers>),
+      node((3, 7), [*14 태스크 타워* → 예측], width: 50mm, fill: gray-fill, name: <towers>),
 
       // === Row 7: 지식 증류 ===
-      node((3, 8), [*지식 증류* → LGBM ×18], width: 50mm, fill: gray-fill, name: <kd>),
+      node((3, 8), [*지식 증류* → LGBM ×14], width: 50mm, fill: gray-fill, name: <kd>),
 
       // === Row 8: 서빙 ===
       node((3, 9), [*Lambda 서빙* + 추천 사유 생성], shape: fletcher.shapes.pill, width: 50mm, fill: gray-fill, name: <serve>),
@@ -704,7 +706,7 @@ Sigmoid 변형은 각 전문가의 관련성을 정규화 전에 독립적으로
 예를 들어, 이탈 예측은 시간적 추세 _와_ 인과 경로 양쪽에서 혜택을 받으며,
 어느 쪽도 다른 쪽을 높이기 위해 억제되어서는 안 된다.
 구조 어블레이션(5.5절)에서 수렴 행동을 평가하기 위해
-20 에포크 학습으로 이 게이트 유형들을 비교한다.
+10 에포크 학습으로 이 게이트 유형들을 비교한다.
 
 === Temporal Ensemble: 전문가 내의 전문가
 
@@ -846,7 +848,7 @@ _방향적_ 의존관계를 포착한다:
     [*소스 → 타겟*], [*방법*], [*고객 경험*], [*인과 방향*],
     [has_nba → nba_primary], [output_concat], [구매 결정 → 상품 선택], [순차적],
     [engagement → has_nba], [hidden_concat], [활동 수준 → 구매 확률], [선행 지표],
-    [spend_level → will_acquire\_\*], [residual], [소비 역량 → 카테고리 의향], [가능 요인],
+    // [spend_level → will_acquire\_\*], [residual], [소비 역량 → 카테고리 의향], [가능 요인],  // 제거됨: spend_level은 결정론적 피처 변환
     [churn → has_nba], [output_concat], [이탈 위험 → 획득 기회], [역상관],
   ),
   caption: [자연스러운 고객 경험 흐름을 반영하는 로짓 전이 관계.],
@@ -968,7 +970,7 @@ Synthetic Data Vault 프레임워크 #cite(<patki2016sdv>) 와
     align: center,
     stroke: 0.5pt,
     [*난이도*], [*레이블*], [$f_"obs"$], [$f_"noise"$], [*XGB AUC*],
-    [Easy], [segment, income_tier], [determ.], [--], [0.95--1.0],
+    [Easy], [segment], [determ.], [--], [0.95--1.0],
     [Core], [has_nba, churn_signal], [0.04], [0.68], [0.58--0.65],
     [Hard], [will_acquire\_\*], [0.03], [0.72], [0.50--0.56],
     [V.Hard], [next_mcc, top_mcc_shift], [0.02], [0.78], [0.50--0.51],
@@ -982,9 +984,9 @@ Synthetic Data Vault 프레임워크 #cite(<patki2016sdv>) 와
 이종 전문가가 단순한 성능 트릭이 아니라
 다면적 설득을 위한 구조적 요건임을 확인한다.
 
-- *데이터*: 100만 고객, 316개 피처(전체), 18개 태스크.
+- *데이터*: 100만 고객, 316개 피처(전체), 14개 태스크.
 - *하드웨어*: NVIDIA RTX 4070 (12GB) 로컬; AWS g4dn.xlarge Spot (T4 16GB) 클라우드.
-- *학습*: 20 에포크 (단일 페이즈), 배치 4096, lr 0.008 (shared-bottom: lr 0.003, 배치 2048), FP32, 조기 종료 patience 5.
+- *학습*: 10 에포크 (단일 페이즈), 배치 4096, lr 0.008 (shared-bottom: lr 0.003, 배치 2048), FP32, 조기 종료 없음.
 - *지표*: AUC (이진), F1 macro (분류), MAE/R² (회귀).
 
 == 피처 + 전문가 결합 어블레이션 (RQ1 + RQ2)
@@ -1026,7 +1028,7 @@ Synthetic Data Vault 프레임워크 #cite(<patki2016sdv>) 와
 
 == 태스크 × 구조 교차 어블레이션 (RQ3)
 
-6개 구조 변형을 비교한다: shared-bottom (PLE/adaTT 없음), PLE-softmax, PLE-sigmoid, adaTT 단독, PLE-softmax+adaTT, PLE-sigmoid+adaTT. 모든 변형은 게이트 유형 간 수렴 행동 차이를 평가하기 위해 7개 이종 전문가 바스켓 전체와 20 에포크를 사용한다.
+6개 구조 변형을 비교한다: shared-bottom (PLE/adaTT 없음), PLE-softmax, PLE-sigmoid, adaTT 단독, PLE-softmax+adaTT, PLE-sigmoid+adaTT. 모든 변형은 게이트 유형 간 수렴 행동 차이를 평가하기 위해 7개 이종 전문가 바스켓 전체와 10 에포크를 사용한다.
 
 #figure(
   table(
@@ -1058,21 +1060,21 @@ Synthetic Data Vault 프레임워크 #cite(<patki2016sdv>) 와
     align: center,
     stroke: 0.5pt,
     table.header(
-      [*제거된 전문가*], [*ΔAUC*], [*ΔVal Loss*],
+      [*제거된 전문가*], [*ΔAUC*], [*해석*],
     ),
-    [Temporal], [+0.0283], [--],
-    [TDA], [+0.0238], [--],
-    [Causal], [+0.0170], [--],
-    [OT], [+0.0163], [--],
-    [LightGCN], [−0.0173], [--],
-    [HGCN], [−0.0478], [--],
+    [Temporal], [+0.0283], [부정적 전이 (negative transfer)],
+    [TDA], [+0.0238], [부정적 전이 (negative transfer)],
+    [Causal], [+0.0170], [부정적 전이 (negative transfer)],
+    [OT], [+0.0163], [부정적 전이 (negative transfer)],
+    [LightGCN], [−0.0173], [유익한 기여],
+    [HGCN], [−0.0478], [구조적 핵심 전문가],
   ),
   caption: [우아한 성능 저하: 전체 모델(AUC 0.5470)에서 각 전문가 제거 시 AUC 변화. 양수 ΔAUC는 해당 전문가 제거 시 성능 향상(negative transfer), 음수는 성능 하락(필수 기여)을 나타낸다.],
 ) <tab:degradation>
 
 == 설명 가능성 분석 (RQ5)
 
-Sigmoid CGC 게이트는 희소하고 해석 가능한 라우팅 가중치를 생성한다: 각 전문가는 다른 전문가와 독립적으로 비음수 가중치를 받으므로, 태스크별 "어떤 전문가가 얼마나 기여했는지"를 직접 귀인할 수 있다. 정규화 분모를 통해 가중치가 결합되는 softmax 게이트와 달리, sigmoid 가중치는 태스크가 여러 전문가를 동시에 강하게 활성화하거나 하나만 남기고 모두 억제하는 것을 허용한다. 18개 전체 태스크에 걸쳐 태스크별 게이트 가중치 분포를 조사하여 (a) 어떤 전문가가 어떤 태스크 유형을 지배하는지, (b) 학습된 라우팅이 도메인 직관과 일치하는지(예: 이탈 예측에서 시계열 전문가의 높은 가중치, 개입 민감 태스크에서 인과 전문가의 높은 가중치) 확인한다.
+Sigmoid CGC 게이트는 희소하고 해석 가능한 라우팅 가중치를 생성한다: 각 전문가는 다른 전문가와 독립적으로 비음수 가중치를 받으므로, 태스크별 "어떤 전문가가 얼마나 기여했는지"를 직접 귀인할 수 있다. 정규화 분모를 통해 가중치가 결합되는 softmax 게이트와 달리, sigmoid 가중치는 태스크가 여러 전문가를 동시에 강하게 활성화하거나 하나만 남기고 모두 억제하는 것을 허용한다. 14개 전체 태스크에 걸쳐 태스크별 게이트 가중치 분포를 조사하여 (a) 어떤 전문가가 어떤 태스크 유형을 지배하는지, (b) 학습된 라우팅이 도메인 직관과 일치하는지(예: 이탈 예측에서 시계열 전문가의 높은 가중치, 개입 민감 태스크에서 인과 전문가의 높은 가중치) 확인한다.
 
 // TODO: ple_sigmoid 체크포인트에서 게이트 가중치 예시 추출
 
@@ -1088,7 +1090,7 @@ $ H_t = - sum_k w_(t,k) log w_(t,k) $
 최대 엔트로피 $log K$ (K=7 전문가, $log 7 approx 1.95$)는
 균일한 전문가 활용을 나타내며, 0에 가까운 엔트로피는 라우팅 붕괴를 나타낸다.
 
-18개 전체 태스크에 걸쳐 softmax와 sigmoid CGC 게이트 간의 게이트 엔트로피를 비교하며,
+14개 전체 태스크에 걸쳐 softmax와 sigmoid CGC 게이트 간의 게이트 엔트로피를 비교하며,
 평균 엔트로피, 최소 엔트로피(최악의 태스크), 전문가 활용률($w > 0.05$인 전문가 비율)을 보고한다.
 
 // TODO: ple_softmax vs ple_sigmoid 체크포인트 비교
@@ -1281,7 +1283,7 @@ AWS 배포 설정) 및 `feature_groups.yaml` (피처 그룹 정의,
 *Phase 2 --- 태스크 × 구조 교차 어블레이션 (6개 시나리오):*
 6개 구조 변형 --- shared-bottom (PLE/adaTT 없음), PLE-softmax, PLE-sigmoid,
 adaTT 단독, PLE-softmax+adaTT, PLE-sigmoid+adaTT ---
-모두 18개 태스크 전체와 7개 이종 전문가를 사용하며 20 에포크로 수행.
+모두 14개 태스크 전체와 7개 이종 전문가를 사용하며 10 에포크로 수행.
 
 #heading(numbering: none, level: 3)[C. 벤치마크 데이터 생성]
 
@@ -1296,7 +1298,7 @@ adaTT 단독, PLE-softmax+adaTT, PLE-sigmoid+adaTT ---
 
 #heading(numbering: none, level: 3)[D. FP32 학습 결정]
 
-온프렘과 동일한 활성화 함수를 사용하는 이종 전문가(ODE 기반 LNN, 선형 HGCN 출력, Softplus TDA 가중치)는 동질적 MLP보다 중간 활성값 범위가 넓다. AMP(FP16)에서 이는 보수적인 GradScaler 설정(init\_scale=1024, max\_scale=4096)에도 불구하고 에포크 2부터 일관되게 NaN 손실을 유발하는 GradScaler 오버플로로 이어졌다. FP32 학습은 전체 20 에포크 실행에서 NaN 배치 0건으로 이 문제를 완전히 제거하며, 약 1.5배 느린 학습 시간이라는 대가를 수반한다. 이 트레이드오프는 각 전문가의 귀납적 편향에 대한 수학적 의미를 보존하며, 이는 이종 아키텍처의 핵심 설계 원리이다.
+온프렘과 동일한 활성화 함수를 사용하는 이종 전문가(ODE 기반 LNN, 선형 HGCN 출력, Softplus TDA 가중치)는 동질적 MLP보다 중간 활성값 범위가 넓다. AMP(FP16)에서 이는 보수적인 GradScaler 설정(init\_scale=1024, max\_scale=4096)에도 불구하고 에포크 2부터 일관되게 NaN 손실을 유발하는 GradScaler 오버플로로 이어졌다. FP32 학습은 전체 10 에포크 실행에서 NaN 배치 0건으로 이 문제를 완전히 제거하며, 약 1.5배 느린 학습 시간이라는 대가를 수반한다. 이 트레이드오프는 각 전문가의 귀납적 편향에 대한 수학적 의미를 보존하며, 이는 이종 아키텍처의 핵심 설계 원리이다.
 
 #heading(numbering: none, level: 3)[E. 구조적 동형사상 검증]
 

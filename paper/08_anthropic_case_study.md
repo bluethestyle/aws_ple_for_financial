@@ -10,7 +10,7 @@
 ### Anthropic 관점에서의 매력 포인트
 
 **1. 생산성 혁신 (Productivity)**
-- PM 1 + 팀원 2 → 18-task, 7-expert, 48-scenario ablation 시스템 구축
+- PM 1 + 팀원 2 → 14-task, 7-expert, 48-scenario ablation 시스템 구축
 - Claude Opus: 아키텍처 설계, 기술 검증, 복잡한 버그 진단
 - Claude Sonnet: 코드 구현, 리팩토링, 병렬 작업
 - Cursor + Claude Code Extension + Teams: 도구별 특화 활용
