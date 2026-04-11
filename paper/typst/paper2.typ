@@ -367,7 +367,7 @@ This avoids conflating metrics with incompatible semantics across task types.
   table(
     columns: (auto, auto, auto, auto),
     inset: 5pt,
-    align: center,
+    align: (left, right, right, right),
     stroke: 0.5pt,
     [*Task*], [*Teacher*], [*Student*], [*Gap*],
     [has_nba (AUC)], [--], [--], [--],
@@ -1080,7 +1080,7 @@ satisfying both SR 11-7 expectations and EU AI Act Art. 9 risk management requir
   table(
     columns: (auto, auto, auto, auto, auto),
     inset: 5pt,
-    align: center,
+    align: (left, right, right, right, right),
     stroke: 0.5pt,
     [*Method*], [*Accuracy*], [*Natural.*], [*Persuasion*], [*Compliance*],
     [Template], [--], [--], [--], [--],
@@ -1096,7 +1096,7 @@ satisfying both SR 11-7 expectations and EU AI Act Art. 9 risk management requir
   table(
     columns: (auto, auto, auto, auto),
     inset: 5pt,
-    align: center,
+    align: (left, right, right, right),
     stroke: 0.5pt,
     [*Check*], [*Precision*], [*Recall*], [*Fallback Rate*],
     [Hallucination], [--], [--], [--],
@@ -1113,7 +1113,7 @@ satisfying both SR 11-7 expectations and EU AI Act Art. 9 risk management requir
   table(
     columns: (1fr, auto, auto, 1fr),
     inset: 5pt,
-    align: center,
+    align: (left, left, right, left),
     stroke: 0.5pt,
     [*Component*], [*Latency*], [*Cost/1K req*], [*Notes*],
     [LGBM inference], [< 10ms], [--], [Lambda CPU],

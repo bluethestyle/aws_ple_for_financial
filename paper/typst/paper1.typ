@@ -57,7 +57,7 @@
   share a common basket, providing a *structural guarantee* against expert collapse:
   experts with fundamentally different inductive biases cannot converge to the same function.
   A *FeatureRouter* further assigns each expert only its designated feature groups
-  (per-expert input dims: 32D--129D from a 316D total space),
+  (per-expert input dims: 27D--168D from a 350D total space),
   realizing "heterogeneous architecture × heterogeneous input" specialization
   and reducing model parameters from 4.77M to ~2.8M.
   CGC gates learn task-specific expert compositions whose weights
@@ -145,7 +145,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Heterogeneous Shared Expert Basket with Structural Collapse Guarantee*: We replace PLE's homogeneous MLP experts with seven architecturally distinct experts (DeepFM, Mamba+LNN+Transformer, HGCN, PersLay, NOTEARS, LightGCN, Optimal Transport). Unlike prior "heterogeneous" MoE work that varies expert _size_ @mowst2024 or _modality_ @jamba2024, we vary the fundamental _inductive bias_, providing a structural guarantee against expert collapse --- a persistent failure mode in homogeneous MoE/PLE deployments @home2024.
 
-+ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via `feature_groups.yaml`), not the full 316D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 32D--129D), reducing model parameters from 4.77M to ~2.8M while strengthening each expert's specialization.
++ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via `feature_groups.yaml` `target_experts` field, group-level routing), not the full 350D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 27D--168D), reducing model parameters from 4.77M to ~2.8M while strengthening each expert's specialization.
 
 + *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), CGC gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
 
@@ -310,6 +310,12 @@ each capturing a fundamentally different aspect of customer identity:
 
 #footnote[Four tasks present in early development (income tier, tenure stage, spend level, engagement score) were removed after identifying them as deterministic feature transformations that do not constitute genuine prediction objectives.]
 
+*nba_primary target design.* `nba_primary` targets _product groups_ (7 classes), not individual product indices.
+The 7 classes are: 0 = no NBA, 1 = savings/guarantee, 2 = checking accounts, 3 = deposits, 4 = investments, 5 = credit loans, 6 = debits.
+This redesign (from 25 individual-product classes) achieves better class balance and enables meaningful ranking-based evaluation.
+The original 25-way classification had a long-tail distribution in which rare products dominated macro-F1,
+making standard F1-macro unreliable; NDCG\@K is appropriate for the group-level ranking objective.
+
 *Axis 2: What form does the information take? (Data Modality)*
 
 Customer data exists in structurally distinct modalities,
@@ -329,7 +335,7 @@ each requiring a different mathematical tool to extract meaningful signals:
     [Short-term series], [recent transactions], [Transformer], [temporal],
     [Long-term series], [monthly trends], [Mamba], [mamba temporal],
     [Disrupted series], [dormant→active], [LNN], [model derived],
-    [Hierarchy], [product category tree], [HGCN], [product hierarchy],
+    [Hierarchy], [MCC merchant category tree], [HGCN], [merchant_hierarchy],
     [Relations], [customer-product graph], [LightGCN], [graph collab.],
     [Topology], [behavioral shape], [PersLay], [TDA global/local],
     [Causality], [behavioral causation], [Causal], [causal features],
@@ -472,7 +478,7 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
       node-corner-radius: 3pt,
 
       // === Row 0: Input ===
-      node((3, 0), [*Input* \ 316D total], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
+      node((3, 0), [*Input* \ 350D total], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
 
       // === Row 1: Feature Groups ===
       node((3, 1), [*12 Feature Groups*], width: 32mm, fill: gray-fill, name: <fg>),
@@ -589,7 +595,7 @@ is processed by an architecture designed for it:
     [*Expert*], [*Inductive Bias*], [*Captures*],
     [DeepFM @guo2017], [Feature interaction], [2nd-order cross features],
     [Temporal Ensemble], [Multi-scale temporal], [Short/long/disrupted series],
-    [HGCN @chami2019], [Hyperbolic hierarchy], [Product category tree],
+    [HGCN @chami2019], [Hyperbolic hierarchy], [MCC merchant category tree (Poincaré)],
     [PersLay @carriere2020], [Topological persistence], [Behavioral shape patterns],
     [LightGCN @he2020lightgcn], [Graph convolution], [Collaborative filtering],
     [Causal @zheng2018notears], [DAG constraint], [Causal direction between features],
@@ -610,10 +616,19 @@ in financial customer understanding that no other expert type addresses:
   vs. $O(n^2)$ for brute-force enumeration,
   while the Deep component captures higher-order interactions.
 
-- *HGCN* @chami2019: Financial product catalogs (MCC codes: 10 L1 / 30 L2 / 109 leaf)
-  are inherently tree-structured.
+- *HGCN* @chami2019: The MCC merchant category hierarchy (10 L1 categories → 30 L2 subcategories → 109 leaf codes)
+  is inherently tree-structured.
   Hyperbolic space (Poincaré ball, 8D) embeds trees with exponentially less distortion
   than Euclidean space @nickel2017poincare --- critical for a 550K-node merchant hierarchy.
+  HGCN receives `merchant_hierarchy` features (27D Poincaré embeddings) via FeatureRouter,
+  not product co-holding features (those belong to LightGCN's `product_hierarchy` group).
+
+  HGCN and LightGCN serve distinct roles that were inadvertently conflated in early experiments.
+  HGCN embeds the MCC merchant category hierarchy (L1: 10 categories → L2: 30 subcategories) into
+  Poincaré disk space, capturing tree-structured category relationships.
+  LightGCN learns customer-product bipartite affinity via collaborative filtering on the 24-product co-holding graph.
+  The `feature_groups.yaml` `target_experts` declarations enforce this separation:
+  `merchant_hierarchy` → HGCN only, `product_hierarchy` → LightGCN only.
 
 - *PersLay* @carriere2020: Topological Data Analysis captures _shape_ features
   (connected components $H_0$, cycles $H_1$, voids $H_2$) of customer spending patterns.
@@ -642,7 +657,7 @@ with a single desktop GPU (12GB VRAM), we cannot scale a homogeneous MLP expert
 to sufficient width/depth for high expressiveness.
 Instead, each expert leverages a _structural inductive bias_ to capture patterns
 that would require orders of magnitude more MLP parameters.
-For example, HGCN embeds a product hierarchy tree in 32 hyperbolic dimensions ---
+For example, HGCN embeds the MCC merchant category hierarchy in 27 hyperbolic dimensions ---
 achieving in $O(d)$ parameters what Euclidean embeddings require $O(2^d)$ dimensions to represent
 without distortion @chami2019.
 
@@ -674,18 +689,18 @@ The resulting per-expert input dimensions are:
     align: left,
     stroke: 0.5pt,
     [*Expert*], [*Input Dim*], [*Feature Groups Routed*],
-    [DeepFM], [109D], [state, snapshot, GMM clusters, model-derived],
-    [Temporal Ensemble], [129D], [temporal sequences, spending dynamics],
-    [HGCN], [34D], [product hierarchy, MCC embeddings],
-    [PersLay], [32D], [TDA persistence diagrams (Betti numbers)],
-    [Causal], [103D], [state, snapshot, causal graph features],
-    [LightGCN], [66D], [graph collaborative features, OT features],
-    [Optimal Transport], [69D], [distribution shift, segment prototypes],
+    [DeepFM], [168D], [demographics, products, txn_behavior, derived_temporal, gmm, model_derived],
+    [Temporal Ensemble], [139D], [txn_behavior, hmm, mamba, model_derived],
+    [HGCN], [27D], [merchant_hierarchy (MCC Poincaré embeddings)],
+    [PersLay], [32D], [tda_global, tda_local],
+    [Causal], [161D], [demographics, products, txn, derived_temporal, product_hierarchy, gmm],
+    [LightGCN], [100D], [product_hierarchy, graph_collaborative],
+    [Optimal Transport], [127D], [demographics, products, txn, derived_temporal, gmm],
   ),
-  caption: [Per-expert input dimensions after FeatureRouter. Total feature space: 316D.],
+  caption: [Per-expert input dimensions after FeatureRouter. Total feature space: 350D (Phase 0 v3/v4).],
 ) <tab:feature-router>
 
-The sum of per-expert dimensions (703D) exceeds 316D because several feature groups
+The sum of per-expert dimensions (703D) exceeds 350D because several feature groups
 are shared across multiple experts where complementary inductive biases
 benefit from the same signal (e.g., state features are useful to both DeepFM
 for interaction modeling and Causal for DAG structure inference).
@@ -759,7 +774,7 @@ that each extract a structurally different signal from the same underlying data.
     stroke: 0.5pt,
     [*Discipline*], [*Method*], [*Dim*], [*Financial Interpretation*],
     [Topology], [Persistent Homology (TDA)], [32], [Behavioral shape persistence: which consumption patterns are transient vs. structural],
-    [Hyperbolic Geometry], [HGCN embedding], [34], [Product category distance: preserving hierarchy in low dimensions],
+    [Hyperbolic Geometry], [HGCN embedding], [27], [MCC merchant category distance: preserving hierarchy in low dimensions],
     [Control Theory], [Mamba (State Space)], [50], [Long-range behavioral dependencies: how past habits influence present],
     [Stochastic Processes], [HMM state transitions], [25], [Latent lifecycle stages: dormant → growing → mature → at-risk],
     [Chemical Kinetics], [Reaction rate modeling], [6], [Spending activation rate, half-life, dormancy reactivation catalysis],
@@ -774,9 +789,11 @@ that each extract a structurally different signal from the same underlying data.
   caption: [Multi-disciplinary feature engineering across 11 academic disciplines.],
 ) <tab:multidisciplinary>
 
-#text(size: 8.5pt, fill: gray)[_Note_: Total 269 generated features + 47 base features = 316.
-    FeatureRouter routes feature subsets to each expert (per-expert dims: DeepFM 109D, Temporal 129D,
-    HGCN 34D, PersLay 32D, Causal 103D, LightGCN 66D, OT 69D); model parameters: ~2.8M.]
+#text(size: 8.5pt, fill: gray)[_Note_: Phase 0 v3/v4 produces 350 total features (up from 316 in earlier versions).
+    FeatureRouter routes feature subsets to each expert (per-expert dims from Phase 0 v3: DeepFM 168D, Temporal 139D,
+    HGCN 27D, PersLay 32D, Causal 161D, LightGCN 100D, OT 127D); model parameters: ~2.8M.
+    Expert routing is built from `feature_groups.yaml` `target_experts` declarations (group-level),
+    ensuring each expert receives only its designated feature groups.]
 
 Several of these applications are, to our knowledge, novel in financial recommendation:
 
@@ -903,7 +920,7 @@ $w_(t,k)$ carries business meaning without additional interpretation:
   #text(size: 9pt)[
     _Example_: For customer $c$, the recommendation of investment funds is driven by: \
     #h(1em) Temporal (0.35) --- spending has been increasing over 3 months \
-    #h(1em) HGCN (0.28) --- current products are structurally close to investment category \
+    #h(1em) HGCN (0.28) --- merchant category hierarchy places investment MCC near current spending \
     #h(1em) DeepFM (0.22) --- income × product-holding interaction pattern \
     #h(1em) Others (0.15)
   ]
@@ -1006,7 +1023,7 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
   table(
     columns: (auto, auto, auto, auto, auto),
     inset: 5pt,
-    align: center,
+    align: (left, left, right, right, right),
     stroke: 0.5pt,
     [*Tier*], [*Labels*], [$f_"obs"$], [$f_"noise"$], [*XGB AUC*],
     [Easy], [segment], [determ.], [--], [0.95--1.0],
@@ -1017,11 +1034,15 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
   caption: [Variance budget per label tier. XGB AUC ceiling validates difficulty control.],
 ) <tab:variance-budget>
 
-The benchmark underwent two iterations: v2 used uniform-random MCC codes and fixed transaction
-amounts across personas, producing near-random labels for MCC-dependent tasks.
-v3 (reported here) introduces persona-weighted MCC distributions with temporal stickiness,
-persona-dependent transaction amounts, and quantile-based label boundaries,
-producing meaningful variation in all 14 tasks.
+The benchmark underwent three iterations.
+v2 used uniform-random MCC codes and fixed transaction amounts across personas, with a 3% has_nba positive rate,
+producing near-random labels for MCC-dependent tasks.
+v3 introduced persona-weighted MCC distributions (4--5× boost) with temporal stickiness (30%),
+persona-dependent transaction amounts, and quantile-based spend_level boundaries,
+improving MCC task signal but still yielding near-uniform label distributions for acquisition tasks.
+v4 (reported here) sharpens persona MCC preferences (8--12× boost), increases temporal stickiness to 60%,
+raises acquisition rates (has_nba 40%, per-product 8--12%), and widens the top_mcc_shift detection window
+to 30 transactions --- producing meaningful class distributions for all 14 tasks.
 
 == Experimental Setup
 
@@ -1029,10 +1050,17 @@ The ablation validates whether each expert provides a distinct "why" for differe
 confirming that heterogeneous experts are not merely a performance trick
 but a structural requirement for multi-faceted persuasion.
 
-- *Data*: 1M customers, 316 features (total), 14 tasks.
+- *Data*: 1M customers, 350 features (total, Phase 0 v3/v4), 14 tasks.
 - *Hardware*: NVIDIA RTX 4070 (12GB) local; AWS g4dn.xlarge Spot (T4 16GB) cloud.
 - *Training*: 10 epochs (single phase), batch 4096, lr 0.008 (shared-bottom: lr 0.003, batch 2048), FP32, no early stopping. adaTT scenarios use warmup=3 epochs, freeze at epoch 8, gradient extraction every 10 steps.
-- *Metrics*: AUC (binary), F1 macro (classification), MAE/R² (regression).
+- *Metrics*: Metrics are chosen to match each task's production semantic.
+  Binary classification uses AUC (threshold-independent and imbalance-robust).
+  Classification multiclass (segment_prediction, 4 classes) uses F1-macro.
+  Recommendation multiclass (nba_primary with 7 product groups, next_mcc with top-50 merchant categories)
+  uses NDCG\@K and top-K accuracy @jarvelin2002ndcg, reflecting standard recommendation system evaluation practice.
+  Regression uses MAE.
+  Metrics are reported per task type; a global average across all 14 tasks is avoided
+  because metrics have incompatible semantics across types.
 
 == Joint Feature + Expert Ablation (RQ1 + RQ2)
 
@@ -1042,10 +1070,10 @@ but a structural requirement for multi-faceted persuasion.
   table(
     columns: (auto, auto, auto, auto, auto),
     inset: 4pt,
-    align: center,
+    align: (left, right, right, right, right),
     stroke: 0.5pt,
     table.header(
-      [*Scenario*], [*Avg AUC*], [*Avg F1m*], [*Avg MAE*], [*Val Loss*],
+      [*Scenario*], [*Avg AUC*], [*Avg F1m†*], [*Avg MAE*], [*Val Loss*],
     ),
     table.cell(colspan: 5, align: left, [_Baselines_]),
     [DeepFM + base feats], [0.5632], [0.4428], [0.1541], [30.56],
@@ -1068,7 +1096,7 @@ but a structural requirement for multi-faceted persuasion.
     [Full − LightGCN], [0.5298], [0.2279], [0.1692], [31.89],
     [Full − HGCN], [0.4992], [0.2755], [0.1715], [31.54],
   ),
-  caption: [Joint feature + expert ablation. Bottom-up adds one generator to DeepFM baseline; top-down removes one expert from the full 7-expert model. Bold = best in group.],
+  caption: [Joint feature + expert ablation. Bottom-up adds one generator to DeepFM baseline; top-down removes one expert from the full 7-expert model. Bold = best in group. †Avg F1m covers segment\_prediction (F1-macro); nba\_primary and next\_mcc use NDCG\@3/Acc\@3 in per-task reporting.],
 ) <tab:joint-ablation>
 
 TDA (PersLay) and LightGCN provide the largest per-expert AUC gains (+0.011 each over baseline). Temporal ensemble shows negative transfer (−0.013), attributed to synthetic transaction sequences lacking real temporal patterns. The full 7-expert model underperforms single-expert additions at 10 epochs, suggesting insufficient convergence for the larger parameter space.
@@ -1081,10 +1109,10 @@ Six structure variants are compared: shared-bottom (no PLE/adaTT), PLE-softmax, 
   table(
     columns: (auto, auto, auto, auto, auto),
     inset: 4pt,
-    align: center,
+    align: (left, right, right, right, right),
     stroke: 0.5pt,
     table.header(
-      [*Variant*], [*Val Loss*], [*Avg AUC*], [*Avg F1m*], [*Avg MAE*],
+      [*Variant*], [*Val Loss*], [*Avg AUC*], [*Avg F1m†*], [*Avg MAE*],
     ),
     [Shared Bottom], [9.978], [0.5726], [0.4931], [0.1246],
     [PLE Softmax], [8.572], [0.5684], [0.3074], [0.1275],
@@ -1093,7 +1121,7 @@ Six structure variants are compared: shared-bottom (no PLE/adaTT), PLE-softmax, 
     [PLE Softmax + adaTT], [--], [0.5693], [--], [--],
     [PLE Sigmoid + adaTT], [--], [*0.5746*], [--], [--],
   ),
-  caption: [Structure ablation: gate type and adaTT impact on convergence and task performance. Bold = best result. v3 applies uncertainty weighting sequentially before adaTT.],
+  caption: [Structure ablation: gate type and adaTT impact on convergence and task performance. Bold = best result. v3 applies uncertainty weighting sequentially before adaTT. †Avg F1m covers segment\_prediction (F1-macro); nba\_primary and next\_mcc use NDCG\@3/Acc\@3 in per-task reporting.],
 ) <tab:structure-ablation>
 
 PLE sigmoid consistently outperforms PLE softmax (+0.009 AUC), confirming the NeurIPS 2024 finding that independent per-expert gating avoids the zero-sum competition inherent in softmax normalization. adaTT results required three iterations to debug: (1) gradient extraction frequency (epoch-only → every 10 steps), (2) config loading path (root YAML not read), (3) loss structure (either/or → sequential uncertainty + adaTT). v3 applies uncertainty weighting _before_ adaTT (sequential, not either/or). The sigmoid + adaTT v3 result (AUC 0.5746) shows +0.014 improvement over v2 (0.5605). Peak AUC at epoch 6 reached 0.5786, exceeding the sigmoid-only baseline, but declined after the freeze epoch — longer training with a later freeze_epoch may resolve this.
@@ -1106,7 +1134,7 @@ We assess robustness by examining how much performance changes when each expert 
   table(
     columns: (auto, auto, auto),
     inset: 4pt,
-    align: center,
+    align: (left, right, left),
     stroke: 0.5pt,
     table.header(
       [*Removed Expert*], [*ΔAUC*], [*Interpretation*],
@@ -1150,7 +1178,7 @@ and expert utilization rate (fraction of experts with $w > 0.05$).
   table(
     columns: (auto, auto, auto, auto),
     inset: 4pt,
-    align: center,
+    align: (left, right, right, right),
     stroke: 0.5pt,
     table.header(
       [*Gate Type*], [*Mean $H_t$*], [*Min $H_t$*], [*Utilization ($w>0.05$)*],
