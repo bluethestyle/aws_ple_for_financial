@@ -1107,7 +1107,15 @@ Chen et al. (ICML 2018), Navon et al. (ICML 2022).
 수학적 관계 구조가 도메인 객체와 무관하게 동일할 때
 수식은 표면적 도메인에 관계없이 같은 패턴을 포착한다.
 
-#note[FeatureRouter와 피처 그룹 라우팅][
+#block(
+  fill: luma(245),
+  stroke: 0.5pt + luma(180),
+  inset: 10pt,
+  radius: 3pt,
+  width: 100%,
+)[
+  *FeatureRouter와 피처 그룹 라우팅*
+
   전체 316D 피처 텐서는 모든 전문가에게 동일하게 전달되는 것이 아니다.
   `feature_groups.yaml`의 `target_experts` 선언에 따라 `FeatureRouter`가
   각 전문가에게 관련 서브셋만 슬라이싱하여 전달한다.
