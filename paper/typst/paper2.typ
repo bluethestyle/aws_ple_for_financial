@@ -787,6 +787,8 @@ in operations/audit contexts, missing a signal is far more dangerous than a fals
 Novel problem types are often caught first by the dissenting perspective
 while the majority, anchored to familiar patterns, overlooks them.
 
+*Note on independence*: this pipeline invokes the *same* Sonnet model three times with different system prompts (conservative / statistical / business perspectives) and sampling temperature variation. What this actually secures is *conditioned diversity*, not weight-level independence. Unanimity therefore indicates only that three conditioned perspectives converged to the same point; a shared training lineage can share the same bias, so we *treat unanimity as a weak signal*. High-risk checks (AV1 fairness, AV2 PII detection, etc.) escalate any minority dissent to human review regardless of the majority verdict.
+
 == Diagnostic Case Store
 
 Inspection reports are not disposable artifacts but accumulate as an operational knowledge base.
