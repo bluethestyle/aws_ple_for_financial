@@ -181,7 +181,7 @@
       inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
     )[
       #text(fill: anthropic-text, size: 9.5pt)[
-        *Executive Summary* --- This document systematically maps the domestic and international regulatory requirements that the financial AI recommendation system (PLE-based) must comply with, and defines system-level response architectures for each requirement. It covers the Korea AI Basic Act (effective 2026.1.22), the Financial Services Commission (FSC) Integrated AI Guidelines 7 Principles, the Financial Supervisory Service (FSS) AI RMF, EU AI Act (Art. 13/14/15), and GDPR Art. 22, including end-to-end compliance architecture spanning audit trails, fairness monitoring, drift surveillance, herding detection, kill switches, opt-out, Human-in-the-Loop, and automated governance report generation.
+        *Executive Summary* --- This document systematically maps the domestic and international regulatory requirements that the financial AI recommendation system (PLE-based) must comply with, and defines system-level response architectures for each requirement.\ It covers the Korea AI Basic Act (effective 2026.1.22), the Financial Services Commission (FSC) Integrated AI Guidelines 7 Principles, the Financial Supervisory Service (FSS) AI RMF, EU AI Act (Art. 13/14/15), and GDPR Art. 22, including end-to-end compliance architecture spanning audit trails, fairness monitoring, drift surveillance, herding detection, kill switches, opt-out, Human-in-the-Loop, and automated governance report generation.
       ]
     ]
   ]
@@ -242,7 +242,7 @@ The AI Basic Act defines high-impact AI as *"artificial intelligence that signif
 
 #table(
   columns: (auto, 1fr, auto),
-  align: (center, left, center),
+  align: (center, center, center),
   [Domain], [Application Examples], [Finance Relevance],
   [Healthcare], [AI used in medical devices and digital medical devices], [Indirect],
   [*Finance (Credit/Lending)*], [*AI for credit scoring, loan assessment, and personal rights evaluation*], [*Direct*],
@@ -257,7 +257,7 @@ The AI Basic Act defines high-impact AI as *"artificial intelligence that signif
 
 == FSC Integrated AI Guidelines --- 7 Principles
 
-The Financial Services Commission published the *"Revised Financial AI Guidelines"* in alignment with the AI Basic Act. Scheduled for *Q1 2026 implementation* as self-regulatory standards per financial sector, they are organized around 7 principles.
+The Financial Services Commission published the *"Revised Financial AI Guidelines"* in alignment with the AI Basic Act. Scheduled for *Q2 2026 implementation* as self-regulatory standards per financial sector, they are organized around 7 principles.
 
 #grid(
   columns: (1fr, 1fr),
@@ -287,7 +287,7 @@ The Financial Services Commission published the *"Revised Financial AI Guideline
 \
 \
     #text(fill: blue, weight: "bold")[6. Good Faith]
-    #text(tracking: -0.05em)[*All customer-facing AI services* require prior notification (broader than AI Basic Act)]\
+    #text(tracking: -0.15em)[*All customer-facing AI services* require prior notification (broader than AI Basic Act)]\
     Conflict of interest prevention, fairness criteria establishment and evaluation
 \
 \
@@ -317,7 +317,7 @@ The Financial Supervisory Service introduced the *"Financial AI Risk Management 
     ],
     [
       *2. Risk Assessment*\
-      Risk identification/measurement -> mitigation -> residual risk\
+      Risk identification/measurement -> mitigation\ -> residual risk\
       *High/Medium/Low* 3-tier classification\
       Quantitative assessment of legality, reliability, good faith, security
     ],
@@ -460,7 +460,7 @@ Mapping the current response status of the PLE-based financial AI recommendation
 #text(size: 8.5pt)[
 #set par(justify: false)
 #table(
-  columns: (0.2fr, 1.2fr, 1.6fr, 0.25fr),
+  columns: (0.2fr, 1.0fr, 1.6fr, 0.25fr),
   align: (center, left, left, center),
   [No.], [RMF Requirement], [Current Response Status], [Level],
   [G-1], [Establish AI top decision-making body], [3-tier governance framework designed; formal committee establishment needed], [△],
@@ -477,7 +477,7 @@ Mapping the current response status of the PLE-based financial AI recommendation
 #text(size: 8.5pt)[
 #set par(justify: false)
 #table(
-  columns: (0.2fr, 1.2fr, 1.6fr, 0.25fr),
+  columns: (0.2fr, 0.8fr, 1.6fr, 0.25fr),
   align: (center, left, left, center),
   [No.], [RMF Requirement], [Current Response Status], [Level],
   [R-1], [Risk classification per AI service], [Self-assessment of high-impact AI applicability complete; formal classification system needed], [○],
@@ -494,7 +494,7 @@ Mapping the current response status of the PLE-based financial AI recommendation
 #text(size: 8.5pt)[
 #set par(justify: false)
 #table(
-  columns: (0.2fr, 1.2fr, 1.6fr, 0.25fr),
+  columns: (0.2fr, 0.8fr, 1.6fr, 0.25fr),
   align: (center, left, left, center),
   [No.], [RMF Requirement], [Current Response Status], [Level],
   [C-1], [Pre-launch risk mitigation verification], [Eligibility rules + fatigue filtering + A/B testing framework], [●],
@@ -520,7 +520,7 @@ The EU AI Act is likely to classify financial AI recommendation systems as *high
 
 #card(title: "Art. 13 Requirements and System Response", accent: navy)[
   #table(
-    columns: (1fr, 1.5fr),
+    columns: (0.6fr, 1.5fr),
     align: (left, left),
     [Art. 13 Requirement], [System Response],
     [Notify use of high-risk AI], [AI disclosure centralized management + per-segment notification separation\
@@ -540,7 +540,7 @@ The EU AI Act is likely to classify financial AI recommendation systems as *high
 
 #card(title: "Art. 14 Requirements and System Response", accent: blue)[
   #table(
-    columns: (1fr, 1.5fr),
+    columns: (0.8fr, 1.5fr),
     align: (left, left),
     [Art. 14 Requirement], [System Response],
     [Provide interface for humans to\ oversee AI system], [Offline: Staff screen shows recommendation list + rationale; final recommendation is staff judgment\
@@ -556,10 +556,10 @@ The EU AI Act is likely to classify financial AI recommendation systems as *high
 
 #card(title: "Art. 15 Requirements and System Response", accent: teal)[
   #table(
-    columns: (1fr, 1.5fr),
+    columns: (0.8fr, 1.5fr),
     align: (left, left),
     [Art. 15 Requirement], [System Response],
-    [Achieve and maintain appropriate\ accuracy levels], [Champion-Challenger automatic model competition\
+    [Achieve and maintain appropriate accuracy levels], [Champion-Challenger automatic model competition\
     PSI-based drift detection + auto-retraining on 3 consecutive critical days],
     [Robustness against errors\ and faults], [Ablation-based per-component contribution quantification\
     Distilled LGBM fallback (auto-switch on teacher performance anomaly)],
@@ -578,7 +578,7 @@ The EU AI Act is likely to classify financial AI recommendation systems as *high
   GDPR Art. 22 grants data subjects the right to refuse *"decisions based solely on automated processing, including profiling."* Korea's Personal Information Protection Act Art. 37-2 guarantees the same right.
 
   #table(
-    columns: (1fr, 1.5fr),
+    columns: (0.7fr, 1.5fr),
     align: (left, left),
     [GDPR Requirement], [System Response],
     [Right to refuse automated\ decisions (Art. 22(1))], [Opt-out registration/withdrawal/confirmation full lifecycle management\
@@ -607,7 +607,7 @@ The EU AI Act is likely to classify financial AI recommendation systems as *high
 Under current law, financial product recommendation systems are *not subject to explicit high-impact AI classification as they do not constitute loan assessment*. However, expanded designation is possible under the following scenarios.
 
 #table(
-  columns: (1.5fr, 0.8fr, 1.5fr),
+  columns: (1.5fr, 0.6fr, 1.5fr),
   align: (center, center, center),
   [Scenario], [Likelihood], [Basis],
   [Enforcement Decree amendment to include all financial product recommendations], [Medium], [EU AI Act already covers this scope],
@@ -626,7 +626,7 @@ Under current law, financial product recommendation systems are *not subject to 
 #text(size: 8.5pt)[
 #set par(justify: false)
 #table(
-  columns: (1.0fr, 0.5fr, 1.7fr, 0.3fr),
+  columns: (0.9fr, 0.4fr, 1.7fr, 0.3fr),
   align: (center, center, left, center),
   [Requirement], [Basis], [Current Response], [Level],
   [Prior notification of AI use], [Art. 31], [AI disclosure centralized management, per-segment notification separation\
@@ -730,8 +730,8 @@ DynamoDB-based serverless management (auto-scaling, per-item TTL):
 
 #text(size: 9pt)[
 #table(
-  columns: (auto, 1fr, auto),
-  align: (center, left, center),
+  columns: (0.5fr, 1fr, auto),
+  align: (center, center, center),
   [Table], [Purpose], [Retention],
   [ks_audit], [Kill switch activation/deactivation history], [7 years],
   [consent_audit], [Marketing consent change history (grant/revoke/renew)], [7 years],
@@ -769,6 +769,8 @@ Note on income: *income* is an input feature and a protected attribute monitored
     |SPD| > 0.1 -> MINOR incident
   ],
 )
+
+#pagebreak()
 
 == Drift Surveillance
 
@@ -914,7 +916,7 @@ The most critical regulatory issue when leveraging LLMs in financial AI systems 
 Data flow during recommendation reason generation and agent diagnostics:
 
 #figure(
-  placement: auto,
+  //placement: bottom,
   diagram(
     node-stroke: 0.6pt + luma(80),
     edge-stroke: 0.7pt + luma(80),
@@ -1020,7 +1022,7 @@ Full-lifecycle model governance aligned with *SR 11-7* (Federal Reserve/OCC), *E
     [Development], [Feature engineering, model training, offline evaluation], [PipelineRunner (Phase 0) + train.py (Phase 1)],
     [Validation], [Champion-Challenger comparison, ablation, fairness audit], [ModelCompetitionManager + FairnessMonitor],
     [Approval], [Manual review gate --- `auto_promote = false`], [AI Committee sign-off (Human-in-the-Loop)],
-    [Monitoring], [Drift, performance, fairness, herding --- continuous], [DriftDetector + PerformanceMonitor + FairnessMonitor],
+    [Monitoring], [Drift, performance,\ fairness, herding --- continuous], [DriftDetector + PerformanceMonitor + FairnessMonitor],
     [Retrain / Retire], [Triggered retrain or model decommission], [ConsecutiveDriftTracker → dag\_monthly\_retrain],
   )
 ]
@@ -1154,7 +1156,8 @@ The serving agents (L1 Rule / L2a Retrieval / L2b Generation) reside on the real
   card(title: "Automation scope", accent: navy)[
     *Batch-only*: does not intervene in real-time serving path\
     *Structured judgments*: threshold comparison, trend analysis, violation classification are handled by the agent\
-    *Unstructured judgments*: suspected data contamination, business context shifts, regulatory interpretation are reserved for humans
+    *Unstructured judgments*: suspected data contamination, business context shifts, regulatory interpretation are reserved for humans\
+\
   ],
   card(title: "Audit artifact guarantees", accent: blue)[
     *HMAC signing*: agent output itself is an audit artifact — HMAC-signed and immutably stored upon generation\
@@ -1162,6 +1165,7 @@ The serving agents (L1 Rule / L2a Retrieval / L2b Generation) reside on the real
     *Human review*: "check when you arrive" model — agent organizes, humans review at their own pace
   ],
 )
+#v(-2em)
 
 == Airflow DAG Integration
 
@@ -1265,7 +1269,7 @@ Auto-generated on a monthly/quarterly basis, stored in S3, and distributed to th
 === 9-Section Structure
 
 #table(
-  columns: (auto, 1fr, 1fr),
+  columns: (auto, 1.5fr, 1fr),
   align: (center, left, left),
   [Section], [Content], [Data Source],
   [1], [Fairness summary (DI/SPD/EOD by protected attribute)], [FairnessMonitor],

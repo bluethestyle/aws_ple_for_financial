@@ -189,8 +189,6 @@
 
 This is an AI system for Korea Post Financial check card product recommendations, built on a *heterogeneous-expert PLE (Progressive Layered Extraction)* multi-task learning architecture. It analyzes customer transaction history, demographics, and product holdings to simultaneously perform *14 prediction tasks* (click, purchase, churn, CLV, etc.). The trained deep learning model is *distilled* into LGBM (LightGBM) and served in real-time on AWS Lambda serverless infrastructure. This architecture enables millisecond-level responses without GPU, achieving both model transparency and operational cost efficiency.
 
-#pagebreak()
-
 // ═══════════════════════════════════════════════════════════
 //  2. Regulatory Compliance Matrix
 // ═══════════════════════════════════════════════════════════
@@ -200,7 +198,7 @@ This is an AI system for Korea Post Financial check card product recommendations
 #text(size: 8.5pt)[
 #set par(justify: false)
 #table(
-  columns: (1.0fr, 1.8fr, 1.5fr, 0.6fr),
+  columns: (0.8fr, 1.2fr, 1.5fr, 0.55fr),
   align: (center, left, left, center),
   [Regulation], [Key Requirements], [Response Components], [Status],
 
@@ -344,7 +342,7 @@ A 5-stage model lifecycle integrating SR 11-7 (US Fed/OCC), NIST AI RMF, and FSS
 #text(size: 9pt)[
 #set par(justify: false)
 #table(
-  columns: (0.5fr, 1.2fr, 1.3fr),
+  columns: (0.4fr, 1.2fr, 1.3fr),
   align: (center, left, left),
   [Stage], [Key Activities], [System Components],
   [1. Develop], [Feature pipeline construction, model training, hyperparameter optimization], [PipelineRunner + SageMaker Training],
@@ -359,8 +357,6 @@ A 5-stage model lifecycle integrating SR 11-7 (US Fed/OCC), NIST AI RMF, and FSS
   Stage 3 approval is *always performed by humans*. An automatically generated report containing Champion-Challenger comparison results (performance, fairness, stability) is reviewed by the AI operations team, and the AI Risk Management Committee provides final approval. Automatic model replacement is *explicitly blocked* -- there is no pathway to production deployment without approval.
 ]
 
-#pagebreak()
-
 // ═══════════════════════════════════════════════════════════
 //  4. Key Safeguards Summary
 // ═══════════════════════════════════════════════════════════
@@ -373,8 +369,8 @@ Three fairness metrics are *measured daily and automatically* across *5 protecte
 
 #text(size: 9pt)[
 #table(
-  columns: (0.8fr, 1.5fr, 0.8fr),
-  align: (center, left, center),
+  columns: (1.8fr, 1.0fr, 0.8fr),
+  align: (center, center, center),
   [Metric], [Description], [Threshold],
   [DI (Disparate Impact)], [Ratio of positive outcomes between groups], [0.8 -- 1.25],
   [SPD (Statistical Parity Diff.)], [Selection rate difference between groups], [|SPD| #sym.lt.eq 0.1],
@@ -398,7 +394,7 @@ All decisions, changes, and access records are secured with *HMAC-SHA256 signatu
 #set par(justify: false)
 #table(
   columns: (0.6fr, 1fr, 1.2fr),
-  align: (center, left, left),
+  align: (center, center, center),
   [Level], [Action], [Fallback Strategy],
   [Level 1], [Immediate deactivation of problem model], [Automatic rollback to previous approved version],
   [Level 2], [Serve rolled-back version], [Escalate to Level 3 if rollback also fails criteria],
@@ -414,7 +410,7 @@ Granular shutdown is available at three scopes: GLOBAL (all) / PER\_TASK (per ta
 #set par(justify: false)
 #table(
   columns: (0.8fr, 1.8fr),
-  align: (center, left),
+  align: (center, center),
   [Right], [System Response],
   [Opt-out (refuse AI decisions)], [Immediate switch to human alternative path; full registration/withdrawal/confirmation lifecycle],
   [Request explanation], [Feature reverse-mapping + natural language recommendation reasons; SLA within 10 days],
@@ -424,7 +420,7 @@ Granular shutdown is available at three scopes: GLOBAL (all) / PER\_TASK (per ta
 ]
 
 #pagebreak()
-
+#v(-2.5em)
 // ═══════════════════════════════════════════════════════════
 //  5. Detailed Reference Guide
 // ═══════════════════════════════════════════════════════════
@@ -436,14 +432,14 @@ For implementation details on each item, please refer to the corresponding secti
 #text(size: 9pt)[
 #set par(justify: false)
 #table(
-  columns: (1.2fr, 2fr, 0.8fr),
-  align: (center, left, center),
+  columns: (1.3fr, 2fr, 0.6fr),
+  align: (center, center, center),
   [This Document], [Technical Reference Section], [Section],
   [System Overview], [Financial AI Regulatory Environment Overview], [Ch. 1],
   [Compliance Matrix -- FSS], [FSS Guidelines Mapping -- 7 Principles and System Response], [Ch. 2],
-  [Compliance Matrix -- EU], [EU AI Act Article Mapping (Art. 13/14/15, GDPR Art. 22)], [Ch. 3],
+  [Compliance Matrix -- EU], [EU AI Act Article Mapping\ (Art. 13/14/15, GDPR Art. 22)], [Ch. 3],
   [Compliance Matrix -- AI Basic Act], [Korea AI Basic Act High-Impact AI Classification], [Ch. 4],
-  [Key Safeguards (Fairness / Drift / Audit / Kill Switch)], [Compliance Architecture (3-Layer Structure Details)], [Ch. 5],
+  [Key Safeguards\ (Fairness / Drift / Audit / Kill Switch)], [Compliance Architecture (3-Layer Structure Details)], [Ch. 5],
   [MRM Lifecycle], [Model Risk Management (MRM) Framework], [Ch. 7],
   [Customer Rights], [Human-in-the-Loop Design + Opt-out Management], [Ch. 6],
   [Governance Reporting], [Automated Governance Report Generation (9 Sections + 36-Item Check)], [Ch. 8],
@@ -454,22 +450,6 @@ For implementation details on each item, please refer to the corresponding secti
 
 #card(title: "Governance Reporting Framework", accent: anthropic-accent)[
   Governance reports are automatically generated on a monthly/quarterly basis. They comprise *9 sections*: fairness summary, drift summary, incident status, model change history, kill switch history, recommendation quality, risk trends, audit store summary, and executive summary. A 36-item regulatory compliance registry enables full automated checks on a quarterly cycle.
-]
-
-#v(0.5em)
-
-#align(center)[
-  #block(
-    fill: gray-bg,
-    stroke: 0.5pt + gray-ln,
-    inset: 8pt,
-    radius: 4pt,
-    width: 90%,
-  )[
-    #text(fill: txt-sub, size: 8.5pt)[
-      This document was prepared as of April 2026. Content may change in accordance with the finalization and enforcement of the AI Basic Act enforcement decree and the FSC Integrated AI Guidelines. For detailed technical content, please refer to 'Regulatory Compliance Framework Technical Reference v1.0.'
-    ]
-  ]
 ]
 
 // ============================================================
