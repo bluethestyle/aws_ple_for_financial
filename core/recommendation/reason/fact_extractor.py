@@ -23,6 +23,28 @@ Integration:
     - Phase 0 batch: extract_batch() runs for all customers
     - Results stored in LanceDB ContextVectorStore metadata as "customer_facts"
     - AsyncReasonOrchestrator reads facts for L2a prompt enrichment
+
+Example Phase 0 batch integration::
+
+    from core.recommendation.reason.fact_extractor import FactExtractor
+    from core.recommendation.reason.context_store import ContextVectorStore
+
+    extractor = FactExtractor("configs/financial/fact_extraction.yaml")
+    facts_per_customer = extractor.extract_batch(features_df)
+
+    # Build metadata dict with customer_facts
+    metadata = {}
+    for cid, facts in zip(customer_ids, facts_per_customer):
+        metadata[cid] = {"customer_facts": facts}
+
+    # Build context store with facts attached
+    context_store = ContextVectorStore(store_path="context_store/")
+    context_store.build(
+        customer_ids=customer_ids,
+        feature_vectors=vectors,
+        metadata=metadata,
+    )
+    context_store.save()
 """
 
 from __future__ import annotations
@@ -134,7 +156,10 @@ class FactExtractor:
 
         results = []
         for row in features_df.itertuples(index=False):
-            features = row._asdict() if hasattr(row, "_asdict") else dict(row._fields)
+            if hasattr(row, "_asdict"):
+                features = row._asdict()
+            else:
+                features = dict(zip(row._fields, row)) if hasattr(row, '_fields') else dict(row)
             results.append(self.extract(features))
         return results
 

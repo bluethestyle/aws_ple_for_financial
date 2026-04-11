@@ -95,9 +95,10 @@ class DialogRecallMemory:
                 self._table.put_item(Item=item)
                 return True
             except Exception as e:
-                logger.warning("DynamoDB save_turn failed: %s", e)
+                logger.warning("DynamoDB save_turn failed, falling back to memory: %s", e)
+                # fall through to memory append
 
-        # Fallback
+        # In-memory fallback (also reached when DynamoDB fails)
         self._memory.append(item)
         return True
 
@@ -113,9 +114,10 @@ class DialogRecallMemory:
                 )
                 return response.get("Items", [])
             except Exception as e:
-                logger.warning("DynamoDB get_recent failed: %s", e)
+                logger.warning("DynamoDB get_recent failed, falling back to memory: %s", e)
+                # fall through to memory
 
-        # Fallback
+        # Fallback (also reached when DynamoDB fails)
         filtered = [item for item in self._memory if item.get("operator_id") == operator_id]
         filtered.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         return filtered[:limit]

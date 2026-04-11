@@ -126,6 +126,21 @@ class TemporalFactStore:
         else:
             self._table.add([record])
 
+    @staticmethod
+    def _normalize_timestamp(ts: Optional[str]) -> Optional[str]:
+        """Normalize ISO timestamp to +00:00 suffix for consistent string comparison.
+
+        Handles Z-suffix (e.g., "2026-02-01T00:00:00Z") and +00:00 suffix
+        interchangeably so that callers using either format compare correctly.
+        """
+        if ts is None:
+            return None
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            return dt.isoformat()
+        except (ValueError, TypeError):
+            return ts  # return as-is if unparseable
+
     def snapshot_at(
         self,
         entity_id: Optional[str] = None,
@@ -139,13 +154,15 @@ class TemporalFactStore:
             entity_id: Optional filter by entity_id.
             entity_type: Optional filter by entity_type.
             attribute: Optional filter by attribute name.
-            at_time: ISO UTC timestamp. Defaults to now.
+            at_time: ISO UTC timestamp. Defaults to now. Accepts Z-suffix or +00:00.
 
         Returns:
             List of fact dicts that were valid at the given time.
         """
         if at_time is None:
             at_time = datetime.now(timezone.utc).isoformat()
+        else:
+            at_time = self._normalize_timestamp(at_time)
 
         results = []
         for fact in self._facts:
@@ -157,11 +174,12 @@ class TemporalFactStore:
             if attribute and fact.get("attribute") != attribute:
                 continue
 
-            # Temporal validity check
-            valid_from = fact.get("valid_from", "")
-            valid_to = fact.get("valid_to")
+            # Temporal validity check — normalize before string comparison
+            valid_from = self._normalize_timestamp(fact.get("valid_from", ""))
+            valid_to_raw = fact.get("valid_to")
+            valid_to = self._normalize_timestamp(valid_to_raw) if valid_to_raw else None
 
-            if valid_from > at_time:
+            if valid_from and valid_from > at_time:
                 continue  # not yet valid
             if valid_to is not None and valid_to <= at_time:
                 continue  # expired before at_time
@@ -196,6 +214,8 @@ class TemporalFactStore:
         """
         if valid_to is None:
             valid_to = datetime.now(timezone.utc).isoformat()
+        else:
+            valid_to = self._normalize_timestamp(valid_to)
 
         for fact in self._facts:
             if fact.get("fact_id") == fact_id:

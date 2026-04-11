@@ -764,6 +764,16 @@ class AsyncReasonOrchestrator:
                     {"name": f, "score": s} for f, s in features[:5]
                 ],
             }
+            # Forward customer_facts from context_store into SQS context so
+            # that _build_llm_prompt can inject them into the L2a prompt.
+            if self._context_store is not None:
+                try:
+                    ctx = self._context_store.get_context(customer_id)
+                    facts = ctx.get("customer_facts", [])
+                    if facts and isinstance(facts, list):
+                        context["customer_facts"] = facts
+                except Exception:
+                    pass  # non-fatal: L2a continues without facts
             # Determine priority from segment
             segment = recommendation.get("segment", "WARMSTART")
             priority = _Priority.HIGH if segment == "VIP" else _Priority.MODERATE
