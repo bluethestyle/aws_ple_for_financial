@@ -730,6 +730,75 @@ Each round: `py_compile` + `yaml.safe_load` + interface contract verification + 
 - *Diagrams*: 3 Paper 2 placeholders → fletcher diagrams, 15 docs/typst ASCII → fletcher conversion
 - *Translation*: 5 docs/typst/en tech_ref files Korean → English full translation
 
+
+== PaperClip Adoption (2026-04)
+
+PaperClip (2026.3, GitHub 30K stars) has a "zero-human company" philosophy that
+conflicts with our principles, but three operational mechanisms were worth adopting:
+
++ *Heartbeat Pattern*: Agents wake periodically to run checklists,
+  but return `HEARTBEAT_OK` and sleep again if nothing changed.
+  Applied to our CP5 (5min), CP6 (1h) periodic checks.
+
++ *Budget Cap (Prepaid Debit Card Model)*: Per-agent monthly token limits,
+  80% soft warning, 100% hard stop. The key insight is *graceful degradation* ---
+  when budget is exhausted, only LLM calls are blocked while the rule engine continues.
+  This naturally aligns with our "on-prem baseline operates without LLM" design.
+
++ *Full Tool Trace*: Every `ToolRegistry.call()` is automatically logged,
+  enabling complete reproduction of "what tool calls produced this diagnosis."
+
+LangMem's *prompt self-improvement* was deliberately not adopted ---
+from an audit perspective, "who approved this prompt?" cannot be answered.
+
+== Memory Framework Adoption (2026-04, follow-up)
+
+Immediately after PaperClip implementation, we reviewed other memory frameworks
+(Mem0, Zep/Graphiti, Letta, SuperLocalMemory). Again, we *did not adopt any framework
+wholesale* --- only four patterns were selectively incorporated.
+
+=== Zep/Graphiti Temporal Knowledge Graph
+
+"What was customer A's state at 2026-03-15?" --- answering this audit query
+requires the model version, features, and verdicts from that moment.
+Rather than joining distributed components, we built `TemporalFactStore` with
+a `(entity, attribute, value, valid_from, valid_to)` schema that resolves
+this as a single filter. Shares the same LanceDB instance as `DiagnosticCaseStore`.
+
+=== SuperLocalMemory Mathematical Decay
+
+"Is a 3-year-old drift resolution approach still valid?" --- no. Recent cases are
+more relevant. But *deleting* old cases violates the 7-year retention requirement.
+Solution: preserve originals but adjust *search weights only* via $exp(-"age"/tau)$
+with a 90-day half-life default. Solved with ~30 LOC added to
+`DiagnosticCaseStore.search_similar()`.
+
+=== Mem0 Fact Compression
+
+`InterpretationRegistry` provides feature-level Korean interpretations, but lacked
+*customer narrative profiles*. Without facts like "this customer prefers deposits
+and is risk-averse" in the L2a prompt, Solar Pro generates reasons without context.
+We implemented `FactExtractor` rule-based --- 15 rules defined in YAML config,
+safely evaluated via Python `eval()` with a sandboxed `__builtins__`. *Zero LLM calls*.
+
+=== Letta Recall Memory
+
+Solved the problem of `BedrockDialogSession` losing dialog history on session termination
+via DynamoDB-backed `DialogRecallMemory`. Past conversations are retrieved by embedding
+search (or keyword fallback) and injected into the system prompt.
+
+=== A Critical Wiring Bug Found in Quality Audit
+
+After implementation, an interface contract audit found *one critical bug*:
+`generate_l1()` retrieved `customer_facts` but only attached them to a local variable;
+they never reached the L2a path through SQS. The entire M-3 chain was a *silent no-op*.
+Fixed by re-querying facts in `get_best_reason()` and injecting them directly
+into the SQS context dict.
+
+The lesson: *even when sub-agents implement individual files correctly,
+connecting data flows between files is a separate task*. Main agent's final
+verification is essential.
+
 #section-break()
 
 

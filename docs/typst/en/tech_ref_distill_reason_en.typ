@@ -899,4 +899,26 @@ Recommendation reason quality is monitored under AuditAgent's AV3 viewpoint via 
 
 InterpretationRegistry → 3-tuple enrichment → TemplateEngine integration is complete, embedding IG interpretations into L1 reasons. ReverseMapper is integrated as Level RM fallback in InterpretationRegistry, expanding feature interpretation coverage.
 
+== Fact Extraction Layer (New, 2026-04)
+
+`FactExtractor` extracts *customer narrative facts* from feature values.
+While `InterpretationRegistry` provides feature-level interpretation,
+`FactExtractor` adds customer-level profiles ("deposit-focused portfolio",
+"risk-averse tendency").
+
+=== Rule-Based, Zero LLM
+
+Python expressions defined in YAML config (`configs/financial/fact_extraction.yaml`)
+are evaluated in a sandboxed environment (`__builtins__` disabled). Zero LLM calls,
+fully deterministic. Facts are extracted at Phase 0 batch time and stored in
+`ContextVectorStore`; at serving time, they are merely retrieved and injected
+into the L2a prompt.
+
+=== L2a Prompt Integration
+
+Both `AsyncReasonOrchestrator.generate_l1()` and `get_best_reason()` retrieve
+`context_store.get_context(customer_id).get("customer_facts", [])` and include
+them as `context["customer_facts"]` in the SQS message body. `_build_llm_prompt()`
+injects them as a "\#\# Customer Facts" section in the final prompt.
+
 Detailed design: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)

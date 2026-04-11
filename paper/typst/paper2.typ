@@ -100,7 +100,7 @@ Existing explanation approaches are insufficient:
 
 We propose a full-chain solution from prediction to persuasion:
 
-+ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (14 tasks, 7 experts, 316 features; organized by the companion paper's reductionist two-axis framework of Financial DNA $times$ Data Modality) is distilled into per-task LGBM students using IG-guided feature selection. The teacher employs sigmoid CGC gates (inspired by @sigmoid_moe2024) instead of standard softmax gates, enabling independent expert contribution without harmful inter-expert competition --- a critical improvement for heterogeneous expert architectures (detailed in companion paper). This enables GPU-free serving while preserving the features that matter for explanation.
++ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (14 tasks, 7 experts, 350 features; organized by the companion paper's reductionist two-axis framework of Financial DNA $times$ Data Modality) is distilled into per-task LGBM students using IG-guided feature selection. The teacher employs sigmoid CGC gates (inspired by @sigmoid_moe2024) instead of standard softmax gates, enabling independent expert contribution without harmful inter-expert competition --- a critical improvement for heterogeneous expert architectures (detailed in companion paper). This enables GPU-free serving while preserving the features that matter for explanation.
 
 + *Multi-Agent Reason Generation*: Three specialized LLM agents collaborate in a pipeline --- Feature Selector chooses explanation-worthy features, Reason Generator produces natural-language narratives, and Safety Gate validates regulatory compliance.
 
@@ -215,7 +215,7 @@ enabling independent improvement of each component.
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((0, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 14 Task, 316D] \ #text(size: 6pt)[GPU, weekly training]], width: 35mm, fill: teacher-fill, name: <teacher>),
+      node((0, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 14 Task, 350D] \ #text(size: 6pt)[GPU, weekly training]], width: 35mm, fill: teacher-fill, name: <teacher>),
 
       node((2, 0), [*Soft Labels* \ #text(size: 6pt)[Per-task probability dist.]], width: 30mm, fill: gray-fill, name: <soft>),
 
@@ -235,7 +235,7 @@ enabling independent improvement of each component.
   caption: [Teacher-student distillation architecture. PLE teacher's soft labels and IG-based feature selection distill into per-task LGBM student models.],
 ) <fig:distillation>
 
-The teacher model (PLE with 7 heterogeneous experts, 14 tasks, 316 features;
+The teacher model (PLE with 7 heterogeneous experts, 14 tasks, 350 features;
 see companion paper for architecture details)
 produces soft probability outputs that serve as training targets
 for per-task LGBM @ke2017lightgbm students.
@@ -243,6 +243,12 @@ The teacher's value as a distillation source stems from its _structural guarante
 against _expert collapse_: because the seven experts are architecturally distinct
 (DeepFM, Mamba, HGCN, PersLay, etc.), they cannot converge to the same function,
 ensuring the soft labels encode genuinely multi-faceted customer understanding.
+Note on HGCN: the graph expert receives 27-dimensional `merchant_hierarchy` features
+(MCC L1 $arrow.r$ L2 $arrow.r$ code Poincaré embeddings), not product co-holding features.
+This distinction matters for distillation: IG scores from the HGCN expert rank highly
+for MCC-dependent tasks (e.g., top_mcc_shift), and the preserved HGCN features
+produce explanation-grounded statements such as "customer shows sustained preference
+for merchant category X" rather than generic co-holding signals.
 
 The key design decision is _per-task distillation_:
 rather than a single student model for all 14 tasks,
@@ -327,7 +333,7 @@ $alpha = 0$ purely for explanation quality.
 We empirically find $alpha = 0.7$ balances both objectives.
 
 The resulting feature set is typically 40--80 features per task
-(down from 316), achieving >95% of teacher AUC
+(down from 350), achieving >95% of teacher AUC
 while providing sufficient explanation vocabulary.
 Critically, the dual-objective selection preserves features across all four
 Financial DNA dimensions (engagement, lifecycle, value, consumption)
@@ -337,6 +343,18 @@ ensuring the student retains multi-faceted understanding
 rather than collapsing to a single dominant feature group.
 
 == Distillation Results
+
+Benchmark v4 produces meaningful label distributions across all 14 tasks.
+Notably, `nba_primary` reaches ~60% no-NBA (down from 91% in earlier benchmarks)
+and `top_mcc_shift` reaches ~50% positive rate (down from 92%),
+removing the near-degenerate class imbalance that previously made
+teacher-student fidelity numbers artificially easy to achieve.
+These distributions make the distillation gaps below genuinely informative.
+
+Teacher-student fidelity metrics are reported per task type:
+AUC gap for binary classification tasks, F1-macro gap for multiclass tasks,
+and MAE gap for regression tasks.
+This avoids conflating metrics with incompatible semantics across task types.
 
 #figure(placement: top, scope: "parent",
   table(
@@ -351,7 +369,7 @@ rather than collapsing to a single dominant feature group.
     [will_acquire_investments], [--], [--], [--],
     [...], [...], [...], [...],
   ),
-  caption: [Distillation results per task (TODO).],
+  caption: [Distillation results per task (TODO). Binary tasks: AUC gap; multiclass: F1-macro gap; regression: MAE gap.],
 ) <tab:distill-results>
 
 // ============================================================
@@ -511,6 +529,23 @@ Customer-facing recommendation reasons require natural, professional Korean text
 *On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.
 *Cloud (AWS)*: L2a rewriting uses Solar Pro 22B (Upstage, Bedrock Marketplace) --- top performance on Korean benchmarks (KMMLU). L2b self-critique also uses Solar (generator $<=$ critic model principle). SelfChecker factuality scoring uses Claude Haiku.
 Bedrock ensures that input/output data is never transmitted to model providers (Anthropic, Upstage) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet, ensuring that financial customer data never leaves the AWS Region (ap-northeast-2) --- structurally satisfying the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
+
+=== Fact Compression Layer (Mem0 Adoption)
+
+While `InterpretationRegistry` provides feature-level interpretation,
+`FactExtractor` adds *customer-level narrative facts*.
+A rule-based engine extracts Korean facts like "예적금 중심 포트폴리오" (deposit-focused portfolio),
+"최근 3개월 펀드 관심 증가" (recent fund interest growth),
+"리스크 회피 성향" (risk-averse tendency) from feature values ---
+deterministically and without any LLM calls.
+
+These facts are extracted at Phase 0 batch time, stored in `ContextVectorStore`,
+and injected into the L2a prompt as a "Customer Facts" section at serving time.
+Solar Pro then generates reasons *with customer understanding*, not just raw feature values.
+
+Rules are defined in `configs/financial/fact_extraction.yaml`
+(15 categories covering portfolio composition, interests, risk tolerance, lifecycle, etc.)
+and new facts can be added with config-only changes.
 
 == Caching Strategy and Asynchronous L2a Architecture
 
@@ -713,6 +748,31 @@ via (problem, action, post-action verdict) triples.
 The case schema includes a `consensus_type` field to track
 the rate at which minority opinions turned out to be correct.
 This data serves directly as "continuous improvement evidence" for regulatory audits.
+
+== Selective Memory Framework Adoption
+
+Core patterns from several 2026 agent memory frameworks (Mem0, Zep/Graphiti, Letta,
+SuperLocalMemory) were *selectively adopted* as incremental additions to existing infrastructure.
+
+*Adoption 1 --- Temporal Knowledge Graph (Zep/Graphiti)*:
+`TemporalFactStore` uses a `(entity, attribute, value, valid_from, valid_to)` schema
+for audit evidence. Point-in-time queries like "What was customer A's state at 2026-03-15?"
+resolve as single filters. Shares the same LanceDB backend as `DiagnosticCaseStore` ---
+zero new dependencies.
+
+*Adoption 2 --- Mathematical Decay (SuperLocalMemory)*:
+`DiagnosticCaseStore.search_similar()` now applies $exp(-"age"/tau)$ weighting
+with a 90-day half-life default. *Original cases are preserved* --- only search weights
+are adjusted, maintaining audit traceability.
+
+*Adoption 3 --- Dialog Recall Memory (Letta)*:
+`DialogRecallMemory` stores past operator conversations in DynamoDB so that
+`BedrockDialogSession` can recall "that issue we discussed last week" across sessions.
+
+*Not adopted*: LangMem's prompt self-improvement (audit risk --- cannot answer
+"who approved this prompt?").
+
+All adoptions are *opt-in* and do not affect existing behavior when not configured.
 
 == Change Detection and Impact Review
 

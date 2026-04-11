@@ -963,3 +963,48 @@ checklist:
 ### 전체 항목 수 및 확장 방법
 
 기본 제공 항목은 48개이며, 새 항목 추가 시 `checklist.yaml`에만 항목을 추가하면 된다. Python 코드 수정 없이 `tool_name`에 등록된 도구를 자동 디스패치한다. 도구 등록은 `core/audit/tool_registry.py`의 `@register_tool` 데코레이터로 수행한다.
+
+## Fact Extraction (`configs/financial/fact_extraction.yaml`)
+
+고객 레벨 서술적 팩트 추출 룰. `FactExtractor`가 로드하여 Phase 0 배치 시점에 사용.
+
+### 구조
+
+```yaml
+version: "1.0"
+rules:
+  - name: "예적금 중심 포트폴리오"        # 사유 프롬프트에 주입될 한국어 팩트
+    condition: "deposit_balance_ratio > 0.6"  # Python expression
+    required_features: ["deposit_balance_ratio"]  # pre-check
+```
+
+### 조건 표현식
+
+- Python 표현식으로 평가되며, 안전한 builtins(`abs`, `min`, `max`, `len`, `any`, `all`, `round`, `int`, `float`)만 허용
+- `__builtins__` 차단 샌드박스에서 실행되어 임의 코드 실행 불가
+- 기본 연산자: `>`, `<`, `>=`, `<=`, `==`, `!=`, `and`, `or`, `not`
+- 복합 조건: `"x > 0.3 and x < 0.7"`
+
+### 범주 (기본 15 rule)
+
+| 범주 | 예시 |
+|---|---|
+| 포트폴리오 구성 | 예적금 중심, 펀드 중심, 대출 부담 |
+| 최근 관심사 | 펀드 조회 증가, 카드 사용 활발, 투자 조회 증가 |
+| 리스크 성향 | 리스크 회피, 공격적 투자 |
+| 생애주기 | 신규 고객, 장기 고객 |
+| 참여도 | 디지털 채널 선호, 고빈도 거래 |
+| 소비 패턴 | 안정적 거래, 소비 증가 |
+| 이탈 리스크 | 이탈 위험 신호 |
+
+### 팩트 품질 검증
+
+`FactExtractor.validate_rules(sample_features)` 메서드로 pre-flight 검증 가능:
+
+```python
+from core.recommendation.reason.fact_extractor import FactExtractor
+
+extractor = FactExtractor("configs/financial/fact_extraction.yaml")
+report = extractor.validate_rules(sample_features=my_sample)
+# {"total_rules": 15, "valid": 15, "invalid": 0, "skipped_missing_features": 0}
+```

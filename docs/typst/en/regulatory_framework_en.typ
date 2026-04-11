@@ -1407,3 +1407,30 @@ A 3-agent consensus mechanism (Sonnet×3 independent voting) structurally mitiga
 Core design principle: *"AI analyzes, humans decide"* --- agents recommend only; final decisions are made by operators. This structurally satisfies EU AI Act Art.14 (human oversight), Korean FSS AI guidelines (human intervention), and AI Basic Act (kill switch).
 
 Detailed design: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)
+
+== Temporal Fact Store (Added 2026-04)
+
+A core audit evidence requirement is *"reproducing system state at a specific point in time"*.
+Questions like "At 2026-03-15, when customer A received a recommendation, what were
+the model version, features, and verdicts?" traditionally require joining across
+distributed components (AuditLogger, DiagnosticCaseStore, `pipeline_state.json`) ---
+expensive.
+
+We solved this with `TemporalFactStore`, adapted from the Zep/Graphiti pattern.
+The schema is `(entity, attribute, value, valid_from, valid_to)`, and most audit
+queries are *single-entity point-in-time reconstructions* resolvable via native
+LanceDB filters.
+
+#table(
+  columns: (auto, 1fr),
+  inset: 5pt,
+  stroke: 0.5pt,
+  [*Property*], [*Implementation*],
+  [No deletion], [`expire_fact()` sets `valid_to` only, originals preserved],
+  [Backend], [Shares LanceDB instance with `DiagnosticCaseStore` (zero new deps)],
+  [Z-suffix compat], [Normalizes diverse timestamp formats from external callers],
+  [Query API], [`snapshot_at()`, `get_timeline()`, `expire_fact()`],
+)
+
+This satisfies EU AI Act Art.12 (record-keeping), Korean FSS AI guidelines
+(audit trail), and AI Basic Act temporal evidence requirements via a single store.

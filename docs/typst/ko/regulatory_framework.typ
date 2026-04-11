@@ -1418,6 +1418,31 @@ SR 11-7 Pillar 2가 요구하는 *독립적 모델 검증*을 Champion-Challenge
 
 상세 설계: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)
 
+== 시간적 팩트 스토어 (2026-04 추가)
+
+감사 증적의 핵심 요구사항 중 하나는 *"특정 시점의 시스템 상태 복원"*이다.
+"2026-03-15에 고객 A에게 추천한 시점의 모델 버전, 피처, 판정은 무엇이었는가?"
+같은 질문에 답하려면 분산된 여러 컴포넌트(AuditLogger, DiagnosticCaseStore,
+`pipeline_state.json`)를 조인해야 하는데 비용이 크다.
+
+이 문제를 Zep/Graphiti 패턴에서 차용한 `TemporalFactStore`로 해결했다.
+스키마는 `(entity, attribute, value, valid_from, valid_to)`이며,
+대부분의 감사 질의가 *단일 엔티티의 시점 복원*이라 LanceDB 네이티브 필터로 해결된다.
+
+#table(
+  columns: (auto, 1fr),
+  inset: 5pt,
+  stroke: 0.5pt,
+  [*특성*], [*구현*],
+  [삭제 불가], [`expire_fact()`는 `valid_to`만 설정, 원본 보존],
+  [백엔드], [`DiagnosticCaseStore`와 LanceDB 인스턴스 공유 (신규 의존성 0)],
+  [Z-suffix 호환], [외부 캘러의 다양한 timestamp 형식 정규화],
+  [쿼리 API], [`snapshot_at()`, `get_timeline()`, `expire_fact()`],
+)
+
+이것으로 EU AI Act 제12조(기록 보관), 금감원 AI 가이드라인(감사 추적),
+AI 기본법의 시계열 증적 요구사항을 단일 스토어로 충족한다.
+
 #v(1.5em)
 
 #align(center)[

@@ -563,6 +563,31 @@ general:
 
 ---
 
+### 메모리 프레임워크 컴포넌트 (2026-04 추가)
+
+PaperClip과 메모리 프레임워크 연구에서 차용한 선택적 기능:
+
+**PaperClip 3종 (운영 효율성):**
+- `core/agent/heartbeat.py` — 에이전트 주기 실행 (CP5 5분, CP6 1시간 등)
+- `core/agent/budget.py` — 에이전트별 토큰 예산 (80% 경고, 100% 하드스톱)
+- `core/agent/tracer.py` — 모든 `ToolRegistry.call()` 자동 추적
+
+**메모리 프레임워크 4종:**
+- `core/agent/temporal_fact_store.py` — 시간적 지식 그래프 (Zep/Graphiti)
+- `core/agent/dialog_recall.py` — 담당자 대화 DynamoDB 저장 (Letta)
+- `core/recommendation/reason/fact_extractor.py` — 룰 기반 고객 팩트 추출 (Mem0)
+- `core/agent/case_store.py` — 기존 파일에 시간 decay 추가 (SuperLocalMemory)
+
+**설정 추가:**
+- `configs/financial/agent.yaml`: `heartbeat`, `budget`, `tracer` 섹션
+- `configs/financial/fact_extraction.yaml`: 15개 룰 기본 제공
+
+**의존성:** 모든 차용은 기존 LanceDB + DynamoDB 스택을 재사용. 신규 의존성 0.
+
+**활성화:** 전부 opt-in — `agent.yaml`의 해당 섹션을 설정하지 않으면 기존 동작 그대로.
+
+---
+
 ### 온프레미스 배포
 
 온프레미스에서는 Bedrock/SageMaker 대신 로컬 환경을 사용:
