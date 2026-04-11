@@ -3426,6 +3426,266 @@ def call(self, name, params=None):
 #v(0.8em)
 
 // ============================================================
+= 메모리 프레임워크 선택적 차용
+// ============================================================
+
+2026년 초 여러 에이전트 메모리 프레임워크(Mem0, Zep/Graphiti, Letta/MemGPT,
+SuperLocalMemory, LangMem 등)가 발표되었다.
+우리 시스템은 이미 상당 부분의 메모리 인프라를 보유하고 있으므로,
+프레임워크를 통째로 도입하지 않고 *핵심 알고리즘/패턴만 차용*한다.
+
+== 이미 해결된 것과 실제 갭
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  stroke: 0.4pt + luma(180),
+  inset: 5pt,
+  table.header([*기능*], [*현재 상태*], [*실제 갭*]),
+  [케이스 축적],
+  [`DiagnosticCaseStore` (LanceDB) 이미 구현],
+  [시간 decay 없음 — 3년 전 케이스와 어제 케이스가 동일 가중치],
+
+  [피처 해석],
+  [`InterpretationRegistry` 5-level cascade 이미 구현],
+  [고객 서술적 프로파일("적금 선호, 리스크 회피") 없음],
+
+  [감사 추적],
+  [HMAC 해시체인 + S3 Object Lock 7년 이미 구현],
+  [*시점 T 스냅샷 복원* 비효율 — 여러 컴포넌트 조인 필요],
+
+  [담당자 대화],
+  [`BedrockDialogSession` 세션 기반],
+  [세션 종료 시 대화 이력 소실 — "지난번 논의한 이슈" 참조 불가],
+)
+
+== 차용 결정
+
+#table(
+  columns: (auto, auto, 1fr, auto),
+  stroke: 0.4pt + luma(180),
+  inset: 5pt,
+  table.header([*순위*], [*프레임워크*], [*차용 내용*], [*우선순위*]),
+  [1], [Zep/Graphiti],
+  [시간적 지식 그래프 패턴: `(entity, attribute, value, valid_from, valid_to)` 스키마로 \
+   "시점 T 스냅샷 복원" 쿼리를 단일 필터로 처리],
+  [HIGH],
+
+  [2], [SuperLocalMemory],
+  [수학적 decay 메커니즘: `exp(-age/τ)` 가중치를 유사 검색에 적용. \
+   원본은 보존(규제 요건), *검색 가중치만* 조정.],
+  [HIGH],
+
+  [3], [Mem0],
+  [팩트 압축 레이어: 배치 시점에 고객 피처 → 서술적 팩트 추출. \
+   룰 기반으로 구현하여 LLM 호출 없이 L2a 프롬프트 강화.],
+  [MEDIUM],
+
+  [4], [Letta (MemGPT)],
+  [Recall memory 패턴: 담당자 대화 이력을 DynamoDB에 저장하여 \
+   세션 간 맥락 유지. BedrockDialogSession에 통합.],
+  [MEDIUM],
+
+  [--], [LangMem],
+  [*차용하지 않음* --- 프롬프트 자기개선은 감사 관점에서 위험. \
+   "누가 이 프롬프트를 승인했는가"에 답할 수 없음. \
+   우리 원칙 "AI가 분석하고 사람이 판단한다"에 어긋남.],
+  [SKIP],
+
+  [--], [Succession/ALE],
+  [*차용하지 않음* --- Claude Code 세션 수명이 짧아 현재 불필요.],
+  [SKIP],
+)
+
+== 차용 1: 시간적 지식 그래프 (Zep/Graphiti 패턴)
+
+감사 질의 "2026-03-15 시점에 고객 A에게 펀드 X를 추천한 근거는?"에 답하려면
+그 시점의 모델 버전, 피처 스냅샷, 체크리스트 상태, 에이전트 판정을 *동시에 복원*해야 한다.
+현재는 각 컴포넌트에 분산되어 있어 조인 비용이 크다.
+
+=== LanceDB 스키마 (신규 `TemporalFactStore`)
+
+```python
+class TemporalFactStore:
+    """시간적 유효 범위가 있는 팩트 저장소.
+
+    DiagnosticCaseStore와 같은 LanceDB 백엔드 재사용.
+    """
+
+    schema = {
+        "fact_id": str,
+        "entity_type": str,     # "customer", "model", "recommendation", "checklist"
+        "entity_id": str,
+        "attribute": str,        # "segment", "version", "verdict"
+        "value": str,            # JSON-serialized
+        "valid_from": datetime,
+        "valid_to": datetime,    # None = 현재 유효
+        "source": str,           # "pipeline", "agent", "operator"
+        "vector": List[float],   # 자연어 설명 임베딩 (선택)
+    }
+```
+
+=== 대표 쿼리
+
+```python
+# "시점 T의 고객 A 모든 팩트"
+store.snapshot_at(entity_id="cust_A", at_time="2026-03-15T00:00:00Z")
+# → SELECT * FROM facts
+#    WHERE entity_id = 'cust_A'
+#      AND valid_from <= '2026-03-15T00:00:00Z'
+#      AND (valid_to IS NULL OR valid_to > '2026-03-15T00:00:00Z')
+
+# "시점 T의 모델 상태"
+store.snapshot_at(entity_type="model", at_time="2026-03-15")
+```
+
+대부분의 감사 쿼리가 *단일 엔티티의 시점 복원*이라
+LanceDB 네이티브 필터로 해결 가능. JOIN 불필요.
+
+=== 구현 위치
+
+`core/agent/case_store.py`에 `TemporalFactStore` 클래스 추가
+(기존 `DiagnosticCaseStore`와 같은 LanceDB 인스턴스 공유).
+
+== 차용 2: 수학적 Decay (SuperLocalMemory 패턴)
+
+현재 `DiagnosticCaseStore.search_similar()`는 모든 케이스를 동일 가중치로 검색한다.
+하지만 실무적으로 *최근 케이스가 더 관련성 높다* ---
+3년 전 drift 해결 방식이 지금도 유효한지 불확실하다.
+
+=== Decay 함수
+
+$ "weight"(c) = "cosine_similarity"(c) times exp(-("age_days"(c)) / tau) $
+
+여기서 $tau$는 반감기 (예: 90일 → 3개월 전 케이스는 가중치 절반).
+
+=== 중요: 삭제가 아님
+
+- *원본 케이스는 보존* (HMAC 감사 로그 7년 보존 요건)
+- *검색 가중치만* 조정
+- 규제기관이 "3년 전 케이스를 왜 삭제했는가?"라고 물을 여지 없음
+
+=== 구현 위치
+
+```python
+# core/agent/case_store.py 수정
+def search_similar(
+    self,
+    query_vector: np.ndarray,
+    k: int = 5,
+    pipeline_part: Optional[str] = None,
+    decay_half_life_days: Optional[float] = 90.0,  # 신규
+) -> List[Tuple[Dict, float]]:
+    ...
+    # 기존: similarity = cosine(query, case.vector)
+    # 신규:
+    age_days = (now - case.timestamp).days
+    decay = math.exp(-age_days / decay_half_life_days) if decay_half_life_days else 1.0
+    adjusted_score = similarity * decay
+    ...
+```
+
+~30 LOC 추가로 구현 가능.
+
+== 차용 3: 고객 팩트 압축 (Mem0 패턴)
+
+현재 L2a 사유 생성 시 IG top-K 피처만 프롬프트에 전달된다.
+고객의 *서술적 프로파일*("적금 선호", "최근 펀드 관심 증가")이 없어
+Solar Pro나 Qwen 14B가 맥락 부족 상태로 사유를 생성한다.
+
+=== 룰 기반 FactExtractor (LLM 없음)
+
+```python
+# core/recommendation/reason/fact_extractor.py (신규)
+class FactExtractor:
+    """고객 피처로부터 서술적 팩트 추출 (룰 기반).
+
+    Mem0와 달리 LLM 호출 없이 결정론적으로 동작.
+    """
+
+    def extract(self, customer_features: Dict) -> List[str]:
+        facts = []
+        # 상품 보유 패턴
+        if customer_features.get("deposit_balance_ratio", 0) > 0.6:
+            facts.append("예적금 중심 포트폴리오")
+        # 최근 관심사
+        if customer_features.get("fund_view_count_3m", 0) > 5:
+            facts.append("최근 3개월 펀드 관심 증가")
+        # 리스크 성향
+        risk_score = customer_features.get("risk_tolerance_score", 0.5)
+        if risk_score < 0.3:
+            facts.append("리스크 회피 성향")
+        # ... config 기반 규칙
+        return facts
+```
+
+=== 통합 방식
+
+Phase 0 배치에서 미리 추출하여 `customer_facts` 컬럼으로 LanceDB에 저장.
+서빙 타임에는 조회만 → LLM 호출 없이 프롬프트 강화.
+
+`InterpretationRegistry`와 별도로 작동하는 *고객 레벨 메모리 레이어*이다.
+
+== 차용 4: Dialog Recall Memory (Letta 패턴)
+
+`BedrockDialogSession`은 대화 이력을 메모리에만 보관하여 세션 종료 시 소실된다.
+담당자가 "지난주 논의한 그 drift 이슈 기억해?"라고 물어도 에이전트가 답할 수 없다.
+
+=== 구현
+
+DynamoDB에 대화 이력 저장:
+
+```python
+# core/agent/bedrock_dialog.py 확장
+class BedrockDialogSession:
+    def __init__(self, ..., recall_memory: Optional["DialogRecallMemory"] = None):
+        self._recall = recall_memory
+
+    def chat(self, user_message: str) -> str:
+        # 이전 세션의 관련 대화 조회
+        if self._recall:
+            past_context = self._recall.search_related(user_message, limit=5)
+            # 시스템 프롬프트에 첨부
+            ...
+
+        response = super().chat(user_message)
+
+        # 저장
+        if self._recall:
+            self._recall.save_turn(user_message, response)
+
+        return response
+```
+
+`DialogRecallMemory`는 DynamoDB 테이블 `agent_dialog_recall`에
+`(operator_id, session_id, turn_id, user_msg, agent_response, timestamp, embedding)` 저장.
+검색은 임베딩 기반 유사도.
+
+== 구현 우선순위 (메모리 프레임워크 차용)
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  stroke: 0.4pt + luma(180),
+  inset: 5pt,
+  align: center,
+  table.header([*ID*], [*태스크*], [*LOC*], [*의존*], [*Phase*]),
+  [M-1], [DiagnosticCaseStore `search_similar()`에 decay 추가], [~30], [없음], [즉시],
+  [M-2], [`TemporalFactStore` (시간 그래프)], [~120], [LanceDB], [Phase 4 확장],
+  [M-3], [`FactExtractor` (룰 기반 고객 팩트)], [~150], [feature_groups.yaml], [Phase 1 확장],
+  [M-4], [`DialogRecallMemory` + BedrockDialog 통합], [~80], [DynamoDB], [Phase 5 확장],
+)
+
+*총 ~380 LOC*. 기존 아키텍처를 크게 건드리지 않고 증분 추가.
+
+#infobox("LanceDB 단일 백엔드 원칙")[
+  M-1, M-2, M-3 모두 기존 `DiagnosticCaseStore`/`ContextVectorStore`와 \
+  *같은 LanceDB 인스턴스*를 공유한다. \
+  DuckDB 등 새 의존성을 추가하지 않으며, 벡터 검색 + 메타데이터 필터를 \
+  단일 스택에서 처리한다. M-4만 DynamoDB를 사용 (기존 reason_cache와 동일 스택).
+]
+
+#v(0.8em)
+
+// ============================================================
 = 미결 설계 과제
 // ============================================================
 
