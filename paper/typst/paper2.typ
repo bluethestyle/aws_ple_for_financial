@@ -48,7 +48,7 @@
   #text(weight: "bold")[Abstract.]
   Financial product recommendation systems must explain _why_ a product is recommended ---
   first and foremost because persuasion requires narrative, not probability:
-  a customer who asks "Why should I buy this fund?" needs a reason they can accept,
+  a customer who asks "Why was this card recommended to me?" needs a reason they can accept,
   not a score they must trust.
   Regulators (Korean FSS, EU AI Act) are one important audience for such explanations,
   but the primary driver is the human act of persuasion itself.
@@ -87,7 +87,7 @@
 The final deliverable of a financial recommendation system is not a probability
 but a _reason the customer can accept_.
 A model outputting $P("invest" | x) = 0.73$ provides no value to:
-- The *customer* who asks "Why should I buy this fund?"
+- The *customer* who asks "Why was this card recommended to me?"
 - The *relationship manager* who needs a talking point for the sales call.
 - The *regulator* who demands "Why was this decision made?" under Article 13 of the EU AI Act.
 
@@ -410,9 +410,9 @@ with structured business metadata:
     [*Feature*], [*Business Mapping*], [*Explanation Template*],
     [hmm_lifecycle#linebreak()\_prob_growing], [Growth stage probability], ["Your asset portfolio is in a growth phase"],
     [mamba_temporal#linebreak()\_d3], [3-month spending trend], ["Your spending has been increasing recently"],
-    [hgcn_hierarchy#linebreak()\_d5], [Product category position], ["Investment products are a natural next step"],
+    [hgcn_hierarchy#linebreak()\_d5], [Product category position], ["You belong to a segment that actively uses card benefits"],
     [synth_stability], [Transaction stability], ["You maintain a stable transaction pattern"],
-    [gmm_cluster#linebreak()\_prob_3], [Segment probability], ["You share characteristics with active investors"],
+    [gmm_cluster#linebreak()\_prob_3], [Segment probability], ["You share patterns with customers of similar lifestyles"],
   ),
   caption: [Feature reverse-mapping examples.],
 ) <tab:reverse-mapping>
@@ -475,7 +475,7 @@ Selects features for explanation based on:
 - Customer context (personalization: different features matter for different customer profiles)
 The Feature Selector uses the Financial DNA axis from the companion paper's two-axis framework
 to select features from the relevant customer dimension
-(e.g., lifecycle features for a churn recommendation, value features for an investment recommendation),
+(e.g., lifecycle features for a retention recommendation, spending-pattern features for a benefit recommendation),
 ensuring explanations address the dimension most pertinent to the recommended action.
 
 === Agent 2: Reason Generator
@@ -504,8 +504,8 @@ Grounding constraints:
       *Example output (customer-facing):* \
       "You are currently in an asset growth phase, with spending trending upward
       over the past three months. Given your product portfolio structure,
-      an investment fund is a natural next step. Considering your stable
-      transaction pattern, we recommend a balanced moderate-risk fund."
+      your current check card benefits are being actively utilized. Considering
+      your stable transaction pattern, we recommend a lifestyle-focused benefit card."
     ]
   ],
   caption: [Generated recommendation reason example (translated from Korean).],
@@ -524,7 +524,7 @@ Validates the generated reason against:
     [*Check Category*], [*Criteria*],
     [Hallucination], [No claims about facts not in feature data],
     [Regulatory], [No violation of Protection Act, Article 19],
-    [Appropriateness], [No unsuitable investment advice for risk profile],
+    [Appropriateness], [No unsuitable product recommendations for customer profile],
     [Tone], [Professional financial advisory language],
     [Factual], [Numerical claims match actual feature values],
   ),
@@ -533,7 +533,7 @@ Validates the generated reason against:
 
 On failure: automatic fallback to template-based safe reason.
 All gate decisions are logged for audit trail.
-Upstream of the 3-agent pipeline, the constraint engine applies eligibility and suitability filters --- verifying investment experience, risk tolerance, and product-specific constraints --- so that no recommendation reaches the customer without passing a suitability check, as required by the Korean Financial Consumer Protection Act (금소법) Article 19 (적합성 원칙).
+Upstream of the 3-agent pipeline, the constraint engine applies eligibility and suitability filters --- verifying customer context, usage patterns, and product-specific constraints --- so that no recommendation reaches the customer without passing a suitability check, as required by the Korean Financial Consumer Protection Act (금소법) Article 19.
 
 === Serving Model Selection
 
@@ -547,7 +547,7 @@ Bedrock ensures that input/output data is never transmitted to model providers (
 While the interpretation registry provides feature-level interpretation,
 the fact extraction layer adds *customer-level narrative facts*.
 A rule-based engine extracts Korean facts like "예적금 중심 포트폴리오" (deposit-focused portfolio),
-"최근 3개월 펀드 관심 증가" (recent fund interest growth),
+"최근 3개월 카드 사용 증가" (recent card usage growth),
 "리스크 회피 성향" (risk-averse tendency) from feature values ---
 deterministically and without any LLM calls.
 
@@ -852,6 +852,34 @@ Our system's existing compliance architecture (drift monitoring, fairness auditi
 audit trails, and human-in-the-loop review) aligns with the Act's requirements,
 with the governance reporting module generating documentation
 suitable for regulatory submission.
+
+=== Deployment Scope Restriction
+
+*Low-risk products only.* The actual deployment target of this research is
+*low-risk products* such as check cards, deposit accounts, and demand deposits.
+Investment products (funds, stocks, bonds) and insurance products are
+*intentionally excluded* from the deployment scope, because the Korean
+Financial Consumer Protection Act Article 19 suitability principle,
+EU MiFID II, US Reg BI, and similar frameworks in many jurisdictions
+restrict direct AI recommendations of such products or mandate human
+advisor oversight due to mis-selling risk.
+
+Synthetic benchmark data (Santander 941K) includes product-agnostic tasks
+for benchmarking purposes --- including tasks like `will_acquire_investments` ---
+but *operational deployment is limited to check card recommendations*.
+This separation of "what the model learns" from "what the system actually
+recommends" preserves the generality of benchmark evaluation while minimizing
+regulatory risk.
+
+*Why this distinction matters.* If a reviewer sees Paper 2 examples
+("Why was this card recommended to me?") and asks "why are investment
+products not shown?", the answer is *intentional exclusion*.
+The underlying technology --- AI agents generating natural-language
+recommendation reasons --- can technically be applied to investment products,
+but fully eliminating mis-selling risk requires human advisor oversight,
+which is incompatible with the *automation* claim of this paper.
+By restricting to low-risk products, the claim of "fully automated,
+explainable recommendations" becomes compatible with regulation.
 
 == Monitoring and Governance
 
