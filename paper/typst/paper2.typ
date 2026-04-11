@@ -203,6 +203,8 @@ enabling independent improvement of each component.
 == Teacher-Student Architecture
 
 #figure(
+  placement: top,
+  scope: "parent",
   {
     let gray-fill = luma(245)
     let teacher-fill = rgb("#d6e6f0")
@@ -210,20 +212,20 @@ enabling independent improvement of each component.
     let ig-fill = rgb("#fff3e0")
 
     fletcher.diagram(
-      spacing: (8pt, 12pt),
+      spacing: (16pt, 14pt),
       node-stroke: 0.6pt + luma(80),
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((0, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 14 Task, 350D] \ #text(size: 6pt)[GPU, weekly training]], width: 35mm, fill: teacher-fill, name: <teacher>),
+      node((0, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 14 Task, 350D] \ #text(size: 6pt)[GPU, weekly training]], width: 50mm, fill: teacher-fill, name: <teacher>),
 
-      node((2, 0), [*Soft Labels* \ #text(size: 6pt)[Per-task probability dist.]], width: 30mm, fill: gray-fill, name: <soft>),
+      node((2, 0), [*Soft Labels* \ #text(size: 6pt)[Per-task probability dist.]], width: 45mm, fill: gray-fill, name: <soft>),
 
-      node((1, 1.2), [*IG Feature Selection* \ #text(size: 6pt)[Dual prediction + explanation] \ #text(size: 6pt)[$"IG"_"dual" = alpha dot "IG"_"pred" + (1-alpha) dot "IG"_"explain"$]], width: 45mm, fill: ig-fill, name: <ig>),
+      node((1, 1.2), [*IG Feature Selection* \ #text(size: 6pt)[Dual prediction + explanation] \ #text(size: 6pt)[$"IG"_"dual" = alpha dot "IG"_"pred" + (1-alpha) dot "IG"_"explain"$]], width: 65mm, fill: ig-fill, name: <ig>),
 
-      node((0, 2.4), [*LGBM Student ×14* \ #text(size: 6pt)[Per-task independent] \ #text(size: 6pt)[CPU, daily inference]], width: 35mm, fill: student-fill, name: <student>),
+      node((0, 2.4), [*LGBM Student ×14* \ #text(size: 6pt)[Per-task independent] \ #text(size: 6pt)[CPU, daily inference]], width: 50mm, fill: student-fill, name: <student>),
 
-      node((2, 2.4), [*Lambda Serving* \ #text(size: 6pt)[GPU-free real-time inference] \ #text(size: 6pt)[+ explainable features preserved]], width: 35mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
+      node((2, 2.4), [*Lambda Serving* \ #text(size: 6pt)[GPU-free real-time inference] \ #text(size: 6pt)[+ explainable features preserved]], width: 50mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
 
       edge(<teacher>, <soft>, "->", label: [soft probs]),
       edge(<teacher>, <ig>, "->", label: [IG attribution]),
@@ -418,6 +420,8 @@ Level IG (IG sign direction + task context) → Level 3 (feature×task manual ov
 == 3-Agent Pipeline Architecture
 
 #figure(
+  placement: top,
+  scope: "parent",
   {
     let gray-fill = luma(245)
     let agent-fill = rgb("#d6e6f0")
@@ -425,23 +429,23 @@ Level IG (IG sign direction + task context) → Level 3 (feature×task manual ov
     let pass-fill = rgb("#e8f5e9")
 
     fletcher.diagram(
-      spacing: (8pt, 14pt),
+      spacing: (16pt, 16pt),
       node-stroke: 0.6pt + luma(80),
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((1, 0), [*Model Predictions* \ #text(size: 6pt)[14 tasks × top-K products]], width: 35mm, fill: gray-fill, name: <pred>),
+      node((1, 0), [*Model Predictions* \ #text(size: 6pt)[14 tasks × top-K products]], width: 55mm, fill: gray-fill, name: <pred>),
 
-      node((1, 1.3), [*Feature Selector* \ #text(size: 6pt)[IG contribution + business mapping richness] \ #text(size: 6pt)[Customer context-based selection]], width: 45mm, fill: agent-fill, name: <a1>),
+      node((1, 1.3), [*Feature Selector* \ #text(size: 6pt)[IG contribution + business mapping richness] \ #text(size: 6pt)[Customer context-based selection]], width: 70mm, fill: agent-fill, name: <a1>),
 
-      node((1, 2.6), [*Reason Generator* \ #text(size: 6pt)[Reverse-mapped features → NL reason] \ #text(size: 6pt)[Financial DNA narrative structure]], width: 45mm, fill: agent-fill, name: <a2>),
+      node((1, 2.6), [*Reason Generator* \ #text(size: 6pt)[Reverse-mapped features → NL reason] \ #text(size: 6pt)[Financial DNA narrative structure]], width: 70mm, fill: agent-fill, name: <a2>),
 
-      node((1, 3.9), [*Safety Gate* \ #text(size: 6pt)[Hallucination · Regulation · Suitability · Tone · Factuality] \ #text(size: 6pt)[5-stage validation]], width: 45mm, fill: safety-fill, name: <a3>),
+      node((1, 3.9), [*Safety Gate* \ #text(size: 6pt)[Hallucination · Regulation · Suitability · Tone · Factuality] \ #text(size: 6pt)[5-stage validation]], width: 70mm, fill: safety-fill, name: <a3>),
 
-      node((0, 5), [*Pass* → Serve], width: 22mm, fill: pass-fill, name: <pass>),
-      node((2, 5), [*Fail* → Template fallback], width: 25mm, fill: gray-fill, name: <fail>),
+      node((0, 5), [*Pass* → Serve], width: 32mm, fill: pass-fill, name: <pass>),
+      node((2, 5), [*Fail* → Template fallback], width: 38mm, fill: gray-fill, name: <fail>),
 
-      node((2.5, 2.6), [*Audit Log* \ #text(size: 6pt)[HMAC signed]], width: 18mm, fill: luma(240), name: <audit>),
+      node((2.5, 2.6), [*Audit Log* \ #text(size: 6pt)[HMAC signed]], width: 28mm, fill: luma(240), name: <audit>),
 
       edge(<pred>, <a1>, "->"),
       edge(<a1>, <a2>, "->", label: [selected features]),
@@ -844,6 +848,8 @@ suitable for regulatory submission.
 == Monitoring and Governance
 
 #figure(
+  placement: top,
+  scope: "parent",
   {
     let gray-fill = luma(245)
     let ops-fill = rgb("#d6e6f0")
@@ -851,23 +857,23 @@ suitable for regulatory submission.
     let report-fill = rgb("#fff9c4")
 
     fletcher.diagram(
-      spacing: (6pt, 12pt),
+      spacing: (14pt, 14pt),
       node-stroke: 0.6pt + luma(80),
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((0, 0), [*DriftDetector* \ #text(size: 6pt)[PSI]], width: 22mm, fill: gray-fill, name: <drift>),
-      node((1, 0), [*FairnessMonitor* \ #text(size: 6pt)[DI/SPD/EOD]], width: 24mm, fill: gray-fill, name: <fair>),
-      node((2, 0), [*HerdingDetector* \ #text(size: 6pt)[HHI/Gini]], width: 22mm, fill: gray-fill, name: <herd>),
+      node((0, 0), [*DriftDetector* \ #text(size: 6pt)[PSI]], width: 34mm, fill: gray-fill, name: <drift>),
+      node((1, 0), [*FairnessMonitor* \ #text(size: 6pt)[DI/SPD/EOD]], width: 36mm, fill: gray-fill, name: <fair>),
+      node((2, 0), [*HerdingDetector* \ #text(size: 6pt)[HHI/Gini]], width: 34mm, fill: gray-fill, name: <herd>),
 
-      node((0, 1.5), [*OpsAgent* \ #text(size: 6pt)[7 checkpoints] \ #text(size: 6pt)[cross-checkpoint analysis]], width: 28mm, fill: ops-fill, name: <ops>),
-      node((2, 1.5), [*AuditAgent* \ #text(size: 6pt)[5 viewpoints] \ #text(size: 6pt)[3-Tier reason quality]], width: 28mm, fill: audit-fill, name: <aud>),
+      node((0, 1.5), [*OpsAgent* \ #text(size: 6pt)[7 checkpoints] \ #text(size: 6pt)[cross-checkpoint analysis]], width: 42mm, fill: ops-fill, name: <ops>),
+      node((2, 1.5), [*AuditAgent* \ #text(size: 6pt)[5 viewpoints] \ #text(size: 6pt)[3-Tier reason quality]], width: 42mm, fill: audit-fill, name: <aud>),
 
-      node((1, 2.8), [*3-Agent Consensus* \ #text(size: 6pt)[Sonnet × 3 independent voting] \ #text(size: 6pt)[Minority report preservation]], width: 38mm, fill: luma(240), name: <consensus>),
+      node((1, 2.8), [*3-Agent Consensus* \ #text(size: 6pt)[Sonnet × 3 independent voting] \ #text(size: 6pt)[Minority report preservation]], width: 55mm, fill: luma(240), name: <consensus>),
 
-      node((1, 4), [*Governance Report* \ #text(size: 6pt)[Monthly auto-generated]], width: 30mm, fill: report-fill, name: <gov>),
+      node((1, 4), [*Governance Report* \ #text(size: 6pt)[Monthly auto-generated]], width: 45mm, fill: report-fill, name: <gov>),
 
-      node((1, 5), [*Human Review and Decision*], width: 30mm, shape: fletcher.shapes.pill, fill: rgb("#e8f5e9"), name: <human>),
+      node((1, 5), [*Human Review and Decision*], width: 45mm, shape: fletcher.shapes.pill, fill: rgb("#e8f5e9"), name: <human>),
 
       edge(<drift>, <ops>, "->"),
       edge(<fair>, <aud>, "->"),
