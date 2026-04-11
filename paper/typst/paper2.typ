@@ -182,7 +182,7 @@ with explanations grounded in causal reasoning rather than post-hoc correlation.
 Deploying LLMs for customer-facing financial text introduces specific risks:
 hallucination (stating non-existent product features),
 inappropriate advice (recommending unsuitable products for the customer's risk profile),
-and regulatory violation (breaching 금소법 or 적합성 원칙).
+and regulatory violation (breaching the Financial Consumer Protection Act or the Suitability Principle).
 
 Retrieval-Augmented Generation (RAG) mitigates hallucination
 by grounding generation in retrieved factual context.
@@ -423,7 +423,7 @@ This registry serves dual purposes:
 
 The interpretation registry interprets features into Korean via a 5-level cascade:
 Level IG (IG sign direction + task context) → Level 3 (feature×task manual overrides) → Level 2 (group×task) → Level 1 (group×task_group auto-generated) → Level RM (reverse-mapping layer glossary templates). Only features unresolved by this cascade fall to raw fallback.
-The reverse-mapping layer is integrated as Level RM, so glossary value-substitution templates (e.g., "월 평균 \{value\}건 거래") operate as part of the cascade. All fallback text outputs Korean.
+The reverse-mapping layer is integrated as Level RM, so glossary value-substitution templates (e.g., `"월 평균 \{value\}건 거래"` — "average \{value\} monthly transactions") operate as part of the cascade. All fallback text outputs Korean.
 
 == 3-Agent Pipeline Architecture
 
