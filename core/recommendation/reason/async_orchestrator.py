@@ -49,6 +49,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from core.recommendation.reason.interpretation_registry import InterpretationRegistry
+    from core.recommendation.reason.fact_extractor import FactExtractor
+    from core.recommendation.reason.context_store import ContextVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +134,10 @@ class AsyncReasonOrchestrator:
                       validation.
         audit_store: Optional callable ``(record: dict) -> None`` for
                      audit logging of L2a/L2b events.
+        fact_extractor: Optional :class:`FactExtractor` instance (reserved
+                        for future use; not called directly by orchestrator).
+        context_store: Optional :class:`ContextVectorStore` providing
+                       ``customer_facts`` metadata for L1/L2a enrichment.
     """
 
     # Human-review sampling rate (5%)
@@ -146,6 +152,8 @@ class AsyncReasonOrchestrator:
         audit_store=None,
         prompt_sanitizer=None,
         interpretation_registry: Optional["InterpretationRegistry"] = None,
+        fact_extractor: Optional[Any] = None,        # FactExtractor instance
+        context_store: Optional[Any] = None,         # ContextVectorStore with customer_facts metadata
     ) -> None:
         self._config = config or {}
         ao_cfg = self._config.get("reason", {}).get("async_orchestrator", {})
@@ -156,6 +164,8 @@ class AsyncReasonOrchestrator:
         self._self_checker = self_checker
         self._audit_store = audit_store
         self._interpretation_registry = interpretation_registry
+        self._fact_extractor = fact_extractor
+        self._context_store = context_store
 
         # In-memory cache (local); production overrides with DynamoDB
         self._cache: Dict[str, ReasonResult] = {}
@@ -299,6 +309,17 @@ class AsyncReasonOrchestrator:
             except Exception:
                 ig_top_features = features  # fallback on any error
 
+        # Retrieve customer facts from ContextVectorStore (Mem0-inspired)
+        customer_facts: List[str] = []
+        if self._context_store is not None:
+            try:
+                ctx = self._context_store.get_context(customer_id)
+                customer_facts = ctx.get("customer_facts", [])
+                if not isinstance(customer_facts, list):
+                    customer_facts = []
+            except Exception:
+                pass  # non-fatal: L1 continues without facts
+
         # Use existing TemplateEngine if available
         if self._template_engine is not None:
             reason_output = self._template_engine.generate_reason(
@@ -311,6 +332,10 @@ class AsyncReasonOrchestrator:
             )
             reasons = reason_output.get("reasons", [])
             text = reasons[0]["text"] if reasons else self._minimal_reason(item_id)
+
+            # Attach facts to result metadata for downstream L2a use
+            if customer_facts and isinstance(reason_output, dict):
+                reason_output["customer_facts"] = customer_facts
         else:
             # Minimal fallback when no template engine is configured
             text = self._minimal_reason(item_id)
@@ -833,6 +858,14 @@ class AsyncReasonOrchestrator:
 
             if feature_lines:
                 prompt += f"\n## Key Features (by importance)\n{feature_lines}\n"
+
+        # Inject customer facts into the prompt (Mem0-inspired)
+        # Only added when not already present via assembled_context_text to
+        # avoid duplication.
+        customer_facts = context.get("customer_facts", [])
+        if customer_facts and isinstance(customer_facts, list) and not assembled_text:
+            facts_text = "\n".join(f"- {f}" for f in customer_facts[:10])
+            prompt += f"\n\n## 고객 특성 팩트\n{facts_text}\n"
 
         prompt += (
             "\n## Grounding Rules\n"

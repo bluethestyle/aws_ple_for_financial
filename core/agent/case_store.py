@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -172,11 +173,50 @@ class DiagnosticCaseStore:
     # Search similar cases
     # ------------------------------------------------------------------
 
+    def _compute_decay_weights(self, decay_half_life_days: float) -> Dict[str, float]:
+        """Compute exponential decay weights for all cases based on age.
+
+        Args:
+            decay_half_life_days: Half-life in days. Uses exp(-age/τ).
+
+        Returns:
+            Dict mapping case_id → weight (0.0~1.0).
+        """
+        weights = {}
+        now = datetime.now(timezone.utc)
+        tau = decay_half_life_days / math.log(2)  # convert half-life to tau
+        for case in self._cases:
+            case_id = case.get("case_id", "")
+            ts = case.get("timestamp", "")
+            try:
+                case_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                age_days = (now - case_time).total_seconds() / 86400
+                weight = math.exp(-age_days / tau)
+            except (ValueError, TypeError):
+                weight = 1.0  # unknown timestamp → no decay
+            weights[case_id] = weight
+        return weights
+
+    def _apply_decay_to_results(
+        self,
+        results: List[Tuple[Dict[str, Any], float]],
+        weights: Dict[str, float],
+        k: int,
+    ) -> List[Tuple[Dict[str, Any], float]]:
+        """Multiply similarity scores by decay weights and re-sort."""
+        adjusted = [
+            (case, round(score * weights.get(case.get("case_id", ""), 1.0), 4))
+            for case, score in results
+        ]
+        adjusted.sort(key=lambda x: x[1], reverse=True)
+        return adjusted[:k]
+
     def search_similar(
         self,
         query_vector: np.ndarray,
         k: int = 5,
         pipeline_part: Optional[str] = None,
+        decay_half_life_days: Optional[float] = 90.0,
     ) -> List[Tuple[Dict[str, Any], float]]:
         """Find similar diagnostic cases by vector similarity.
 
@@ -184,13 +224,27 @@ class DiagnosticCaseStore:
             query_vector: Embedding of the current finding text.
             k: Number of similar cases to return.
             pipeline_part: Optional filter to same pipeline part (e.g. ``"P1"``).
+            decay_half_life_days: Time decay half-life in days (default 90).
+                If None, no decay applied (pure similarity search).
+                Cases without parseable timestamps get weight 1.0.
 
         Returns:
-            List of ``(case_dict, similarity_score)`` tuples, descending similarity.
+            List of (case_dict, adjusted_score) tuples, descending.
         """
+        # Fetch more than k to allow decay re-ranking
+        fetch_k = k * 3 if decay_half_life_days is not None else k
+
         if self._backend == "lancedb" and self._table is not None:
-            return self._search_lancedb(query_vector, k, pipeline_part)
-        return self._search_numpy(query_vector, k, pipeline_part)
+            results = self._search_lancedb(query_vector, fetch_k, pipeline_part)
+        else:
+            results = self._search_numpy(query_vector, fetch_k, pipeline_part)
+
+        # Apply decay if configured
+        if decay_half_life_days is not None and results:
+            weights = self._compute_decay_weights(decay_half_life_days)
+            return self._apply_decay_to_results(results, weights, k)
+
+        return results[:k]
 
     def _search_numpy(
         self,

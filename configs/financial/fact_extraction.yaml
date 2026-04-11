@@ -1,0 +1,87 @@
+# Customer Fact Extraction Rules
+# Loaded by core/recommendation/reason/fact_extractor.py
+#
+# Each rule has:
+#   name: The fact string (Korean, shown in L2a reason prompts)
+#   condition: Python expression evaluated against customer features
+#              Available: feature names as variables
+#              Safe builtins: abs, min, max, len, any, all
+#   required_features: List of feature names that must exist (pre-check)
+#
+# Rules are config-driven — no hardcoded thresholds in code.
+
+version: "1.0"
+
+rules:
+  # === Portfolio composition ===
+  - name: "예적금 중심 포트폴리오"
+    condition: "deposit_balance_ratio > 0.6"
+    required_features: ["deposit_balance_ratio"]
+
+  - name: "펀드 중심 포트폴리오"
+    condition: "fund_balance_ratio > 0.5"
+    required_features: ["fund_balance_ratio"]
+
+  - name: "대출 부담이 있는 고객"
+    condition: "loan_to_asset_ratio > 0.3"
+    required_features: ["loan_to_asset_ratio"]
+
+  # === Recent interest patterns ===
+  - name: "최근 3개월 펀드 관심 증가"
+    condition: "fund_view_count_3m > 5"
+    required_features: ["fund_view_count_3m"]
+
+  - name: "최근 카드 사용 활발"
+    condition: "card_txn_count_1m > 30"
+    required_features: ["card_txn_count_1m"]
+
+  - name: "최근 투자 상품 조회 증가"
+    condition: "investment_view_count_3m > 3"
+    required_features: ["investment_view_count_3m"]
+
+  # === Risk profile ===
+  - name: "리스크 회피 성향"
+    condition: "risk_tolerance_score < 0.3"
+    required_features: ["risk_tolerance_score"]
+
+  - name: "공격적 투자 성향"
+    condition: "risk_tolerance_score > 0.7"
+    required_features: ["risk_tolerance_score"]
+
+  # === Lifecycle stage ===
+  - name: "신규 고객 (가입 6개월 이내)"
+    condition: "tenure_months < 6"
+    required_features: ["tenure_months"]
+
+  - name: "장기 고객 (가입 5년 이상)"
+    condition: "tenure_months >= 60"
+    required_features: ["tenure_months"]
+
+  # === Engagement ===
+  - name: "디지털 채널 선호"
+    condition: "mobile_login_count_1m > 15"
+    required_features: ["mobile_login_count_1m"]
+
+  - name: "고빈도 거래 고객"
+    condition: "txn_count_3m > 100"
+    required_features: ["txn_count_3m"]
+
+  # === Spending patterns ===
+  - name: "안정적 거래 패턴"
+    condition: "spend_cv_3m < 0.3"
+    required_features: ["spend_cv_3m"]
+
+  - name: "최근 소비 증가 추세"
+    condition: "spend_growth_3m > 0.15"
+    required_features: ["spend_growth_3m"]
+
+  # === Churn risk ===
+  - name: "이탈 위험 신호"
+    condition: "churn_probability > 0.4"
+    required_features: ["churn_probability"]
+
+# === Notes ===
+# - Add new rules here; FactExtractor auto-picks them up on restart.
+# - Conditions use standard Python operators: >, <, >=, <=, ==, !=, and, or, not
+# - For range conditions: "x > 0.3 and x < 0.7"
+# - For missing features: pre-check via required_features prevents errors

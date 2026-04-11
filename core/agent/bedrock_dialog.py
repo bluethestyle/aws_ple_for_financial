@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.agent.tool_registry import ToolRegistry
+    from core.agent.dialog_recall import DialogRecallMemory  # NEW
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ class BedrockDialogSession:
         region: str = "ap-northeast-2",
         system_prompt: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
+        recall_memory: Optional[Any] = None,  # DialogRecallMemory instance
     ) -> None:
         self._registry = registry
         self._agent_type = agent_type
@@ -66,6 +68,7 @@ class BedrockDialogSession:
         self._region = region
         self._config = config or {}
         self._history: List[DialogTurn] = []
+        self._recall_memory = recall_memory
 
         self._system_prompt = system_prompt or self._default_system_prompt()
         self._client = None  # lazy init
@@ -107,6 +110,30 @@ class BedrockDialogSession:
         # Add user turn
         self._history.append(DialogTurn(role="user", content=user_message))
 
+        # Retrieve related past dialog turns (Letta-inspired)
+        recall_context = ""
+        if self._recall_memory is not None:
+            try:
+                operator_id = self._config.get("operator_id", "default") if hasattr(self, "_config") else "default"
+                related = self._recall_memory.search_related(
+                    operator_id=operator_id,
+                    query_text=user_message,
+                    limit=5,
+                )
+                if related:
+                    lines = []
+                    for r in related:
+                        ts = r.get("timestamp", "")[:10]  # date only
+                        user_msg = r.get("user_message", "")[:100]
+                        agent_resp = r.get("agent_response", "")[:100]
+                        lines.append(f"[{ts}] 담당자: {user_msg}\n에이전트: {agent_resp}")
+                    recall_context = "\n\n---\n[과거 대화 참고]\n" + "\n\n".join(lines)
+            except Exception as e:
+                logger.debug("Dialog recall failed: %s", e)
+
+        # Build augmented system prompt with recall context
+        augmented_system = self._system_prompt + recall_context if recall_context else None
+
         # Build messages for Bedrock
         messages = self._build_messages()
         tool_config = self._build_tool_config()
@@ -114,7 +141,7 @@ class BedrockDialogSession:
         # Conversation loop (may involve multiple tool calls)
         max_iterations = 5  # prevent infinite tool loops
         for _ in range(max_iterations):
-            response = self._call_bedrock(messages, tool_config)
+            response = self._call_bedrock(messages, tool_config, system_override=augmented_system)
 
             # Check if response contains tool use
             tool_uses = self._extract_tool_uses(response)
@@ -122,6 +149,22 @@ class BedrockDialogSession:
                 # Pure text response
                 text = self._extract_text(response)
                 self._history.append(DialogTurn(role="assistant", content=text))
+
+                # Save this turn for future recall
+                if self._recall_memory is not None:
+                    try:
+                        operator_id = self._config.get("operator_id", "default") if hasattr(self, "_config") else "default"
+                        turn_id = str(len(self._history))
+                        self._recall_memory.save_turn(
+                            operator_id=operator_id,
+                            session_id=str(id(self)),  # session scoped to this object instance
+                            turn_id=turn_id,
+                            user_msg=user_message,
+                            agent_response=text,
+                        )
+                    except Exception as e:
+                        logger.debug("Dialog recall save_turn failed: %s", e)
+
                 return text
 
             # Execute tools and add results
@@ -190,14 +233,14 @@ class BedrockDialogSession:
             return {}
         return {"tools": tools}
 
-    def _call_bedrock(self, messages: List[Dict], tool_config: Dict) -> Dict:
+    def _call_bedrock(self, messages: List[Dict], tool_config: Dict, system_override: Optional[str] = None) -> Dict:
         """Call Bedrock converse API."""
         client = self._get_client()
 
         kwargs: Dict[str, Any] = {
             "modelId": self._model_id,
             "messages": messages,
-            "system": [{"text": self._system_prompt}],
+            "system": [{"text": system_override if system_override is not None else self._system_prompt}],
         }
         if tool_config:
             kwargs["toolConfig"] = tool_config
