@@ -469,16 +469,18 @@ resume 지원: 이미 완료된 stage는 skip하고 이어서 실행.
 
 ## Champion/Challenger 평가
 
+> **Metric Aggregation 원칙 (2026-04-11)**: ablation 및 Champion/Challenger 비교에서 전 task 단일 평균을 사용하지 않는다. `avg_auc`는 binary task 전용, `avg_f1_macro`는 multiclass task 전용, `avg_mae`는 regression task 전용으로 분리 집계한다. 세 지표를 별도 열로 표시해야 metric semantics 충돌을 방지할 수 있다.
+
 ```
 현재 모델 (Champion) vs. 새 모델 (Challenger)
     ↓
 ┌─────────────────────────────────────────┐
 │ 평가 기준                                │
 │                                         │
-│ 1. 주요 메트릭 (태스크별)                 │
-│    - Binary: AUC-ROC > champion - 0.01  │
-│    - Regression: MAE < champion + 5%    │
-│    - Multiclass: F1-macro > champion    │
+│ 1. 주요 메트릭 (태스크 유형별 분리 집계)   │
+│    - Binary avg_auc > champion - 0.01   │
+│    - Regression avg_mae < champion + 5% │
+│    - Multiclass avg_f1_macro > champion │
 │                                         │
 │ 2. 추론 성능                             │
 │    - Latency p99 < 100ms               │

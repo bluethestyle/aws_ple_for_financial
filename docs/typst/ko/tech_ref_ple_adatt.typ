@@ -242,7 +242,7 @@
 
 #warn[설계 vs 구현 참고][
   본 문서는 풀뱅크 설계(734D)를 기준으로 작성되었습니다.
-  현재 Santander 벤치마크 구현은 316D (12 feature groups)입니다.
+  현재 Santander 벤치마크 구현은 350D (13 feature groups)입니다.
 ]
 
 
@@ -397,20 +397,20 @@ $ "scale"_i = sqrt("mean\_dim" / "dim"_i), quad "mean\_dim" = (128 + 64 times 7)
 CGC Gate가 태스크별 최적 조합을 학습한다.
 
 *FeatureRouter 활성화 (현재 구현):* `feature_groups.yaml`의 `target_experts` 선언에 따라
-`FeatureRouter`가 각 Expert에게 전체 316D 중 해당 Expert에 지정된 피처 서브셋만을 슬라이싱하여 전달한다.
+`FeatureRouter`가 각 Expert에게 전체 350D 중 해당 Expert에 지정된 피처 서브셋만을 슬라이싱하여 전달한다.
 이로 인해 각 Expert의 입력 차원은 서로 다르며(이종 입력), 출력은 64D로 균일하게 정렬된다.
 모델 파라미터는 4.77M → ~2.8M으로 감소하였다.
 
 #styled-table(
   (1.3fr, 1.0fr, 0.6fr, 2.3fr),
-  [*Expert*], [*라우팅 입력 (316D 서브셋)*], [*출력*], [*역할 및 대체 불가능성*],
+  [*Expert*], [*라우팅 입력 (350D 서브셋)*], [*출력*], [*역할 및 대체 불가능성*],
   [DeepFM], [109D], [64D], [FM의 $O(n k)$ 2차 교차를 명시적으로 포착],
   [LightGCN], [66D], [64D], [이분 그래프 기반 "비슷한 고객" 협업 신호],
-  [Unified HGCN], [34D], [128D], [쌍곡 공간에서 MCC 계층 구조 인코딩],
+  [Unified HGCN], [27D (merchant\_hierarchy, MCC 계층)], [128D], [Poincaré 임베딩으로 쌍곡 공간에서 MCC 계층 구조 인코딩],
   [Temporal], [129D (시퀀스)], [64D], [Mamba+LNN+Transformer 시간 패턴 앙상블],
   [PersLay], [32D], [64D], [소비 패턴의 위상적 구조(루프, 클러스터)],
-  [Causal], [103D], [64D], [SCM/NOTEARS 기반 방향성 인과 관계 추출],
-  [Optimal Transport], [69D], [64D], [Sinkhorn Wasserstein 분포 기하학],
+  [Causal], [161D], [64D], [SCM/NOTEARS 기반 방향성 인과 관계 추출],
+  [Optimal Transport], [127D], [64D], [Sinkhorn Wasserstein 분포 기하학],
   [RawScale], [원시 멱법칙 서브셋], [64D], [정규화 전 멱법칙 분포 정보 보존],
 )
 
@@ -429,19 +429,19 @@ $ bold(h)_"shared" = ["unified\_hgcn"_(128"D") || "perslay"_(64"D") || "deepfm"_
 8개 Expert는 동일 고객 데이터의 *근본적으로 다른 수학 구조*를 추출한다:
 
 - *DeepFM (109D)*: 피처 상호작용 중심 서브셋 — 대칭 교차(FM) 구조 포착
-- *Causal (103D)*: 인과 구조 관련 서브셋 — 비대칭 인과(DAG) 방향성 추출
-- *Optimal Transport (69D)*: 분포 비교 서브셋 — Wasserstein 분포 거리 포착
+- *Causal (161D)*: 인과 구조 관련 서브셋 — 비대칭 인과(DAG) 방향성 추출
+- *Optimal Transport (127D)*: 분포 비교 서브셋 — Wasserstein 분포 거리 포착
 - *Temporal (129D)*: 시계열 서브셋 — 시간적 동역학 ($[B, 180, 16]$, $[B, 90, 8]$)
 - *PersLay (32D)*: TDA 서브셋 — 위상적 불변량 (Betti number, persistence)
-- *Unified HGCN (34D)*: 계층/그래프 서브셋 — 쌍곡 기하학에서의 계층 관계
-- *LightGCN (66D)*: 그래프 서브셋 — 고객-가맹점 그래프의 협업 필터링 신호
+- *Unified HGCN (27D, merchant\_hierarchy)*: 계층/그래프 서브셋 — 쌍곡 기하학에서의 MCC 계층 관계 (product\_hierarchy 아님)
+- *LightGCN (66D)*: 그래프 서브셋 — 고객-가맹점 그래프의 협업 필터링 신호; 제품 co-holding 협업 필터링도 이분 그래프로 처리
 - *RawScale*: 정규화 시 손실되는 원시 스케일/멱법칙 분포 패턴
 
 == 2.3 Expert 라우팅 (FeatureRouter)
 
 각 Expert는 config의 `shared_experts` 섹션에서 활성화되며,
 `feature_groups.yaml`의 `target_experts` 선언으로부터 `FeatureRouter`가 빌드된다.
-`FeatureRouter`는 전체 316D 입력 텐서에서 Expert별 지정 인덱스를 슬라이싱하여 전달하며,
+`FeatureRouter`는 전체 350D 입력 텐서에서 Expert별 지정 인덱스를 슬라이싱하여 전달하며,
 입력 데이터가 `None`인 경우 *zero tensor fallback*을 수행하고
 CGC 게이팅이 해당 Expert의 가중치를 자동으로 낮춘다.
 
@@ -453,9 +453,9 @@ HMM Triple-Mode는 별도 입력 경로로 처리된다:
 #styled-table(
   (1fr, 0.8fr, 0.8fr, 2fr),
   [*HMM 모드*], [*입력*], [*시간 스케일*], [*대상 태스크*],
-  [Journey], [16D], [daily], [has\_nba, engagement\_score, cross\_sell\_count, will\_acquire\_\*],
-  [Lifecycle], [16D], [monthly], [churn\_signal, product\_stability, tenure\_stage, segment\_prediction],
-  [Behavior], [16D], [monthly], [income\_tier, spend\_level, nba\_primary, next\_mcc, ...],
+  [Journey], [16D], [daily], [has\_nba, cross\_sell\_count, will\_acquire\_\*],
+  [Lifecycle], [16D], [monthly], [churn\_signal, product\_stability, segment\_prediction],
+  [Behavior], [16D], [monthly], [nba\_primary, next\_mcc, mcc\_diversity\_trend, top\_mcc\_shift, ...],
 )
 
 각 모드는 10D base 상태 확률 + 6D ODE dynamics로 구성되며,
@@ -584,6 +584,10 @@ $ nabla_theta cal(L)_i^"adaTT" = nabla_theta cal(L)_i + lambda sum_(j != i) w_(i
 #warn[검증: freeze_epoch > warmup_epochs][
   Phase 2가 완전히 스킵되면 학습된 친화도가 전이에 반영되지 않아
   adaTT 사용의 의미가 없어진다. 초기화 시 `ValueError`로 조기 차단.
+]
+
+#note[adaTT Epoch 예산][
+  10-epoch 실행(warmup=3, freeze=8)에서 adaTT의 Dynamic 구간은 5 epoch (Phase 2: epoch 3–8)에 불과하다. 친화도 수렴에 충분하지 않은 경우가 많다. *adaTT 평가에는 20-epoch 실행을 권장한다* — warmup=3, freeze=15로 Dynamic 구간이 12 epoch 확보되어 freeze 전 친화도 행렬이 안정화된다.
 ]
 
 == 3.7 Group Prior

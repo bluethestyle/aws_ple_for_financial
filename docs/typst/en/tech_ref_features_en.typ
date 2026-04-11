@@ -243,7 +243,7 @@
 
 #v(12pt)
 #warn[Design vs. Implementation Dimensions][
-  This document is written based on the *full-bank design (734D)*. The current Santander benchmark implementation uses *316D (12 feature groups)*. For the actual implementation dimension specifications, refer to `outputs/phase0/feature_schema.json`. The Appendix "Design vs. Implementation Dimension Mapping" details the per-group differences.
+  This document is written based on the *full-bank design (734D)*. The current Santander benchmark implementation uses *350D (13 feature groups)*. For the actual implementation dimension specifications, refer to `outputs/phase0/feature_schema.json`. The Appendix "Design vs. Implementation Dimension Mapping" details the per-group differences.
 ]
 
 // =====================================================================
@@ -286,6 +286,10 @@ Features in this system serve two simultaneous roles.
 + *Predictive input*: As input tensors to the PLE-adaTT model, they contribute to the prediction of 14 tasks.
 + *Expert routing signal*: The soft assignment probabilities ($gamma_(n k)$) from GMM are used as routing signals that weighted-combine the 20 sub-heads of the GroupTaskExpertBasket, and the 48D HMM output is fed to a dedicated Projector through a separate input path.
 
+#note[Expert Routing Granularity][
+  Expert routing (`target_experts` in `feature_groups.yaml`) is declared at the *feature-group level*, not the column level. Each expert receives the full subset of its assigned feature groups as sliced by `FeatureRouter`. Column-level routing is not supported and would break the config-driven design.
+]
+
 == Overall Feature Tensor Composition
 
 #styled-table(
@@ -297,7 +301,7 @@ Features in this system serve two simultaneous roles.
   [Domain], [159D], [TDA(70) + GMM(22) + Mamba(50) + Economics(17)],
   [Model-Derived], [27D], [HMM summary(5) + Bandit/MAB(4) + LNN(18)],
   [Multidisciplinary], [24D], [Chemical(6) + SIR(5) + Crime(5) + Wave(8)],
-  [Merchant Hierarchy], [21D], [MCC hierarchy coordinates + brand embeddings],
+  [Merchant Hierarchy], [27D], [MCC Poincaré embeddings (hierarchy) + brand embeddings (was 21D stats only)],
   [*Total (normalized)*], [*644D*], [],
   [Raw power-law copy], [90D], [log1p originals of power-law columns (unscaled)],
   [*Main Tensor Total*], [*734D*], [644D normalized + 90D raw power-law],
@@ -975,9 +979,9 @@ The foundational feature block of traditional financial ML.
   [LNN Statistics], [18D], [Hand-crafted statistical features: moving average, volatility, autocorrelation, etc.],
 )
 
-== Merchant Hierarchy Features (21D)
+== Merchant Hierarchy Features (27D)
 
-Coordinates and embeddings reflecting the MCC hierarchy (Root → L1 → L2 → Brand). Includes hyperbolic coordinates extracted from H-GCN and brand similarity based on co-visitation.
+Coordinates and embeddings reflecting the MCC hierarchy (Root → L1 → L2 → Brand). Includes MCC Poincaré embeddings extracted from H-GCN (Phase 0 v3/v4; was 21D stats-only prior to v3) and brand similarity based on co-visitation.
 
 
 // =====================================================================
@@ -1064,19 +1068,19 @@ The `_log` copies of power-law columns (generated in Stage 1) are preserved *wit
 // =====================================================================
 = Appendix: Design vs. Implementation Dimension Mapping
 
-#warn[Note][This Appendix summarizes the dimensional differences between the full-bank design (734D) and the current Santander benchmark implementation (316D). Implementation dimensions can be verified in `outputs/phase0/feature_schema.json`.]
+#warn[Note][This Appendix summarizes the dimensional differences between the full-bank design (734D) and the current Santander benchmark implementation (350D, Phase 0 v3/v4). Implementation dimensions can be verified in `outputs/phase0/feature_schema.json`.]
 
 #styled-table(
   (1.2fr, 1fr, 1fr, 2fr),
-  table.header([*Feature Groups*], [*Design (734D)*], [*Implementation (316D)*], [*Notes*]),
+  table.header([*Feature Groups*], [*Design (734D)*], [*Implementation (350D)*], [*Notes*]),
   [TDA], [70D], [32D], [tda\_global 16D + tda\_local 16D],
   [HMM], [48D + 5D (separate)], [25D], [main tensor only],
   [Base (Profile, etc.)], [238D], [47D], [Demographics, RFM, Financial Summary reduced],
   [Graph], [unspecified], [66D], [added as independent group in implementation],
-  [Merchant / Hierarchy], [21D], [34D], [MCC levels, brand embeddings expanded],
+  [Merchant / Hierarchy], [27D], [34D], [MCC Poincaré embeddings + brand embeddings (Phase 0 v3/v4)],
   [GMM], [22D], [53D], [number of clusters and derived features expanded],
-  [Others (Economics, SIR, etc.)], [335D], [59D], [Mamba, Wave, Crime, etc. reduced],
-  [*Total*], [*734D*], [*316D*], [12 feature groups],
+  [Others (Economics, SIR, etc.)], [335D], [93D], [Mamba, Wave, Crime, etc.; expanded vs. prior],
+  [*Total*], [*734D*], [*350D*], [13 feature groups],
 )
 
 

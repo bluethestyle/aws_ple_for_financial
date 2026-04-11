@@ -88,6 +88,7 @@ tasks:
     loss_weight: 2.0
     label_col: label_nba
     num_classes: 12
+    topk_k: [1, 3, 5]
 
   - name: spending_category
     type: multiclass

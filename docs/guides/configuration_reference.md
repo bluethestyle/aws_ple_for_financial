@@ -674,9 +674,9 @@ training:
 ```yaml
 model:
   # Global dimensions
-  input_dim: 316                      # Set by FeatureGroupPipeline.total_dim (full feature tensor)
+  input_dim: 350                      # Set by FeatureGroupPipeline.total_dim (full feature tensor)
                                       # NOTE: With FeatureRouter active, each expert receives a
-                                      # per-expert subset — NOT the full 316D. The global input_dim
+                                      # per-expert subset — NOT the full 350D. The global input_dim
                                       # represents the total feature tensor fed to FeatureRouter,
                                       # which then slices per-expert views via feature_group_ranges.
                                       # Per-expert dims: deepfm=109D, temporal_ensemble=129D,

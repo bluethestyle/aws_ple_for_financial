@@ -310,7 +310,7 @@ Financial time series have compound structures that no single model can capture.
 - *bias\_high/bias\_low*: Injects initial bias toward domain-relevant experts
 - *entropy regularization*: Prevents expert collapse
 
-Stacked PLE: 3 CGC layers. Layer 0 uses the heterogeneous Expert Basket + FeatureRouter (each expert receives a different input_dim subset), while Layers 1--2 use homogeneous MLP experts for abstraction. Because per-expert input dims are heterogeneous (32D--129D), `dim_normalize` corrects dimensional imbalance in the CGC gate.
+Stacked PLE: 3 CGC layers. Layer 0 uses the heterogeneous Expert Basket + FeatureRouter (each expert receives a different input_dim subset), while Layers 1--2 use homogeneous MLP experts for abstraction. Because per-expert input dims are heterogeneous (27D--168D), `dim_normalize` corrects dimensional imbalance in the CGC gate.
 
 == Dual-Registry Architecture
 
@@ -428,9 +428,9 @@ All features are classified along 5 axes, and each axis is mapped to a correspon
   [Item], [None (relational)], [Medium], [Customer-product interactions], [Graph collaborative filtering],
 )
 
-== 12 Feature Groups (316D Total)
+== 12 Feature Groups (350D Total)
 
-The full feature tensor is 316D. With FeatureRouter active, each expert receives a designated subset of this tensor rather than the full 316D. Per-expert input dims: deepfm=109D, temporal\_ensemble=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, optimal\_transport=69D. Feature group-to-expert routing is declared via `target_experts` in `feature_groups.yaml`.
+The full feature tensor is 350D (Phase 0 v3/v4). With FeatureRouter active, each expert receives a designated subset of this tensor rather than the full 350D. Per-expert input dims: deepfm=168D, temporal\_ensemble=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, optimal\_transport=127D. Feature group-to-expert routing is group-level, auto-built at `build_model()` time from `target_experts` declarations in `feature_groups.yaml` --- no hard-coded column routing.
 
 === 4 Base Groups (transform type)
 
@@ -780,7 +780,7 @@ EncryptionPipeline.process_source()
       node((0, 9), [*Stage 6: SequenceBuilder* #text(size: 6pt)[(flat → 3D tensors)]], width: 55mm, fill: proc-fill, name: <s6>),
 
       // Output nodes on the right
-      node((1.6, 6), [features.parquet \ #text(size: 6pt)[316D]], width: 24mm, fill: out-fill, name: <feat>),
+      node((1.6, 6), [features.parquet \ #text(size: 6pt)[350D]], width: 24mm, fill: out-fill, name: <feat>),
       node((1.6, 7), [labels.parquet], width: 24mm, fill: out-fill, name: <lab>),
       node((1.6, 9), [sequences.npy], width: 24mm, fill: out-fill, name: <seq>),
 
@@ -857,7 +857,7 @@ EncryptionPipeline.process_source()
 
 == Internal Model Data Flow
 
-FeatureRouter is *active*: each expert receives only its designated feature group subset, not the full 316D tensor. Per-expert input dims: deepfm=109D, temporal_ensemble=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, optimal_transport=69D. This reduced model parameters from 4.77M to ~2.8M.
+FeatureRouter is *active*: each expert receives only its designated feature group subset, not the full 350D tensor. Per-expert input dims (Phase 0 v3/v4): deepfm=168D, temporal_ensemble=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, optimal_transport=127D. Routing is group-level, auto-built from `target_experts` in `feature_groups.yaml`. This reduced model parameters from 4.77M to ~2.8M.
 
 #figure(
   placement: auto,
@@ -873,9 +873,9 @@ FeatureRouter is *active*: each expert receives only its designated feature grou
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((0, 0), [*5-Axis Features (316D)* \ #text(size: 6pt)[State / Snapshot / Timeseries / Hierarchy / Item]], width: 68mm, fill: input-fill, name: <feat>),
+      node((0, 0), [*5-Axis Features (350D)* \ #text(size: 6pt)[State / Snapshot / Timeseries / Hierarchy / Item]], width: 68mm, fill: input-fill, name: <feat>),
       edge(<feat>, <router>, "->", label: [FeatureRouter], label-side: right),
-      node((0, 1), [*Expert Basket (7 shared)* \ #text(size: 6pt)[DeepFM ← 109D (State)] \ #text(size: 6pt)[Temporal ← 129D (Timeseries)] \ #text(size: 6pt)[HGCN ← 34D (Hierarchy)] \ #text(size: 6pt)[PersLay ← 32D (Snapshot)] \ #text(size: 6pt)[Causal ← 103D (Snapshot)] \ #text(size: 6pt)[LightGCN ← 66D (Item)] \ #text(size: 6pt)[OT ← 69D (Snapshot)]], width: 68mm, fill: expert-fill, name: <router>),
+      node((0, 1), [*Expert Basket (7 shared)* \ #text(size: 6pt)[DeepFM ← 168D (State)] \ #text(size: 6pt)[Temporal ← 139D (Timeseries)] \ #text(size: 6pt)[HGCN ← 27D (Hierarchy)] \ #text(size: 6pt)[PersLay ← 32D (Snapshot)] \ #text(size: 6pt)[Causal ← 161D (Snapshot)] \ #text(size: 6pt)[LightGCN ← 100D (Item)] \ #text(size: 6pt)[OT ← 127D (Snapshot)]], width: 68mm, fill: expert-fill, name: <router>),
       edge(<router>, <cgc>, "->"),
       node((0, 2), [*CGC Layer × 3* \ #text(size: 6pt)[dim\_normalize · entropy regularization]], width: 68mm, fill: proc-fill, name: <cgc>),
       edge(<cgc>, <hmm>, "->"),
@@ -890,7 +890,7 @@ FeatureRouter is *active*: each expert receives only its designated feature grou
       node((0, 7), [*Task Towers × 14 (TowerRegistry)* \ #text(size: 6pt)[Evidential Layer (regression) · SAE sidecar] \ #text(size: 6pt)[Per-task Loss + Uncertainty Weighting]], width: 68mm, fill: out-fill, name: <towers>),
     )
   },
-  caption: [Internal model data flow: FeatureRouter slices per-expert subsets from the 316D feature tensor.],
+  caption: [Internal model data flow: FeatureRouter slices per-expert subsets from the 350D feature tensor (Phase 0 v3/v4). Routing is group-level, auto-built from \`target_experts\` in feature_groups.yaml.],
 )
 
 == GPU/CPU Acceleration Mapping

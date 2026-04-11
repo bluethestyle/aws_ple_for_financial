@@ -527,7 +527,7 @@ The EU AI Act is likely to classify financial AI recommendation systems as *high
     All recommendation outputs automatically include AI usage labeling],
     [Explain system operation], [2-Layer recommendation rationale (L1 Template + L2 LLM)\
     3-Agent pipeline (Feature Selector $arrow$ Reason Generator $arrow$ Safety Gate)],
-    [Disclose input data specification], [Feature schema auto-documentation (316D current / 734D full-bank design)\
+    [Disclose input data specification], [Feature schema auto-documentation (350D current Phase 0 v3/v4 / 734D full-bank design)\
     Training data source, scope, and pseudonymization status recorded],
     [Disclose performance level], [Model card auto-generation (architecture, performance, feature importance)\
     Per-task independent AUC tracking (14 tasks)],
@@ -747,6 +747,8 @@ DynamoDB-based serverless management (auto-scaling, per-item TTL):
 
 3 fairness metrics are continuously monitored across 5 protected attributes.
 
+Note on income: *income* is an input feature and a protected attribute monitored for fairness bias. It is _not_ a model task. The deterministic bucket derivation `income_tier` was removed from tasks (v14 task set) due to leakage --- the model could trivially reconstruct the label from the feature. The income _feature_ itself is retained and monitored.
+
 #grid(
   columns: (1fr, 1fr),
   gutter: 8pt,
@@ -754,7 +756,7 @@ DynamoDB-based serverless management (auto-scaling, per-item TTL):
     - *Age group*: youth / middle / pre_senior / senior
     - *Gender*: M / F / unspecified
     - *Region type*: metropolitan / urban / rural
-    - *Income quintile*: low / middle / high
+    - *Income quintile*: low / middle / high (feature, not task)
     - *Lifecycle*: 6 classes
   ],
   card(title: "Thresholds and Actions", accent: red-acc)[

@@ -288,24 +288,24 @@ generator_params:
 
 == FeatureRouter — Expert별 피처 서브셋 라우팅 (활성화됨)
 
-*FeatureRouter*는 현재 *활성화* 상태이다. 각 expert는 전체 316D 피처 중 자신에게 지정된 feature group만 입력으로 받는다. `feature_groups.yaml`의 `target_experts` 선언이 실제 런타임 라우팅을 결정한다.
+*FeatureRouter*는 현재 *활성화* 상태이다. 각 expert는 전체 350D 피처 중 자신에게 지정된 feature group만 입력으로 받는다. `feature_groups.yaml`의 `target_experts` 선언이 실제 런타임 라우팅을 결정한다. expert_routing은 그룹 단위로 동작하며, `build_model()` 시점에 `feature_groups.yaml`에서 자동 빌드된다.
 
-*Expert별 입력 차원 (현재 기준):*
+*Expert별 입력 차원 (Phase 0 v3/v4):*
 
 #table(
-  columns: (auto, auto),
+  columns: (auto, auto, 1fr),
   stroke: 0.5pt,
-  [*Expert*], [*입력 차원*],
-  [deepfm], [109D],
-  [temporal\_ensemble], [129D],
-  [hgcn], [34D],
-  [perslay], [32D],
-  [causal], [103D],
-  [lightgcn], [66D],
-  [optimal\_transport], [69D],
+  [*Expert*], [*입력 차원*], [*주요 소스 그룹*],
+  [deepfm], [168D], [State축 전반],
+  [temporal\_ensemble], [139D], [Timeseries축 전반],
+  [hgcn], [27D], [merchant\_hierarchy (MCC Poincaré L1/L2 27D)],
+  [perslay], [32D], [tda\_local 16D + tda\_global 16D],
+  [causal], [161D], [Snapshot축 전반],
+  [lightgcn], [100D], [product\_hierarchy 32D + graph\_collaborative 66D + 기타],
+  [optimal\_transport], [127D], [Snapshot/State 혼합],
 )
 
-전체 피처는 316D이며, 각 expert는 전체의 부분집합을 입력으로 받는다. FeatureRouter 활성화로 모델 파라미터가 4.77M → ~2.8M으로 감소했다.
+전체 피처는 350D이며, 각 expert는 전체의 부분집합을 입력으로 받는다. FeatureRouter 활성화로 모델 파라미터가 4.77M → ~2.8M으로 감소했다.
 
 *구현 방식*: `target_experts` config에서 읽어 `FeatureRouter`가 `feature_group_ranges`를 참조, expert별로 해당 컬럼 범위를 슬라이싱하여 전달한다. 하드코딩 라우팅은 금지한다.
 

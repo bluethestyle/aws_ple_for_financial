@@ -399,6 +399,22 @@ class PLETrainer:
         state = self._make_state()
         self.callbacks.on_train_begin(state)
 
+        # Log task type breakdown so users can verify metric grouping
+        _type_groups: Dict[str, List[str]] = {"binary": [], "multiclass": [], "regression": [], "other": []}
+        for _tn in self.model.task_names:
+            _tt = self.model.config.get_task_type(_tn)
+            _type_groups.get(_tt, _type_groups["other"]).append(_tn)
+        logger.info(
+            "Task type breakdown — binary: %d %s | multiclass: %d %s | regression: %d %s",
+            len(_type_groups["binary"]), _type_groups["binary"],
+            len(_type_groups["multiclass"]), _type_groups["multiclass"],
+            len(_type_groups["regression"]), _type_groups["regression"],
+        )
+        logger.info(
+            "Metric aggregation: avg_auc <- binary only | avg_f1_macro <- multiclass only | "
+            "avg_ndcg@3 <- multiclass tasks with topk_k configured | avg_mae <- regression only"
+        )
+
         # Auto-compute class weights for multiclass tasks before training
         self._auto_compute_class_weights(train_loader)
         # Auto-compute pos_weights for binary tasks before training
@@ -1018,6 +1034,69 @@ class PLETrainer:
 
         return avg_loss, metrics
 
+    @staticmethod
+    def _compute_topk_metrics(
+        logits: "np.ndarray",
+        labels: "np.ndarray",
+        k_values: List[int],
+    ) -> Dict[str, float]:
+        """Compute top-K ranking metrics for single-label multiclass.
+
+        Assumes single-label ground truth (one relevant item per sample),
+        which is the case for nba_primary and next_mcc tasks.
+
+        Args:
+            logits: Raw class scores, shape ``(n_samples, n_classes)``.
+            labels: Integer class indices, shape ``(n_samples,)``.
+            k_values: List of K values to evaluate (e.g. ``[1, 3, 5]``).
+
+        Returns:
+            Dict with the following keys for each K:
+
+            * ``accuracy@K``  — fraction of samples whose true label is in top-K
+            * ``hit@K``       — same as accuracy@K; exposed as a distinct key for
+                                recsys reporting conventions
+            * ``recall@K``    — same as hit@K for single-label tasks (|relevant|=1)
+            * ``precision@K`` — hit@K / K  (|top-K ∩ relevant| / K)
+            * ``ndcg@K``      — binary-relevance NDCG (IDCG=1 per sample)
+        """
+        import numpy as np  # noqa: PLC0415
+
+        metrics: Dict[str, float] = {}
+        if len(logits) == 0 or logits.ndim < 2:
+            return metrics
+
+        n_samples, n_classes = logits.shape
+        max_k = min(max(k_values), n_classes)
+
+        # Descending argsort; materialise only the columns we need.
+        topk_preds = np.argsort(-logits, axis=1)[:, :max_k]  # (n, max_k)
+        labels_col = labels.reshape(-1, 1)  # (n, 1)
+
+        # Binary match matrix: matches[i, j] = 1 iff topk_preds[i, j] == labels[i]
+        matches = (topk_preds == labels_col).astype(np.float32)  # (n, max_k)
+
+        for k in k_values:
+            k_eff = min(k, n_classes)
+            # hit_mean = fraction of samples that have the true label in their top-K
+            hit = matches[:, :k_eff].sum(axis=1)  # (n,) — 0 or 1 (single-label)
+            hit_mean = float(hit.mean())
+
+            metrics[f"accuracy@{k}"] = hit_mean          # backward-compat key
+            metrics[f"hit@{k}"] = hit_mean               # recsys alias
+            metrics[f"recall@{k}"] = hit_mean            # single-label: recall == hit
+            metrics[f"precision@{k}"] = hit_mean / k     # single-label: precision == hit/K
+
+            # NDCG@K: binary relevance; IDCG = 1 (single relevant item per sample)
+            # DCG@K = sum_{i=0}^{k_eff-1} match[i] / log2(i + 2)
+            discounts = 1.0 / np.log2(
+                np.arange(2, k_eff + 2, dtype=np.float32)
+            )  # (k_eff,)
+            dcg = (matches[:, :k_eff] * discounts).sum(axis=1)  # (n,)
+            metrics[f"ndcg@{k}"] = float(dcg.mean())
+
+        return metrics
+
     def _compute_val_metrics(
         self,
         predictions: Dict[str, List[torch.Tensor]],
@@ -1029,7 +1108,8 @@ class PLETrainer:
         appropriate metrics:
 
         * Binary: AUC (ROC)
-        * Multiclass: Accuracy, Macro F1
+        * Multiclass: Accuracy, Macro F1, and optionally top-K accuracy /
+          NDCG@K for tasks that declare ``topk_k`` in their task definition.
         * Regression: MAE, RMSE, R-squared
         """
         metrics: Dict[str, float] = {}
@@ -1047,10 +1127,16 @@ class PLETrainer:
             logger.debug("sklearn not available, skipping validation metrics.")
             return metrics
 
-        aucs: List[float] = []
-        accuracies: List[float] = []
-        f1s: List[float] = []
-        maes: List[float] = []
+        # Per-type accumulators: keyed by task type
+        binary_aucs: List[float] = []
+        binary_task_names_seen: List[str] = []
+        multiclass_accuracies: List[float] = []
+        multiclass_f1s: List[float] = []
+        multiclass_task_names_seen: List[str] = []
+        # top-K accumulators: only tasks with topk_k configured contribute
+        topk_ndcg3_values: List[float] = []  # for avg_ndcg@3 across rec tasks
+        regression_maes: List[float] = []
+        regression_task_names_seen: List[str] = []
 
         for task_name, pred_list in predictions.items():
             label_list = labels.get(task_name)
@@ -1092,7 +1178,8 @@ class PLETrainer:
                     metrics[f"{task_name}_mae"] = mae
                     metrics[f"{task_name}_rmse"] = rmse
                     metrics[f"{task_name}_r2"] = r2
-                    maes.append(mae)
+                    regression_maes.append(mae)
+                    regression_task_names_seen.append(task_name)
 
                 elif task_type == "multiclass":
                     pred_classes = np.argmax(preds_np, axis=-1)
@@ -1107,28 +1194,58 @@ class PLETrainer:
                     ))
                     metrics[f"{task_name}_accuracy"] = acc
                     metrics[f"{task_name}_f1_macro"] = f1
-                    accuracies.append(acc)
-                    f1s.append(f1)
+                    multiclass_accuracies.append(acc)
+                    multiclass_f1s.append(f1)
+                    multiclass_task_names_seen.append(task_name)
+
+                    # --- Top-K metrics (opt-in via topk_k in task config) ---
+                    k_values = self.model.config.get_task_topk_k(task_name)
+                    if k_values is not None:
+                        topk_m = self._compute_topk_metrics(
+                            preds_np[valid], true_classes[valid], k_values
+                        )
+                        for metric_name, metric_val in topk_m.items():
+                            metrics[f"{task_name}_{metric_name}"] = metric_val
+                        # Accumulate ndcg@3 for avg across recommendation tasks
+                        ndcg3_key = "ndcg@3"
+                        if ndcg3_key in topk_m:
+                            topk_ndcg3_values.append(topk_m[ndcg3_key])
 
                 else:  # binary
                     unique = set(labs_np.flatten().tolist())
                     if unique <= {0.0, 1.0} and len(unique) == 2:
                         auc = float(roc_auc_score(labs_np, preds_np))
                         metrics[f"{task_name}_auc"] = auc
-                        aucs.append(auc)
+                        binary_aucs.append(auc)
+                        binary_task_names_seen.append(task_name)
 
             except Exception as e:
                 logger.debug("Metric computation failed for %s: %s", task_name, e)
 
-        # Aggregate metrics
-        if aucs:
-            metrics["avg_auc"] = sum(aucs) / len(aucs)
-        if accuracies:
-            metrics["avg_accuracy"] = sum(accuracies) / len(accuracies)
-        if f1s:
-            metrics["avg_f1_macro"] = sum(f1s) / len(f1s)
-        if maes:
-            metrics["avg_mae"] = sum(maes) / len(maes)
+        # --- Task-type-grouped aggregation ---
+        # Binary tasks: primary metric = AUC
+        if binary_aucs:
+            metrics["avg_auc"] = sum(binary_aucs) / len(binary_aucs)
+        # Multiclass tasks: primary metrics = accuracy, macro-F1
+        if multiclass_accuracies:
+            metrics["avg_accuracy"] = sum(multiclass_accuracies) / len(multiclass_accuracies)
+        if multiclass_f1s:
+            metrics["avg_f1_macro"] = sum(multiclass_f1s) / len(multiclass_f1s)
+        # Recommendation tasks: avg NDCG@3 across tasks that declared topk_k
+        if topk_ndcg3_values:
+            metrics["avg_ndcg@3"] = sum(topk_ndcg3_values) / len(topk_ndcg3_values)
+        # Regression tasks: primary metric = MAE
+        if regression_maes:
+            metrics["avg_mae"] = sum(regression_maes) / len(regression_maes)
+
+        # Task-type count and name summary keys
+        metrics["n_binary_tasks"] = float(len(binary_task_names_seen))
+        metrics["n_multiclass_tasks"] = float(len(multiclass_task_names_seen))
+        metrics["n_regression_tasks"] = float(len(regression_task_names_seen))
+        # Store names as a pipe-delimited string so they fit in the flat metrics dict
+        metrics["binary_task_names"] = "|".join(binary_task_names_seen)
+        metrics["multiclass_task_names"] = "|".join(multiclass_task_names_seen)
+        metrics["regression_task_names"] = "|".join(regression_task_names_seen)
 
         return metrics
 
@@ -1203,7 +1320,7 @@ class PLETrainer:
             parts.append(f"val_loss={val_loss:.6f}")
 
         if val_metrics:
-            for key in ("avg_auc", "avg_accuracy", "avg_f1_macro", "avg_mae"):
+            for key in ("avg_auc", "avg_accuracy", "avg_f1_macro", "avg_ndcg@3", "avg_mae"):
                 val = val_metrics.get(key)
                 if val is not None:
                     parts.append(f"{key}={val:.4f}")
@@ -1243,7 +1360,7 @@ class PLETrainer:
             "learning_rate": self.optimizer.param_groups[0]["lr"],
         }
         if val_metrics:
-            for key in ("avg_auc", "avg_accuracy", "avg_f1_macro", "avg_mae"):
+            for key in ("avg_auc", "avg_accuracy", "avg_f1_macro", "avg_ndcg@3", "avg_mae"):
                 if key in val_metrics:
                     epoch_record[key] = round(val_metrics[key], 4)
 

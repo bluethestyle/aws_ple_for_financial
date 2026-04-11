@@ -20,6 +20,11 @@
 - **LeakageValidator를 학습 전에 반드시 호출**한다.
 - **피처의 단순 변환(bucketing, 선형 결합)으로 파생되는 레이블은 태스크로 사용하지 않는다.** 모델이 입력에서 레이블을 완벽 복원할 수 있어 증류/학습이 무의미하다 (예: income_tier, tenure_stage, spend_level, engagement_score 등 deterministic 변환 결과).
 
+### 1.7 라우팅 및 메트릭 교훈 (2026-04-11)
+- **Feature-group level routing**: expert_routing은 개별 컬럼이 아닌 feature group 이름을 기준으로 해야 한다. 컬럼 이름 기반 routing은 Phase 0에서 정규화/log 복사본 추가로 컬럼이 재배열될 때 오작동한다.
+- **Group range contiguity**: feature_group_ranges는 연속된 블록이어야 한다. min~max index 방식은 3-stage 정규화가 생성한 _log 접미사 컬럼이 끝에 추가되면 range를 터트린다. 비연속 매칭 시 가장 긴 연속 블록을 사용해야 한다.
+- **Metric aggregation by task type**: avg_auc는 binary, avg_f1_macro는 multiclass, avg_mae는 regression task 전용이어야 한다. 전 task 평균은 metric semantics가 호환되지 않아 의미가 없다.
+
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:
   1. **Phase 0 출력 검증**: feature_stats.json에서 zero-variance 컬럼, NaN 비율, 생성된 피처 컬럼 수 확인

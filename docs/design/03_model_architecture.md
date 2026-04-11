@@ -113,7 +113,7 @@ class FeatureRouter:
 |--------|----------|--------------------|
 | `deepfm` | **109D** | demographics, product_holdings, txn_behavior, derived_temporal, gmm_clustering, model_derived |
 | `temporal_ensemble` | **129D** | txn_behavior, hmm_states, mamba_temporal, model_derived |
-| `hgcn` | **34D** | product_hierarchy only |
+| `hgcn` | **34D** | product_hierarchy (13D) + merchant_hierarchy (21D) |
 | `perslay` | **32D** | tda_global, tda_local only |
 | `causal` | **103D** | demographics, product_holdings, txn_behavior, derived_temporal, product_hierarchy, gmm_clustering |
 | `lightgcn` | **66D** | graph_collaborative only |

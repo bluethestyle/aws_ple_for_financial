@@ -373,13 +373,13 @@ and strict regulatory requirements (Korean FSS AI guidelines, EU AI Act).
 
 Rather than treating these constraints as limitations,
 the team adapted its methodology at every level:
-(1) AI-augmented development using Claude (Anthropic), Gemini (Google), and Cursor,
-with each team member leading a parallel team of AI agents;
-(2) parameter-efficient architecture design where structural inductive biases
-replace the brute-force capacity of large MLPs;
-(3) knowledge distillation to LGBM for GPU-free CPU inference on AWS Lambda;
-(4) config-driven pipeline requiring only two YAML files to control the entire system,
-enabling operation by a minimal team.
+
+#list(tight: true,
+  [*AI-augmented development* using Claude (Anthropic), Gemini (Google), and Cursor, with each team member leading a parallel team of AI agents;],
+  [*Parameter-efficient architecture design* where structural inductive biases replace the brute-force capacity of large MLPs;],
+  [*Knowledge distillation* to LGBM for GPU-free CPU inference on AWS Lambda;],
+  [*Config-driven pipeline* requiring only two YAML files to control the entire system, enabling operation by a minimal team.],
+)
 
 Early exploration considered a Black-Litterman-inspired approach,
 treating multiple models' predictions as "expert views" combined via Bayesian updating.
@@ -689,13 +689,13 @@ The resulting per-expert input dimensions are:
     align: left,
     stroke: 0.5pt,
     [*Expert*], [*Input Dim*], [*Feature Groups Routed*],
-    [DeepFM], [168D], [demographics, products, txn_behavior, derived_temporal, gmm, model_derived],
-    [Temporal Ensemble], [139D], [txn_behavior, hmm, mamba, model_derived],
+    [DeepFM], [168D], [#list(tight: true, [demographics], [products], [txn_behavior], [derived_temporal], [gmm], [model_derived])],
+    [Temporal Ensemble], [139D], [#list(tight: true, [txn_behavior], [hmm], [mamba], [model_derived])],
     [HGCN], [27D], [merchant_hierarchy (MCC Poincaré embeddings)],
     [PersLay], [32D], [tda_global, tda_local],
-    [Causal], [161D], [demographics, products, txn, derived_temporal, product_hierarchy, gmm],
+    [Causal], [161D], [#list(tight: true, [demographics], [products], [txn], [derived_temporal], [product_hierarchy], [gmm])],
     [LightGCN], [100D], [product_hierarchy, graph_collaborative],
-    [Optimal Transport], [127D], [demographics, products, txn, derived_temporal, gmm],
+    [Optimal Transport], [127D], [#list(tight: true, [demographics], [products], [txn], [derived_temporal], [gmm])],
   ),
   caption: [Per-expert input dimensions after FeatureRouter. Total feature space: 350D (Phase 0 v3/v4).],
 ) <tab:feature-router>
@@ -720,8 +720,10 @@ Recent theoretical work @sigmoid_moe2024 proves that sigmoid gating achieves
 higher sample efficiency by eliminating inter-expert competition.
 
 We implement both gate types for empirical comparison:
-- *Softmax*: $w_k = "softmax"(W dot h)_k$ --- competitive, sum-to-one.
-- *Sigmoid*: $w_k = sigma(bold(w)_k dot h) slash sum_j sigma(bold(w)_j dot h)$ --- independent evaluation, normalized.
+#list(tight: true,
+  [*Softmax*: $w_k = "softmax"(W dot h)_k$ --- competitive, sum-to-one.],
+  [*Sigmoid*: $w_k = sigma(bold(w)_k dot h) slash sum_j sigma(bold(w)_j dot h)$ --- independent evaluation, normalized.],
+)
 
 The sigmoid variant evaluates each expert's relevance independently
 before normalization, allowing multiple experts to receive high weight simultaneously.
@@ -740,9 +742,11 @@ daily transaction sequences (irregular, bursty),
 and multi-month dormancy gaps (disrupted).
 No single temporal model handles all three well:
 
-- *Mamba* @gu2024 (State Space Model): Captures long-range dependencies with $O(n)$ efficiency via selective state spaces. Ideal for monthly/quarterly trends spanning 12+ months.
-- *LNN* @hasani2021 (Liquid Neural Network): Adaptive time constants that naturally handle irregular sampling intervals and dormancy gaps. When a customer is inactive for 3 months then suddenly active, LNN's continuous-time dynamics adapt without requiring imputation.
-- *Transformer*: Attention-based short-range context extraction. Captures patterns within the most recent 30--90 days of transaction sequences where positional relationships matter.
+#list(tight: true,
+  [*Mamba* @gu2024 (State Space Model): Captures long-range dependencies with $O(n)$ efficiency via selective state spaces. Ideal for monthly/quarterly trends spanning 12+ months.],
+  [*LNN* @hasani2021 (Liquid Neural Network): Adaptive time constants that naturally handle irregular sampling intervals and dormancy gaps. When a customer is inactive for 3 months then suddenly active, LNN's continuous-time dynamics adapt without requiring imputation.],
+  [*Transformer*: Attention-based short-range context extraction. Captures patterns within the most recent 30--90 days of transaction sequences where positional relationships matter.],
+)
 
 The three models' outputs are concatenated and projected,
 mirroring the heterogeneous expert philosophy at a finer granularity.
@@ -1338,10 +1342,13 @@ The current architecture is intentionally lightweight --- each expert uses a com
 This is a deliberate design choice, not merely a resource constraint: structural inductive biases substitute for raw parameter count.
 
 When scaling to larger institutions with dedicated GPU infrastructure, the natural progression is:
-(1) *data enrichment* --- longer transaction histories, broader product coverage, richer interaction signals --- before model capacity increase;
-(2) *per-expert input dimension expansion* --- wider feature groups feeding each expert's specialized inductive bias;
-(3) *expert depth/width scaling* --- deeper layers within individual experts, particularly Temporal (longer sequence modeling) and HGCN (deeper hierarchy encoding);
-(4) *multi-GPU training* via DDP, which is architecturally supported but not yet validated.
+
+#list(tight: true,
+  [*Data enrichment* --- longer transaction histories, broader product coverage, richer interaction signals --- before model capacity increase;],
+  [*Per-expert input dimension expansion* --- wider feature groups feeding each expert's specialized inductive bias;],
+  [*Expert depth/width scaling* --- deeper layers within individual experts, particularly Temporal (longer sequence modeling) and HGCN (deeper hierarchy encoding);],
+  [*Multi-GPU training* via DDP, which is architecturally supported but not yet validated.],
+)
 
 Notably, scaling the expert basket size (adding more expert types) is less promising than scaling individual expert capacity, because the heterogeneous design already covers the major mathematical perspectives relevant to financial behavior.
 

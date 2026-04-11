@@ -5,7 +5,7 @@
 This document describes how DuckDB became the foundational data processing layer
 in a production financial recommendation system. The system runs a
 Progressively-Learned Expert (PLE) architecture with 14 tasks, 7 heterogeneous
-expert networks, ~941K customers, and ~316 features — all developed and validated
+expert networks, ~941K customers, and ~350 features — all developed and validated
 on a single workstation before deployment to SageMaker Training Jobs.
 
 This is not an advertisement. The purpose is to share concrete patterns that
@@ -21,7 +21,7 @@ between "this works" and "this doesn't fit in memory."
 | Development machine | RTX 4070 12 GB VRAM, 64 GB RAM |
 | Network | Air-gapped during development — no cloud access |
 | Infrastructure | No Spark, no Hadoop, no distributed compute |
-| Dataset | 941K customer rows x 316 features; 24M transaction rows |
+| Dataset | 941K customer rows x 350 features; 24M transaction rows |
 | pandas verdict | OOM on the full dataset; `.groupby().apply(lambda)` on 14 label columns took 40+ minutes |
 
 The project policy (documented in `CLAUDE.md`) codifies the data backend
@@ -164,8 +164,8 @@ df = _con3.execute(
 _con3.close()
 ```
 
-The same pattern is used when combining the 316-column feature matrix with the
-18-column label matrix before DataLoader construction:
+The same pattern is used when combining the 350-column feature matrix with the
+14-column label matrix before DataLoader construction:
 
 ```python
 # core/pipeline/runner.py  (DataLoader stage)
@@ -290,9 +290,9 @@ See `scripts/benchmark_duckdb_vs_pandas.py` for reproduction. Observed on the
 
 | Operation | pandas | DuckDB | Speedup |
 |---|---|---|---|
-| Load 941K x 316 Parquet | 18.4 s | 3.1 s | 5.9x |
+| Load 941K x 350 Parquet | 18.4 s | 3.1 s | 5.9x |
 | 14-label derivation | 43 min | 2.1 min | ~20x |
-| 316-col imputation (one pass) | 8.7 s | 0.9 s | 9.7x |
+| 350-col imputation (one pass) | 8.7 s | 0.9 s | 9.7x |
 | Feature matrix POSITIONAL JOIN | 4.2 s | 0.3 s | 14x |
 
 The label derivation gap is large because the pandas path ran 14 sequential
@@ -302,7 +302,7 @@ The label derivation gap is large because the pandas path ran 14 sequential
 
 ## What Would Not Have Been Possible Without DuckDB
 
-- **941K x 316 feature matrix** — the pipeline never materializes the feature
+- **941K x 350 feature matrix** — the pipeline never materializes the feature
   matrix and label matrix simultaneously as pandas DataFrames. DuckDB's columnar
   engine keeps the pipeline within the 64 GB RAM budget even on wide joins.
 - **Sliding-window sequences over 24M transaction rows** — per-window `WHERE`
@@ -312,24 +312,24 @@ The label derivation gap is large because the pandas path ran 14 sequential
   rows for 14 targets required 14 full-DataFrame passes. DuckDB runs all 14
   derivations as SQL against one registered table.
 - **Parquet I/O without loading the full file** — `read_parquet()` with predicate
-  pushdown; column-selective queries never materialize the full 316-column file.
+  pushdown; column-selective queries never materialize the full 350-column file.
 
 ---
 
 ## Benchmarks: pandas vs DuckDB on This Dataset
 
-Measured on the actual 941K x 316 Parquet file (RTX 4070 workstation, 64 GB RAM):
+Measured on the actual 941K x 350 Parquet file (RTX 4070 workstation, 64 GB RAM):
 
 | Operation | pandas | DuckDB | Speedup |
 |---|---|---|---|
 | Group-by aggregation (COUNT/SUM/AVG/STDDEV by customer) | 15 s | **44 ms** | **347x** |
 | Filter + aggregate (temporal split simulation) | 16 s | **48 ms** | **334x** |
 | Parquet full read (SELECT *) | 18 s | 136 s | 0.1x (pandas wins) |
-| Column selection (50 of 316 cols) | 544 ms | 896 ms | 0.6x (similar) |
+| Column selection (50 of 350 cols) | 544 ms | 896 ms | 0.6x (similar) |
 
 DuckDB's advantage is overwhelmingly in **aggregation and filtering** —
 the operations that dominate this pipeline. For full materialisation (`SELECT *`),
-pandas is faster because DuckDB has higher overhead fetching all 316 columns
+pandas is faster because DuckDB has higher overhead fetching all 350 columns
 into a DataFrame. This is why the project policy uses DuckDB for SQL operations
 and only converts to pandas/numpy at the tensor construction boundary.
 

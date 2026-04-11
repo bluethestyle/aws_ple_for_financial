@@ -17,6 +17,12 @@ Stage 6:   SequenceBuilder (time-based + sliding window → sequences.npy, seq_l
 
 `core/pipeline/features.py`의 `FeatureGroupPipeline`이 Stage 4 피처 엔지니어링의 주 진입점이다.
 
+### Expert Routing — Feature Group 단위 원칙 (2026-04-11)
+
+**expert_routing은 개별 컬럼 이름이 아닌 feature group 이름을 기준으로 해야 한다.** Phase 0의 3-stage 정규화는 power-law 컬럼마다 `_log` 접미사 복사본을 추가하므로, 컬럼 이름 기반 routing은 이 재배열 이후 잘못된 슬라이스를 Expert에 전달한다.
+
+`feature_group_ranges`는 연속된 컬럼 블록으로 저장해야 한다 (contiguous blocks). min~max index 방식은 정규화 후 삽입된 `_log` 컬럼이 블록 경계를 넘어갈 때 인접 group의 컬럼을 포함하는 오류를 일으킨다. 비연속 매칭 발생 시 가장 긴 연속 블록을 사용하거나 컬럼 이름 리스트로 range를 저장한다.
+
 ### FeatureGroupPipeline vs Adapter 역할 분리
 
 | 역할 | DataAdapter (Stage 1) | FeatureGroupPipeline (Stage 4) |
@@ -69,7 +75,7 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
     │   └── PatchTST — Patch 기반 시계열 트랜스포머
     │
     ├── Hierarchy (구조)
-    │   ├── merchant_hierarchy (21D) — MCC L1(4) + L2(4) + 브랜드 임베딩(8) + 통계(4) + radius(1)
+    │   ├── merchant_hierarchy (27D) — MCC 계층의 Poincaré 쌍곡 임베딩 (27D). HGCN 라우팅
     │   ├── graph_embeddings (20D) — Poincare 쌍곡 임베딩 (MCC/상품/지역 계층)
     │   └── product_hierarchy — 상품 카테고리 트리 (24개 금융 상품)
     │
@@ -196,9 +202,11 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
   generator_params:
     mcc_hierarchy_path: configs/mcc_hierarchy.yaml   # ISO 18245, L1/L2/L3
     n_svd_components: 8       # Brand SVD embedding dim
-  output_dim: 21              # MCC L1(4D) + L2(4D) + Brand SVD(8D) + Stats(4D) + Radius(1D)
+    poincare_dim: 27          # Poincaré hyperbolic embedding of MCC hierarchy
+  output_dim: 27              # Poincaré 27D embedding (쌍곡 공간, MCC 계층 구조 인코딩)
   target_experts: [hgcn]
   # MCC Hierarchy: 10 L1 groups, ~30 L2 subcategories, 109 L3 codes in dataset
+  # NOTE: txn_mcc_seq는 generator 호출 전에 마지막 1원소 제거 (next_mcc 누수 방지)
 
 - name: product_hierarchy
   axis: hierarchy
@@ -250,7 +258,7 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
 | 5 | `gmm` | `core/feature/generators/gmm.py` | Snapshot | 22D | cuML (optional) | GMM soft labels (K=20, not KMeans) |
 | 6 | `model_derived` | `core/feature/generators/model_features.py` | Snapshot | 27D | - | GMM soft probs(5D) + Bandit(4D) + LNN(18D) |
 | 7 | `economics` | `core/feature/generators/economics.py` | State | 17D | - | Income decomposition(8D) + Financial behavior(9D) |
-| 8 | `merchant_hierarchy` | `core/feature/generators/merchant_hierarchy.py` | Hierarchy | 21D | - | MCC L1(4D) + L2(4D) + Brand SVD(8D) + Stats(4D) + Radius(1D) |
+| 8 | `merchant_hierarchy` | `core/feature/generators/merchant_hierarchy.py` | Hierarchy | 27D | - | MCC 계층의 Poincaré 쌍곡 임베딩 (27D). txn_mcc_seq는 next_mcc 누수 방지를 위해 마지막 원소 제거 후 전달 |
 
 ### 추가 Generator (보조)
 

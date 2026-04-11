@@ -802,6 +802,134 @@ verification is essential.
 #section-break()
 
 
+= Data Integrity Audit: v3 to v4 (2026-04-10/11)
+
+#quote-box[
+  "An AUC of 0.98 on an imbalanced multi-task tabular setup is not a breakthrough —
+  it is a red flag. The model is not learning; it is inverting a bucket function
+  it was handed as input."
+]
+
+== Deterministic Leakage Discovery: 18 → 14 Tasks
+
+Four tasks were removed after a leakage audit traced what the model was actually
+learning. `income_tier` was a direct bucket of `income`; `tenure_stage` was a
+bucket of `tenure_months`; `spend_level` was a bucket of `synth_monthly_spend`;
+`engagement_score` was the linear combination
+$0.3 dot "is_active" + 0.4 dot "freq" + 0.3 dot "num_products"$.
+All four were model-input features or trivial transformations thereof.
+
+The audit was triggered by implausibly high validation numbers: `income_tier`
+AUC = 0.98, `tenure_stage` F1 = 0.98. On a heavily imbalanced, multi-task
+tabular setup, numbers at this level are not a signal of skill — they are a
+clear indicator of leakage or trivial reconstruction. A leakage audit was
+immediately initiated. It traced the cause to the label definitions themselves:
+each of the four tasks was a deterministic bucket or linear transform of features
+already present in the model's input. The CLAUDE.md principle "labels derived by
+deterministic transformation of input features must not be used as tasks" was
+already written; the audit confirmed it had not been applied to the task list.
+All four were removed. The task count fell from 18 to 14, and the remaining
+tasks represent genuinely uncertain predictions: product acquisition, churn,
+next-MCC, spend-shift, and similar outcomes that require the model to learn
+something non-trivial about customer behavior.
+
+The broader lesson: leakage reviews should target *label definitions*, not just
+feature pipelines. A perfectly clean feature pipeline can still be undermined by
+a label that is a function of those same features.
+
+== Synthetic Data Iterations: v2 → v3 → v4
+
+Getting the synthetic benchmark to produce meaningful label distributions took
+three iterations and exposed assumptions we had not examined.
+
+v2 used uniform-random MCC assignment and fixed transaction amounts. The result
+was near-random labels for any MCC-dependent task — the model was predicting
+outcomes that the data generator had made structureless by construction.
+v3 introduced persona-weighted MCC (4--5× preference multiplier) and transaction
+stickiness of 30%. Labels improved, but acquisition tasks remained near-uniform
+because the persona-to-product mapping was too weak to differentiate customers.
+
+v4 made three sharper changes: MCC preference multipliers were raised to 8--12×
+(personas now have strongly distinct spending profiles), stickiness was raised to
+60% (customers reliably stay in category), acquisition rates were increased across
+all products, and the mode-shift window was widened to allow more realistic
+behavior changes over time. The result was meaningful distributions across all
+14 tasks — enough variance to reward a model that learns, without label collapse
+that rewards a trivial predictor.
+
+The pattern across all three iterations: each fix revealed the *next* assumption
+that was too weak. v2 assumed MCC randomness was fine; fixing that exposed the
+persona mapping problem. Fixing the persona mapping exposed the acquisition rate
+problem. Synthetic data design is iterative by nature, and the right signal that
+an iteration is finished is when label distributions resemble the target domain,
+not when the generator code looks clean.
+
+== HGCN vs. LightGCN Role Confusion
+
+The two graph experts were initially routed to the same type of data: product
+co-holding relationships. HGCN received `product_hierarchy` (a bipartite
+product–customer graph), making it functionally identical to LightGCN. Both
+experts learned collaborative-filtering-style affinity. The on-prem design
+intention — HGCN learns *tree structure in hyperbolic space*, LightGCN learns
+*bipartite affinity* — was not reflected in the routing.
+
+The fix required rewriting the `merchant_hierarchy` generator to produce actual
+MCC L1→L2 Poincaré embeddings (27-dimensional), representing the hierarchical
+relationship between merchant category groups and their subcategories.
+`feature_groups.yaml` was updated so that HGCN's `target_experts` points to
+the merchant hierarchy group while LightGCN retains product co-holding.
+After this change the two experts serve genuinely different functions:
+HGCN encodes taxonomic distance in hyperbolic space; LightGCN encodes
+purchase co-occurrence patterns via collaborative filtering.
+
+This was a design-intent preservation issue, not a code bug. The generator
+produced valid embeddings; the routing fed them to the wrong expert.
+Config-driven routing (`feature_groups.yaml`) is the only sustainable way
+to manage this — hardcoded routing in adapter or model code would have made
+the misassignment invisible for much longer.
+
+== Infrastructure and Tooling Fixes
+
+Several infrastructure issues were discovered and resolved during this session.
+
+*Expert routing granularity.* Routing must be specified at feature-group level,
+not column level. Column-level routing does not survive Phase 0 normalization
+reordering: when log-suffix columns are appended, column indices shift and the
+routing silently breaks. Feature-group-level routing uses named groups from
+`feature_groups.yaml` and is stable across normalization transformations.
+
+*Feature group range indexing.* `feature_group_ranges` must be built as
+contiguous blocks using min/max position across all columns in a group.
+Previous logic broke when `_log` suffix columns were appended after the base
+columns: the range endpoints no longer bracketed the right indices.
+
+*Metric aggregation by task type.* Averaging AUC across all tasks regardless
+of type is misleading. The correct aggregation uses average AUC for binary
+classification tasks, average F1-macro for multiclass, and average MAE for
+regression. Mixed-type averaging was producing metrics that obscured model
+behavior on individual task types.
+
+*Ablation result preservation.* Results must be archived, never deleted.
+The `rm -rf` pattern in cleanup scripts was replaced with archive rotation:
+each run's results move to a timestamped subdirectory before new results are
+written. This prevents accidental loss of completed ablation runs.
+
+*Windows sleep and subprocess reliability.* Windows `sleep` mode interrupts
+overnight runs. Sleep-on-idle was disabled for long sessions. Spurious
+subprocess failures (non-zero exit on clean runs) were addressed by adding
+retry logic with a one-second backoff.
+
+*Temperature scaling for LGBM students.* Knowledge distillation papers
+typically recommend T = 3--5 for neural student models. For tree-based LGBM
+students, T = 1 was found to be appropriate: LGBM cannot represent the
+smooth probability distributions that high-temperature softening produces, so
+the standard neural-student temperature setting was actively harmful.
+T = 1 preserves the teacher's rank ordering without imposing an impossible
+distribution shape on the student.
+
+#section-break()
+
+
 = Future Plans
 
 == Academic and Industry Publications

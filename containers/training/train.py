@@ -775,6 +775,8 @@ def build_model(feature_schema, label_schema, hp, input_dim, device, config=None
             task_override["loss"] = t["loss"]
         if "loss_params" in t:
             task_override["loss_params"] = t["loss_params"]
+        if "topk_k" in t:
+            task_override["topk_k"] = t["topk_k"]
         ple_config.task_overrides[t["name"]] = task_override
 
     # -- Logit transfers from schema --

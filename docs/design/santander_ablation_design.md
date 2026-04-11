@@ -1,8 +1,8 @@
 # Santander Ablation Study 설계 문서
 
 > **프로젝트**: AIOps PLE Financial — Santander Customer Product Recommendation
-> **데이터셋**: 941,132 users x 89 columns x 14 tasks x 7 shared experts
-> **최종 갱신**: 2026-03-30
+> **데이터셋**: 941,132 users x 89 columns x 14 tasks x 7 shared experts x 350D features (benchmark v4)
+> **최종 갱신**: 2026-04-11
 > **Config 경로**: `configs/santander/pipeline.yaml`, `configs/santander/feature_groups.yaml`, `configs/santander/item_universe.yaml`
 > **Orchestrator**: `scripts/run_santander_ablation.py`
 
@@ -62,7 +62,7 @@ raw_data["main"] (941K x 89)
   +-- Stage 4 --> df_features (941K x ~500D, 총합)
   |                 checkpoints/features.parquet
   |                 ※ FeatureRouter: 각 Expert는 지정된 피처 그룹의 서브셋만 수신
-  |                    (316D 라우팅 기준: deepfm=109D, temporal_ensemble=129D, hgcn=34D,
+  |                    (350D 라우팅 기준 — benchmark v4: deepfm=109D, temporal_ensemble=129D, hgcn=27D (merchant_hierarchy Poincaré),
   |                     perslay=32D, causal=103D, lightgcn=66D, optimal_transport=69D)
   |
   +-- Stage 5 --> df_labels (941K x 14 label cols)
@@ -184,7 +184,7 @@ Tier 5 — Txn NBA (3 tasks)    txn_mcc_seq 거래 시퀀스에서 파생
 ```
 
 > Tier 4 (개별 상품 태스크)는 Tier 3 그룹과 중복으로 제외됨
-> tenure_stage, spend_level, engagement_score, income_tier는 신호 약함으로 제거됨
+> tenure_stage, spend_level, engagement_score, income_tier는 **결정론적 leakage**로 제거됨 — 입력 피처의 단순 변환(bucketing, 선형 결합)으로 파생되므로 모델이 입력에서 레이블을 완벽 복원 가능, 증류/학습이 무의미함
 
 ### 3.2 전체 14개 태스크 상세
 
@@ -258,17 +258,19 @@ logit_transfer_strength = 0.5
 
 핵심 아키텍처는 **Progressive Layered Extraction (PLE)** 에 **adaptive Task-Transfer (adaTT)** 를 결합한 멀티태스크 학습 모델이다.
 
+> **adaTT warmup/freeze 고려사항**: ablation 실험(10ep)에서 warmup_epochs=3, freeze_epoch=8 기준으로 설정. Best config Teacher 학습(30+20ep)에서는 warmup_epochs=10, freeze_epoch=28로 확장. `grad_interval=10` (epoch-only 추출 금지). uncertainty weighting과 adaTT는 either/or가 아니라 순차 적용 (uncertainty → loss scale 정규화 → adaTT transfer). preflight 로그에서 설정 적용 여부 반드시 확인.
+
 ```
-Input (~500D, 총 316D 활성 피처)
+Input (~500D, 총 350D 활성 피처 — benchmark v4)
   |
   v
 [FeatureRouter] ── Expert별 지정 피처 그룹 서브셋만 라우팅 (전체 브로드캐스트 아님)
   |                  deepfm          → 109D  (demographics + product + synth 교차)
   |                  temporal_ens    → 129D  (txn_behavior + temporal_pattern + synth)
-  |                  hgcn            → 34D   (product_hierarchy + product_holdings)
+  |                  hgcn            → 27D   (merchant_hierarchy Poincaré — MCC 계층 구조)
   |                  perslay         → 32D   (tda_global)
   |                  causal          → 103D  (demographics + synth + txn_behavior)
-  |                  lightgcn        → 66D   (product_holdings + co-purchase graph)
+  |                  lightgcn        → 66D   (product_hierarchy + graph_collaborative)
   |                  optimal_transport→ 69D  (demographics + synth + distribution)
   |                  ※ 파라미터: 4.77M → ~2.8M (감소)
   v
@@ -293,13 +295,13 @@ Input (~500D, 총 316D 활성 피처)
 |---|---|---|---|
 | **DeepFM** | 피처 교차 상호작용 | **109D** | emb_dim=8, hidden=[256,128], dropout=0.1 |
 | **Temporal Ensemble** | 시계열 패턴 (Mamba+Transformer+LNN) | **129D** | mamba_d=64, n_layers=2, transformer_heads=4 |
-| **HGCN** | 쌍곡 기하학 기반 상품 계층 | **34D** | hyperbolic_dim=20, product_dim=24, refine=128 |
+| **HGCN** | MCC 계층 구조 학습 (merchant_hierarchy Poincaré) | **27D** | hyperbolic_dim=27, refine=128 |
 | **PersLay** | TDA 위상 특징 처리 | **32D** | phi_hidden=64, rho_hidden=64 |
 | **Causal** | DAG 기반 인과관계 | **103D** | dag_hidden=[128,64], lambda_dag=0.01 |
 | **LightGCN** | 협업 필터링 그래프 | **66D** | emb_dim=64, n_layers=3 |
 | **Optimal Transport** | 분포 매칭 | **69D** | hidden=[128,64], sinkhorn_iter=50 |
 
-> **FeatureRouter 활성화**: 전체 ~500D 피처를 모든 Expert에 브로드캐스트하지 않고, 각 Expert의 설계 목적에 맞는 피처 그룹만 라우팅한다. 총 모델 파라미터: 4.77M → ~2.8M (감소). 라우팅 입력 차원의 합이 총 피처 수(~500D)를 초과하는 것은 일부 피처 그룹이 복수 Expert에 공유되기 때문이다 (현재 활성 316D 기준).
+> **FeatureRouter 활성화**: 전체 ~500D 피처를 모든 Expert에 브로드캐스트하지 않고, 각 Expert의 설계 목적에 맞는 피처 그룹만 라우팅한다. 총 모델 파라미터: 4.77M → ~2.8M (감소). 라우팅 입력 차원의 합이 총 피처 수(~500D)를 초과하는 것은 일부 피처 그룹이 복수 Expert에 공유되기 때문이다 (현재 활성 350D 기준 — benchmark v4).
 
 Task expert: MLP (hidden=[256,128], dropout=0.1) -- 각 태스크마다 1개
 

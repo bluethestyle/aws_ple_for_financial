@@ -103,6 +103,39 @@ def _quantile_rank(x: np.ndarray) -> np.ndarray:
     return (r - 1) / max(len(r) - 1, 1)
 
 
+# Product-index → NBA group mapping (7 classes total, 0-6)
+# class 0: no NBA (handled separately — empty list or missing)
+# class 1: savings_guarantee    (prod_saving=0, prod_guarantee=1)
+# class 2: checking_accounts    (prod_checking=2, prod_derivados=3,
+#                                prod_payroll_acct=4, prod_junior_acct=5,
+#                                prod_particular_acct=6, prod_particular_plus=7,
+#                                prod_home_acct=19, prod_payroll=20)
+# class 3: deposits             (prod_short_deposit=8, prod_medium_deposit=9,
+#                                prod_long_deposit=10, prod_e_account=11)
+# class 4: investments          (prod_funds=12, prod_mortgage=13, prod_pension_plan=14)
+# class 5: credit_loans         (prod_loans=15, prod_taxes=16,
+#                                prod_credit_card=17, prod_securities=18)
+# class 6: debits               (prod_pension_deposit=21, prod_direct_debit=22,
+#                                prod_auto_debit=23)
+_NBA_GROUP_MAP: dict[int, int] = {
+    0: 1, 1: 1,                          # savings_guarantee
+    2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 19: 2, 20: 2,  # checking_accounts
+    8: 3, 9: 3, 10: 3, 11: 3,           # deposits
+    12: 4, 13: 4, 14: 4,                 # investments
+    15: 5, 16: 5, 17: 5, 18: 5,         # credit_loans
+    21: 6, 22: 6, 23: 6,                 # debits
+}
+
+
+def _product_idx_to_nba_group(idx: int) -> int:
+    """Map a product index (0-23) to an NBA group class (1-6).
+
+    Returns 6 (debits/other) for any index not explicitly listed.
+    Callers must handle the "no NBA" case (class 0) before calling this.
+    """
+    return _NBA_GROUP_MAP.get(idx, 6)
+
+
 # ============================================================================
 # BenchmarkDataGenerator
 # ============================================================================
@@ -643,38 +676,38 @@ class BenchmarkDataGenerator:
                     w[lo_c:hi_c] *= factor
 
             if persona_name == "conservative_saver":
-                _boost(0, 6, 4.0)   # grocery
-                _boost(6, 11, 3.0)  # utilities/fuel
-                _boost(11, 16, 1.5) # some dining
-                _boost(26, 49, 0.3) # minimal entertainment/digital/travel
+                _boost(0, 6, 10.0)  # grocery (dominant)
+                _boost(6, 11, 8.0)  # utilities/fuel
+                _boost(11, 16, 2.0) # some dining
+                _boost(26, 49, 0.1) # minimal entertainment/digital/travel
             elif persona_name == "active_spender":
-                _boost(11, 16, 3.0) # dining
-                _boost(16, 26, 2.5) # retail
-                _boost(26, 31, 2.0) # entertainment
-                _boost(0, 6, 1.5)   # some grocery
+                _boost(11, 16, 10.0) # dining (dominant)
+                _boost(16, 26, 8.0)  # retail
+                _boost(26, 31, 5.0)  # entertainment
+                _boost(0, 6, 1.5)    # some grocery
             elif persona_name == "young_digital":
-                _boost(31, 36, 4.0) # online/digital
-                _boost(36, 41, 3.0) # subscriptions
-                _boost(26, 31, 2.5) # entertainment/gaming
-                _boost(11, 16, 1.5) # dining
-                _boost(0, 11, 0.4)  # less grocery/utilities
+                _boost(31, 36, 12.0) # online/digital (dominant)
+                _boost(36, 41, 9.0)  # subscriptions
+                _boost(26, 31, 5.0)  # entertainment/gaming
+                _boost(11, 16, 2.0)  # dining
+                _boost(0, 11, 0.1)   # minimal grocery/utilities
             elif persona_name == "high_value":
-                _boost(41, 46, 4.0) # travel/airline
-                _boost(46, 49, 3.5) # luxury/finance
-                _boost(16, 26, 2.0) # retail
-                _boost(11, 16, 1.5) # dining
+                _boost(41, 46, 12.0) # travel/airline (dominant)
+                _boost(46, 49, 10.0) # luxury/finance
+                _boost(16, 26, 2.0)  # retail
+                _boost(11, 16, 1.5)  # dining
             elif persona_name == "occasional_user":
-                _boost(0, 6, 5.0)   # concentrated grocery
-                _boost(6, 9, 3.0)   # fuel
-                _boost(9, 49, 0.2)  # minimal everything else
+                _boost(0, 6, 12.0)   # concentrated grocery (dominant)
+                _boost(6, 9, 8.0)    # fuel
+                _boost(9, 49, 0.1)   # minimal everything else
             elif persona_name == "diversified":
-                # Roughly uniform with slight retail tilt
-                _boost(16, 26, 1.5) # retail
+                # Roughly uniform with moderate retail tilt
+                _boost(16, 26, 2.5) # retail
             # Normalize to probability distribution
             return w / w.sum()
 
         # Sticky MCC probability: with this prob a transaction repeats the previous MCC
-        STICKY_PROB = 0.30
+        STICKY_PROB = 0.60
 
         # Vectorized generation per persona (bulk random)
         for pid in range(self.n_personas):
@@ -1014,7 +1047,7 @@ class BenchmarkDataGenerator:
         )
         logit_nba = self._calibrate_logit(
             obs_nba, lat_nba, obs_frac=0.04, lat_frac=0.28,
-            noise_frac=0.68, intercept=-3.5, target_pos_rate=0.03,
+            noise_frac=0.68, intercept=-3.5, target_pos_rate=0.40,
         )
         labels["has_nba"] = self._apply_label_noise(
             (_sigmoid(logit_nba) > 0.5).astype(np.int64), noise_rate=0.06
@@ -1155,11 +1188,11 @@ class BenchmarkDataGenerator:
                 selected = self.rng.choice(not_held, size=n_rec, replace=False)
                 nba_label_list[i] = sorted(selected.tolist())
 
-        # --- nba_primary (multiclass 24) ---
-        nba_primary = np.full(n, -1, dtype=np.int64)
+        # --- nba_primary (multiclass 7: 0=no_nba, 1-6=product_group) ---
+        nba_primary = np.zeros(n, dtype=np.int64)  # class 0 = no NBA
         for i in range(n):
             if nba_label_list[i]:
-                nba_primary[i] = nba_label_list[i][0]
+                nba_primary[i] = _product_idx_to_nba_group(nba_label_list[i][0])
         labels["label_nba_primary"] = nba_primary
 
         # ================================================================
@@ -1185,7 +1218,7 @@ class BenchmarkDataGenerator:
                         "occasional_user": -0.2, "diversified": 0.1,
                     })
                 ),
-                "target_rate": 0.02,
+                "target_rate": 0.10,
             },
             "investments": {
                 "indices": [12, 18],
@@ -1204,7 +1237,7 @@ class BenchmarkDataGenerator:
                         "occasional_user": -0.4, "diversified": 0.3,
                     })
                 ),
-                "target_rate": 0.01,
+                "target_rate": 0.08,
             },
             "accounts": {
                 "indices": [2, 5, 6, 7, 11, 19],
@@ -1223,7 +1256,7 @@ class BenchmarkDataGenerator:
                         "occasional_user": -0.3, "diversified": 0.2,
                     })
                 ),
-                "target_rate": 0.03,
+                "target_rate": 0.12,
             },
             "lending": {
                 "indices": [13, 15],
@@ -1242,7 +1275,7 @@ class BenchmarkDataGenerator:
                         "occasional_user": -0.3, "diversified": 0.2,
                     })
                 ),
-                "target_rate": 0.01,
+                "target_rate": 0.08,
             },
             "payments": {
                 "indices": [4, 17, 20, 22, 23],
@@ -1261,7 +1294,7 @@ class BenchmarkDataGenerator:
                         "occasional_user": -0.4, "diversified": 0.2,
                     })
                 ),
-                "target_rate": 0.025,
+                "target_rate": 0.10,
             },
         }
         for group_name, cfg in product_group_config.items():
@@ -1302,10 +1335,10 @@ class BenchmarkDataGenerator:
         # Recompute nba_primary and cross_sell_count from updated nba_label
         for i in range(n):
             if nba_label_list[i]:
-                nba_primary[i] = nba_label_list[i][0]
+                nba_primary[i] = _product_idx_to_nba_group(nba_label_list[i][0])
                 cs_count[i] = len(nba_label_list[i])
             else:
-                nba_primary[i] = -1
+                nba_primary[i] = 0  # class 0 = no NBA
                 cs_count[i] = 0
         labels["label_nba_primary"] = nba_primary
         labels["label_cross_sell_count"] = cs_count
@@ -1339,12 +1372,14 @@ class BenchmarkDataGenerator:
         labels["label_mcc_diversity_trend"] = mcc_div_trend
 
         # --- top_mcc_shift (binary) ---
+        # Use 30-txn windows (60 total) for stability: with stickiness=0.60,
+        # the mode over 30 txns is much more stable → shift rate ~40-60%
         top_mcc_shift = np.zeros(n, dtype=np.int64)
         for i in range(n):
             seq = mcc_seqs[i]
-            if seq and len(seq) >= 30:
-                recent_mode = Counter(seq[-15:]).most_common(1)[0][0]
-                older_mode = Counter(seq[-30:-15]).most_common(1)[0][0]
+            if seq and len(seq) >= 60:
+                recent_mode = Counter(seq[-30:]).most_common(1)[0][0]
+                older_mode = Counter(seq[-60:-30]).most_common(1)[0][0]
                 if recent_mode != older_mode:
                     top_mcc_shift[i] = 1
         labels["label_top_mcc_shift"] = self._apply_label_noise(
@@ -1636,7 +1671,7 @@ class BenchmarkDataGenerator:
                     score = r2_score(y_te, y_pred)
                     metric = "R2"
                 else:  # multiclass
-                    # Filter out -1 (ignore class) and remap to 0..K-1
+                    # All valid classes are >= 0; keep all samples
                     mc_mask = y_valid >= 0
                     if mc_mask.sum() < 100:
                         logger.info("  %s: SKIP (too few valid)", label_name)

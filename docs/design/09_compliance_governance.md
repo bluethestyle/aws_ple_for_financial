@@ -317,6 +317,8 @@ fairness:
     - name: income_tier
       groups: [low, middle, high]
       privileged: high
+      # NOTE: income_tier는 공정성 모니터링용 보호속성 그룹 구분자(income 피처 → 3 구간)이다.
+      # ML 예측 태스크가 아님 — income_tier를 예측 태스크로 사용하면 결정론적 leakage 발생.
     - name: life_stage
       groups: [6 classes]
       privileged: null              # 기준 그룹 없음 → 전체 쌍 비교

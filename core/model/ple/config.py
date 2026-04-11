@@ -402,6 +402,19 @@ class PLEConfig:
         override = self.task_overrides.get(task_name, {})
         return override.get("task_type", "binary")
 
+    def get_task_topk_k(self, task_name: str) -> Optional[List[int]]:
+        """Return the list of K values for top-K metrics, or None if not configured.
+
+        Only multiclass tasks that explicitly set ``topk_k`` in their task
+        definition will have top-K accuracy and NDCG@K computed.
+        Returns ``None`` for tasks that have not configured this field.
+        """
+        override = self.task_overrides.get(task_name, {})
+        k_values = override.get("topk_k")
+        if k_values is None:
+            return None
+        return [int(k) for k in k_values]
+
     def get_domain_experts(self, task_name: str) -> List[str]:
         """Return the list of domain-relevant expert names for a task."""
         override = self.task_overrides.get(task_name, {})

@@ -181,7 +181,7 @@
 )[
   #text(weight: "bold", fill: anthropic-accent)[Design vs. Implementation Note.]
   This document is written against the full-bank design (734D).
-  The current Santander benchmark implementation uses 316D (12 feature groups).
+  The current Santander benchmark implementation uses 350D (13 feature groups).
 ]
 
 #v(0.5em)
@@ -714,7 +714,7 @@ NaN issues encountered during actual training and their resolutions:
   stroke: 0.5pt + luma(200),
   table.header[*Item*][*Causal Expert*][*OT Expert*],
   [Registry Name], [`"causal"`], [`"optimal_transport"`],
-  [Input Dimension], [644D (normalized features)], [644D (normalized features)],
+  [Input Dimension], [161D (demographics, products, txn, derived\_temporal, product\_hierarchy, gmm)], [127D (demographics, products, txn, derived\_temporal, gmm)],
   [Latent Space], [32D (causal variables)], [32D (probability simplex)],
   [Output Dimension], [64D], [64D],
   [Core Mechanism], [SCM: $hat(bold(z)) = bold(z) + bold(z)(bold(W) circle.tiny bold(W))$], [Sinkhorn: $W(bold(mu), bold(nu)_k) times 16$],
@@ -731,7 +731,7 @@ Both experts are integrated into PLE via the same pathway:
 ```python
 # ple_cluster_adatt.py
 elif name in ("causal", "optimal_transport"):
-    out, _ = expert(inputs.features[:, :644])
+    out, _ = expert(inputs.features[:, expert_slice])  # FeatureRouter slices per-expert subset
 ```
 
 Only the Causal Expert carries an additional regularization loss:
@@ -749,8 +749,7 @@ naturally trained via backpropagation through the task loss.
 
 == Mathematical Perspective Comparison of Three Experts
 
-Although DeepFM, Causal, and OT all receive the same normalized 644D features as input,
-the mathematical structures they extract are fundamentally different:
+Although DeepFM, Causal, and OT all receive overlapping but distinct feature subsets as input (Causal: 161D, OT: 127D, via FeatureRouter), the mathematical structures they extract are fundamentally different:
 
 #table(
   columns: (0.8fr, 1.3fr, 1fr, 1.3fr),

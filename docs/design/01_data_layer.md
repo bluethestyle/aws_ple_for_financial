@@ -10,7 +10,7 @@ Stage 1.5: TemporalPrep (Leakage Prevention — seq truncation, prod recompute)
 Stage 2:   SchemaClassifier (5-axis)
 Stage 3:   EncryptionPipeline (PII → SHA256 salt → INT32)
 Stage 4:   FeatureGroupPipeline + Normalization
-Stage 5:   LabelDeriver (14 tasks)
+Stage 5:   LabelDeriver (14 tasks, derived in generate_benchmark_data.py to prevent spend_level-style leakage)
 Stage 5.5: LeakageValidator (sequence/correlation/product/temporal)
 Stage 6:   SequenceBuilder (flat → 3D tensors)
 Stage 7:   DataLoader (temporal split with gap_days=30)
@@ -230,8 +230,8 @@ class PIIDomain(Enum):
 | Method | 설명 | 예시 |
 |--------|------|------|
 | `direct` | 기존 컬럼 그대로 사용 | `has_nba`, `churn_signal` |
-| `bucket` | 연속값 → 구간 분류 | `tenure_months` → 5 class |
-| `weighted_sum` | 가중합 + normalize | `engagement_score` |
+| `bucket` | 연속값 → 구간 분류 | (tenure_stage는 결정론적 leakage로 제거됨 — bucketing이 입력에서 완벽 복원 가능) |
+| `weighted_sum` | 가중합 + normalize | `cross_sell_count` (engagement_score는 결정론적 leakage로 태스크에서 제거됨) |
 | `product_group_acquisition` | 상품 그룹 보유 변화 감지 | `will_acquire_deposits` |
 | `categorical_encode` | 범주형 → 정수 인코딩 | `segment_prediction` |
 | `list_first` | 리스트의 첫 번째 항목 | `nba_primary` |
@@ -373,6 +373,8 @@ txn_sequences:
     txn_mcc_seq: {feat_dim: 1, dtype: int}
     txn_day_offset_seq: {feat_dim: 1, dtype: int}   # 날짜 대신 일수 오프셋 (snap_date 기준)
 ```
+
+**txn_mcc_seq 절단 (merchant_hierarchy 누수 방지)**: `txn_mcc_seq`는 merchant_hierarchy generator에 전달되기 전에 마지막 1개 원소가 제거된다. 마지막 원소가 `next_mcc` 레이블과 동일한 값이기 때문이다 — 이 원소를 포함한 채 MCC 임베딩을 생성하면 레이블 정보가 피처로 누수된다.
 
 **txn_day_offset_seq**: YYYYMMDD 절대 날짜 대신 `snap_date` 기준 상대 일수 오프셋을 사용한다 (augment 스크립트에서 생성). 이로써 시계열 모델이 절대 날짜가 아닌 시간 간격 패턴을 학습한다.
 
@@ -516,7 +518,7 @@ Features → [LeakageValidator] → [Temporal Split] → Training
 | Cold Start | 없음 | **is_cold_start flag + sequence-derived feature zeroing** | cold start 고객 대응 |
 | 시퀀스 처리 | 전체 시퀀스 사용 | **Truncate last month + prod recompute** | 레이블 누수 제거 |
 | 누수 검증 | 없음 | **LeakageValidator 4-check** | 자동 누수 감지 |
-| 레이블 생성 | 코드 내 하드코딩 | **LabelDeriver (config-driven, 14 tasks)** | 선언적, 재현 가능 |
+| 레이블 생성 | 코드 내 하드코딩 | **generate_benchmark_data.py에서 파생 (v4 기준), LabelDeriver (config-driven, 14 tasks)** — 정규화 이전에 파생하여 spend_level 스타일 결정론적 누수 방지 | 선언적, 재현 가능 |
 | 암호화 | encryption_config.yaml 별도 | `core/security/` 통합 (스키마 pii 자동 연동) | Stage 3 자동 처리 |
 | 저장소 | 로컬 Parquet + GCS | S3 (버전관리 + 파티셔닝) | 내구성, IAM, 비용 |
 | GPU 가속 | 없음 | cuDF/cuPY optional (Stage 3/4) | 대규모 데이터 처리 가속 |

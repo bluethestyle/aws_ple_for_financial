@@ -65,13 +65,14 @@ tasks:
     loss: ce
     loss_weight: 2.0
     label_col: label_nba_primary
-    num_classes: 24
-    description: "Next best action -- which product index (0-23) to recommend"
+    num_classes: 7
+    topk_k: [1, 3]
+    description: "Next best action -- product group to recommend (0=no_nba, 1=savings_guarantee, 2=checking_accounts, 3=deposits, 4=investments, 5=credit_loans, 6=debits)"
     derive:
-      method: list_first
+      method: list_first_group
       source_col: nba_label
       filter_col: has_nba
-      default: -1
+      default: 0
 
   # ===== Tier 2 — Derived targets (2 tasks active; 2 removed for leakage) =====
   # Derived from existing columns via rules
@@ -258,6 +259,7 @@ tasks:
     loss_weight: 1.2
     label_col: label_next_mcc
     num_classes: 50
+    topk_k: [1, 5, 10]
     description: "Predict next MCC category from txn sequence (top-50 MCCs)"
     # LEAKAGE NOTE: txn_mcc_seq must be truncated (exclude last element) before
     # feature generation. Label = txn_mcc_seq[-1]; Input = txn_mcc_seq[:-1].
@@ -309,11 +311,11 @@ labels:
   product_stability:
     source: product_stability
     type: direct
-  # Tier 1 derived: nba_primary
+  # Tier 1 derived: nba_primary (7-class product groups, 0=no_nba)
   label_nba_primary:
     source: nba_label
-    type: list_first
-    default: -1
+    type: list_first_group
+    default: 0
 
   # Tier 2: derived from profile/synth columns
   # REMOVED: deterministic leakage — tenure_months is a model input; bucket is reconstructable.
@@ -935,32 +937,27 @@ ablation:
       - top_mcc_shift
 
   # Structure variants for Phase 3: architecture ablation
+  # AMP and LR overrides removed — all variants use script defaults
+  # (BASE_HPS.amp=true, learning_rate=0.0005) for fair 20-epoch comparison.
   structure_variants:
     shared_bottom:
       use_ple: false
       use_adatt: false
-      learning_rate: 0.003       # lower LR: all 18 task gradients hit single network
-      amp: false                 # FP32 required: gradient conflict causes FP16 overflow
     ple_softmax:
       use_ple: true
       use_adatt: false
-      amp: false                 # FP32: PLE softmax gate causes FP16 overflow with heterogeneous experts
     ple_sigmoid:
       use_ple: true
       use_adatt: false
-      amp: false                 # FP32: unified with softmax for fair comparison
     adatt_only:
       use_ple: false
       use_adatt: true
-      amp: false                 # FP32: unified with PLE variants for fair comparison
     ple_softmax_adatt:
       use_ple: true
       use_adatt: true
-      amp: false                 # FP32: PLE + adaTT combined
     ple_sigmoid_adatt:
       use_ple: true
       use_adatt: true
-      amp: false                 # FP32: unified
 
   # Budget limit (USD) for cost guard — ablation stops if exceeded
   budget_limit: 80.0

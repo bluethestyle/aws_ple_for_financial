@@ -242,7 +242,7 @@
 
 #warn[Design vs. Implementation Note][
   This document is written based on the full-bank design (734D).
-  The current Santander benchmark implementation is 316D (12 feature groups).
+  The current Santander benchmark implementation is 350D (13 feature groups).
 ]
 
 
@@ -401,11 +401,11 @@ and the CGC Gate learns the optimal per-task combination.
   [*Expert*], [*Input*], [*Output*], [*Role and Irreplaceability*],
   [DeepFM], [normalized 644D], [64D], [Explicitly captures FM $O(n k)$ second-order feature interactions],
   [LightGCN], [precomputed 64D], [64D], [Bipartite graph-based "similar customers" collaborative signal],
-  [Unified HGCN], [47D], [128D], [Encodes MCC hierarchical structure in hyperbolic space],
+  [Unified HGCN], [27D (merchant\_hierarchy, MCC hierarchy)], [128D], [Encodes MCC hierarchical structure in hyperbolic space via Poincaré embeddings],
   [Temporal], [sequence input], [64D], [Mamba+LNN+Transformer temporal pattern ensemble],
   [PersLay], [Persistence Diagram], [64D], [Topological structure of spending patterns (loops, clusters)],
-  [Causal], [normalized 644D], [64D], [Directional causal relation extraction via SCM/NOTEARS],
-  [Optimal Transport], [normalized 644D], [64D], [Sinkhorn Wasserstein distributional geometry],
+  [Causal], [161D (demographics, products, txn, derived\_temporal, product\_hierarchy, gmm)], [64D], [Directional causal relation extraction via SCM/NOTEARS],
+  [Optimal Transport], [127D (demographics, products, txn, derived\_temporal, gmm)], [64D], [Sinkhorn Wasserstein distributional geometry],
   [RawScale], [raw 90D], [64D], [Preserves power-law distribution information before normalization],
 )
 
@@ -417,11 +417,11 @@ $ bold(h)_"shared" = ["unified\_hgcn"_(128"D") || "perslay"_(64"D") || "deepfm"_
 
 The 8 experts extract *fundamentally different mathematical structures* from the same customer data:
 
-- *DeepFM/Causal/OT*: all receive the same normalized 644D input but capture different structures — symmetric interactions (FM), asymmetric causality (DAG), distributional distance (Wasserstein)
+- *DeepFM/Causal/OT*: receive overlapping but distinct feature subsets (Causal: 161D, OT: 127D) and capture different structures — symmetric interactions (FM), asymmetric causality (DAG), distributional distance (Wasserstein)
 - *Temporal*: temporal dynamics of sequential data ($[B, 180, 16]$, $[B, 90, 8]$)
 - *PersLay*: topological invariants (Betti numbers, persistence)
-- *Unified HGCN*: hierarchical relationships in hyperbolic geometry
-- *LightGCN*: collaborative filtering signal from the customer-merchant graph
+- *Unified HGCN*: hierarchical relationships in hyperbolic geometry (merchant_hierarchy, MCC hierarchy; not product_hierarchy)
+- *LightGCN*: collaborative filtering signal from the customer-merchant graph; also handles product co-holding collaborative filtering via the bipartite graph
 - *RawScale*: raw scale/power-law distribution patterns lost during normalization
 
 == 2.3 Expert Routing
@@ -436,9 +436,9 @@ HMM Triple-Mode is handled through a separate input path:
 #styled-table(
   (1fr, 0.8fr, 0.8fr, 2fr),
   [*HMM Mode*], [*Input*], [*Time Scale*], [*Target Tasks*],
-  [Journey], [16D], [daily], [has\_nba, engagement\_score, cross\_sell\_count, will\_acquire\_\*],
-  [Lifecycle], [16D], [monthly], [churn\_signal, product\_stability, tenure\_stage, segment\_prediction],
-  [Behavior], [16D], [monthly], [income\_tier, spend\_level, nba\_primary, next\_mcc, ...],
+  [Journey], [16D], [daily], [has\_nba, cross\_sell\_count, will\_acquire\_\*],
+  [Lifecycle], [16D], [monthly], [churn\_signal, product\_stability, segment\_prediction],
+  [Behavior], [16D], [monthly], [nba\_primary, next\_mcc, mcc\_diversity\_trend, top\_mcc\_shift, ...],
 )
 
 Each mode consists of 10D base state probabilities + 6D ODE dynamics,
@@ -567,6 +567,10 @@ The second term is a *correction vector* that steers shared parameters toward di
 #warn[Validation: freeze_epoch > warmup_epochs][
   If Phase 2 is completely skipped, the learned affinity is never reflected in transfer,
   rendering adaTT usage meaningless. Validated at initialization with an early `ValueError`.
+]
+
+#note[adaTT Epoch Budget][
+  With 10-epoch runs (warmup=3, freeze=8), adaTT has a limited dynamic window of only 5 epochs (Phase 2: epochs 3–8). This is often insufficient for affinity to converge. *20-epoch runs are recommended for meaningful adaTT evaluation* — they provide a 12-epoch dynamic window (warmup=3, freeze=15) which allows affinity matrices to stabilize before freezing.
 ]
 
 == 3.7 Group Prior

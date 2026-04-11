@@ -86,9 +86,9 @@
   causal inference (Causal/NOTEARS), and distributional matching (Optimal Transport)---and
   no single expert can substitute for any other.
   Additionally, this document covers the dynamic knowledge transfer mechanism across 14 tasks
-  via adaTT (Adaptive Task-aware Transfer), and the 316-dimensional feature engineering framework
-  derived from 11 academic disciplines. With FeatureRouter active, each expert receives a
-  designated subset of the 316D tensor rather than the full input.
+  via adaTT (Adaptive Task-aware Transfer), and the 350-dimensional feature engineering framework
+  derived from 11 academic disciplines (Phase 0 v3/v4). With FeatureRouter active, each expert receives a
+  designated subset of the 350D tensor rather than the full input.
 
   #v(0.3em)
   #text(weight: "bold")[Keywords:]
@@ -107,10 +107,12 @@
 )[
   #text(weight: "bold")[Design vs. Implementation Note.]
   This document is written based on the full-bank design (734D).
-  The current Santander benchmark implementation uses 316D (12 feature groups).
-  FeatureRouter is active: each expert receives a per-expert subset of the 316D tensor
-  (deepfm=109D, temporal\_ensemble=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, ot=69D),
-  reducing model parameters from 4.77M to ~2.8M.
+  The current Santander benchmark implementation uses 350D (Phase 0 v3/v4, 12 feature groups).
+  FeatureRouter is active: each expert receives a per-expert subset of the 350D tensor
+  (deepfm=168D, temporal\_ensemble=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, ot=127D),
+  reducing model parameters from 4.77M to ~2.8M. Routing is group-level, auto-built from
+  \`target_experts\` in feature_groups.yaml. HGCN receives merchant_hierarchy (27D MCC Poincaré);
+  LightGCN receives product_hierarchy (32D) + graph_collaborative (66D) = 98D core input.
   I/O specs below reflect the FeatureRouter-active per-expert input dims.
 ]
 
@@ -435,8 +437,30 @@ The Lorentz factor $gamma_i$ assigns higher weight to boundary points (specializ
     [Output], [Customer embedding 64D (direct)], [Merchant emb $arrow$ per-customer agg 47D],
     [FeatureRouter input], [66D subset], [34D subset],
   ),
-  caption: [Dual GCN architecture comparison. With FeatureRouter active, LightGCN receives 66D and H-GCN receives 34D from the 316D tensor.],
+  caption: [Dual GCN architecture comparison (Phase 0 v3/v4). HGCN receives 27D merchant_hierarchy (MCC Poincaré); LightGCN receives 100D including product_hierarchy (32D) + graph_collaborative (66D).],
 )
+
+=== HGCN Input Detail (27D merchant_hierarchy)
+
+The 27D `merchant_hierarchy` group captures MCC L1→L2 tree structure embedded in Poincaré disk:
+
+#table(
+  columns: (auto, auto, 1fr),
+  stroke: 0.5pt,
+  [*Sub-group*], [*Dim*], [*Content*],
+  [L1 Poincaré coords], [4D], [Level-1 MCC category position in Poincaré disk],
+  [L2 Poincaré coords], [4D], [Level-2 MCC sub-category position],
+  [Brand SVD], [8D], [Brand-level SVD embeddings],
+  [Aggregate stats], [4D], [Spend share, frequency, recency by L1 bucket],
+  [Depth features], [3D], [Hierarchy depth indicators],
+  [Spread features], [4D], [Breadth of MCC usage across tree levels],
+)
+
+HGCN *learns MCC L1→L2 tree structure in hyperbolic space* (Poincaré disk). Its role is complementary to LightGCN: HGCN captures "how merchant categories relate hierarchically," while LightGCN captures "which products customers co-hold" (bipartite CF graph).
+
+=== LightGCN Input Detail (100D)
+
+LightGCN receives `product_hierarchy` (32D) + `graph_collaborative` (66D) + additional item-axis features = 100D total. It operates on the *product-customer bipartite graph* for collaborative filtering, complementing HGCN's merchant tree focus.
 
 == Implementation Notes
 
@@ -571,7 +595,7 @@ Short concat 128D + Long concat 192D + Global stats MLP 32D + Phase transition 1
     stroke: 0.5pt,
     [*PersLay Input*], [32D feature subset (FeatureRouter: Snapshot-axis TDA groups) or raw persistence diagrams],
     [*PersLay Output*], [64D expert representation for PLE gate],
-    [*TDA Offline Output*], [70D features integrated into main 316D tensor],
+    [*TDA Offline Output*], [70D features integrated into main 350D tensor],
     [*Computation*], [Ripser++ (GPU) $arrow$ Ripser (CPU) $arrow$ giotto-tda (fallback)],
   ),
   caption: [PersLay / TDA Expert I/O specification. FeatureRouter provides 32D input subset.],
@@ -638,13 +662,13 @@ $ cal(L)_"BPR" = -sum_((u, i^+, i^-)) log sigma(hat(y)_(u i^+) - hat(y)_(u i^-))
   table(
     columns: (auto, auto),
     stroke: 0.5pt,
-    [*Input*], [User-item bipartite graph + 66D feature subset (FeatureRouter: Item-axis groups)],
+    [*Input*], [Product-customer bipartite graph + 100D feature subset (FeatureRouter: product_hierarchy 32D + graph_collaborative 66D + item-axis groups)],
     [*Embedding dim*], [64D (Euclidean $bb(R)^(64)$)],
     [*Layers*], [3 hops with uniform averaging],
     [*Loss*], [BPR (pairwise ranking)],
     [*Output*], [Customer embedding 64D for PLE gate],
   ),
-  caption: [LightGCN Expert I/O specification. Feature input is 66D (FeatureRouter active).],
+  caption: [LightGCN Expert I/O specification. Feature input is 100D (FeatureRouter active: product_hierarchy 32D + graph_collaborative 66D). Handles product co-holding collaborative filtering, complementing HGCN's MCC merchant hierarchy.],
 )
 
 == Implementation Notes
@@ -652,6 +676,7 @@ $ cal(L)_"BPR" = -sum_((u, i^+, i^-)) log sigma(hat(y)_(u i^+) - hat(y)_(u i^-))
 - In Stage 1 of the 2-stage pipeline, BPR training is performed offline and embeddings are stored as Parquet.
 - L2 regularization is applied only to initial embeddings, not to GCN outputs.
 - Separated as a _distinct_ expert from H-GCN to ensure independent gradient flows for Euclidean (CF) and hyperbolic (hierarchy) geometries.
+- LightGCN's domain is *product co-holding* (what products customers hold together) --- not MCC tree structure, which is H-GCN's domain.
 
 *Key References:*
 He et al. (SIGIR 2020), Rendle et al. (UAI 2009), Kipf & Welling (ICLR 2017).
@@ -874,7 +899,7 @@ This provides directional information impossible with KL divergence or Euclidean
   Causal extracts asymmetric directional causality $W_(i,j)^2$,
   OT extracts distance functions (metric) $W(mu, nu_k)$.
   The three experts extract _mathematically completely different_ structures; with FeatureRouter active,
-  each operates on its own input subset (causal=103D, ot=69D, deepfm=109D) rather than the same full input.
+  each operates on its own input subset (causal=161D, ot=127D, deepfm=168D, Phase 0 v3/v4) rather than the same full input.
 
 *Key References:*
 Cuturi (NeurIPS 2013), Kantorovich (1942).
@@ -1016,6 +1041,7 @@ blocking clearly adversarial gradients.
 
 - *Phase 1 (Shared Expert Pretrain):* adaTT active --- gradient extraction + transfer loss for 15 epochs.
 - *Phase 2 (Cluster Finetune):* adaTT disabled --- Shared experts frozen, only cluster-specific sub-heads trained for 8 epochs.
+- *Warmup/freeze epochs for short ablations:* When running short ablations (3--5 epochs), set `warmup_epochs=1` and `freeze_epochs=3` to ensure the dynamic phase is reached. With default values designed for 15+ epoch runs, short ablations may never exit the warmup phase.
 - A lightweight variant of Hypernetworks (Ha et al., 2017): uses observed gradients instead of learned task embeddings
   as the conditioning signal, enabling zero-delay adaptation to changing task relationships.
 - `detect_negative_transfer()` API returns the list of adversarial tasks for each task
@@ -1028,7 +1054,7 @@ Chen et al. (ICML 2018), Navon et al. (ICML 2022).
 #pagebreak()
 
 // ============================================================
-= Feature Engineering Overview --- 11 Disciplines, 316D <sec9-features>
+= Feature Engineering Overview --- 11 Disciplines, 350D <sec9-features>
 // ============================================================
 
 == Feature Engineering Philosophy
@@ -1058,7 +1084,7 @@ the formulas capture the same patterns irrespective of the surface domain.
     [MAB (Decision Theory)], [4D], [Explore/exploit balance], [HHI trend, recency-weighted entropy],
     [Graph Embedding], [111D], [Collaborative filtering + hierarchical structure], [LightGCN (64D) + H-GCN (47D)],
   ),
-  caption: [Feature framework derived from 11 academic disciplines. Total 316D (TDA 70D + GMM 22D + HMM 48D + Economics 17D + Multidisciplinary 24D + MAB 4D + Graph 111D + LNN statistics 18D + HMM 5D summary = 316D+ model-derived features).],
+  caption: [Feature framework derived from 11 academic disciplines. Total 350D (Phase 0 v3/v4: TDA 70D + GMM 22D + HMM 48D + Economics 17D + Multidisciplinary 24D + MAB 4D + Graph 111D + LNN statistics 18D + HMM 5D summary + additional 31D = 350D including model-derived features).],
 )
 
 == Economics Features (17D)

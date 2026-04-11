@@ -422,7 +422,16 @@ This registry serves dual purposes:
 (2) audit trail showing which features influenced each recommendation.
 
 The interpretation registry interprets features into Korean via a 5-level cascade:
-Level IG (IG sign direction + task context) → Level 3 (feature×task manual overrides) → Level 2 (group×task) → Level 1 (group×task_group auto-generated) → Level RM (reverse-mapping layer glossary templates). Only features unresolved by this cascade fall to raw fallback.
+
+#list(tight: true,
+  [*Level IG* --- IG sign direction + task context],
+  [*Level 3* --- feature×task manual overrides],
+  [*Level 2* --- group×task],
+  [*Level 1* --- group×task_group auto-generated],
+  [*Level RM* --- reverse-mapping layer glossary templates],
+)
+
+Only features unresolved by this cascade fall to raw fallback.
 The reverse-mapping layer is integrated as Level RM, so glossary value-substitution templates (e.g., `"월 평균 \{value\}건 거래"` — "average \{value\} monthly transactions") operate as part of the cascade. All fallback text outputs Korean.
 
 == 3-Agent Pipeline Architecture
@@ -538,18 +547,24 @@ Upstream of the 3-agent pipeline, the constraint engine applies eligibility and 
 === Serving Model Selection
 
 Customer-facing recommendation reasons require natural, professional Korean text. The optimal model differs by deployment environment:
-*On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.
-*Cloud (AWS)*: L2a rewriting uses Solar Pro 22B (Upstage, Bedrock Marketplace) --- top performance on Korean benchmarks (KMMLU). L2b self-critique also uses Solar (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku.
+
+#list(tight: true,
+  [*On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.],
+  [*Cloud (AWS)*: L2a rewriting uses Solar Pro 22B (Upstage, Bedrock Marketplace) --- top performance on Korean benchmarks (KMMLU). L2b self-critique also uses Solar (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku.],
+)
 Bedrock ensures that input/output data is never transmitted to model providers (Anthropic, Upstage) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet, ensuring that financial customer data never leaves the AWS Region (ap-northeast-2) --- structurally satisfying the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
 
 === Fact Compression Layer (Mem0 Adoption)
 
 While the interpretation registry provides feature-level interpretation,
 the fact extraction layer adds *customer-level narrative facts*.
-A rule-based engine extracts Korean facts like "예적금 중심 포트폴리오" (deposit-focused portfolio),
-"최근 3개월 카드 사용 증가" (recent card usage growth),
-"리스크 회피 성향" (risk-averse tendency) from feature values ---
-deterministically and without any LLM calls.
+A rule-based engine extracts Korean facts from feature values --- deterministically and without any LLM calls. Example facts include:
+
+#list(tight: true,
+  ["예적금 중심 포트폴리오" (deposit-focused portfolio)],
+  ["최근 3개월 카드 사용 증가" (recent card usage growth)],
+  ["리스크 회피 성향" (risk-averse tendency)],
+)
 
 These facts are extracted at Phase 0 batch time, stored in the context vector store,
 and injected into the L2a prompt as a "Customer Facts" section at serving time.
@@ -687,7 +702,13 @@ so that the human reviewer can act without cross-referencing documentation.
     stroke: 0.5pt,
     [*Principle*], [*Rationale*],
     [Batch-only, never real-time], [No serving path dependency; agents run asynchronously after DAG completion],
-    [Per-task optimal model assignment], [Reason generation: Solar Pro (Korean-specialized). Agent dialog/consensus: Claude Sonnet (contextual reasoning). Judgment: Claude Haiku (low cost). Embeddings: Titan V2. On-prem: Exaone 3.5 (reasons) + Qwen 2.5 14B Q4 (consensus)],
+    [Per-task optimal model assignment], [#list(tight: true,
+      [Reason generation: Solar Pro (Korean-specialized)],
+      [Agent dialog/consensus: Claude Sonnet (contextual reasoning)],
+      [Judgment: Claude Haiku (low cost)],
+      [Embeddings: Titan V2],
+      [On-prem: Exaone 3.5 (reasons) + Qwen 2.5 14B Q4 (consensus)],
+    )],
     [Reports deposited to shared folder], [Alerts via Slack/email only on anomalies; human reviews at their own pace],
     [Agent outputs are audit artifacts], [Immutable, HMAC-signed; the report itself is evidence of monitoring],
     [Cost: ~\$0.03/day (3× consensus)], [1--2 small-model calls with structured input per execution cycle],
@@ -705,9 +726,21 @@ can never degrade customer-facing service.
 
 == Model Selection for Operational Agents
 
-Unlike serving agents, which require Korean-language fluency for customer-facing text, operational agents process structured JSON inputs and produce logical assessments --- natural language fluency is secondary to reasoning accuracy.
-*On-premises (air-gapped)*: Exaone 3.5 7.8B (Korean reason generation) + Qwen 2.5 14B Q4 (agent consensus). Sequential loading on RTX 4070 12GB VRAM.
-*Cloud (AWS)*: per-task optimal models --- Solar Pro (Korean L2a reason generation/critique), Claude Sonnet (agent dialog, 3-agent consensus), Claude Haiku (self-check layer factuality judgment), Claude Opus (quarterly deep audit), Titan Embeddings V2 (vectorization). The Bedrock infrastructure is shared between reason generation and agents; quota competition is resolved via time-slot separation.
+Unlike serving agents, which require Korean-language fluency for customer-facing text, operational agents process structured JSON inputs and produce logical assessments --- natural language fluency is secondary to reasoning accuracy. Model assignment by deployment environment:
+
+#list(tight: true,
+  [*On-premises (air-gapped)*: Exaone 3.5 7.8B (Korean reason generation) + Qwen 2.5 14B Q4 (agent consensus). Sequential loading on RTX 4070 12GB VRAM.],
+  [*Cloud (AWS)*: per-task optimal models are assigned.
+    #list(tight: true,
+      [Solar Pro --- Korean L2a reason generation/critique],
+      [Claude Sonnet --- agent dialog, 3-agent consensus],
+      [Claude Haiku --- self-check layer factuality judgment],
+      [Claude Opus --- quarterly deep audit],
+      [Titan Embeddings V2 --- vectorization],
+    )
+    The Bedrock infrastructure is shared between reason generation and agents; quota competition is resolved via time-slot separation.],
+)
+
 In both deployments, operational agents execute only 1--2 calls per DAG cycle, keeping cost and latency negligible regardless of model choice.
 
 == Practical Value
@@ -1005,15 +1038,12 @@ creating a complete lineage from data to deployed model.
 === Human Oversight (Art. 14)
 
 Beyond the Human-in-the-Loop mechanisms described above,
-the system provides two additional transparency layers for human reviewers.
-First, post-distillation LGBM students expose
-IG-based feature importance rankings per task ---
-a human-readable audit that compliance officers can review
-without deep learning expertise.
-Second, CGC gate weights in the PLE teacher
-quantify each expert's contribution to every prediction,
-making the expert routing mechanism transparent
-rather than a black-box ensemble.
+the system provides two additional transparency layers for human reviewers:
+
+#list(tight: true,
+  [*Post-distillation LGBM students* expose IG-based feature importance rankings per task --- a human-readable audit that compliance officers can review without deep learning expertise.],
+  [*CGC gate weights in the PLE teacher* quantify each expert's contribution to every prediction, making the expert routing mechanism transparent rather than a black-box ensemble.],
+)
 The 3-agent LLM pipeline (Section 4) further translates
 these technical attributions into natural-language explanations
 that compliance officers can directly evaluate.
@@ -1240,24 +1270,14 @@ than any amount of architectural sophistication applied to shallow statistical s
 We presented a full-chain system that bridges the gap
 between model prediction and human persuasion in financial product recommendation.
 
-Four key contributions define this work.
-First, IG-guided knowledge distillation with a dual-objective feature selection
-preserves both predictive accuracy and explanation material
-when compressing a complex PLE teacher into lightweight LGBM students.
-Second, the 3-agent recommendation reason generation pipeline
-(Feature Selector → Reason Generator → Safety Gate)
-produces natural-language explanations grounded in business-mapped feature attributions,
-with role separation enabling independent improvement and audit logging.
-Third, two operational agents (OpsAgent and AuditAgent) interpret
-monitoring and compliance outputs in natural language,
-eliminating dashboard fatigue and enabling regulation-compliant MLOps
-for small teams without dedicated MLOps staff ---
-extending the architecture to a 5-agent system (3 serving + 2 ops).
-Fourth, regulatory compliance is embedded by design ---
-Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act
-are explicitly mapped to system architecture components,
-with automated monitoring (drift, fairness, herding)
-and human-in-the-loop oversight at critical decision points.
+Four key contributions define this work:
+
+#list(tight: true,
+  [*IG-guided knowledge distillation* with a dual-objective feature selection preserves both predictive accuracy and explanation material when compressing a complex PLE teacher into lightweight LGBM students.],
+  [*3-agent recommendation reason generation pipeline* (Feature Selector → Reason Generator → Safety Gate) produces natural-language explanations grounded in business-mapped feature attributions, with role separation enabling independent improvement and audit logging.],
+  [*Two operational agents* (OpsAgent and AuditAgent) interpret monitoring and compliance outputs in natural language, eliminating dashboard fatigue and enabling regulation-compliant MLOps for small teams without dedicated MLOps staff --- extending the architecture to a 5-agent system (3 serving + 2 ops).],
+  [*Regulatory compliance embedded by design* --- Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act are explicitly mapped to system architecture components, with automated monitoring (drift, fairness, herding) and human-in-the-loop oversight at critical decision points.],
+)
 
 The fundamental insight is that features serve a dual role in financial AI:
 they contribute to prediction _and_ to the explanation vocabulary

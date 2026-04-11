@@ -8,6 +8,7 @@ Usage:
     python scripts/run_local_ablation.py                # full 10-epoch ablation
     python scripts/run_local_ablation.py --dry-run      # 1-epoch verify settings
     python scripts/run_local_ablation.py --scenario NAME # single scenario
+    python scripts/run_local_ablation.py --force-fresh  # archive old + start clean
 """
 from __future__ import annotations
 
@@ -15,11 +16,13 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,13 +36,18 @@ logger = logging.getLogger(__name__)
 PHASE0 = "outputs/phase0_v3"
 RESULTS = "outputs/ablation_v3"
 CONFIG = "configs/santander/pipeline.yaml"
-EPOCHS = 10
-WARMUP = 3
+EPOCHS = 20             # adaTT needs warmup(7) + active(~10) + freeze(3) to learn task transfer
+WARMUP = 7              # 35% of epochs — prevents loss spike from cosine LR schedule
 BATCH = 4096
 LR = 0.0005
 SEED = 42
 AMP = True
-PATIENCE = EPOCHS  # no early stop — run full epochs for fair delta comparison
+PATIENCE = EPOCHS       # no early stop — run full epochs for fair delta comparison
+
+# Robustness: retry spurious failures (subprocess crashed/killed before producing output)
+MIN_REAL_RUN_SEC = 60   # if elapsed < this, treat as spurious failure
+MAX_RETRIES = 3
+INTER_SCENARIO_DELAY_SEC = 5  # give GPU/system time to cleanup between scenarios
 
 BASE_HPS: Dict[str, Any] = {
     "config": CONFIG,
@@ -113,8 +121,193 @@ SCENARIOS: List[Dict[str, Any]] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Manifest / archive helpers
+# ---------------------------------------------------------------------------
+MANIFEST_FILENAME = "run_manifest.json"
+# Keys compared when deciding if configs match on resume
+_MATCH_KEYS = ("epochs", "warmup_epochs", "batch_size", "learning_rate", "seed", "amp")
+
+
+def load_previous_manifest(results_dir: Path) -> Optional[Dict[str, Any]]:
+    """Return the manifest saved in a previous run, or None if absent/corrupt."""
+    path = results_dir / MANIFEST_FILENAME
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Could not read previous manifest (%s): %s", path, exc)
+        return None
+
+
+def save_current_manifest(
+    results_dir: Path,
+    hps: Dict[str, Any],
+    scenarios: List[Dict[str, Any]],
+) -> None:
+    """Write run_manifest.json BEFORE any scenario runs."""
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    # Try to capture git commit hash (best-effort)
+    git_hash: Optional[str] = None
+    try:
+        git_hash = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        pass
+
+    manifest = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "script_version": git_hash,
+        "epochs": hps.get("epochs"),
+        "warmup_epochs": hps.get("warmup_epochs"),
+        "batch_size": hps.get("batch_size"),
+        "learning_rate": hps.get("learning_rate"),
+        "seed": hps.get("seed"),
+        "amp": hps.get("amp"),
+        "scenarios": [s["name"] for s in scenarios],
+    }
+    path = results_dir / MANIFEST_FILENAME
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    logger.info("Manifest saved → %s", path)
+
+
+def archive_results(results_dir: Path) -> Path:
+    """
+    Atomically move results_dir to a timestamped archive sibling.
+    Returns the archive path.  Raises on failure (disk full, etc.).
+    """
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive_path = results_dir.parent / f"{results_dir.name}_archive_{ts}"
+    logger.info("Archiving %s → %s", results_dir, archive_path)
+    shutil.move(str(results_dir), str(archive_path))
+    logger.info("Archive complete: %s", archive_path)
+    return archive_path
+
+
+def configs_match(prev: Dict[str, Any], curr: Dict[str, Any]) -> bool:
+    """Return True only when all key training HPs are identical."""
+    for key in _MATCH_KEYS:
+        if prev.get(key) != curr.get(key):
+            logger.debug("Config mismatch on '%s': prev=%s curr=%s",
+                         key, prev.get(key), curr.get(key))
+            return False
+    return True
+
+
+def _check_and_handle_existing_results(
+    results_dir: Path,
+    base_hps: Dict[str, Any],
+    scenarios: List[Dict[str, Any]],
+    force_fresh: bool,
+) -> None:
+    """
+    Called once at startup.  Decides whether to archive, resume, or bail.
+
+    Mutates nothing on disk except (possibly) archiving results_dir.
+    After this call returns, results_dir either does not exist (fresh start)
+    or contains a matching manifest (resume).
+    """
+    if not results_dir.exists():
+        return  # nothing to check
+
+    # Count any completed scenario directories
+    completed = [
+        d for d in results_dir.iterdir()
+        if d.is_dir() and (d / "model" / "model.pth").exists()
+    ]
+
+    if not completed and not (results_dir / MANIFEST_FILENAME).exists():
+        # Directory exists but is effectively empty — safe to continue
+        return
+
+    prev_manifest = load_previous_manifest(results_dir)
+
+    if force_fresh:
+        logger.warning(
+            "--force-fresh requested: archiving %d completed scenario(s) in %s",
+            len(completed), results_dir,
+        )
+        archive_results(results_dir)
+        return
+
+    if prev_manifest is None:
+        # Has completed results but no manifest — legacy run
+        logger.warning(
+            "Found %d completed scenario(s) in %s but no manifest. "
+            "Use --force-fresh to archive and start clean, or Ctrl-C to abort.",
+            len(completed), results_dir,
+        )
+        # Give user 10 s to Ctrl-C; then continue (resume best-effort)
+        for remaining in range(10, 0, -1):
+            sys.stdout.write(f"\r  Resuming in {remaining}s (Ctrl-C to abort) ...")
+            sys.stdout.flush()
+            time.sleep(1)
+        sys.stdout.write("\n")
+        return
+
+    curr_for_compare = {k: base_hps.get(k) for k in _MATCH_KEYS}
+    if configs_match(prev_manifest, curr_for_compare):
+        logger.info(
+            "Config matches previous manifest (epochs=%s warmup=%s). "
+            "Resuming — %d scenario(s) already completed.",
+            prev_manifest.get("epochs"), prev_manifest.get("warmup_epochs"),
+            len(completed),
+        )
+        return
+
+    # Mismatch — show diff and archive
+    mismatched = [
+        k for k in _MATCH_KEYS
+        if prev_manifest.get(k) != curr_for_compare.get(k)
+    ]
+    logger.warning(
+        "Config mismatch vs previous run on: %s", mismatched,
+    )
+    for k in mismatched:
+        logger.warning("  %s: was %s, now %s", k, prev_manifest.get(k), curr_for_compare.get(k))
+    logger.warning(
+        "Archiving previous results (%d scenario(s)) to preserve experiment data.",
+        len(completed),
+    )
+    archive_results(results_dir)
+
+
+def _execute_train(
+    hp: Dict[str, Any],
+    out_dir: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+) -> tuple:
+    """Execute train.py as subprocess. Returns (elapsed, stdout_text)."""
+    env = dict(os.environ)
+    env["SM_CHANNEL_TRAIN"] = PHASE0
+    env["SM_OUTPUT_DATA_DIR"] = str(out_dir)
+    env["SM_MODEL_DIR"] = str(out_dir / "model")
+    env["SM_HPS"] = json.dumps(hp)
+    env["PYTHONPATH"] = str(Path.cwd())
+    # Prevent Windows sleep during long subprocess execution
+    env["PYTHONUNBUFFERED"] = "1"
+
+    start = time.time()
+    with open(stdout_path, "w") as fout, open(stderr_path, "w") as ferr:
+        proc = subprocess.run(
+            [sys.executable, "-u", "containers/training/train.py"],
+            env=env, stdout=fout, stderr=ferr,
+        )
+    elapsed = time.time() - start
+    stdout_text = stdout_path.read_text(errors="replace")
+    return elapsed, stdout_text, proc.returncode
+
+
 def run_scenario(scenario: Dict[str, Any], dry_run: bool = False) -> Dict[str, Any]:
-    """Run one ablation scenario."""
+    """Run one ablation scenario with automatic retry for spurious failures."""
+    import gc
+
     name = scenario["name"]
     out_dir = Path(RESULTS) / name
 
@@ -134,29 +327,36 @@ def run_scenario(scenario: Dict[str, Any], dry_run: bool = False) -> Dict[str, A
         hp["early_stopping_patience"] = 1
         hp["warmup_epochs"] = 0
 
-    env = dict(os.environ)
-    env["SM_CHANNEL_TRAIN"] = PHASE0
-    env["SM_OUTPUT_DATA_DIR"] = str(out_dir)
-    env["SM_MODEL_DIR"] = str(out_dir / "model")
-    env["SM_HPS"] = json.dumps(hp)
-    env["PYTHONPATH"] = str(Path.cwd())
-
-    # Log only scenario-specific HP (not the base ones everyone shares)
     diff_hp = {k: v for k, v in hp.items() if k not in BASE_HPS}
     logger.info("[%s] %s %s", "DRY" if dry_run else "RUN", name, diff_hp or "(baseline)")
 
-    start = time.time()
     stdout_path = out_dir / "logs" / "stdout.log"
     stderr_path = out_dir / "logs" / "stderr.log"
 
-    with open(stdout_path, "w") as fout, open(stderr_path, "w") as ferr:
-        proc = subprocess.run(
-            [sys.executable, "-u", "containers/training/train.py"],
-            env=env, stdout=fout, stderr=ferr,
+    # Retry loop for spurious subprocess failures (e.g. Windows sleep, resource limit)
+    elapsed = 0.0
+    stdout_text = ""
+    returncode = -1
+    for attempt in range(MAX_RETRIES):
+        elapsed, stdout_text, returncode = _execute_train(
+            hp, out_dir, stdout_path, stderr_path,
         )
-
-    elapsed = time.time() - start
-    stdout_text = stdout_path.read_text(errors="replace")
+        # Detect spurious failure: elapsed < threshold and no output
+        is_spurious = (
+            elapsed < MIN_REAL_RUN_SEC
+            and "val_loss=" not in stdout_text
+            and not dry_run
+        )
+        if not is_spurious:
+            break
+        logger.warning(
+            "[RETRY] %s: spurious failure (elapsed=%.1fs, rc=%d, empty output) — "
+            "attempt %d/%d",
+            name, elapsed, returncode, attempt + 1, MAX_RETRIES,
+        )
+        # Force cleanup before retry
+        gc.collect()
+        time.sleep(INTER_SCENARIO_DELAY_SEC * 2)
 
     epoch_count = stdout_text.count("val_loss=")
     expected = 1 if dry_run else EPOCHS
@@ -186,7 +386,7 @@ def run_scenario(scenario: Dict[str, Any], dry_run: bool = False) -> Dict[str, A
         )):
             applied.append(line.strip().split("] ")[-1] if "] " in line else line.strip())
 
-    success = proc.returncode == 0 and epoch_count >= expected
+    success = returncode == 0 and epoch_count >= expected
 
     logger.info(
         "[%s] %s: %d/%d epochs, %.0fs, AUC=%s F1=%s",
@@ -214,6 +414,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--scenario", type=str, default=None)
+    parser.add_argument(
+        "--force-fresh",
+        action="store_true",
+        help="Archive existing results and start a clean ablation run.",
+    )
     args = parser.parse_args()
 
     scenarios = SCENARIOS
@@ -224,13 +429,42 @@ def main():
                          args.scenario, [s["name"] for s in SCENARIOS])
             sys.exit(1)
 
+    results_dir = Path(RESULTS)
+
+    # --- Archive / resume decision (BEFORE any scenario runs) ---
+    try:
+        _check_and_handle_existing_results(
+            results_dir=results_dir,
+            base_hps=BASE_HPS,
+            scenarios=scenarios,
+            force_fresh=args.force_fresh,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to handle existing results: %s — aborting to prevent mixed state.", exc
+        )
+        sys.exit(1)
+
+    # Write manifest for this run (dry-run writes its own ephemeral manifest)
+    if not args.dry_run:
+        try:
+            save_current_manifest(results_dir, BASE_HPS, scenarios)
+        except Exception as exc:
+            logger.error("Failed to write run manifest: %s — aborting.", exc)
+            sys.exit(1)
+
     logger.info("=" * 60)
     logger.info("LOCAL ABLATION: %d scenarios x %d epochs", len(scenarios), 1 if args.dry_run else EPOCHS)
     logger.info("=" * 60)
 
+    import gc
     results = []
-    for s in scenarios:
+    for i, s in enumerate(scenarios):
         results.append(run_scenario(s, dry_run=args.dry_run))
+        # Force cleanup between scenarios to prevent resource accumulation
+        gc.collect()
+        if i < len(scenarios) - 1 and not args.dry_run:
+            time.sleep(INTER_SCENARIO_DELAY_SEC)
 
     # Summary
     logger.info("\n" + "=" * 60)
@@ -245,8 +479,8 @@ def main():
         logger.info("  %-35s AUC=%-7s F1=%-7s (%ds)",
                      r["name"], m.get("avg_auc", "?"), m.get("avg_f1_macro", "?"), r.get("seconds", 0))
 
-    Path(RESULTS).mkdir(parents=True, exist_ok=True)
-    with open(Path(RESULTS) / "ablation_summary.json", "w") as f:
+    results_dir.mkdir(parents=True, exist_ok=True)
+    with open(results_dir / "ablation_summary.json", "w") as f:
         json.dump(results, f, indent=2, default=str)
 
 

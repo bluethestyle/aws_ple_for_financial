@@ -93,6 +93,8 @@
 - 7 experts의 inductive bias와 파라미터 효율성
 - [Figure 2: PLE 아키텍처 — 이종 expert basket + CGC gate + task towers]
 - Temporal Ensemble 내부 앙상블 (Mamba + LNN + Transformer)
+- HGCN: `merchant_hierarchy` 그룹 (MCC L1→L2 Poincaré 임베딩, 27차원) → 쌍곡 공간에서 분류 계층 거리 인코딩
+- LightGCN: 상품 공동 보유 이분 그래프 → 협업 필터링 친화성 인코딩 (HGCN과 역할 명확히 분리)
 - 각 expert가 다른 종류의 "왜"에 답하는 구조
 
 ### 3.5 Financial DNA Task Grouping
@@ -137,12 +139,13 @@
 ### 5.1 Benchmark Data
 - Gaussian Copula + Latent Variable 합성 데이터
 - 4-Layer generative model 설명
+- Benchmark v4: MCC 선호 배율 8–12×, 거래 고착성 60%, 넓어진 mode-shift window — 의미 있는 레이블 분포 확보 (v2→v3→v4 반복 과정 설명)
 - Variance budget으로 태스크별 난이도 통제
 - XGBoost AUC ceiling 검증
 - [Table 4: 레이블별 variance budget + AUC ceiling]
 
 ### 5.2 Experimental Setup
-- 데이터: 1M customers, 316 features, 14 tasks
+- 데이터: 1M customers, 350 features, 14 tasks
 - 하드웨어: RTX 4070 12GB (로컬) / g5.xlarge A10G 24GB (클라우드)
 - 학습 설정: epochs, batch_size, lr, AMP, early stopping
 - 평가 메트릭: AUC (binary), F1 (classification), MAE/RMSE/R² (regression)
