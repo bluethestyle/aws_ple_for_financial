@@ -565,7 +565,15 @@ Recommendation reasons are served via a 3-layer asynchronous architecture:
 
 + *L1 (Template)*: returned immediately on customer request. No LLM call. The template engine generates deterministic Korean reasons based on IG top-K feature business reverse-mappings. Features pass through the interpretation registry's 5-level cascade (IG direction → L3 → L2 → L1 → reverse-mapping layer) to produce enriched 3-tuples `(feature_name, IG_value, Korean_interpretation)`.
 
-+ *L2a (LLM Rewrite)*: submitted asynchronously via SQS. Solar Pro refines L1 reasons into natural Korean. Results are cached in DynamoDB for subsequent requests. VIP customers receive priority processing.
++ *L2a (LLM Rewrite)*: submitted asynchronously via SQS. Solar Pro refines L1 reasons into natural Korean. Results are cached in DynamoDB for subsequent requests.
+  *All customers receive the L1 template equally*, and L2a processing order is determined by *context richness* (feature availability, consultation history) rather than customer tier --- complying with Korean Financial Consumer Protection Act Art.19 (equal explanation obligation) and Personal Information Protection Act Art.37-2(2) (right to explanation).
+  Context richness classification: rich (abundant features + history) → moderate (partial features) → sparse (cold-start; excluded from L2a, L1 template only). This reflects that *data availability* determines LLM output quality, not a service-quality differential by customer segment.#footnote[
+  An earlier prototype set L2a priority based on customer segment (VIP), but
+  was redesigned around context richness classification to comply with the
+  Korean Financial Consumer Protection Act Art.19 equal-explanation obligation
+  (on-prem v3.0.0, 2026). This design transition is continuously monitored
+  under AV1 (fairness) of the audit agent.
+]
 
 + *L2b (Quality Validation)*: applies a 5-stage safety gate to L2a output --- (1) prompt sanitizer, (2) PII detection (Korean resident registration number, card numbers, etc.), (3) self-check layer (compliance + injection + factuality), (4) grounding verification (number cross-check), (5) 5% human review sampling. Pass promotes to L2b; failure falls back to L1.
 

@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from core.recommendation.reason.interpretation_registry import InterpretationRegistry
     from core.recommendation.reason.fact_extractor import FactExtractor
     from core.recommendation.reason.context_store import ContextVectorStore
+    from core.recommendation.reason.portfolio_triage import PortfolioTriageAgent
 
 logger = logging.getLogger(__name__)
 
@@ -93,9 +94,21 @@ class ReasonResult:
 # ---------------------------------------------------------------------------
 
 class _Priority:
-    HIGH = 1        # Rich / VIP customers
-    MODERATE = 5    # Standard customers
-    LOW = 10        # Low-engagement customers
+    """L2a processing priority based on CONTEXT RICHNESS, not customer tier.
+
+    Rationale: Korean Financial Consumer Protection Act §19 (equal explanation
+    obligation) and Personal Information Protection Act §37-2(2) (right to
+    explanation) require equal treatment across customer segments. Priority
+    here reflects data availability for the LLM, not customer value.
+    """
+    RICH_CONTEXT = 1       # Features + consultation history available
+    MODERATE_CONTEXT = 5   # Some features available
+    SPARSE_CONTEXT = 10    # Minimal context (typically excluded from L2a)
+
+    # Legacy aliases for backward compatibility
+    HIGH = RICH_CONTEXT
+    MODERATE = MODERATE_CONTEXT
+    LOW = SPARSE_CONTEXT
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +167,7 @@ class AsyncReasonOrchestrator:
         interpretation_registry: Optional["InterpretationRegistry"] = None,
         fact_extractor: Optional[Any] = None,        # FactExtractor instance
         context_store: Optional[Any] = None,         # ContextVectorStore with customer_facts metadata
+        triage_agent: Optional[Any] = None,          # PortfolioTriageAgent
     ) -> None:
         self._config = config or {}
         ao_cfg = self._config.get("reason", {}).get("async_orchestrator", {})
@@ -166,6 +180,7 @@ class AsyncReasonOrchestrator:
         self._interpretation_registry = interpretation_registry
         self._fact_extractor = fact_extractor
         self._context_store = context_store
+        self._triage_agent = triage_agent
 
         # In-memory cache (local); production overrides with DynamoDB
         self._cache: Dict[str, ReasonResult] = {}
@@ -774,9 +789,22 @@ class AsyncReasonOrchestrator:
                         context["customer_facts"] = facts
                 except Exception:
                     pass  # non-fatal: L2a continues without facts
-            # Determine priority from segment
-            segment = recommendation.get("segment", "WARMSTART")
-            priority = _Priority.HIGH if segment == "VIP" else _Priority.MODERATE
+            # Determine priority from CONTEXT RICHNESS (not customer segment)
+            # Regulatory: Korean FSS Art.19 equal-explanation obligation prohibits
+            # segment-based differential treatment. Priority reflects data availability,
+            # not customer tier.
+            if self._triage_agent is not None:
+                richness = self._triage_agent.classify_richness(context.get("customer_features", {}))
+                l2a_priority = self._triage_agent.get_l2a_rewrite_priority(richness)
+                if l2a_priority is None:
+                    # sparse context → skip L2a, L1 template is sufficient
+                    logger.debug("Skipping L2a for customer %s (sparse context)", customer_id)
+                    return l1_result
+                priority = l2a_priority
+            else:
+                # Fallback: all customers at moderate priority (no discrimination)
+                priority = _Priority.MODERATE_CONTEXT
+
             self.submit_l2a_rewrite(customer_id, l1_result, context, priority)
 
         return l1_result
