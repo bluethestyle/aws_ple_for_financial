@@ -110,7 +110,7 @@ We propose a full-chain solution from prediction to persuasion:
 
 + *IG-guided Distillation with Explanation Preservation*: Feature selection optimizes not only for prediction accuracy but also for explanation material availability.
 
-+ *Feature Business Reverse-Mapping*: A systematic registry (`interpretation_registry`) that maps every feature to a business-interpretable description, enabling grounded explanation generation.
++ *Feature Business Reverse-Mapping*: A systematic interpretation registry that maps every feature to a business-interpretable description, enabling grounded explanation generation.
 
 + *3-Agent Reason Generation Pipeline*: Role-separated agents (selection → generation → safety) with independent improvement and audit logging.
 
@@ -217,15 +217,15 @@ enabling independent improvement of each component.
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((0, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 14 Task, 350D] \ #text(size: 6pt)[GPU, weekly training]], width: 50mm, fill: teacher-fill, name: <teacher>),
+      node((0, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 14 Task, 350D] \ #text(size: 8pt)[GPU, weekly training]], width: 50mm, fill: teacher-fill, name: <teacher>),
 
-      node((2, 0), [*Soft Labels* \ #text(size: 6pt)[Per-task probability dist.]], width: 45mm, fill: gray-fill, name: <soft>),
+      node((2, 0), [*Soft Labels* \ #text(size: 8pt)[Per-task probability dist.]], width: 45mm, fill: gray-fill, name: <soft>),
 
-      node((1, 1.2), [*IG Feature Selection* \ #text(size: 6pt)[Dual prediction + explanation] \ #text(size: 6pt)[$"IG"_"dual" = alpha dot "IG"_"pred" + (1-alpha) dot "IG"_"explain"$]], width: 65mm, fill: ig-fill, name: <ig>),
+      node((0, 1.2), [*IG Feature Selection* \ #text(size: 8pt)[Dual prediction + explanation] \ #text(size: 8pt)[$"IG"_"dual" = alpha dot "IG"_"pred" + (1-alpha) dot "IG"_"explain"$]], width: 65mm, fill: ig-fill, name: <ig>),
 
-      node((0, 2.4), [*LGBM Student ×14* \ #text(size: 6pt)[Per-task independent] \ #text(size: 6pt)[CPU, daily inference]], width: 50mm, fill: student-fill, name: <student>),
+      node((2.5, 1.2), [*LGBM Student ×14* \ #text(size: 8pt)[Per-task independent] \ #text(size: 8pt)[CPU, daily inference]], width: 50mm, fill: student-fill, name: <student>),
 
-      node((2, 2.4), [*Lambda Serving* \ #text(size: 6pt)[GPU-free real-time inference] \ #text(size: 6pt)[+ explainable features preserved]], width: 50mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
+      node((2.5, 2.4), [*Lambda Serving* \ #text(size: 8pt)[GPU-free real-time inference] \ #text(size: 8pt)[ explainable features preserved]], width: 50mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
 
       edge(<teacher>, <soft>, "->", label: [soft probs]),
       edge(<teacher>, <ig>, "->", label: [IG attribution]),
@@ -234,7 +234,7 @@ enabling independent improvement of each component.
       edge(<student>, <serve>, "->"),
     )
   },
-  caption: [Teacher-student distillation architecture. PLE teacher's soft labels and IG-based feature selection distill into per-task LGBM student models.],
+  caption: [Teacher-student distillation architecture.\ PLE teacher's soft labels and IG-based feature selection distill into per-task LGBM student models.],
 ) <fig:distillation>
 
 The teacher model (PLE with 7 heterogeneous experts, 14 tasks, 350 features;
@@ -353,9 +353,14 @@ removing the near-degenerate class imbalance that previously made
 teacher-student fidelity numbers artificially easy to achieve.
 These distributions make the distillation gaps below genuinely informative.
 
-Teacher-student fidelity metrics are reported per task type:
-AUC gap for binary classification tasks, F1-macro gap for multiclass tasks,
-and MAE gap for regression tasks.
+Teacher-student fidelity metrics are reported per task type,
+chosen to match each task's production semantic.
+Binary classification tasks use AUC gap (threshold-independent and imbalance-robust).
+Classification multiclass (segment_prediction, 4 classes) uses F1-macro gap.
+Recommendation multiclass (nba_primary with 7 product groups, next_mcc with top-50 merchant categories)
+uses NDCG\@K gap and top-K accuracy gap @jarvelin2002ndcg,
+reflecting standard recommendation system evaluation practice.
+Regression tasks use MAE gap.
 This avoids conflating metrics with incompatible semantics across task types.
 
 #figure(placement: top, scope: "parent",
@@ -364,20 +369,23 @@ This avoids conflating metrics with incompatible semantics across task types.
     inset: 5pt,
     align: center,
     stroke: 0.5pt,
-    [*Task*], [*Teacher AUC*], [*Student AUC*], [*Gap*],
-    [has_nba], [--], [--], [--],
-    [churn_signal], [--], [--], [--],
-    [will_acquire_deposits], [--], [--], [--],
-    [will_acquire_investments], [--], [--], [--],
+    [*Task*], [*Teacher*], [*Student*], [*Gap*],
+    [has_nba (AUC)], [--], [--], [--],
+    [churn_signal (AUC)], [--], [--], [--],
+    [will_acquire_deposits (AUC)], [--], [--], [--],
+    [will_acquire_investments (AUC)], [--], [--], [--],
+    [segment_prediction (F1-macro)], [--], [--], [--],
+    [nba_primary (NDCG\@3)], [--], [--], [--],
+    [next_mcc (NDCG\@3)], [--], [--], [--],
     [...], [...], [...], [...],
   ),
-  caption: [Distillation results per task (TODO). Binary tasks: AUC gap; multiclass: F1-macro gap; regression: MAE gap.],
+  caption: [Distillation results per task (TODO).\ Binary tasks: AUC gap; segment\_prediction: F1-macro gap;\ nba\_primary and next\_mcc: NDCG\@3 gap; regression: MAE gap.],
 ) <tab:distill-results>
 
 // ============================================================
 
 // Bridge: Distillation → Reason Generation
-The `interpretation_registry` serves as the *data contract* between distillation and reason generation.
+The interpretation registry serves as the *data contract* between distillation and reason generation.
 Distillation (Section 3) decides _which_ features to preserve in the student model ---
 optimizing for both predictive accuracy and explanation material via the dual-objective IG score.
 Reason generation (Section 4) decides _how_ to explain those features to humans ---
@@ -390,7 +398,7 @@ improving feature selection does not require rewriting explanation templates, an
 
 == Feature Business Reverse-Mapping
 
-Every feature in the system is registered in an `interpretation_registry`
+Every feature in the system is registered in the interpretation registry
 with structured business metadata:
 
 #figure(placement: top, scope: "parent",
@@ -413,9 +421,9 @@ This registry serves dual purposes:
 (1) grounding material for the Reason Generator agent, and
 (2) audit trail showing which features influenced each recommendation.
 
-`InterpretationRegistry` interprets features into Korean via a 5-level cascade:
-Level IG (IG sign direction + task context) → Level 3 (feature×task manual overrides) → Level 2 (group×task) → Level 1 (group×task_group auto-generated) → Level RM (`ReverseMapper` glossary templates). Only features unresolved by this cascade fall to raw fallback.
-`ReverseMapper` is integrated as Level RM, so glossary value-substitution templates (e.g., "월 평균 \{value\}건 거래") operate as part of the cascade. All fallback text outputs Korean.
+The interpretation registry interprets features into Korean via a 5-level cascade:
+Level IG (IG sign direction + task context) → Level 3 (feature×task manual overrides) → Level 2 (group×task) → Level 1 (group×task_group auto-generated) → Level RM (reverse-mapping layer glossary templates). Only features unresolved by this cascade fall to raw fallback.
+The reverse-mapping layer is integrated as Level RM, so glossary value-substitution templates (e.g., "월 평균 \{value\}건 거래") operate as part of the cascade. All fallback text outputs Korean.
 
 == 3-Agent Pipeline Architecture
 
@@ -434,18 +442,18 @@ Level IG (IG sign direction + task context) → Level 3 (feature×task manual ov
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((1, 0), [*Model Predictions* \ #text(size: 6pt)[14 tasks × top-K products]], width: 55mm, fill: gray-fill, name: <pred>),
+      node((1, 0), [*Model Predictions* \ #text(size: 8pt)[14 tasks × top-K products]], width: 55mm, fill: gray-fill, name: <pred>),
 
-      node((1, 1.3), [*Feature Selector* \ #text(size: 6pt)[IG contribution + business mapping richness] \ #text(size: 6pt)[Customer context-based selection]], width: 70mm, fill: agent-fill, name: <a1>),
+      node((1, 1.0), [*Feature Selector* \ #text(size: 8pt)[IG contribution + business mapping richness] \ #text(size: 8pt)[Customer context-based selection]], width: 70mm, fill: agent-fill, name: <a1>),
 
-      node((1, 2.6), [*Reason Generator* \ #text(size: 6pt)[Reverse-mapped features → NL reason] \ #text(size: 6pt)[Financial DNA narrative structure]], width: 70mm, fill: agent-fill, name: <a2>),
+      node((1, 2.2), [*Reason Generator* \ #text(size: 8pt)[Reverse-mapped features → NL reason] \ #text(size: 8pt)[Financial DNA narrative structure]], width: 70mm, fill: agent-fill, name: <a2>),
 
-      node((1, 3.9), [*Safety Gate* \ #text(size: 6pt)[Hallucination · Regulation · Suitability · Tone · Factuality] \ #text(size: 6pt)[5-stage validation]], width: 70mm, fill: safety-fill, name: <a3>),
+      node((1, 3.7), [*Safety Gate* \ #text(size: 8pt)[Hallucination · Regulation · Suitability · Tone · Factuality] \ #text(size: 8pt)[5-stage validation]], width: 75mm, fill: safety-fill, name: <a3>),
 
       node((0, 5), [*Pass* → Serve], width: 32mm, fill: pass-fill, name: <pass>),
-      node((2, 5), [*Fail* → Template fallback], width: 38mm, fill: gray-fill, name: <fail>),
+      node((2, 5), [*Fail* → Template fallback], width: 44mm, fill: gray-fill, name: <fail>),
 
-      node((2.5, 2.6), [*Audit Log* \ #text(size: 6pt)[HMAC signed]], width: 28mm, fill: luma(240), name: <audit>),
+      node((2.2, 2.6), [*Audit Log* \ #text(size: 8pt)[HMAC signed]], width: 28mm, fill: luma(240), name: <audit>),
 
       edge(<pred>, <a1>, "->"),
       edge(<a1>, <a2>, "->", label: [selected features]),
@@ -456,7 +464,7 @@ Level IG (IG sign direction + task context) → Level 3 (feature×task manual ov
       edge(<a3>, <audit>, "->", stroke: 0.4pt + luma(160)),
     )
   },
-  caption: [3-agent recommendation reason generation pipeline. Feature Selector → Reason Generator → Safety Gate.],
+  caption: [3-agent recommendation reason generation pipeline.\ Feature Selector → Reason Generator → Safety Gate.],
 ) <fig:3agent>
 
 === Agent 1: Feature Selector
@@ -515,7 +523,7 @@ Validates the generated reason against:
     stroke: 0.5pt,
     [*Check Category*], [*Criteria*],
     [Hallucination], [No claims about facts not in feature data],
-    [Regulatory], [No violation of 금소법, 적합성 원칙],
+    [Regulatory], [No violation of Protection Act, Article 19],
     [Appropriateness], [No unsuitable investment advice for risk profile],
     [Tone], [Professional financial advisory language],
     [Factual], [Numerical claims match actual feature values],
@@ -525,29 +533,29 @@ Validates the generated reason against:
 
 On failure: automatic fallback to template-based safe reason.
 All gate decisions are logged for audit trail.
-Upstream of the 3-agent pipeline, the `ConstraintAwareEngine` applies eligibility and suitability filters --- verifying investment experience, risk tolerance, and product-specific constraints --- so that no recommendation reaches the customer without passing a suitability check, as required by the Korean Financial Consumer Protection Act (금소법) Article 19 (적합성 원칙).
+Upstream of the 3-agent pipeline, the constraint engine applies eligibility and suitability filters --- verifying investment experience, risk tolerance, and product-specific constraints --- so that no recommendation reaches the customer without passing a suitability check, as required by the Korean Financial Consumer Protection Act (금소법) Article 19 (적합성 원칙).
 
 === Serving Model Selection
 
 Customer-facing recommendation reasons require natural, professional Korean text. The optimal model differs by deployment environment:
 *On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.
-*Cloud (AWS)*: L2a rewriting uses Solar Pro 22B (Upstage, Bedrock Marketplace) --- top performance on Korean benchmarks (KMMLU). L2b self-critique also uses Solar (generator $<=$ critic model principle). SelfChecker factuality scoring uses Claude Haiku.
+*Cloud (AWS)*: L2a rewriting uses Solar Pro 22B (Upstage, Bedrock Marketplace) --- top performance on Korean benchmarks (KMMLU). L2b self-critique also uses Solar (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku.
 Bedrock ensures that input/output data is never transmitted to model providers (Anthropic, Upstage) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet, ensuring that financial customer data never leaves the AWS Region (ap-northeast-2) --- structurally satisfying the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
 
 === Fact Compression Layer (Mem0 Adoption)
 
-While `InterpretationRegistry` provides feature-level interpretation,
-`FactExtractor` adds *customer-level narrative facts*.
+While the interpretation registry provides feature-level interpretation,
+the fact extraction layer adds *customer-level narrative facts*.
 A rule-based engine extracts Korean facts like "예적금 중심 포트폴리오" (deposit-focused portfolio),
 "최근 3개월 펀드 관심 증가" (recent fund interest growth),
 "리스크 회피 성향" (risk-averse tendency) from feature values ---
 deterministically and without any LLM calls.
 
-These facts are extracted at Phase 0 batch time, stored in `ContextVectorStore`,
+These facts are extracted at Phase 0 batch time, stored in the context vector store,
 and injected into the L2a prompt as a "Customer Facts" section at serving time.
 Solar Pro then generates reasons *with customer understanding*, not just raw feature values.
 
-Rules are defined in `configs/financial/fact_extraction.yaml`
+Rules are defined in a YAML configuration file
 (15 categories covering portfolio composition, interests, risk tolerance, lifecycle, etc.)
 and new facts can be added with config-only changes.
 
@@ -555,11 +563,11 @@ and new facts can be added with config-only changes.
 
 Recommendation reasons are served via a 3-layer asynchronous architecture:
 
-+ *L1 (Template)*: returned immediately on customer request. No LLM call. `TemplateEngine` generates deterministic Korean reasons based on IG top-K feature business reverse-mappings. Features pass through `InterpretationRegistry`'s 5-level cascade (IG direction → L3 → L2 → L1 → ReverseMapper) to produce enriched 3-tuples `(feature_name, IG_value, Korean_interpretation)`.
++ *L1 (Template)*: returned immediately on customer request. No LLM call. The template engine generates deterministic Korean reasons based on IG top-K feature business reverse-mappings. Features pass through the interpretation registry's 5-level cascade (IG direction → L3 → L2 → L1 → reverse-mapping layer) to produce enriched 3-tuples `(feature_name, IG_value, Korean_interpretation)`.
 
 + *L2a (LLM Rewrite)*: submitted asynchronously via SQS. Solar Pro refines L1 reasons into natural Korean. Results are cached in DynamoDB for subsequent requests. VIP customers receive priority processing.
 
-+ *L2b (Quality Validation)*: applies a 5-stage safety gate to L2a output --- (1) PromptSanitizer, (2) PII detection (Korean resident registration number, card numbers, etc.), (3) SelfChecker (compliance + injection + factuality), (4) grounding verification (number cross-check), (5) 5% human review sampling. Pass promotes to L2b; failure falls back to L1.
++ *L2b (Quality Validation)*: applies a 5-stage safety gate to L2a output --- (1) prompt sanitizer, (2) PII detection (Korean resident registration number, card numbers, etc.), (3) self-check layer (compliance + injection + factuality), (4) grounding verification (number cross-check), (5) 5% human review sampling. Pass promotes to L2b; failure falls back to L1.
 
 Caching uses a dual backend (in-memory + DynamoDB) with composite key `customer_id + product_id + task_name` and TTL-based auto-expiry. Of 941K customers, L2a targets (~5% sample, ~47K items) are processed by 5 parallel Solar workers in ~8 minutes at ~\$0.10 cost.
 
@@ -598,7 +606,7 @@ instead of checking 10 metrics daily, the human reads one natural-language summa
 
 The OpsAgent runs after training completion and drift monitoring DAG executions.
 
-*Inputs*: `eval_metrics.json`, training logs, CGC gate entropy, PSI drift reports.
+*Inputs*: evaluation metrics, training logs, CGC gate entropy, PSI drift reports.
 
 *Output*: A "Model Health Report" in natural language.
 
@@ -633,7 +641,7 @@ are affected, providing actionable context rather than raw numbers.
 
 The AuditAgent runs after fairness monitoring and governance DAG executions.
 
-*Inputs*: `FairnessMonitor` reports (DI/SPD/EOD), audit trail integrity checks,
+*Inputs*: fairness monitor reports (DI/SPD/EOD), audit trail integrity checks,
 opt-out statistics, governance checklist status.
 
 *Output*: A "Regulatory Compliance Report" in natural language.
@@ -691,7 +699,7 @@ can never degrade customer-facing service.
 
 Unlike serving agents, which require Korean-language fluency for customer-facing text, operational agents process structured JSON inputs and produce logical assessments --- natural language fluency is secondary to reasoning accuracy.
 *On-premises (air-gapped)*: Exaone 3.5 7.8B (Korean reason generation) + Qwen 2.5 14B Q4 (agent consensus). Sequential loading on RTX 4070 12GB VRAM.
-*Cloud (AWS)*: per-task optimal models --- Solar Pro (Korean L2a reason generation/critique), Claude Sonnet (agent dialog, 3-agent consensus), Claude Haiku (SelfChecker factuality judgment), Claude Opus (quarterly deep audit), Titan Embeddings V2 (vectorization). The Bedrock infrastructure is shared between reason generation and agents; quota competition is resolved via time-slot separation.
+*Cloud (AWS)*: per-task optimal models --- Solar Pro (Korean L2a reason generation/critique), Claude Sonnet (agent dialog, 3-agent consensus), Claude Haiku (self-check layer factuality judgment), Claude Opus (quarterly deep audit), Titan Embeddings V2 (vectorization). The Bedrock infrastructure is shared between reason generation and agents; quota competition is resolved via time-slot separation.
 In both deployments, operational agents execute only 1--2 calls per DAG cycle, keeping cost and latency negligible regardless of model choice.
 
 == Practical Value
@@ -715,7 +723,7 @@ OpsAgent handles 23 items, AuditAgent handles 25 items.
 == Tool Calling Architecture
 
 38 tools (29 Query + 9 Action) are defined via JSON Schema,
-wrapping existing monitoring components (`DriftDetector`, `FairnessMonitor`, `SelfChecker`, etc.)
+wrapping existing monitoring components (drift detector, fairness monitor, self-check layer, etc.)
 as callable tools for the agents.
 Query tools can be called freely, while Action tools (incident creation, audit logging)
 require explicit approval, structurally enforcing the Query/Action boundary.
@@ -741,7 +749,7 @@ while the majority, anchored to familiar patterns, overlooks them.
 == Diagnostic Case Store
 
 Inspection reports are not disposable artifacts but accumulate as an operational knowledge base.
-A LanceDB-based `DiagnosticCaseStore` stores structured metadata
+A LanceDB-based diagnostic case knowledge base stores structured metadata
 (part, item, verdict, severity) and text embeddings (finding + cause + action)
 for three purposes:
 (1) *similar case search*: referencing past response history when a new anomaly occurs,
@@ -759,19 +767,19 @@ Core patterns from several 2026 agent memory frameworks (Mem0, Zep/Graphiti, Let
 SuperLocalMemory) were *selectively adopted* as incremental additions to existing infrastructure.
 
 *Adoption 1 --- Temporal Knowledge Graph (Zep/Graphiti)*:
-`TemporalFactStore` uses a `(entity, attribute, value, valid_from, valid_to)` schema
+The temporal fact store uses a `(entity, attribute, value, valid_from, valid_to)` schema
 for audit evidence. Point-in-time queries like "What was customer A's state at 2026-03-15?"
-resolve as single filters. Shares the same LanceDB backend as `DiagnosticCaseStore` ---
+resolve as single filters. Shares the same LanceDB backend as the diagnostic case knowledge base ---
 zero new dependencies.
 
 *Adoption 2 --- Mathematical Decay (SuperLocalMemory)*:
-`DiagnosticCaseStore.search_similar()` now applies $exp(-"age"/tau)$ weighting
+The diagnostic case knowledge base's similar case search now applies $exp(-"age"/tau)$ weighting
 with a 90-day half-life default. *Original cases are preserved* --- only search weights
 are adjusted, maintaining audit traceability.
 
 *Adoption 3 --- Dialog Recall Memory (Letta)*:
-`DialogRecallMemory` stores past operator conversations in DynamoDB so that
-`BedrockDialogSession` can recall "that issue we discussed last week" across sessions.
+The dialog recall memory stores past operator conversations in DynamoDB so that
+the Bedrock conversational interface can recall "that issue we discussed last week" across sessions.
 
 *Not adopted*: LangMem's prompt self-improvement (audit risk --- cannot answer
 "who approved this prompt?").
@@ -781,7 +789,7 @@ All adoptions are *opt-in* and do not affect existing behavior when not configur
 == Change Detection and Impact Review
 
 Changes to code, configuration, models, and data sources are detected via two channels:
-push (git hooks, `_PipelineState` callbacks, ingestion completion events) for immediate detection,
+push (git hooks, pipeline state callbacks, ingestion completion events) for immediate detection,
 and pull (manifest diff, serving metric polling) for periodic detection.
 When a change is detected, the checklist for affected pipeline parts is re-executed.
 In the AWS environment, Sonnet reads the diff and reasons about downstream impact,
@@ -803,13 +811,13 @@ enabling operators to discuss the impact assessment interactively.
     stroke: 0.5pt,
     [*FSS Requirement*], [*System Component*], [*Verification*],
     [Explainability], [Gate weights + 3-agent reason], [Per-recommendation audit log],
-    [Fairness], [FairnessMonitor (DI/SPD/EOD)], [Weekly automated report],
+    [Fairness], [Fairness monitor (DI/SPD/EOD)], [Weekly automated report],
     [Model validation], [Champion-Challenger], [Pre-deployment comparison],
-    [Monitoring], [DriftDetector (PSI)], [Continuous, 3-day trigger],
+    [Monitoring], [Drift detector (PSI)], [Continuous, 3-day trigger],
     [Audit trail], [HMAC hash-chain logs], [Immutable, 7 audit tables],
     [Fallback], [Template reason + kill switch], [Instant manual override],
-    [Model risk mgmt], [ModelCompetitionManager (champion-challenger)], [Independent validation, manual approval],
-    [Customer suitability], [ConstraintAwareEngine + eligibility filters], [Pre-recommendation suitability check],
+    [Model risk mgmt], [Champion-challenger manager], [Independent validation, manual approval],
+    [Customer suitability], [Constraint engine + eligibility filters], [Pre-recommendation suitability check],
   ),
   caption: [Korean FSS guideline compliance mapping.],
 ) <tab:fss-mapping>
@@ -862,18 +870,18 @@ suitable for regulatory submission.
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((0, 0), [*DriftDetector* \ #text(size: 6pt)[PSI]], width: 34mm, fill: gray-fill, name: <drift>),
-      node((1, 0), [*FairnessMonitor* \ #text(size: 6pt)[DI/SPD/EOD]], width: 36mm, fill: gray-fill, name: <fair>),
-      node((2, 0), [*HerdingDetector* \ #text(size: 6pt)[HHI/Gini]], width: 34mm, fill: gray-fill, name: <herd>),
+      node((0, 0), [*Drift Detector* \ #text(size: 8pt)[PSI]], width: 34mm, fill: gray-fill, name: <drift>),
+      node((1, 0), [*Fairness Monitor* \ #text(size: 8pt)[DI/SPD/EOD]], width: 36mm, fill: gray-fill, name: <fair>),
+      node((2, 0), [*Herding Detector* \ #text(size: 8pt)[HHI/Gini]], width: 36mm, fill: gray-fill, name: <herd>),
 
-      node((0, 1.5), [*OpsAgent* \ #text(size: 6pt)[7 checkpoints] \ #text(size: 6pt)[cross-checkpoint analysis]], width: 42mm, fill: ops-fill, name: <ops>),
-      node((2, 1.5), [*AuditAgent* \ #text(size: 6pt)[5 viewpoints] \ #text(size: 6pt)[3-Tier reason quality]], width: 42mm, fill: audit-fill, name: <aud>),
+      node((0, 1.5), [*OpsAgent* \ #text(size: 8pt)[7 checkpoints] \ #text(size: 8pt)[cross-checkpoint analysis]], width: 42mm, fill: ops-fill, name: <ops>),
+      node((2, 1.5), [*AuditAgent* \ #text(size: 8pt)[5 viewpoints] \ #text(size: 8pt)[3-Tier reason quality]], width: 42mm, fill: audit-fill, name: <aud>),
 
-      node((1, 2.8), [*3-Agent Consensus* \ #text(size: 6pt)[Sonnet × 3 independent voting] \ #text(size: 6pt)[Minority report preservation]], width: 55mm, fill: luma(240), name: <consensus>),
+      node((1, 2.8), [*3-Agent Consensus* \ #text(size: 8pt)[Sonnet × 3 independent voting] \ #text(size: 8pt)[Minority report preservation]], width: 55mm, fill: luma(240), name: <consensus>),
 
-      node((1, 4), [*Governance Report* \ #text(size: 6pt)[Monthly auto-generated]], width: 45mm, fill: report-fill, name: <gov>),
+      node((1, 4), [*Governance Report* \ #text(size: 8pt)[Monthly auto-generated]], width: 45mm, fill: report-fill, name: <gov>),
 
-      node((1, 5), [*Human Review and Decision*], width: 45mm, shape: fletcher.shapes.pill, fill: rgb("#e8f5e9"), name: <human>),
+      node((1, 5), [*Human Review and Decision*], width: 55mm, shape: fletcher.shapes.pill, fill: rgb("#e8f5e9"), name: <human>),
 
       edge(<drift>, <ops>, "->"),
       edge(<fair>, <aud>, "->"),
@@ -882,10 +890,10 @@ suitable for regulatory submission.
       edge(<aud>, <consensus>, "->"),
       edge(<consensus>, <gov>, "->"),
       edge(<gov>, <human>, "->"),
-      edge(<ops>, <aud>, "-->", stroke: 0.4pt + luma(140), label: [cross-trigger], label-size: 6pt),
+      edge(<ops>, <aud>, "-->", stroke: 0.4pt + luma(140), label: [cross-trigger], label-size: 10pt),
     )
   },
-  caption: [Monitoring and governance architecture. Monitoring components → Ops/Audit agents → Consensus → Governance report → Human review.],
+  caption: [Monitoring and governance architecture.\ Monitoring components → Ops/Audit agents → Consensus → Governance report → Human review.],
 ) <fig:monitoring>
 
 === Human-in-the-Loop
@@ -913,19 +921,19 @@ free of errors and complete" with appropriate data governance measures.
 Our Phase 0 pipeline (preprocessing $arrow.r$ feature generation $arrow.r$
 label derivation $arrow.r$ normalization $arrow.r$ tensor storage)
 produces two audit artifacts at every run:
-`feature_stats.json` records per-column NaN ratios, zero-variance flags,
+The feature statistics file records per-column NaN ratios, zero-variance flags,
 distribution statistics, and generated feature counts;
-`label_stats.json` records class balance and positive rates for all 14 tasks.
+the label statistics file records class balance and positive rates for all 14 tasks.
 These artifacts constitute a verifiable data quality record
 that an external auditor can inspect without executing any code.
 
 Reproducibility is guaranteed by config-driven processing:
-the entire pipeline is controlled by two YAML files
-(`pipeline.yaml` and `feature_groups.yaml`),
+the entire pipeline is controlled by two YAML configuration files
+(the pipeline configuration and the feature group configuration),
 so identical configs produce identical outputs given the same input data.
 No dataset-specific logic resides in executable code.
 
-As a pre-training gate, `LeakageValidator` verifies that
+As a pre-training gate, the leakage validator verifies that
 (1) the scaler was fit on training data only,
 (2) a temporal gap separates train/validation/test splits, and
 (3) the final sequence timestep does not overlap with label windows.
@@ -936,10 +944,10 @@ ensuring data governance violations are caught _before_ compute is consumed.
 
 Article 11 mandates technical documentation sufficient to assess compliance.
 Our system achieves this through config-as-documentation:
-the two YAML files fully specify feature groups, generator parameters,
+the two YAML configuration files fully specify feature groups, generator parameters,
 normalization stages, task definitions, loss weights, and expert routing.
 A config snapshot is saved alongside every training run,
-and `eval_metrics.json` captures the full training provenance
+and the evaluation metrics file captures the full training provenance
 (hyperparameters, data splits, final metrics, timestamps).
 Combined with fixed random seeds, any historical experiment
 can be exactly reproduced from its archived config.
@@ -992,12 +1000,12 @@ Drift monitoring (PSI-based) is designed to provide continuous robustness verifi
 Article 10(2)(f) requires examination of training data
 for possible biases that may affect health, safety, or fundamental rights.
 Label distribution validation before training
-(via `label_stats.json`) ensures class imbalance is documented and addressed.
-The task-level breakdown in `eval_metrics.json`
+(via the label statistics file) ensures class imbalance is documented and addressed.
+The task-level breakdown in the evaluation metrics file
 enables per-segment performance monitoring:
 auditors can verify that model accuracy does not vary systematically
 across customer demographics or product categories.
-The `FairnessMonitor` component (disparate impact, statistical parity difference,
+The fairness monitor component (disparate impact, statistical parity difference,
 equalized odds difference) provides automated bias detection
 at the granularity required by Article 10(2)(f).
 
@@ -1006,10 +1014,10 @@ at the granularity required by Article 10(2)(f).
 The system implements an SR 11-7 aligned five-stage MRM lifecycle:
 _develop_ (teacher training + student distillation),
 _validate_ (independent metric evaluation on held-out data),
-_approve_ (manual sign-off gate; `auto_promote=False` by default),
+_approve_ (manual sign-off gate; automatic promotion disabled by default),
 _monitor_ (continuous PSI-based drift detection), and
 _retrain_ (automatic re-distillation when drift exceeds threshold).
-The `ModelCompetitionManager` orchestrates champion-challenger evaluation:
+The champion-challenger manager orchestrates champion-challenger evaluation:
 when a newly distilled student is produced, it is compared against the
 current production champion on all target metrics.
 Promotion requires explicit human approval ---
@@ -1116,7 +1124,7 @@ suitable for regulatory inspection.
 We compute Disparate Impact (DI), Statistical Parity Difference (SPD),
 and Equal Opportunity Difference (EOD) across protected attributes
 (age group, gender, income tier) for each task.
-The FairnessMonitor runs as a scheduled batch job
+The fairness monitor runs as a scheduled batch job
 and generates alerts when any metric exceeds configurable thresholds.
 
 // ============================================================
@@ -1158,7 +1166,7 @@ Even features with marginal predictive contribution (e.g., TDA topological featu
 may add only $Delta$AUC = 0.01) provide irreplaceable context for recommendation reasoning.
 Internally, TDA persistence captures behavioral shape stability ---
 but the customer never sees "persistent homology" or "Betti numbers."
-Instead, the `interpretation_registry` reverse-maps this to business language
+Instead, the interpretation registry reverse-maps this to business language
 (e.g., "You maintain a stable transaction pattern"), and the LLM agent weaves it into a natural-language reason.
 
 This reframes feature engineering evaluation:
@@ -1279,6 +1287,43 @@ and Cursor for a seamless development environment.
 What could have remained an unrealized vision
 was brought to life through the collaboration
 of a small team and these tools.
+
+// ============================================================
+
+// ============================================================
+#heading(numbering: none, level: 1)[Appendix A. Implementation Reference]
+
+The concepts described in this paper have concrete Python implementations
+available in the public code repository. The mapping between paper concepts
+and implementation modules is as follows:
+
+#figure(placement: top, scope: "parent",
+  table(
+    columns: (auto, auto),
+    inset: 5pt,
+    align: left,
+    stroke: 0.5pt,
+    [*Paper Concept*], [*Implementation Module*],
+    [Interpretation registry], [`core/recommendation/reason/interpretation_registry.py`],
+    [Reverse-mapping layer], [`core/recommendation/reason/reverse_mapper.py`],
+    [Fact extraction layer], [`core/recommendation/reason/fact_extractor.py`],
+    [3-agent serving pipeline], [`core/recommendation/reason/async_orchestrator.py`],
+    [Self-check / Safety Gate], [`core/recommendation/reason/self_checker.py`],
+    [Template engine], [`core/recommendation/reason/template_engine.py`],
+    [Operations agent], [`core/agent/ops/`],
+    [Audit agent], [`core/agent/audit/`],
+    [Consensus mechanism], [`core/agent/consensus.py`],
+    [Diagnostic case knowledge base], [`core/agent/case_store.py`],
+    [Temporal fact store], [`core/agent/temporal_fact_store.py`],
+    [Dialog recall memory], [`core/agent/dialog_recall.py`],
+    [Tool registry], [`core/agent/tool_registry.py`],
+    [Configuration files], [`configs/financial/*.yaml`],
+  ),
+  caption: [Mapping of paper concepts to implementation modules.],
+) <tab:impl-map>
+
+Detailed implementation, unit tests, and configuration files are available
+in the public repository.
 
 // ============================================================
 #bibliography("references.bib", style: "association-for-computing-machinery")
