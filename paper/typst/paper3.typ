@@ -98,6 +98,17 @@ When we attempted to scale PLE to *13 heterogeneous tasks*
 --- 7 binary, 3 multiclass (4 to 50 classes), and 3 regression ---
 several assumptions broke down in ways that existing literature does not address.
 
+The 13-task configuration was not a design preference but a constraint.
+Financial regulations mandate distinct prediction targets:
+suitability assessment, fairness monitoring across protected attributes,
+churn early-warning, and product-level acquisition propensity
+each require a separate supervised signal.
+Meanwhile, limited infrastructure --- a single desktop GPU (12GB VRAM)
+and a 3-person team --- precludes maintaining separate models per task.
+The result is a regime that large-scale CTR teams have no reason to enter
+(they can afford model-per-task) but that resource-constrained regulated
+industries are forced into.
+
 This paper reports five empirical findings from this scaling experience.
 We make no claims of state-of-the-art performance;
 instead, we document *phenomena and practical guidelines*
