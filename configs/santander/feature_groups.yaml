@@ -103,7 +103,7 @@ feature_groups:
       category: product_ownership
       template: "Customer {holds/does_not_hold} {product}, indicating {direction} portfolio"
       narrative_lens: lifecycle
-      primary_tasks: [has_nba, nba_primary, churn_signal, product_stability]
+      primary_tasks: [nba_primary, churn_signal, product_stability]
     distill: true
     distill_weight: 1.0
 
@@ -137,7 +137,7 @@ feature_groups:
       category: transaction_behavior
       template: "{feature} shows {direction} transaction behavior at {value}"
       narrative_lens: engagement
-      primary_tasks: [spend_level, engagement_score, has_nba, nba_primary]
+      primary_tasks: [nba_primary]
     distill: true
     distill_weight: 1.0
 
@@ -159,7 +159,7 @@ feature_groups:
       category: product_lifecycle
       template: "{feature} at {value} indicates {direction} product activity"
       narrative_lens: lifecycle
-      primary_tasks: [churn_signal, cross_sell_count, has_nba, product_stability]
+      primary_tasks: [churn_signal, cross_sell_count, product_stability]
     distill: true
     distill_weight: 0.9
 
@@ -215,7 +215,7 @@ feature_groups:
       category: domain_topology
       template: "Local transaction topology shows {pattern} with {value} persistence"
       narrative_lens: engagement
-      primary_tasks: [spend_level, engagement_score, has_nba]
+      primary_tasks: [next_mcc, top_mcc_shift]
     distill: true
     distill_weight: 0.5
 
@@ -237,7 +237,7 @@ feature_groups:
       category: behavioral_state
       template: "Customer {mode} state indicates {state} at confidence {value}"
       narrative_lens: lifecycle
-      primary_tasks: [churn_signal, product_stability, has_nba, nba_primary]
+      primary_tasks: [churn_signal, product_stability, nba_primary]
     distill: false
 
   # =========================================================================
@@ -266,7 +266,7 @@ feature_groups:
       category: temporal_state
       template: "Mamba temporal state indicates {direction} trend at {value}"
       narrative_lens: engagement
-      primary_tasks: [spend_level, engagement_score, has_nba]
+      primary_tasks: [next_mcc, mcc_diversity_trend, top_mcc_shift]
     distill: false
 
   # =========================================================================
@@ -295,7 +295,7 @@ feature_groups:
       category: product_structure
       template: "Position in product hierarchy suggests {insight} at depth {value}"
       narrative_lens: consumption
-      primary_tasks: [nba_primary, has_nba, acquire_checking, acquire_funds]
+      primary_tasks: [nba_primary, cross_sell_count]
     distill: false
 
   # -------------------------------------------------------------------------
@@ -353,7 +353,7 @@ feature_groups:
       category: collaborative
       template: "Collaborative signal suggests {insight} product affinity at {value}"
       narrative_lens: consumption
-      primary_tasks: [nba_primary, has_nba, acquire_saving, acquire_checking]
+      primary_tasks: [nba_primary, cross_sell_count]
     distill: false
 
   # =========================================================================

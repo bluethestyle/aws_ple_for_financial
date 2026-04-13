@@ -818,8 +818,24 @@ if __name__ == "__main__":
     # --- Label derivation (config-driven) ---
     # LabelDeriver still needs pandas input for some derivation types.
     # Materialise only to pandas for the derivation, then merge back via DuckDB.
+    #
+    # If all task label columns already exist in the table (e.g. benchmark data
+    # with pre-derived labels), skip the LabelDeriver entirely.
     label_configs = pipeline_cfg.get("labels", {})
-    if label_configs:
+    _tasks_cfg = pipeline_cfg.get("tasks", [])
+    _required_label_cols = {t["label_col"] for t in _tasks_cfg if "label_col" in t}
+    _existing_cols_set = set(
+        r[0] for r in con.execute(f"DESCRIBE SELECT * FROM {_TBL}").fetchall()
+    )
+    _missing_labels = _required_label_cols - _existing_cols_set
+    _skip_derive = not _missing_labels and _required_label_cols
+
+    if _skip_derive:
+        logger.info(
+            "All %d task label columns already exist in data — skipping LabelDeriver. "
+            "Labels: %s", len(_required_label_cols), sorted(_required_label_cols),
+        )
+    elif label_configs:
         from core.pipeline.label_deriver import LabelDeriver
         deriver = LabelDeriver()
         # Materialise the table to pandas for label derivation
@@ -860,7 +876,9 @@ if __name__ == "__main__":
     from core.pipeline.normalizer import FeatureNormalizer
 
     _id_cols_set = {_id_col} if _id_col else set()
+    # Combine label config keys AND actual task label_col names for exclusion
     _label_cols_set = set(label_configs.keys()) if label_configs else set()
+    _label_cols_set |= _required_label_cols
 
     # Refresh column list from current table
     _all_cols = [
@@ -1109,16 +1127,43 @@ if __name__ == "__main__":
             agg_parts = []
             for col in batch_cols:
                 qc = f'"{col}"'
+                # Use COALESCE to handle STDDEV overflow (out-of-range on extreme values)
                 agg_parts.append(
-                    f"AVG({qc}) AS \"{col}__mean\", "
-                    f"STDDEV({qc}) AS \"{col}__std\", "
+                    f"AVG(TRY_CAST({qc} AS DOUBLE)) AS \"{col}__mean\", "
+                    f"COALESCE(TRY_CAST(STDDEV({qc}) AS DOUBLE), 0.0) AS \"{col}__std\", "
                     f"MIN({qc}) AS \"{col}__min\", "
                     f"MAX({qc}) AS \"{col}__max\", "
                     f"(SUM(CASE WHEN {qc} IS NULL THEN 1 ELSE 0 END)::DOUBLE / COUNT(*)) AS \"{col}__null_pct\", "
                     f"COUNT(DISTINCT {qc}) AS \"{col}__nunique\""
                 )
             sql = f"SELECT {', '.join(agg_parts)} FROM {_TBL}"
-            row = con.execute(sql).fetchone()
+            try:
+                row = con.execute(sql).fetchone()
+            except Exception as e:
+                logger.warning("Feature stats batch failed: %s. Computing per-column.", e)
+                # Fallback: compute stats one column at a time
+                for col2 in batch_cols:
+                    qc2 = f'"{col2}"'
+                    try:
+                        r = con.execute(
+                            f"SELECT AVG(TRY_CAST({qc2} AS DOUBLE)), "
+                            f"COALESCE(TRY_CAST(STDDEV({qc2}) AS DOUBLE), 0.0), "
+                            f"MIN({qc2}), MAX({qc2}), "
+                            f"(SUM(CASE WHEN {qc2} IS NULL THEN 1 ELSE 0 END)::DOUBLE / COUNT(*)), "
+                            f"COUNT(DISTINCT {qc2}) FROM {_TBL}"
+                        ).fetchone()
+                        stats[col2] = {
+                            "mean": float(r[0]) if r[0] is not None else 0.0,
+                            "std": float(r[1]) if r[1] is not None else 0.0,
+                            "min": float(r[2]) if r[2] is not None else 0.0,
+                            "max": float(r[3]) if r[3] is not None else 0.0,
+                            "null_pct": float(r[4]) if r[4] is not None else 0.0,
+                            "nunique": int(r[5]) if r[5] is not None else 0,
+                        }
+                    except Exception:
+                        logger.warning("Stats failed for column '%s', using defaults", col2)
+                        stats[col2] = {"mean": 0, "std": 0, "min": 0, "max": 0, "null_pct": 0, "nunique": 0}
+                continue
             idx = 0
             for col in batch_cols:
                 stats[col] = {
@@ -1161,13 +1206,18 @@ if __name__ == "__main__":
             ).fetchall()
             label_stats[col] = {str(r[0]): int(r[1]) for r in vc_rows}
         elif col_type in _float_types:
-            _ls_row = con.execute(
-                f"SELECT AVG({qc}), STDDEV({qc}) FROM {_TBL}"
-            ).fetchone()
-            label_stats[col] = {
-                "mean": float(_ls_row[0]) if _ls_row[0] is not None else 0.0,
-                "std": float(_ls_row[1]) if _ls_row[1] is not None else 0.0,
-            }
+            try:
+                _ls_row = con.execute(
+                    f"SELECT AVG(TRY_CAST({qc} AS DOUBLE)), "
+                    f"COALESCE(TRY_CAST(STDDEV({qc}) AS DOUBLE), 0.0) FROM {_TBL}"
+                ).fetchone()
+                label_stats[col] = {
+                    "mean": float(_ls_row[0]) if _ls_row[0] is not None else 0.0,
+                    "std": float(_ls_row[1]) if _ls_row[1] is not None else 0.0,
+                }
+            except Exception:
+                logger.warning("Label stats STDDEV failed for '%s', using defaults", col)
+                label_stats[col] = {"mean": 0.0, "std": 0.0}
     if label_stats:
         with open(os.path.join(output_dir, "label_stats.json"), "w") as f:
             json.dump(label_stats, f, indent=2)

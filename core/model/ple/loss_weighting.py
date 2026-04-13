@@ -308,7 +308,12 @@ class UncertaintyWeighting(BaseLossWeighting):
         task_names: Ordered list of task name strings.
     """
 
-    def __init__(self, num_tasks: int, task_names: List[str]):
+    def __init__(
+        self,
+        num_tasks: int,
+        task_names: List[str],
+        task_loss_weights: Optional[Dict[str, float]] = None,
+    ):
         super().__init__(num_tasks, task_names)
 
         self.log_vars = nn.ParameterDict({
@@ -316,7 +321,16 @@ class UncertaintyWeighting(BaseLossWeighting):
             for name in task_names
         })
 
-        logger.info(f"UncertaintyWeighting init: {num_tasks} tasks")
+        # Manual loss_weight from pipeline.yaml — multiplied ON TOP of
+        # uncertainty precision, matching on-prem formula:
+        #   loss = loss_weight * (precision * L + log_var)
+        self._task_loss_weights = task_loss_weights or {}
+
+        logger.info(
+            "UncertaintyWeighting init: %d tasks, manual weights: %s",
+            num_tasks,
+            {k: v for k, v in self._task_loss_weights.items() if v != 1.0} or "none",
+        )
 
     def compute_weights(self) -> Dict[str, float]:
         """Return effective weights: 1 / (2 * exp(log_var))."""
@@ -354,8 +368,10 @@ class UncertaintyWeighting(BaseLossWeighting):
         total = torch.tensor(0.0, device=next(iter(task_losses.values())).device)
         for name in self.task_names:
             if name in task_losses:
-                precision = torch.exp(-self.log_vars[name])
-                total = total + precision * task_losses[name] + self.log_vars[name] / 2.0
+                log_var = self.log_vars[name].clamp(-4.0, 4.0)
+                precision = torch.exp(-log_var).clamp(min=1e-3, max=100.0)
+                lw = self._task_loss_weights.get(name, 1.0)
+                total = total + lw * (precision * task_losses[name] + log_var)
         return total
 
     def weighted_loss_dict(
@@ -372,8 +388,10 @@ class UncertaintyWeighting(BaseLossWeighting):
         result = {}
         for name in self.task_names:
             if name in task_losses:
-                precision = torch.exp(-self.log_vars[name])
-                result[name] = precision * task_losses[name] + self.log_vars[name] / 2.0
+                log_var = self.log_vars[name].clamp(-4.0, 4.0)
+                precision = torch.exp(-log_var).clamp(min=1e-3, max=100.0)
+                lw = self._task_loss_weights.get(name, 1.0)
+                result[name] = lw * (precision * task_losses[name] + log_var)
         return result
 
 
@@ -386,6 +404,7 @@ def create_loss_weighting(
     num_tasks: int,
     task_names: List[str],
     config: Optional[dict] = None,
+    task_loss_weights: Optional[Dict[str, float]] = None,
 ) -> Optional[BaseLossWeighting]:
     """Create a loss weighting strategy by name.
 
@@ -395,6 +414,8 @@ def create_loss_weighting(
         num_tasks: Number of tasks.
         task_names: Ordered list of task name strings.
         config: Strategy-specific keyword arguments.
+        task_loss_weights: Per-task manual loss weights from pipeline.yaml.
+            Applied on top of learned weights (uncertainty/gradnorm).
 
     Returns:
         A ``BaseLossWeighting`` instance, or ``None`` for ``"fixed"``/``"manual"``.
@@ -419,6 +440,7 @@ def create_loss_weighting(
         return UncertaintyWeighting(
             num_tasks=num_tasks,
             task_names=task_names,
+            task_loss_weights=task_loss_weights,
         )
     elif strategy in ("fixed", "manual"):
         return None

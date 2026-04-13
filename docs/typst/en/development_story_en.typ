@@ -173,7 +173,7 @@
     ]
     #v(0.5cm)
     #text(size: 9pt, fill: anthropic-muted)[
-      This document records the journey of building a 14-task, 7-expert\
+      This document records the journey of building a 13-task, 7-expert\
       PLE+adaTT recommendation system — without infrastructure budget,\
       using a single desktop GPU and a team of AI agents.
     ]
@@ -254,11 +254,11 @@ Had a large GPU cluster been available, this architecture would likely never hav
 
 == On-Premises System Scale
 
-The on-prem system was not a prototype but a production-scale system: 80+ Airflow DAGs, Champion-Challenger model competition, weekly automated retraining, 734D feature tensor, 16 simultaneous tasks, and 62 data table ingestion. Building a system of this scale with 3 people was itself a result of AI-augmented development.
+The on-prem system was not a prototype but a production-scale system: 80+ Airflow DAGs, Champion-Challenger model competition, weekly automated retraining, 734D feature tensor, 16 simultaneous tasks (13 in the AWS benchmark version after removing 5 deterministic-leakage/redundant tasks), and 62 data table ingestion. Building a system of this scale with 3 people was itself a result of AI-augmented development.
 
 == Project Objective
 
-The existing financial product recommendation system was based on ALS (Alternating Least Squares) collaborative filtering. The goal was to replace it with a multi-task deep learning recommendation system built on PLE (Progressive Layered Extraction) + adaTT (Adaptive Task Transfer) architecture. The system processes 14 tasks through 7 expert networks, explicitly modeling inter-task relationships.
+The existing financial product recommendation system was based on ALS (Alternating Least Squares) collaborative filtering. The goal was to replace it with a multi-task deep learning recommendation system built on PLE (Progressive Layered Extraction) + adaTT (Adaptive Task Transfer) architecture. The system processes 13 tasks through 7 expert networks, explicitly modeling inter-task relationships.
 
 == Architecture Decision Journey
 
@@ -537,7 +537,7 @@ PLE's val_loss froze at 3.702 in Phase 2, while shared_bottom (1 MLP) paradoxica
 
 3. *freeze_epoch not passed*: `AdaTTConfig` was constructed without passing `freeze_epoch`, leaving it always None. Transfer weights kept adapting unstably until the end of training.
 
-4. *Loss composition*: The on-prem version applies uncertainty weighting first (normalizing loss scales) and then adaTT transfer. The AWS version used either/or logic, silently disabling uncertainty weighting whenever adaTT was active. With 14 tasks having mismatched loss scales, transfer was dominated by the largest-loss tasks.
+4. *Loss composition*: The on-prem version applies uncertainty weighting first (normalizing loss scales) and then adaTT transfer. The AWS version used either/or logic, silently disabling uncertainty weighting whenever adaTT was active. With 13 tasks having mismatched loss scales, transfer was dominated by the largest-loss tasks.
 
 5. *warmup_epochs: 0*: Transfer began immediately while the affinity matrix was still identity (no measurements taken), resulting in meaningless loss sharing from epoch one.
 
@@ -630,7 +630,7 @@ The core philosophy of the PLE architecture — Mixture of Experts — was appli
       #text(size: 11pt, fill: anthropic-text, weight: "bold")[Recommendation System]
       #v(4pt)
       #text(size: 10pt, fill: anthropic-text)[
-        • 14-task multi-task learning \
+        • 13-task multi-task learning \
         • 7-expert PLE network \
         • adaTT adaptive inter-task transfer \
         • Uncertainty weighting (Kendall et al.) \
@@ -657,7 +657,7 @@ A total of nine technical documents were produced throughout the project: archit
 
 == Papers
 
-Two papers are being prepared for submission to arXiv, covering the experience of building a large-scale multi-task recommendation system under resource constraints, and the development methodology of a small team leveraging AI agents. This may be the first arXiv publication by a practitioner at a Korean financial institution.
+Two papers have been prepared: one covering the heterogeneous expert PLE architecture and ablation study (Paper 1), and another covering the recommendation reason generation pipeline, ops/audit agents, and regulatory compliance (Paper 2). Both are available in the project repository in English and Korean.
 
 == Expert Specialization Revealed by Ablation
 
@@ -810,7 +810,7 @@ verification is essential.
   it was handed as input."
 ]
 
-== Deterministic Leakage Discovery: 18 → 14 Tasks
+== Deterministic Leakage Discovery: 18 → 13 Tasks
 
 Four tasks were removed after a leakage audit traced what the model was actually
 learning. `income_tier` was a direct bucket of `income`; `tenure_stage` was a
@@ -828,7 +828,7 @@ each of the four tasks was a deterministic bucket or linear transform of feature
 already present in the model's input. The CLAUDE.md principle "labels derived by
 deterministic transformation of input features must not be used as tasks" was
 already written; the audit confirmed it had not been applied to the task list.
-All four were removed. The task count fell from 18 to 14, and the remaining
+Five were removed (including has_nba, which was folded into nba_primary). The task count fell from 18 to 13, and the remaining
 tasks represent genuinely uncertain predictions: product acquisition, churn,
 next-MCC, spend-shift, and similar outcomes that require the model to learn
 something non-trivial about customer behavior.
@@ -854,7 +854,7 @@ v4 made three sharper changes: MCC preference multipliers were raised to 8--12×
 60% (customers reliably stay in category), acquisition rates were increased across
 all products, and the mode-shift window was widened to allow more realistic
 behavior changes over time. The result was meaningful distributions across all
-14 tasks — enough variance to reward a model that learns, without label collapse
+13 tasks — enough variance to reward a model that learns, without label collapse
 that rewards a trivial predictor.
 
 The pattern across all three iterations: each fix revealed the *next* assumption
@@ -934,9 +934,11 @@ distribution shape on the student.
 
 == Academic and Industry Publications
 
-- *arXiv Paper Submission*: 2 papers (system architecture paper + AI agent development methodology paper)
-- *Anthropic Case Study Submission*: A case study on building a financial AI system using Claude Code
-- *GARP Submission*: A paper combining the FRM credential with an AI risk management perspective
+- *Paper Publication*: 2 papers completed (Paper 1: architecture + ablation, Paper 2: serving + ops/audit + compliance)
+- *DuckDB Community*: Case study on replacing pandas with DuckDB as ML pipeline engine
+- *Anthropic Case Study*: Building a financial AI system with Claude Code
+- *GARP Submission*: Practitioner paper combining FRM credential with AI risk management
+- *FSS Regulatory Review*: Compliance reference material for AI guidelines development
 
 == Regulatory Engagement
 
@@ -947,8 +949,7 @@ distribution shape on the student.
 - *On-premises Production Data Results*: Performance results from actual production data to be added as paper supplements
 - *Public GitHub Repository*: A sanitized version of the codebase with organizational information removed will be published as a public repository
 
-#v(1cm)
-#section-break()
+#v(0.5cm)
 
 #align(center)[
   #text(size: 9pt, fill: anthropic-muted, style: "italic")[

@@ -187,18 +187,17 @@ serving, and DynamoDB feature stores. See the
 ### Extend the platform
 
 Add custom generators, transformers, experts, task heads, scorers, or filters
-via the plugin registry pattern. See the
-[Plugin Development Guide](plugin_development.md).
+via the plugin registry pattern. See `configs/` directory for plugin configuration examples.
 
-### 운영/감사 에이전트
+### Ops / Audit Agents
 
-파이프라인 실행 완료 후, 2개의 자율 진단 에이전트가 비동기로 작동합니다:
+After pipeline execution completes, two autonomous diagnostic agents run asynchronously:
 
-- **운영 에이전트 (OpsAgent)**: 7개 체크포인트(인제스천~A/B테스트)를 모니터링하고, 이상 징후 간 연쇄 영향을 분석하여 `finding + likely_cause + suggested_action` 형식으로 리포트를 생성합니다.
-- **감사 에이전트 (AuditAgent)**: 공정성, 추천사유 품질, 규제 적합성을 5개 관점에서 점검하고, 교차 보호속성 분석 및 3-Tier 추천사유 품질 검증을 수행합니다.
+- **Ops Agent (OpsAgent)**: Monitors 7 checkpoints (from ingestion through A/B testing), analyzes cascading effects between anomalies, and generates reports in `finding + likely_cause + suggested_action` format.
+- **Audit Agent (AuditAgent)**: Evaluates fairness, recommendation-reason quality, and regulatory compliance across 5 viewpoints, performing cross-protected-attribute analysis and 3-tier recommendation-reason quality verification.
 
-에이전트 설정: `configs/financial/agent.yaml`
-상세 설계: `docs/design/11_ops_audit_agent.md`
+Agent configuration: `configs/financial/agent.yaml`
+Detailed design: `docs/design/11_ops_audit_agent.md`
 
 ---
 

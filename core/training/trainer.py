@@ -1327,6 +1327,15 @@ class PLETrainer:
 
         logger.info("  ".join(parts))
 
+        # Log uncertainty weights every 5 epochs (debug + paper figure)
+        if self.current_epoch % 5 == 0 and hasattr(self.model, "loss_weighting") and self.model.loss_weighting is not None:
+            try:
+                uw = self.model.loss_weighting.compute_weights()
+                uw_str = "  ".join(f"{k}={v:.4f}" for k, v in sorted(uw.items()))
+                logger.info("Uncertainty weights (epoch %d): %s", self.current_epoch, uw_str)
+            except Exception:
+                pass
+
         # Log adaTT affinity matrix every 5 epochs
         if self.current_epoch % 5 == 0 and hasattr(self.model, "adatt") and self.model.adatt is not None:
             try:
@@ -1364,7 +1373,7 @@ class PLETrainer:
                 if key in val_metrics:
                     epoch_record[key] = round(val_metrics[key], 4)
 
-            # Per-task metrics (e.g. "churn_signal_auc", "has_nba_auc", etc.)
+            # Per-task metrics (e.g. "churn_signal_auc", "nba_primary_f1_macro", etc.)
             per_task_epoch = {}
             for key, val in val_metrics.items():
                 if isinstance(val, (int, float)) and math.isfinite(val):

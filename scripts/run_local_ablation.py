@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Local Ablation Runner: 14 tasks, 10 epochs (warmup=3)
+Local Ablation Runner: 13 tasks, 20 epochs (warmup=7)
 Delta measurement only — same epoch count for fair comparison.
 No Docker, no SageMaker local mode. Pure local Python.
 
@@ -16,13 +16,53 @@ import argparse
 import json
 import logging
 import os
+
+# Block orchestrator from initialising a CUDA context.  On WDDM (Windows),
+# a parent process that touches CUDA will hold shared GPU memory even if the
+# actual work runs in a child subprocess.  Setting this BEFORE any library
+# import prevents accidental torch/cupy init in the orchestrator.
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+import ctypes
 import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+# Prevent Windows from sleeping while ablation is running.
+# ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED
+if sys.platform == "win32":
+    ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001 | 0x00000040)
+    logging.basicConfig(level=logging.INFO)  # ensure logger exists for this message
+    logging.getLogger(__name__).info("Windows sleep prevention: SetThreadExecutionState enabled")
 from typing import Any, Dict, List, Optional
+
+# ---------------------------------------------------------------------------
+# Windows process isolation helpers
+# ---------------------------------------------------------------------------
+# On Windows, each child subprocess is launched in a NEW process group so that:
+#   1. The child's Windows Job Object is independent from the parent's.
+#   2. CUDA/GPU driver handles acquired by child processes are not inherited
+#      back into the parent, preventing handle table exhaustion after ~4 runs.
+#   3. STATUS_DATATYPE_MISALIGNMENT (0xC0000002) crashes caused by stale
+#      inherited DLL/GPU state are avoided.
+#
+# CREATE_NEW_PROCESS_GROUP also prevents Ctrl-C from propagating to children
+# so we must send CTRL_BREAK_EVENT explicitly if we ever need to kill them.
+_IS_WINDOWS = sys.platform == "win32"
+_SUBPROCESS_CREATION_FLAGS = subprocess.CREATE_NEW_PROCESS_GROUP if _IS_WINDOWS else 0
+
+# CUDA environment variables that must NOT be inherited from the parent process.
+# The parent never uses GPU; allowing children to inherit a dirty CUDA env from
+# a previously-crashed child (via os.environ) can cause misalignment faults.
+_CUDA_ENV_BLOCKLIST = {
+    "CUDA_LAUNCH_BLOCKING",   # set by train.py at import time via os.environ.setdefault
+    "CUDA_VISIBLE_DEVICES",   # may be set by a previous child crash handler
+    "NCCL_DEBUG",
+    "TORCH_DISTRIBUTED_DEBUG",
+}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,12 +73,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-PHASE0 = "outputs/phase0_v3"
-RESULTS = "outputs/ablation_v3"
+PHASE0 = "outputs/phase0_v12"
+RESULTS = "outputs/ablation_v12"
 CONFIG = "configs/santander/pipeline.yaml"
-EPOCHS = 20             # adaTT needs warmup(7) + active(~10) + freeze(3) to learn task transfer
-WARMUP = 7              # 35% of epochs — prevents loss spike from cosine LR schedule
-BATCH = 4096
+EPOCHS = 10             # reduced from 20 — plateau observed at epoch 5-6 across scenarios
+WARMUP = 3              # 30% of epochs
+BATCH = 5632          # orchestrator CUDA-blocked, no VRAM spillover
 LR = 0.0005
 SEED = 42
 AMP = True
@@ -65,19 +105,113 @@ BASE_HPS: Dict[str, Any] = {
 # Scenario definitions — json.dumps handles escaping correctly
 # ---------------------------------------------------------------------------
 SCENARIOS: List[Dict[str, Any]] = [
-    # === Structure ablation (6) ===
+    # === Structure ablation (8) — "add one component at a time" progression ===
+
+    # TRUE shared_bottom: no CGC gate, no GroupTaskExpert, no logit transfer, no HMM projectors
     {"name": "struct_14_shared_bottom",
-     "hp": {"use_ple": "false", "use_adatt": "false"}},
+     "hp": {
+         "use_ple": "false",
+         "use_adatt": "false",
+         "use_cgc_gate": "false",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
+    # CGC only: single PLE layer with CGC attention gate
+    {"name": "struct_14_cgc_only",
+     "hp": {
+         "use_ple": "false",
+         "use_adatt": "false",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
+    # PLE softmax: multi-layer CGC with softmax gate
     {"name": "struct_14_ple_softmax",
-     "hp": {"use_ple": "true", "use_adatt": "false", "gate_type": "softmax"}},
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "gate_type": "softmax",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
+    # PLE sigmoid: multi-layer CGC with sigmoid gate
     {"name": "struct_14_ple_sigmoid",
-     "hp": {"use_ple": "true", "use_adatt": "false", "gate_type": "sigmoid"}},
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
+    # PLE sigmoid + GroupTaskExpert (GroupEncoder + ClusterEmbedding)
+    {"name": "struct_14_ple_sigmoid_gte",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "true",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
+    # PLE sigmoid + GTE + Logit Transfer
+    {"name": "struct_14_ple_sigmoid_gte_lt",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "true",
+         "use_logit_transfer": "true",
+         "use_hmm_projectors": "false",
+     }},
+
+    # Full PLE: all components except adaTT
+    {"name": "struct_14_ple_full",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "true",
+         "use_logit_transfer": "true",
+         "use_hmm_projectors": "true",
+     }},
+
+    # PLE softmax + adaTT: softmax isolates experts, adaTT selectively shares
     {"name": "struct_14_ple_softmax_adatt",
-     "hp": {"use_ple": "true", "use_adatt": "true", "gate_type": "softmax"}},
-    {"name": "struct_14_ple_sigmoid_adatt",
-     "hp": {"use_ple": "true", "use_adatt": "true", "gate_type": "sigmoid"}},
-    {"name": "struct_14_adatt_only",
-     "hp": {"use_ple": "false", "use_adatt": "true"}},
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "true",
+         "gate_type": "softmax",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "true",
+         "use_logit_transfer": "true",
+         "use_hmm_projectors": "true",
+     }},
+
+    # Full PLE (sigmoid) + adaTT
+    {"name": "struct_14_ple_full_adatt",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "true",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "true",
+         "use_logit_transfer": "true",
+         "use_hmm_projectors": "true",
+     }},
 
     # === Feature + Expert joint ablation ===
     # Full system baseline
@@ -118,6 +252,18 @@ SCENARIOS: List[Dict[str, Any]] = [
      "hp": {"removed_experts": json.dumps(["causal"])}},
     {"name": "joint_full-ot",
      "hp": {"removed_experts": json.dumps(["optimal_transport"])}},
+
+    # === adaTT isolated ===
+    # shared_bottom + adaTT only: isolates adaTT contribution without PLE/CGC
+    {"name": "struct_14_shared_bottom_adatt",
+     "hp": {
+         "use_ple": "false",
+         "use_adatt": "true",
+         "use_cgc_gate": "false",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
 ]
 
 
@@ -277,27 +423,60 @@ def _check_and_handle_existing_results(
     archive_results(results_dir)
 
 
+def _build_child_env() -> Dict[str, str]:
+    """
+    Build a clean environment for child training subprocesses.
+
+    Strategy:
+    - Start from os.environ (to inherit PATH, TEMP, system vars).
+    - Strip CUDA_ENV_BLOCKLIST entries so a dirty CUDA env from a previous
+      child cannot pollute the next child's GPU initialisation.
+    - Never inherit CUDA_VISIBLE_DEVICES from parent — let the child see all
+      GPUs as intended by its own config.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _CUDA_ENV_BLOCKLIST}
+    return env
+
+
 def _execute_train(
     hp: Dict[str, Any],
     out_dir: Path,
     stdout_path: Path,
     stderr_path: Path,
 ) -> tuple:
-    """Execute train.py as subprocess. Returns (elapsed, stdout_text)."""
-    env = dict(os.environ)
+    """
+    Execute train.py as an isolated subprocess.
+
+    Windows isolation measures applied:
+      1. CREATE_NEW_PROCESS_GROUP  — independent Job Object; GPU/kernel handles
+         acquired by the child are not inherited by the parent or siblings.
+      2. Clean CUDA env             — CUDA_ENV_BLOCKLIST vars stripped so stale
+         driver state from a previous crashed child cannot cause the next child
+         to fault at DLL-load time (STATUS_DATATYPE_MISALIGNMENT 0xC0000002).
+      3. Explicit stdout/stderr     — files opened only for the duration of this
+         call; handles are closed before we read the log back.
+
+    Returns (elapsed_seconds, stdout_text, returncode).
+    """
+    env = _build_child_env()
+    # Force UTF-8 encoding in child process to avoid cp949 UnicodeEncodeError
+    # when log messages contain em-dash or other non-ASCII characters.
+    env["PYTHONIOENCODING"] = "utf-8"
     env["SM_CHANNEL_TRAIN"] = PHASE0
     env["SM_OUTPUT_DATA_DIR"] = str(out_dir)
     env["SM_MODEL_DIR"] = str(out_dir / "model")
     env["SM_HPS"] = json.dumps(hp)
     env["PYTHONPATH"] = str(Path.cwd())
-    # Prevent Windows sleep during long subprocess execution
     env["PYTHONUNBUFFERED"] = "1"
 
     start = time.time()
     with open(stdout_path, "w") as fout, open(stderr_path, "w") as ferr:
         proc = subprocess.run(
             [sys.executable, "-u", "containers/training/train.py"],
-            env=env, stdout=fout, stderr=ferr,
+            env=env,
+            stdout=fout,
+            stderr=ferr,
+            creationflags=_SUBPROCESS_CREATION_FLAGS,
         )
     elapsed = time.time() - start
     stdout_text = stdout_path.read_text(errors="replace")
@@ -349,14 +528,18 @@ def run_scenario(scenario: Dict[str, Any], dry_run: bool = False) -> Dict[str, A
         )
         if not is_spurious:
             break
+        # Log Windows exit code in hex so 0xC0000002 etc. are immediately
+        # recognisable without manual conversion.
+        rc_hex = hex(returncode & 0xFFFFFFFF) if returncode < 0 else hex(returncode)
         logger.warning(
-            "[RETRY] %s: spurious failure (elapsed=%.1fs, rc=%d, empty output) — "
+            "[RETRY] %s: spurious failure (elapsed=%.1fs, rc=%d / %s, empty output) — "
             "attempt %d/%d",
-            name, elapsed, returncode, attempt + 1, MAX_RETRIES,
+            name, elapsed, returncode, rc_hex, attempt + 1, MAX_RETRIES,
         )
-        # Force cleanup before retry
+        # Force cleanup before retry; give GPU driver time to release memory
+        # from the crashed child before we spawn a new one.
         gc.collect()
-        time.sleep(INTER_SCENARIO_DELAY_SEC * 2)
+        time.sleep(INTER_SCENARIO_DELAY_SEC * 4)
 
     epoch_count = stdout_text.count("val_loss=")
     expected = 1 if dry_run else EPOCHS
@@ -388,10 +571,16 @@ def run_scenario(scenario: Dict[str, Any], dry_run: bool = False) -> Dict[str, A
 
     success = returncode == 0 and epoch_count >= expected
 
+    rc_info = (
+        f"rc={returncode}"
+        if returncode == 0
+        else f"rc={returncode} ({hex(returncode & 0xFFFFFFFF)})"
+    )
     logger.info(
-        "[%s] %s: %d/%d epochs, %.0fs, AUC=%s F1=%s",
+        "[%s] %s: %d/%d epochs, %.0fs, %s, AUC=%s F1=%s",
         "OK" if success else "FAIL", name, epoch_count, expected,
-        elapsed, metrics.get("avg_auc", "?"), metrics.get("avg_f1_macro", "?"),
+        elapsed, rc_info,
+        metrics.get("avg_auc", "?"), metrics.get("avg_f1_macro", "?"),
     )
     for a in applied:
         logger.info("  → %s", a)

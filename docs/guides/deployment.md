@@ -523,78 +523,78 @@ general:
 
 ---
 
-## 운영/감사 에이전트 배포
+## Ops / Audit Agent Deployment
 
-### 사전 요구사항
+### Prerequisites
 
-- Bedrock 모델 접근 권한: Claude Sonnet, Claude Haiku, Titan Embeddings V2
-- Bedrock Marketplace: Upstage Solar Pro (선택, L2a 사유 생성용)
-- IAM 역할: `bedrock:InvokeModel`, `s3:GetObject/PutObject`, `dynamodb:*`, `sns:Publish`
+- Bedrock model access: Claude Sonnet, Claude Haiku, Titan Embeddings V2
+- Bedrock Marketplace: Upstage Solar Pro (optional, for L2a reason generation)
+- IAM role: `bedrock:InvokeModel`, `s3:GetObject/PutObject`, `dynamodb:*`, `sns:Publish`
 
-### 에이전트 설정
+### Agent Configuration
 
-- `configs/financial/agent.yaml`: 에이전트 설정 (모델, 스케줄, 합의)
-- `configs/financial/checklist.yaml`: 48개 체크리스트 항목
+- `configs/financial/agent.yaml`: Agent settings (models, schedules, consensus)
+- `configs/financial/checklist.yaml`: 48 checklist items
 
-### 실행 모드
+### Execution Modes
 
-1. **이벤트 기반**: 파이프라인 스테이지 완료 시 자동 트리거
-   - `_PipelineState.mark_complete()` 콜백 → ChangeDetector → 에이전트 실행
-2. **주기적**: CloudWatch Events / EventBridge 스케줄
-   - CP5 서빙 헬스: 5분 주기
-   - CP6 추천 응답: 1시간 집계
-   - AV4 규제 적합성: 주 1회
+1. **Event-driven**: Automatically triggered on pipeline stage completion
+   - `_PipelineState.mark_complete()` callback -> ChangeDetector -> agent execution
+2. **Periodic**: CloudWatch Events / EventBridge schedule
+   - CP5 serving health: every 5 minutes
+   - CP6 recommendation response: hourly aggregation
+   - AV4 regulatory compliance: weekly
 
-### Bedrock 합의 메커니즘
+### Bedrock Consensus Mechanism
 
-- 3개 Sonnet 세션 병렬 호출 (독립 투표)
-- WARN/FAIL 항목에만 적용 (비용 효율)
-- 마이너리티 리포트 보존
+- 3 Sonnet sessions called in parallel (independent voting)
+- Applied only to WARN/FAIL items (cost-efficient)
+- Minority report preserved
 
-### 케이스 스토어
+### Case Store
 
 - LanceDB on S3 (`DiagnosticCaseStore`)
-- 진단 이력 영구 보존 — 유사 케이스 검색, 통계, 대응 효과 추적
+- Permanent diagnostic history -- similar case retrieval, statistics, response effectiveness tracking
 
-### 알림
+### Alerts
 
-- SNS: CRITICAL/FAIL 자동 에스컬레이션
-- Slack: 일일 `ops_report` / 주간 `audit_report` 전달
-
----
-
-### 메모리 프레임워크 컴포넌트 (2026-04 추가)
-
-PaperClip과 메모리 프레임워크 연구에서 차용한 선택적 기능:
-
-**PaperClip 3종 (운영 효율성):**
-- `core/agent/heartbeat.py` — 에이전트 주기 실행 (CP5 5분, CP6 1시간 등)
-- `core/agent/budget.py` — 에이전트별 토큰 예산 (80% 경고, 100% 하드스톱)
-- `core/agent/tracer.py` — 모든 `ToolRegistry.call()` 자동 추적
-
-**메모리 프레임워크 4종:**
-- `core/agent/temporal_fact_store.py` — 시간적 지식 그래프 (Zep/Graphiti)
-- `core/agent/dialog_recall.py` — 담당자 대화 DynamoDB 저장 (Letta)
-- `core/recommendation/reason/fact_extractor.py` — 룰 기반 고객 팩트 추출 (Mem0)
-- `core/agent/case_store.py` — 기존 파일에 시간 decay 추가 (SuperLocalMemory)
-
-**설정 추가:**
-- `configs/financial/agent.yaml`: `heartbeat`, `budget`, `tracer` 섹션
-- `configs/financial/fact_extraction.yaml`: 15개 룰 기본 제공
-
-**의존성:** 모든 차용은 기존 LanceDB + DynamoDB 스택을 재사용. 신규 의존성 0.
-
-**활성화:** 전부 opt-in — `agent.yaml`의 해당 섹션을 설정하지 않으면 기존 동작 그대로.
+- SNS: Automatic escalation for CRITICAL/FAIL
+- Slack: Daily `ops_report` / weekly `audit_report` delivery
 
 ---
 
-### 온프레미스 배포
+### Memory Framework Components (added 2026-04)
 
-온프레미스에서는 Bedrock/SageMaker 대신 로컬 환경을 사용:
-- **학습**: 로컬 GPU (RTX 4070) + PyTorch
-- **서빙**: Docker 컨테이너 + vLLM
-- **모델**: Exaone 3.5 7.8B (사유) + Qwen 2.5 14B Q4 (에이전트)
-- **에이전트**: 동일한 룰 엔진 + 2-Round 합의 (Sonnet 대신 Qwen)
-- **알림**: SNS 대신 이메일/Slack
+Optional features borrowed from PaperClip and memory framework research:
 
-상세: `docs/design/11_ops_audit_agent_onprem_handoff.md`
+**PaperClip (3 components for operational efficiency):**
+- `core/agent/heartbeat.py` -- Periodic agent execution (CP5 every 5 min, CP6 every 1 hour, etc.)
+- `core/agent/budget.py` -- Per-agent token budget (80% warning, 100% hard stop)
+- `core/agent/tracer.py` -- Automatic tracing of all `ToolRegistry.call()` invocations
+
+**Memory Framework (4 components):**
+- `core/agent/temporal_fact_store.py` -- Temporal knowledge graph (Zep/Graphiti)
+- `core/agent/dialog_recall.py` -- Advisor dialog DynamoDB storage (Letta)
+- `core/recommendation/reason/fact_extractor.py` -- Rule-based customer fact extraction (Mem0)
+- `core/agent/case_store.py` -- Time decay added to existing file (SuperLocalMemory)
+
+**Configuration additions:**
+- `configs/financial/agent.yaml`: `heartbeat`, `budget`, `tracer` sections
+- `configs/financial/fact_extraction.yaml`: 15 default rules provided
+
+**Dependencies:** All borrowed components reuse the existing LanceDB + DynamoDB stack. Zero new dependencies.
+
+**Activation:** All opt-in -- if the corresponding section in `agent.yaml` is not configured, existing behavior is unchanged.
+
+---
+
+### On-Premises Deployment
+
+On-premises deployments use local infrastructure instead of Bedrock/SageMaker:
+- **Training**: Local GPU (RTX 4070) + PyTorch
+- **Serving**: Docker containers + vLLM
+- **Models**: Exaone 3.5 7.8B (reason generation) + Qwen 2.5 14B Q4 (agents)
+- **Agents**: Same rule engine + 2-round consensus (Qwen instead of Sonnet)
+- **Alerts**: Email/Slack instead of SNS
+
+Details: `docs/design/11_ops_audit_agent_onprem_handoff.md`

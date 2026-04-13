@@ -335,19 +335,19 @@ Expert Basket (core.model.ple.experts.ExpertBasket)
 
 == 4 Financial DNA Groups
 
-The initial design considered per-GMM-cluster task sub-heads, but with K=20, T=14, this would produce 280 sub-heads -> unmanageable, high overfitting risk. The direction was shifted to *grouping tasks by financial DNA perspective*:
+The initial design considered per-GMM-cluster task sub-heads, but with K=20, T=13, this would produce 260 sub-heads -> unmanageable, high overfitting risk. The direction was shifted to *grouping tasks by financial DNA perspective*:
 
 #table(
   columns: (auto, 1fr, 1fr, auto, auto),
   align: (left, left, left, center, center),
   table.header[*Group*][*Financial DNA*][*Included Tasks*][*intra*][*inter*],
-  [engagement], [Does the customer respond?], [has\_nba, next\_mcc, top\_mcc\_shift], [0.8], [0.3],
+  [engagement], [Does the customer respond?], [next\_mcc, top\_mcc\_shift], [0.8], [0.3],
   [lifecycle], [Where is the customer?], [churn\_signal, product\_stability, segment\_prediction], [0.7], [0.3],
   [value], [How valuable is the customer?], [mcc\_diversity\_trend], [0.6], [0.3],
   [consumption], [What will the customer buy?], [nba\_primary, cross\_sell\_count, will\_acquire\_\* (5)], [0.7], [0.3],
 )
 
-A total of *14 tasks* organized into 4 semantic groups.
+A total of *13 tasks* organized into 4 semantic groups.
 
 == Adaptive Task Transfer (adaTT)
 
@@ -629,12 +629,10 @@ Task-level predictions are integrated into a single recommendation score:
   columns: (auto, auto),
   align: (left, center),
   table.header[*Task*][*Weight*],
-  [has\_nba], [0.20],
   [nba\_primary], [0.30],
   [cross\_sell\_count], [0.15],
   [churn\_signal], [0.15],
   [product\_stability], [0.10],
-  [engagement\_score], [0.10],
 )
 
 === DNA Modifier
@@ -775,7 +773,7 @@ EncryptionPipeline.process_source()
       node((0, 4), [*Stage 2: SchemaClassifier* #text(size: 6pt)[(5-Axis classification)]], width: 55mm, fill: proc-fill, name: <s2>),
       node((0, 5), [*Stage 3: EncryptionPipeline* #text(size: 6pt)[(PII → SHA256 → INT32)]], width: 55mm, fill: proc-fill, name: <s3e>),
       node((0, 6), [*Stage 4: FeatureGroupPipeline* #text(size: 6pt)[(8 Generators + Normalization)]], width: 55mm, fill: proc-fill, name: <s4>),
-      node((0, 7), [*Stage 5: LabelDeriver* #text(size: 6pt)[(14 tasks, config-driven)]], width: 55mm, fill: proc-fill, name: <s5>),
+      node((0, 7), [*Stage 5: LabelDeriver* #text(size: 6pt)[(13 tasks, config-driven)]], width: 55mm, fill: proc-fill, name: <s5>),
       node((0, 8), [*Stage 5.5: LeakageValidator* #text(size: 6pt)[(4-check, auto-drop)]], width: 55mm, fill: valid-fill, name: <s55>),
       node((0, 9), [*Stage 6: SequenceBuilder* #text(size: 6pt)[(flat → 3D tensors)]], width: 55mm, fill: proc-fill, name: <s6>),
 
@@ -958,7 +956,7 @@ class PLEInput:
 All system parameters are managed through 2 YAML files:
 
 *`pipeline.yaml`*: Task definitions, model structure, training parameters, AWS infrastructure settings
-- `tasks`: 14 tasks (name, type, loss, loss\_weight, label\_col)
+- `tasks`: 13 tasks (name, type, loss, loss\_weight, label\_col)
 - `model.ple`: num\_layers, extraction\_dim, expert\_basket
 - `model.adatt`: task\_groups, intra/inter strength
 - `model.logit_transfers`: 3 transfer edges

@@ -100,7 +100,7 @@ Existing explanation approaches are insufficient:
 
 We propose a full-chain solution from prediction to persuasion:
 
-+ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (14 tasks, 7 experts, 350 features; organized by the companion paper's reductionist two-axis framework of Financial DNA $times$ Data Modality) is distilled into per-task LGBM students using IG-guided feature selection. The teacher employs sigmoid CGC gates (inspired by @sigmoid_moe2024) instead of standard softmax gates, enabling independent expert contribution without harmful inter-expert competition --- a critical improvement for heterogeneous expert architectures (detailed in companion paper). This enables GPU-free serving while preserving the features that matter for explanation.
++ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 350 features; organized by the companion paper's reductionist two-axis framework of Financial DNA $times$ Data Modality) is distilled into per-task LGBM students using IG-guided feature selection. The teacher employs sigmoid CGC gates (inspired by @sigmoid_moe2024) instead of standard softmax gates, enabling independent expert contribution without harmful inter-expert competition --- a critical improvement for heterogeneous expert architectures (detailed in companion paper). This enables GPU-free serving while preserving the features that matter for explanation.
 
 + *Multi-Agent Reason Generation*: Three specialized LLM agents collaborate in a pipeline --- Feature Selector chooses explanation-worthy features, Reason Generator produces natural-language narratives, and Safety Gate validates regulatory compliance.
 
@@ -223,7 +223,7 @@ enabling independent improvement of each component.
 
       node((0, 1.2), [*IG Feature Selection* \ #text(size: 8pt)[Dual prediction + explanation] \ #text(size: 8pt)[$"IG"_"dual" = alpha dot "IG"_"pred" + (1-alpha) dot "IG"_"explain"$]], width: 65mm, fill: ig-fill, name: <ig>),
 
-      node((2.5, 1.2), [*LGBM Student ×14* \ #text(size: 8pt)[Per-task independent] \ #text(size: 8pt)[CPU, daily inference]], width: 50mm, fill: student-fill, name: <student>),
+      node((2.5, 1.2), [*LGBM Student ×13* \ #text(size: 8pt)[Per-task independent] \ #text(size: 8pt)[CPU, daily inference]], width: 50mm, fill: student-fill, name: <student>),
 
       node((2.5, 2.4), [*Lambda Serving* \ #text(size: 8pt)[GPU-free real-time inference] \ #text(size: 8pt)[ explainable features preserved]], width: 50mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
 
@@ -237,7 +237,7 @@ enabling independent improvement of each component.
   caption: [Teacher-student distillation architecture.\ PLE teacher's soft labels and IG-based feature selection distill into per-task LGBM student models.],
 ) <fig:distillation>
 
-The teacher model (PLE with 7 heterogeneous experts, 14 tasks, 350 features;
+The teacher model (PLE with 7 heterogeneous experts, 13 tasks, 350 features;
 see companion paper for architecture details)
 produces soft probability outputs that serve as training targets
 for per-task LGBM @ke2017lightgbm students.
@@ -253,15 +253,15 @@ produce explanation-grounded statements such as "customer shows sustained prefer
 for merchant category X" rather than generic co-holding signals.
 
 The key design decision is _per-task distillation_:
-rather than a single student model for all 14 tasks,
-we train 14 independent LGBM models, each learning one task's soft labels.
+rather than a single student model for all 13 tasks,
+we train 13 independent LGBM models, each learning one task's soft labels.
 This enables:
 (1) per-task feature selection (different tasks benefit from different features),
 (2) independent retraining (if one task drifts, only its student is re-distilled),
 (3) interpretable feature importance per task (LGBM's built-in feature importance
 aligns with the business reverse-mapping for explanation generation).
 
-Four tasks from the original 18-task PLE teacher were excluded from the distillation pipeline: income tier, tenure stage, spend level, and engagement score. These tasks represent deterministic feature transformations --- for instance, income tier is simply a quantile bucket of the raw income feature, which is already a model input. A student model can perfectly reconstruct such labels from its input features, making the distillation trivially solvable and uninformative. The remaining 14 tasks represent genuine prediction objectives where the label cannot be deterministically derived from input features.
+Five tasks from the original 18-task PLE teacher were excluded from the distillation pipeline: income tier, tenure stage, spend level, engagement score, and has\_nba. The first four represent deterministic feature transformations --- for instance, income tier is simply a quantile bucket of the raw income feature, which is already a model input. A student model can perfectly reconstruct such labels from its input features, making the distillation trivially solvable and uninformative. has\_nba (binary "will acquire any product?") was folded into nba\_primary class 0 --- predicting _which_ product to recommend subsumes predicting _whether_ to recommend. The remaining 13 tasks represent genuine prediction objectives where the label cannot be deterministically derived from input features.
 
 *Lifecycle separation*:
 - *Teacher*: retrained weekly/monthly on SageMaker (GPU required, comprehensive).
@@ -346,7 +346,7 @@ rather than collapsing to a single dominant feature group.
 
 == Distillation Results
 
-Benchmark v4 produces meaningful label distributions across all 14 tasks.
+Benchmark v12 produces meaningful label distributions across all 13 tasks.
 Notably, `nba_primary` reaches ~60% no-NBA (down from 91% in earlier benchmarks)
 and `top_mcc_shift` reaches ~50% positive rate (down from 92%),
 removing the near-degenerate class imbalance that previously made
@@ -370,7 +370,6 @@ This avoids conflating metrics with incompatible semantics across task types.
     align: (left, right, right, right),
     stroke: 0.5pt,
     [*Task*], [*Teacher*], [*Student*], [*Gap*],
-    [has_nba (AUC)], [--], [--], [--],
     [churn_signal (AUC)], [--], [--], [--],
     [will_acquire_deposits (AUC)], [--], [--], [--],
     [will_acquire_investments (AUC)], [--], [--], [--],
@@ -379,7 +378,7 @@ This avoids conflating metrics with incompatible semantics across task types.
     [next_mcc (NDCG\@3)], [--], [--], [--],
     [...], [...], [...], [...],
   ),
-  caption: [Distillation results per task (TODO).\ Binary tasks: AUC gap; segment\_prediction: F1-macro gap;\ nba\_primary and next\_mcc: NDCG\@3 gap; regression: MAE gap.],
+  caption: [Distillation results per task (TODO).\ 7 binary tasks: AUC gap; segment\_prediction: F1-macro gap;\ nba\_primary and next\_mcc: NDCG\@3 gap; 3 regression tasks: MAE gap.],
 ) <tab:distill-results>
 
 // ============================================================
@@ -451,7 +450,7 @@ The reverse-mapping layer is integrated as Level RM, so glossary value-substitut
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((1, 0), [*Model Predictions* \ #text(size: 8pt)[14 tasks × top-K products]], width: 55mm, fill: gray-fill, name: <pred>),
+      node((1, 0), [*Model Predictions* \ #text(size: 8pt)[13 tasks × top-K products]], width: 55mm, fill: gray-fill, name: <pred>),
 
       node((1, 1.0), [*Feature Selector* \ #text(size: 8pt)[IG contribution + business mapping richness] \ #text(size: 8pt)[Customer context-based selection]], width: 70mm, fill: agent-fill, name: <a1>),
 
@@ -656,7 +655,7 @@ The OpsAgent runs after training completion and drift monitoring DAG executions.
 The OpsAgent does not make promotion decisions ---
 it surfaces the information a human needs to make one.
 When all metrics are within normal bounds, the report is brief
-("All 14 tasks within tolerance; no action required").
+("All 13 tasks within tolerance; no action required").
 When anomalies are detected, the report identifies _which_ tasks and _which_ experts
 are affected, providing actionable context rather than raw numbers.
 
@@ -994,7 +993,7 @@ label derivation $arrow.r$ normalization $arrow.r$ tensor storage)
 produces two audit artifacts at every run:
 The feature statistics file records per-column NaN ratios, zero-variance flags,
 distribution statistics, and generated feature counts;
-the label statistics file records class balance and positive rates for all 14 tasks.
+the label statistics file records class balance and positive rates for all 13 tasks.
 These artifacts constitute a verifiable data quality record
 that an external auditor can inspect without executing any code.
 
@@ -1060,7 +1059,7 @@ rather than causing catastrophic failure,
 proving that no single component is a critical point of failure.
 Uncertainty weighting @kendall2018 prevents any single task
 from dominating the multi-task objective,
-ensuring robust performance across all 14 tasks simultaneously.
+ensuring robust performance across all 13 tasks simultaneously.
 Drift monitoring (PSI-based) is designed to provide continuous robustness verification once deployed.
 
 === Bias Monitoring (Art. 10.2f)

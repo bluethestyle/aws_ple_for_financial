@@ -6,7 +6,7 @@ Feature Engineering은 Stage 4 ~ Stage 6을 담당한다:
 
 ```
 Stage 4:   FeatureGroupPipeline + Normalization (per axis generators + PowerLawAwareScaler)
-Stage 5:   LabelDeriver (14 tasks, config-driven derivation)
+Stage 5:   LabelDeriver (13 tasks, config-driven derivation)
 Stage 5.5: LeakageValidator (sequence/correlation/product/temporal)
 Stage 6:   SequenceBuilder (time-based + sliding window → sequences.npy, seq_lengths.npy)
 ```
@@ -339,16 +339,18 @@ class PowerLawAwareScaler:
 
 ---
 
-## 14-Task Label Architecture
+## 13-Task Label Architecture
 
 ### 4-Tier 태스크 구조
 
 | Tier | 설명 | 태스크 수 | 예시 |
 |------|------|----------|------|
-| **Tier 1** | Core targets (직접 레이블) | 4 | has_nba, churn_signal, product_stability, nba_primary |
+| **Tier 1** | Core targets (직접 레이블) | 3 | churn_signal, product_stability, nba_primary |
 | **Tier 2** | Derived targets (규칙 유도) | 1 | cross_sell_count |
 | **Tier 3** | Product group + segmentation | 6 | will_acquire_{deposits,investments,accounts,lending,payments}, segment_prediction |
 | **Tier 5** | Transaction-based NBA | 3 | next_mcc, mcc_diversity_trend, top_mcc_shift |
+
+> **참고**: has_nba (binary)는 2026-04-12에 nba_primary (multiclass)로 통합됨 — nba_primary의 class 0이 "NBA 없음"을 나타내므로 has_nba는 중복 태스크로 제거됨. 18→14→13 태스크로 축소.
 
 ### Per-task Focal Alpha Calibration
 
@@ -356,7 +358,6 @@ Binary 태스크의 `focal_alpha`는 positive rate에 따라 calibrated:
 
 | 태스크 | Positive Rate | focal_alpha | 근거 |
 |--------|-------------|-------------|------|
-| `has_nba` | 2.98% | 0.90 | 극도로 불균형 |
 | `churn_signal` | 5.1% | 0.85 | 매우 불균형 |
 | `will_acquire_deposits` | ~1% | 0.95 | 극단적 불균형 |
 | `will_acquire_investments` | ~2% | 0.90 | 매우 불균형 |
@@ -369,7 +370,7 @@ Binary 태스크의 `focal_alpha`는 positive rate에 따라 calibrated:
 
 ```yaml
 task_groups:
-  engagement:   [has_nba, next_mcc, top_mcc_shift]
+  engagement:   [next_mcc, top_mcc_shift]
   lifecycle:    [churn_signal, product_stability, segment_prediction]
   value:        [mcc_diversity_trend, cross_sell_count]
   consumption:  [nba_primary, will_acquire_deposits,
@@ -479,7 +480,7 @@ SageMaker Processing Job
 | HMM | 코드에 직접 구현 | Generator Registry (hmm_triple_mode) | 선택적 활성화 |
 | Graph | HGCN만 | **Poincare + LightGCN** (Hierarchy + Item 축) | 계층+협업 분리 |
 | Item Universe | 없음 | **고객x상품 bipartite graph** (24 금융 상품) | 상품 추천 핵심 |
-| 레이블 생성 | 코드 하드코딩 | **LabelDeriver** (config-driven 14 tasks) | 선언적, 재현 가능 |
+| 레이블 생성 | 코드 하드코딩 | **LabelDeriver** (config-driven 13 tasks) | 선언적, 재현 가능 |
 | 누수 방지 | 없음 | **LeakageValidator** (4-check) + temporal split | 자동 누수 감지 |
 | 피처 버전 | 없음 | features/v{version}/ | 재현성, 롤백 |
 | Cold Start | 없음 | **is_cold_start flag + sequence-derived feature zeroing** | cold start 고객 대응 |

@@ -173,11 +173,10 @@ Task Towers (14개 출력)
 │   raw_loss = loss_fn(pred, label)                 │
 │                                                    │
 │ task_losses = {                                    │
-│   "has_nba": 0.234,          # focal(alpha=0.90)  │
 │   "churn_signal": 0.567,     # focal(alpha=0.85)  │
 │   "product_stability": 1.23, # huber              │
 │   "nba_primary": 0.890,      # ce(auto weights)   │
-│   ...                         # 14 tasks total     │
+│   ...                         # 13 tasks total     │
 │ }                                                  │
 ├──────────────────────────────────────────────────┤
 │ Auxiliary losses                                    │
@@ -267,7 +266,7 @@ training:
 ## Knowledge Distillation (Stage 9)
 
 ```
-PLE Teacher (GPU, 14 tasks)
+PLE Teacher (GPU, 13 tasks)
     ↓ Forward pass on full dataset
     ↓ Soft labels (temperature=5.0) + hard labels
     ↓ S3에 저장
@@ -308,7 +307,7 @@ LGBM Students (CPU, per-task)
 │    mlp_only (minimal baseline)                                   │
 │                                                                  │
 │  Dim 3: Task x Structure Cross (16 scenarios)                   │
-│    태스크 수 스케일링 (4 → 8 → 12 → 14)                         │
+│    태스크 수 스케일링 (3 → 5 → 10 → 13)                         │
 │    구조 변���: shared_bottom / ple_only / adatt_only / full       │
 │                                                                  │
 │  Dim 4: Structure Ablation (Phase 3에 포함)                     │
@@ -385,10 +384,10 @@ Feature-expert 연동: 피처 그룹이 제거될 때 해당 expert만 받는 ex
 
 ```yaml
 task_tiers:            # ablation.task_tiers
-  tasks_4: [has_nba, churn_signal, product_stability, nba_primary]
-  tasks_8: [+cross_sell_count, next_mcc, top_mcc_shift, mcc_diversity_trend]
-  tasks_12: [+Tier 3 Product Group + Segmentation]
-  tasks_14: all
+  tasks_3: [churn_signal, product_stability, nba_primary]          # has_nba 통합됨 (2026-04-12)
+  tasks_5: [+cross_sell_count, next_mcc, top_mcc_shift, mcc_diversity_trend]  # was tasks_8 when has_nba existed
+  tasks_10: [+Tier 3 Product Group + Segmentation일부]
+  tasks_13: all
 
 structure_variants:    # ablation.structure_variants
   shared_bottom: {use_ple: false, use_adatt: false}
@@ -408,7 +407,7 @@ ablation_hps = {
     "--removed-feature-groups": "쉼표 구분 제거 feature group",
     "--removed-axes": "쉼표 구분 제거 axis",
     "--removed-experts": "쉼표 구분 제거 expert",
-    "--num-active-tasks": "활성 태스크 수 (4/8/14)",
+    "--num-active-tasks": "활성 태스크 수 (3/5/10/13)",
     "--disable-adatt": "adaTT 비활성화",
     "--disable-ple-stacking": "PLE stacking 비활성화 (단일 CGC)",
     "--loss-weighting-strategy": "uncertainty/gradnorm/dwa/fixed",
@@ -444,7 +443,7 @@ class SageMakerTrainer:
   "completed_stages": ["adapter", "temporal_prep", "schema", "encryption", "features", "labels", "leakage", "sequences", "dataloader", "training"],
   "artifacts": {
     "features": {"path": "features.parquet", "rows": 941132, "dim": 512},
-    "labels": {"path": "labels.parquet", "tasks": 14},
+    "labels": {"path": "labels.parquet", "tasks": 13},
     "training": {"best_val_loss": 0.234, "epochs": 50}
   },
   "start_time": "2026-03-20T23:07:04"
@@ -524,7 +523,7 @@ Santander 학습 기준 (50 epochs, ~4시간):
 | 2-Phase | trainer.py 내부 로직 | SageMaker Job 2개 분리 | 각 Phase 독립 재실행 가능 |
 | 데이터 로딩 | TensorDataset + PLEDataset 이중 | **PyArrow zero-copy** + cross-sectional auto-detect split | pandas 없음, 자동 split 감지 |
 | 학습 루프 | 인라인 루프 + PLETrainer 이중 | **PLETrainer 단일** (AMP/callbacks/체크포인트) | 일관성 |
-| 태스크 수 | 16개 | **14개** (Tier 5 txn-based NBA 포함) | 거래 시퀀스 활용 |
+| 태스크 수 | 16개 | **13개** (has_nba → nba_primary 통합; Tier 5 txn-based NBA 포함) | 거래 시퀀스 활용, 중복 제거 |
 | Loss 함수 | 코드 내 하드코딩 | **build_loss() + focal_alpha calibrated** | positive rate 반영 |
 | Loss 가중치 | 불확실성 (미활성화) | **Uncertainty weighting 활성화** | 자동 밸런싱 |
 | 모델 구조 | PLE + adaTT | **+ 7 heterogeneous experts + Evidential + SAE + AMP FP32 loss** | 불확실성 + 해석 가능성 |

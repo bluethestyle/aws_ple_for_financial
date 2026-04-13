@@ -254,7 +254,7 @@
 
 == 1.1 Motivation for Multi-Task Learning
 
-The AIOps recommendation system must simultaneously predict 14 tasks.
+The AIOps recommendation system must simultaneously predict 13 tasks.
 Leveraging shared patterns across tasks dramatically improves data efficiency.
 The total loss is defined as a weighted sum:
 
@@ -455,7 +455,7 @@ $ bold(h)_"hmm"^m = "SiLU"("LayerNorm"("Linear"_(16 arrow 32)(bold(x)_"hmm"^m)))
 
 == 3.1 Motivation: Negative Transfer
 
-When 14 tasks share Shared Expert parameters, gradient conflicts cause
+When 13 tasks share Shared Expert parameters, gradient conflicts cause
 Negative Transfer. Three limitations of fixed-tower MTL:
 
 + *Unidirectional sharing*: no mechanism to detect or regulate inter-task interference
@@ -627,12 +627,12 @@ enabling immediate adaptation to changes in task relationships.
 
 == 4.1 Four Financial DNA Groups
 
-Based on domain knowledge, 14 tasks are classified into 4 groups:
+Based on domain knowledge, 13 tasks are classified into 4 groups:
 
 #styled-table(
   (1fr, 2.5fr, 0.7fr, 0.7fr, 1.8fr),
   [*Group*], [*Members*], [*Intra*], [*Inter*], [*Business Meaning*],
-  [Engagement], [has\_nba, cross\_sell\_count,\ will\_acquire\_deposits, will\_acquire\_investments,\ will\_acquire\_accounts, will\_acquire\_lending,\ will\_acquire\_payments], [0.8], [0.3], [Customer engagement/conversion],
+  [Engagement], [cross\_sell\_count,\ will\_acquire\_deposits, will\_acquire\_investments,\ will\_acquire\_accounts, will\_acquire\_lending,\ will\_acquire\_payments], [0.8], [0.3], [Customer engagement/conversion],
   [Lifecycle], [churn\_signal, product\_stability,\ segment\_prediction], [0.7], [0.3], [Customer lifecycle],
   [Value], [nba\_primary], [0.6], [0.3], [Customer value/behavioral patterns],
   [Consumption], [next\_mcc, mcc\_diversity\_trend, top\_mcc\_shift], [0.7], [0.3], [Spending pattern analysis],
@@ -742,7 +742,7 @@ adaTT is always restored after Phase 2 ends (guaranteed even on exceptions via `
 
 Tasks with high uncertainty ($sigma_i^2$ large) automatically receive lower weight ($1/(2 sigma_i^2)$),
 and the $log sigma_i^2$ regularization term prevents uncertainty from growing unboundedly.
-This *automatic balancing* replaces the combinatorial explosion of manually tuning weights for 14 tasks.
+This *automatic balancing* replaces the combinatorial explosion of manually tuning weights for 13 tasks.
 
 Uncertainty Weighting is applied *before* adaTT.
 The `task_losses` input to adaTT already reflects uncertainty weighting.
@@ -759,11 +759,9 @@ and focuses learning on hard examples ($p_t approx 0$).
 #styled-table(
   (1fr, 0.6fr, 1fr, 2.5fr),
   [*Task*], [*weight*], [*Focal $alpha$/$gamma$*], [*Notes*],
-  [has\_nba], [1.0], [$gamma$=2, $alpha$=0.25], [standard binary classification],
   [will\_acquire\_\*], [1.5], [$gamma$=2, $alpha$=0.20], [extremely low positive rate $arrow.r$ weight increased],
   [churn\_signal], [1.2], [$gamma$=2, $alpha$=0.60], [high FN cost $arrow.r$ alpha increased],
   [nba\_primary], [2.0], [CE (multiclass)], [business critical],
-  [engagement\_score], [1.5], [huber ($delta$=1.0)], [regression, outlier robust],
   [next\_mcc], [2.0], [CE (multiclass)], [spending category prediction],
 )
 
@@ -817,7 +815,7 @@ Memory impact:
   [*Component*], [*Memory*], [*Notes*],
   [Forward pass graph], [1x], [baseline],
   [retain\_graph overhead], [$tilde$1x], [additional memory due to graph not being freed],
-  [14 task gradients], [$tilde$0.3x], [each gradient is shared\_param\_size],
+  [13 task gradients], [$tilde$0.3x], [each gradient is shared\_param\_size],
   [*Total*], [*$tilde$2.3x*], [batch 16384 possible on RTX 4070 12GB],
 )
 

@@ -793,31 +793,31 @@ model:
 ## Agent Configuration (`configs/financial/agent.yaml`)
 
 **File:** `configs/financial/agent.yaml`
-**Purpose:** AIOps 에이전트 오케스트레이션 설정. 운영 체크포인트(ops), 감사 관점(audit), 다중 에이전트 합의(consensus), 모델 할당(models)의 4개 섹션으로 구성된다.
+**Purpose:** AIOps agent orchestration configuration. Composed of four sections: ops checkpoints, audit viewpoints, multi-agent consensus, and model assignments.
 
 ### ops
 
-운영 파이프라인의 체크포인트(CP) 목록과 각 체크포인트의 실행 주기를 선언한다.
+Declares the list of operational pipeline checkpoints (CPs) and their execution schedules.
 
 ```yaml
 ops:
   checkpoints: [CP1, CP2, CP3, CP4, CP5, CP6, CP7]
   schedule:
-    CP1: event       # 이벤트 트리거 (데이터 도착 즉시)
-    CP2: 5min        # 5분 주기
-    CP3: 1h          # 1시간 주기
+    CP1: event       # Event-triggered (on data arrival)
+    CP2: 5min        # Every 5 minutes
+    CP3: 1h          # Every 1 hour
     CP4: 1h
-    CP5: daily       # 일 1회
+    CP5: daily       # Once daily
     CP6: daily
     CP7: event
 ```
 
-- `checkpoints`: 실행할 CP ID 목록. 순서대로 등록되며, 비활성화할 CP는 목록에서 제거한다.
-- `schedule`: CP ID → 실행 주기. 허용 값: `event` | `5min` | `1h` | `daily`.
+- `checkpoints`: List of CP IDs to execute. Registered in order; remove a CP from the list to deactivate it.
+- `schedule`: CP ID to execution frequency. Allowed values: `event` | `5min` | `1h` | `daily`.
 
 ### audit
 
-감사 관점(Audit Viewpoint, AV) 목록과 각 관점의 실행 주기를 선언한다.
+Declares the list of audit viewpoints (AVs) and their execution schedules.
 
 ```yaml
 audit:
@@ -830,57 +830,57 @@ audit:
     AV5: daily
 ```
 
-- `viewpoints`: 활성화할 AV ID 목록 (AV1-AV5).
-- `schedule`: AV ID → 실행 주기.
+- `viewpoints`: List of active AV IDs (AV1-AV5).
+- `schedule`: AV ID to execution frequency.
 
 ### consensus
 
-다중 에이전트 합의(Multi-Agent Consensus) 동작을 제어한다.
+Controls multi-agent consensus behavior.
 
 ```yaml
 consensus:
-  model: sonnet          # 합의에 사용할 기반 모델
-  agents: 3              # 독립 에이전트 수
-  parallel: true         # 병렬 실행 여부 (false = 순차)
-  apply_to:              # 합의를 적용할 CP/AV 목록
+  model: sonnet          # Base model used for consensus
+  agents: 3              # Number of independent agents
+  parallel: true         # Parallel execution (false = sequential)
+  apply_to:              # List of CPs/AVs to apply consensus to
     - CP4
     - AV3
     - AV5
 ```
 
-- `model`: 합의 에이전트에 사용할 모델 식별자. `sonnet` = Claude Sonnet.
-- `agents`: 몇 개의 독립 에이전트가 각각 판단한 뒤 다수결/가중 합의를 수행할지 결정.
-- `parallel`: `true`면 `agents`개를 동시 실행(비용 절감), `false`면 순차 실행(디버깅 용이).
-- `apply_to`: 합의를 적용할 대상 CP/AV ID 목록. 여기에 없는 CP/AV는 단일 에이전트로 실행.
+- `model`: Model identifier for consensus agents. `sonnet` = Claude Sonnet.
+- `agents`: Number of independent agents that each render a judgment before majority/weighted consensus.
+- `parallel`: `true` runs all agents concurrently (cost-efficient); `false` runs sequentially (easier to debug).
+- `apply_to`: List of CP/AV IDs to apply consensus to. CPs/AVs not listed here run with a single agent.
 
 ### models
 
-파이프라인 단계별 모델 할당을 선언한다. 각 키는 역할(role)이며, 값은 모델 식별자이다.
+Declares model assignments per pipeline stage. Each key is a role; the value is a model identifier.
 
 ```yaml
 models:
-  reason_generation: solar-pro      # 한국어 특화 추론 생성 (L2a)
-  reason_critique:   solar-pro      # 생성된 추론 자기 검증 (self-critique)
-  factuality_check:  claude-haiku   # 사실성 검사 (빠르고 저렴)
-  agent_dialog:      claude-sonnet  # 에이전트 간 대화/협의
-  agent_consensus:   claude-sonnet  # 다중 에이전트 합의 (× agents 수)
-  deep_audit:        claude-opus    # 심층 감사 (분기 실행, 고비용)
+  reason_generation: solar-pro      # Korean-specialized reason generation (L2a)
+  reason_critique:   solar-pro      # Self-critique of generated reasons
+  factuality_check:  claude-haiku   # Factuality check (fast and low-cost)
+  agent_dialog:      claude-sonnet  # Inter-agent dialog/negotiation
+  agent_consensus:   claude-sonnet  # Multi-agent consensus (x agents count)
+  deep_audit:        claude-opus    # Deep audit (quarterly, high-cost)
   embeddings:        titan-embed-v2 # AWS Titan Embeddings V2
 ```
 
-| 역할 | 모델 | 비고 |
+| Role | Model | Notes |
 |---|---|---|
-| `reason_generation` | Solar Pro | 한국어 금융 설명문 생성에 특화 |
-| `reason_critique` | Solar Pro | 동일 모델로 self-critique 수행 |
-| `factuality_check` | Claude Haiku | 저지연/저비용 사실성 검사 |
-| `agent_dialog` | Claude Sonnet | 에이전트 간 협의 대화 |
-| `agent_consensus` | Claude Sonnet | 합의 투표 (병렬 × 3 기본) |
-| `deep_audit` | Claude Opus | 고비용 — `apply_to` 조건 충족 시만 실행 |
-| `embeddings` | Titan Embeddings V2 | AWS Bedrock 네이티브 임베딩 |
+| `reason_generation` | Solar Pro | Specialized for Korean financial explanation generation |
+| `reason_critique` | Solar Pro | Self-critique using the same model |
+| `factuality_check` | Claude Haiku | Low-latency/low-cost factuality check |
+| `agent_dialog` | Claude Sonnet | Inter-agent negotiation dialog |
+| `agent_consensus` | Claude Sonnet | Consensus voting (parallel x 3 by default) |
+| `deep_audit` | Claude Opus | High-cost -- only runs when `apply_to` conditions are met |
+| `embeddings` | Titan Embeddings V2 | AWS Bedrock native embeddings |
 
-### 온프레미스 모델 설정
+### On-Premises Model Configuration
 
-온프레미스에서는 `agent.yaml`의 models 섹션이 다르다:
+On-premises deployments use a different models section in `agent.yaml`:
 
 ```yaml
 models:
@@ -892,7 +892,7 @@ model_paths:
   exaone_7b: "/models/exaone-3.5-7.8b-instruct"
   qwen_14b_q4: "/models/qwen2.5-14b-instruct-q4_k_m.gguf"
 gpu:
-  sequential_loading: true  # 12GB VRAM — 동시 로딩 불가
+  sequential_loading: true  # 12GB VRAM — cannot load simultaneously
 ```
 
 ---
@@ -900,35 +900,35 @@ gpu:
 ## Checklist Configuration (`configs/financial/checklist.yaml`)
 
 **File:** `configs/financial/checklist.yaml`
-**Purpose:** 파이프라인 6파트(P1-P6)에 걸친 48+ 개 점검 항목을 정의한다. 각 항목은 어떤 도구를 실행하고, 어떤 임계값을 기준으로, 어떤 판정 로직을 적용할지를 선언한다.
+**Purpose:** Defines 48+ checklist items across 6 pipeline parts (P1-P6). Each item declares which tool to run, what threshold to apply, and which verdict logic to use.
 
-### 파트 구성 (P1-P6)
+### Part Structure (P1-P6)
 
-| 파트 | 범위 | 예시 항목 수 |
+| Part | Scope | Approx. Items |
 |---|---|---|
-| P1 | 데이터 품질 (입력 무결성, NaN/이상치, 스키마) | ~10 |
-| P2 | 피처 엔지니어링 (zero-variance, 분포, 리키지) | ~8 |
-| P3 | 레이블 파생 (class balance, positive rate) | ~6 |
-| P4 | 모델 학습 (loss 수렴, gradient, AUC) | ~10 |
-| P5 | 추론/추천 (필터, 스코어 분포, 피로도) | ~8 |
-| P6 | 감사/컴플라이언스 (공정성, 드리프트, 규정) | ~8 |
+| P1 | Data quality (input integrity, NaN/outliers, schema) | ~10 |
+| P2 | Feature engineering (zero-variance, distributions, leakage) | ~8 |
+| P3 | Label derivation (class balance, positive rate) | ~6 |
+| P4 | Model training (loss convergence, gradients, AUC) | ~10 |
+| P5 | Inference/recommendation (filters, score distributions, fatigue) | ~8 |
+| P6 | Audit/compliance (fairness, drift, regulations) | ~8 |
 
-### 항목 구조
+### Item Structure
 
-각 점검 항목은 3개 필드로 구성된다.
+Each checklist item consists of three fields.
 
 ```yaml
 checklist:
   P1:
     - id: P1-01
-      description: "NaN 비율 점검"
-      tool_name: nan_ratio_checker       # 실행할 도구(함수/클래스) 이름
-      threshold:                         # 판정 기준값
-        max_nan_ratio: 0.05              # 5% 초과 시 FAIL
-      verdict_logic: threshold_le        # 판정 방식 (아래 참조)
+      description: "NaN ratio check"
+      tool_name: nan_ratio_checker       # Tool (function/class) to execute
+      threshold:                         # Verdict threshold
+        max_nan_ratio: 0.05              # FAIL if exceeds 5%
+      verdict_logic: threshold_le        # Verdict method (see below)
 
     - id: P1-02
-      description: "스키마 컬럼 수 일치 확인"
+      description: "Schema column count validation"
       tool_name: schema_column_checker
       threshold:
         expected_min_columns: 30
@@ -936,70 +936,70 @@ checklist:
 
   P4:
     - id: P4-03
-      description: "AUC 최소 기준"
+      description: "AUC minimum threshold"
       tool_name: auc_evaluator
       threshold:
         min_auc: 0.70
       verdict_logic: threshold_ge
 
     - id: P4-07
-      description: "NaN/Inf loss 감지"
+      description: "NaN/Inf loss detection"
       tool_name: loss_nan_detector
-      threshold: null                    # 발생 즉시 FAIL (binary 판정)
+      threshold: null                    # FAIL on any occurrence (binary verdict)
       verdict_logic: no_occurrence
 ```
 
-### verdict_logic 허용 값
+### Allowed verdict_logic Values
 
-| 값 | 의미 |
+| Value | Meaning |
 |---|---|
-| `threshold_le` | 측정값 ≤ threshold → PASS |
-| `threshold_ge` | 측정값 ≥ threshold → PASS |
-| `threshold_between` | lower ≤ 측정값 ≤ upper → PASS |
-| `no_occurrence` | 이벤트 미발생 → PASS |
-| `all_pass` | 하위 항목 전체 PASS → PASS |
-| `custom` | `tool_name`이 반환한 `verdict` 필드를 직접 사용 |
+| `threshold_le` | Measured value <= threshold -> PASS |
+| `threshold_ge` | Measured value >= threshold -> PASS |
+| `threshold_between` | lower <= measured value <= upper -> PASS |
+| `no_occurrence` | No event occurred -> PASS |
+| `all_pass` | All sub-items PASS -> PASS |
+| `custom` | Uses the `verdict` field returned by `tool_name` directly |
 
-### 전체 항목 수 및 확장 방법
+### Total Item Count and Extension
 
-기본 제공 항목은 48개이며, 새 항목 추가 시 `checklist.yaml`에만 항목을 추가하면 된다. Python 코드 수정 없이 `tool_name`에 등록된 도구를 자동 디스패치한다. 도구 등록은 `core/audit/tool_registry.py`의 `@register_tool` 데코레이터로 수행한다.
+48 items are provided by default. To add new items, simply add entries to `checklist.yaml`. Tools registered under `tool_name` are auto-dispatched without Python code changes. Tool registration is done via the `@register_tool` decorator in `core/audit/tool_registry.py`.
 
 ## Fact Extraction (`configs/financial/fact_extraction.yaml`)
 
-고객 레벨 서술적 팩트 추출 룰. `FactExtractor`가 로드하여 Phase 0 배치 시점에 사용.
+Customer-level descriptive fact extraction rules. Loaded by `FactExtractor` and applied at Phase 0 batch time.
 
-### 구조
+### Structure
 
 ```yaml
 version: "1.0"
 rules:
-  - name: "예적금 중심 포트폴리오"        # 사유 프롬프트에 주입될 한국어 팩트
+  - name: "Deposit-focused portfolio"     # Korean-language fact injected into reason prompts
     condition: "deposit_balance_ratio > 0.6"  # Python expression
     required_features: ["deposit_balance_ratio"]  # pre-check
 ```
 
-### 조건 표현식
+### Condition Expressions
 
-- Python 표현식으로 평가되며, 안전한 builtins(`abs`, `min`, `max`, `len`, `any`, `all`, `round`, `int`, `float`)만 허용
-- `__builtins__` 차단 샌드박스에서 실행되어 임의 코드 실행 불가
-- 기본 연산자: `>`, `<`, `>=`, `<=`, `==`, `!=`, `and`, `or`, `not`
-- 복합 조건: `"x > 0.3 and x < 0.7"`
+- Evaluated as Python expressions; only safe builtins are allowed (`abs`, `min`, `max`, `len`, `any`, `all`, `round`, `int`, `float`)
+- Runs in a `__builtins__`-blocked sandbox preventing arbitrary code execution
+- Basic operators: `>`, `<`, `>=`, `<=`, `==`, `!=`, `and`, `or`, `not`
+- Compound conditions: `"x > 0.3 and x < 0.7"`
 
-### 범주 (기본 15 rule)
+### Categories (15 default rules)
 
-| 범주 | 예시 |
+| Category | Examples |
 |---|---|
-| 포트폴리오 구성 | 예적금 중심, 펀드 중심, 대출 부담 |
-| 최근 관심사 | 펀드 조회 증가, 카드 사용 활발, 투자 조회 증가 |
-| 리스크 성향 | 리스크 회피, 공격적 투자 |
-| 생애주기 | 신규 고객, 장기 고객 |
-| 참여도 | 디지털 채널 선호, 고빈도 거래 |
-| 소비 패턴 | 안정적 거래, 소비 증가 |
-| 이탈 리스크 | 이탈 위험 신호 |
+| Portfolio composition | Deposit-focused, fund-focused, loan-burdened |
+| Recent interests | Increased fund inquiries, active card usage, rising investment inquiries |
+| Risk appetite | Risk-averse, aggressive investor |
+| Life cycle | New customer, long-term customer |
+| Engagement | Digital channel preference, high-frequency transactions |
+| Spending patterns | Stable transactions, increasing spending |
+| Churn risk | Churn warning signals |
 
-### 팩트 품질 검증
+### Fact Quality Validation
 
-`FactExtractor.validate_rules(sample_features)` 메서드로 pre-flight 검증 가능:
+Use `FactExtractor.validate_rules(sample_features)` for pre-flight validation:
 
 ```python
 from core.recommendation.reason.fact_extractor import FactExtractor

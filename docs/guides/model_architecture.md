@@ -29,12 +29,12 @@ multi-task learning architecture that solves the "seesaw" problem in multi-task
 learning -- where improving one task degrades another.
 
 ```
-                        Input Features (316D total)
+                        Input Features (~350D total)
                                |
                     FeatureRouter [ACTIVE]
                     (auto-built from feature_groups.yaml target_experts)
           /         |         |        |         |         |         \
-      [109D]     [129D]     [34D]    [32D]    [103D]    [66D]     [69D]    [316D]
+      [109D]     [129D]     [34D]    [32D]    [103D]    [66D]     [69D]   [~350D]
         |           |         |        |         |         |         |       |
    +--------+  +------+  +------+  +------+  +------+  +------+  +------+ +-----+
    | DeepFM |  |Temp. |  | HGCN |  |Pers- |  |Causal|  |Light-|  | OT   | | MLP |

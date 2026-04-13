@@ -300,7 +300,7 @@ each capturing a fundamentally different aspect of customer identity:
     align: left,
     stroke: 0.5pt,
     [*DNA*], [*Question*], [*Tasks*],
-    [Engagement], [What do they _do_?], [has_nba #linebreak() engagement #linebreak() next_mcc #linebreak() mcc_trend #linebreak() top_mcc_shift],
+    [Engagement], [What do they _do_?], [engagement #linebreak() next_mcc #linebreak() mcc_trend #linebreak() top_mcc_shift],
     [Lifecycle], [Where _are_ they?], [churn #linebreak() segment],
     [Value], [How much are they _worth_?], [cross_sell #linebreak() stability],
     [Consumption], [What _will_ they buy?], [will_acquire\_\* (5), nba_primary],
@@ -439,7 +439,7 @@ Four principles guide the architecture:
 + *Graceful Degradation*: Removing any single expert does not cause catastrophic performance loss.
   The remaining experts redistribute gate weights to compensate.
 + *Flexible Extensibility*: New features, tasks, or experts are added via YAML configuration,
-  not code changes. The system has been extended from 4 to 14 tasks without architectural modification.
+  not code changes. The system has been extended from 4 to 13 tasks without architectural modification.
 + *Unified Manageability*: The entire pipeline (feature engineering → training → distillation → serving → monitoring)
   is controlled by two configuration files (`pipeline.yaml` and `feature_groups.yaml`),
   reducing operational overhead for teams with limited ML engineering resources.
@@ -521,7 +521,7 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
       node((5, 6), [*Consume*], width: 19mm, fill: task-fill, name: <tg4>),
 
       // === Row 6: Task Towers ===
-      node((3, 7), [*14 Task Towers* → Predictions], width: 50mm, fill: gray-fill, name: <towers>),
+      node((3, 7), [*13 Task Towers* → Predictions], width: 50mm, fill: gray-fill, name: <towers>),
 
       // === Row 7: Knowledge Distillation ===
       node((3, 8), [*Knowledge Distillation* → LGBM ×14], width: 50mm, fill: gray-fill, name: <kd>),
@@ -852,7 +852,7 @@ $ cal(L)_i^("adaTT") = cal(L)_i + lambda sum_(j eq.not i) w_(i arrow.r j) dot ca
 where $w_(i arrow.r j)$ is the transfer weight from task $j$ to task $i$,
 computed via gradient cosine similarity between task loss gradients.
 The base task losses $cal(L)_i$ are weighted by learned uncertainty @kendall2018,
-and binary classification tasks with severe class imbalance (e.g., has_nba at 3\% positive rate)
+and binary classification tasks with severe class imbalance (e.g., churn_signal)
 use focal loss @lin2017focal with task-specific $alpha$ and $gamma$ parameters.
 
 This design choice was motivated by two considerations:
@@ -877,16 +877,15 @@ that reflect the natural sequence of customer experience:
     align: left,
     stroke: 0.5pt,
     [*Source → Target*], [*Method*], [*Customer Experience*], [*Causal Direction*],
-    [has_nba → nba_primary], [output_concat], [Purchase decision → product selection], [Sequential],
-    [engagement → has_nba], [hidden_concat], [Activity level → purchase probability], [Leading indicator],
+    [engagement → nba_primary], [hidden_concat], [Activity level → purchase probability], [Leading indicator],
     // [spend_level → will_acquire\_\*], [residual], [Spending capacity → category intent], [Enabling factor],  // removed: spend_level is a deterministic feature transformation
-    [churn → has_nba], [output_concat], [Retention risk → acquisition opportunity], [Inverse correlation],
+    [churn → nba_primary], [output_concat], [Retention risk → acquisition opportunity (class 0 = no NBA)], [Inverse correlation],
   ),
   caption: [Logit transfer relationships reflecting natural customer experience flow.],
 ) <tab:logit-transfer>
 
-These transfers connect DNA groups (@tab:dna-axis): engagement→engagement (intra-group),
-value→consumption (inter-group), reflecting the natural sequence of customer experience.
+These transfers connect DNA groups (@tab:dna-axis): engagement→consumption (intra-Engagement/Consumption axis),
+lifecycle→consumption (churn→nba_primary, inter-group), reflecting the natural sequence of customer experience.
 The transfer directions are not learned from data but specified based on
 domain knowledge of the customer journey.
 This is a deliberate design choice: while the _strength_ of transfer
@@ -1031,22 +1030,39 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
     stroke: 0.5pt,
     [*Tier*], [*Labels*], [$f_"obs"$], [$f_"noise"$], [*XGB AUC*],
     [Easy], [segment], [determ.], [--], [0.95--1.0],
-    [Core], [has_nba, churn_signal], [0.04], [0.68], [0.58--0.65],
+    [Core], [churn_signal], [0.04], [0.68], [0.58--0.65],
     [Hard], [will_acquire\_\*], [0.03], [0.72], [0.50--0.56],
     [V.Hard], [next_mcc, top_mcc_shift], [0.02], [0.78], [0.50--0.51],
   ),
   caption: [Variance budget per label tier. XGB AUC ceiling validates difficulty control.],
 ) <tab:variance-budget>
 
-The benchmark underwent three iterations.
-v2 used uniform-random MCC codes and fixed transaction amounts across personas, with a 3% has_nba positive rate,
+The benchmark underwent several iterations.
+v2 used uniform-random MCC codes and fixed transaction amounts across personas,
 producing near-random labels for MCC-dependent tasks.
 v3 introduced persona-weighted MCC distributions (4--5× boost) with temporal stickiness (30%),
 persona-dependent transaction amounts, and quantile-based spend_level boundaries,
 improving MCC task signal but still yielding near-uniform label distributions for acquisition tasks.
-v4 (reported here) sharpens persona MCC preferences (8--12× boost), increases temporal stickiness to 60%,
-raises acquisition rates (has_nba 40%, per-product 8--12%), and widens the top_mcc_shift detection window
-to 30 transactions --- producing meaningful class distributions for all 14 tasks.
+v4 sharpened persona MCC preferences (8--12× boost), increased temporal stickiness to 60%,
+raised per-product acquisition rates (8--12%), and widened the top_mcc_shift detection window
+to 30 transactions.
+v12 (reported here) introduces Financial DNA axis-aligned situation variables --- each customer receives
+an independent situation per DNA axis (engagement: steady/surging/declining/volatile;
+lifecycle: stable/growing/consolidating/transitioning;
+value: stable/ascending/descending/shock;
+consumption: consistent/exploring/focusing/switching).
+Situations modulate transaction sequence patterns (temporal spacing, amount trends,
+MCC distribution shifts, product acquisition rates) without altering static demographic features,
+creating signals recoverable only through Phase 0 generators (Mamba, TDA, HGCN, GMM).
+Label interactions use 3rd--5th order continuous multiplicative terms with obs_frac=0.15,
+producing meaningful class distributions for all 13 tasks.
+
+Label signals combine linear observable features (obs_frac=0.15) with latent components (lat_frac=0.35)
+recoverable through behavioral sequence patterns.
+Observable interactions are 3rd to 5th order continuous multiplicative
+(e.g., income × spend × tenure × products × stability for investment propensity),
+requiring deep nonlinear capacity that tree-based models and shallow networks cannot efficiently approximate.
+The remaining variance (noise_frac=0.50) is irreducible noise, setting a hard upper bound on model performance.
 
 == Experimental Setup
 
@@ -1054,7 +1070,7 @@ The ablation validates whether each expert provides a distinct "why" for differe
 confirming that heterogeneous experts are not merely a performance trick
 but a structural requirement for multi-faceted persuasion.
 
-- *Data*: 1M customers, 350 features (total, Phase 0 v3/v4), 14 tasks.
+- *Data*: 1M customers, 350 features (total, Phase 0 v3/v4), 13 tasks.
 - *Hardware*: NVIDIA RTX 4070 (12GB) local; AWS g4dn.xlarge Spot (T4 16GB) cloud.
 - *Training*: 10 epochs (single phase), batch 4096, lr 0.008 (shared-bottom: lr 0.003, batch 2048), FP32, no early stopping. adaTT scenarios use warmup=3 epochs, freeze at epoch 8, gradient extraction every 10 steps.
 - *Metrics*: Metrics are chosen to match each task's production semantic.
@@ -1063,7 +1079,7 @@ but a structural requirement for multi-faceted persuasion.
   Recommendation multiclass (nba_primary with 7 product groups, next_mcc with top-50 merchant categories)
   uses NDCG\@K and top-K accuracy @jarvelin2002ndcg, reflecting standard recommendation system evaluation practice.
   Regression uses MAE.
-  Metrics are reported per task type; a global average across all 14 tasks is avoided
+  Metrics are reported per task type; a global average across all 13 tasks is avoided
   because metrics have incompatible semantics across types.
 
 == Joint Feature + Expert Ablation (RQ1 + RQ2)
@@ -1157,7 +1173,7 @@ Removing Temporal or TDA _improves_ aggregate AUC, indicating negative transfer 
 
 == Explainability Analysis (RQ5)
 
-The sigmoid CGC gate produces sparse, interpretable routing weights: each expert receives a non-negative weight independent of other experts, enabling direct attribution of "which expert contributed how much" per task. Unlike softmax gates where weights are coupled through the normalization denominator, sigmoid weights allow a task to strongly activate multiple experts simultaneously or suppress all but one. We examine per-task gate weight distributions across all 14 tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition (e.g., temporal expert weighted highly for churn prediction, causal expert for intervention-sensitive tasks).
+The sigmoid CGC gate produces sparse, interpretable routing weights: each expert receives a non-negative weight independent of other experts, enabling direct attribution of "which expert contributed how much" per task. Unlike softmax gates where weights are coupled through the normalization denominator, sigmoid weights allow a task to strongly activate multiple experts simultaneously or suppress all but one. We examine per-task gate weight distributions across all 13 tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition (e.g., temporal expert weighted highly for churn prediction, causal expert for intervention-sensitive tasks).
 
 // TODO: Extract gate weight examples from ple_sigmoid checkpoints
 
@@ -1174,7 +1190,7 @@ Maximum entropy $log K$ (K=7 experts, $log 7 approx 1.95$) indicates
 uniform expert utilization; entropy near zero indicates routing collapse.
 
 We compare gate entropy between softmax and sigmoid CGC gates
-across all 14 tasks, reporting mean entropy, minimum entropy (worst-case task),
+across all 13 tasks, reporting mean entropy, minimum entropy (worst-case task),
 and expert utilization rate (fraction of experts with $w > 0.05$).
 
 // TODO: Compare ple_softmax vs ple_sigmoid checkpoints
@@ -1317,7 +1333,7 @@ training pipeline, serving endpoint, and monitoring dashboard.
 
 - *Synthetic benchmark limitations*: The 1M-customer benchmark uses a four-layer generative model
   with persona-based MCC distributions, time-of-day weighting, and persona-dependent transaction amounts.
-  Despite these calibrations, binary task signals (has\_nba, churn\_signal, will\_acquire\_\*)
+  Despite these calibrations, binary task signals (churn\_signal, will\_acquire\_\*)
   derive primarily from demographic and product-holding features, not transaction behavior ---
   limiting the performance ceiling for these tasks regardless of model capacity or training duration.
   Multiclass and regression tasks that depend on MCC patterns (next\_mcc, mcc\_diversity\_trend)
@@ -1477,7 +1493,7 @@ and 6 top-down scenarios (full minus one expert-feature pair).
 *Phase 2 --- Task x Structure Cross Ablation (6 scenarios):*
 Six structural variants --- shared-bottom (no PLE/adaTT), PLE-softmax, PLE-sigmoid,
 adaTT-only, PLE-softmax+adaTT, PLE-sigmoid+adaTT ---
-all using the full 14 tasks and 7 heterogeneous experts with 10 epochs.
+all using the full 13 tasks and 7 heterogeneous experts with 10 epochs.
 
 #heading(numbering: none, level: 3)[C. Benchmark Data Generation]
 

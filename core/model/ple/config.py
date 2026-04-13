@@ -367,6 +367,11 @@ class PLEConfig:
     # Set from pipeline.yaml ``model.hmm_group_mode_map``.
     hmm_group_mode_map: Dict[str, str] = field(default_factory=dict)
 
+    # -- HMM projectors toggle (ablation) ------------------------------------
+    # When False, HMM triple-mode projectors are not built even if
+    # task_group_map is populated.  Set via HP ``use_hmm_projectors=false``.
+    hmm_projectors_enabled: bool = True
+
     # -- Per-task loss configuration -----------------------------------------
     # Maps task_name -> loss type string (e.g. "focal", "ce", "huber", "mse")
     task_loss_types: Dict[str, str] = field(default_factory=dict)

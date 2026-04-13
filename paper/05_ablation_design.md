@@ -62,7 +62,7 @@ training_defaults:
   drop_last: true
 ```
 
-- 데이터: 1M customers, 316 features (전체 피처 공간), 14 tasks
+- 데이터: 1M customers, 316 features (전체 피처 공간), 13 tasks
 - **FeatureRouter 활성화**: 각 expert는 전체 316D가 아닌 지정된 피처 그룹만 수신
   - deepfm=109D, temporal_ensemble=129D, causal=103D, optimal_transport=69D
   - lightgcn=66D, hgcn=34D, perslay=32D
@@ -73,7 +73,7 @@ training_defaults:
 ## 4. 기대 결과
 
 ### AUC 범위
-- XGBoost ceiling: has_nba=0.61, churn_signal=0.65
+- XGBoost ceiling: churn_signal=0.65 (has_nba는 nba_primary로 통합; nba_primary NDCG@3으로 평가)
 - PLE 딥모델 예상: 0.65-0.80 (비선형 상호작용 학습)
 - 시나리오 간 델타: 0.02-0.10 (의미있는 차이)
 

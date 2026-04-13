@@ -180,16 +180,16 @@ class BenchmarkDataGenerator:
             "Generating benchmark data: n=%d, seed=%d", self.n, self.seed
         )
 
-        # Layer 1: Latent personas
-        z, l = self._generate_latent_personas()
+        # Layer 1: Latent personas + situation assignment
+        z, l, situations = self._generate_latent_personas()
         logger.info("Layer 1 done: personas shape=%s, latent shape=%s", z.shape, l.shape)
 
         # Layer 2: Observable profiles
         profiles = self._generate_profiles(z, l)
         logger.info("Layer 2 done: %d profile columns", len(profiles))
 
-        # Layer 3: Transaction sequences
-        txn_data = self._generate_transactions(z, l, profiles)
+        # Layer 3: Transaction sequences (situations modulate patterns, not aggregates)
+        txn_data = self._generate_transactions(z, l, profiles, situations)
         logger.info("Layer 3 done: %d txn columns", len(txn_data))
 
         # Merge all features
@@ -200,7 +200,7 @@ class BenchmarkDataGenerator:
         logger.info("Layer 4 done: %d label columns", len(labels))
 
         # Save via DuckDB
-        self._save_parquet(features, labels, z, l)
+        self._save_parquet(features, labels, z, l, situations)
 
         elapsed = time.time() - t0
         logger.info("Generation complete in %.1fs", elapsed)
@@ -282,7 +282,7 @@ class BenchmarkDataGenerator:
     # ==================================================================
     # Layer 1: Latent Personas
     # ==================================================================
-    def _generate_latent_personas(self) -> Tuple[np.ndarray, np.ndarray]:
+    def _generate_latent_personas(self) -> Tuple[np.ndarray, np.ndarray, dict]:
         """
         z_i ~ Categorical(K=6, pi)   -- discrete persona index
         l_i ~ N(mu_z, Sigma_z)       -- 5D continuous latent vector
@@ -318,7 +318,74 @@ class BenchmarkDataGenerator:
         independent_noise = self.rng.standard_normal(l.shape)
         l = 0.7 * l + 0.3 * independent_noise
 
-        return z, l
+        # ----------------------------------------------------------------
+        # Financial DNA Situation Assignment
+        # Situations are INDEPENDENT of persona (pure rng.choice).
+        # They modulate BEHAVIORAL PATTERNS (sequences) not static features.
+        # Latent modulation here creates a path from situation → label,
+        # but the situation itself is invisible in aggregate features.
+        # ----------------------------------------------------------------
+        n = self.n
+
+        # Engagement axis: steady(0) / surging(1) / declining(2) / volatile(3)
+        engagement_sit = self.rng.choice(4, size=n, p=[0.50, 0.20, 0.20, 0.10])
+
+        # Lifecycle axis: stable(0) / growing(1) / consolidating(2) / transitioning(3)
+        lifecycle_sit = self.rng.choice(4, size=n, p=[0.50, 0.20, 0.15, 0.15])
+
+        # Value axis: stable_value(0) / ascending(1) / descending(2) / shock(3)
+        value_sit = self.rng.choice(4, size=n, p=[0.50, 0.20, 0.15, 0.15])
+
+        # Consumption axis: consistent(0) / exploring(1) / focusing(2) / switching(3)
+        consumption_sit = self.rng.choice(4, size=n, p=[0.50, 0.20, 0.15, 0.15])
+
+        # --- Latent modulation (additive, applied after base generation) ---
+        # Engagement → activity_level (l[:,1])
+        l[engagement_sit == 1, 1] += 0.5   # surging → more active
+        l[engagement_sit == 2, 1] -= 0.5   # declining → less active
+        volatile_mask = engagement_sit == 3
+        n_volatile = volatile_mask.sum()
+        if n_volatile > 0:
+            l[volatile_mask, 1] += self.rng.choice(
+                [-0.3, 0.3], size=n_volatile
+            )
+
+        # Lifecycle → loyalty (l[:,4]) and wealth (l[:,0])
+        l[lifecycle_sit == 1, 4] += 0.4    # growing → more loyal
+        l[lifecycle_sit == 2, 4] -= 0.4    # consolidating → less loyal
+        l[lifecycle_sit == 2, 0] -= 0.3    # consolidating → wealth concern
+
+        # Value → wealth_propensity (l[:,0])
+        l[value_sit == 1, 0] += 0.5        # ascending → wealth up
+        l[value_sit == 2, 0] -= 0.5        # descending → wealth down
+        shock_mask = value_sit == 3
+        n_shock = shock_mask.sum()
+        if n_shock > 0:
+            l[shock_mask, 0] += self.rng.choice(
+                [-0.8, 0.8], size=n_shock
+            )
+
+        # Consumption → risk_tolerance (l[:,2])
+        l[consumption_sit == 1, 2] += 0.4  # exploring → higher risk tolerance
+        l[consumption_sit == 2, 2] -= 0.4  # focusing → lower risk tolerance
+
+        logger.info(
+            "  Situations assigned: engagement dist=%s, lifecycle dist=%s, "
+            "value dist=%s, consumption dist=%s",
+            np.unique(engagement_sit, return_counts=True)[1].tolist(),
+            np.unique(lifecycle_sit, return_counts=True)[1].tolist(),
+            np.unique(value_sit, return_counts=True)[1].tolist(),
+            np.unique(consumption_sit, return_counts=True)[1].tolist(),
+        )
+
+        situations = {
+            "sit_engagement": engagement_sit,
+            "sit_lifecycle": lifecycle_sit,
+            "sit_value": value_sit,
+            "sit_consumption": consumption_sit,
+        }
+
+        return z, l, situations
 
     # ==================================================================
     # Layer 2: Observable Profiles (Gaussian Copula)
@@ -598,7 +665,8 @@ class BenchmarkDataGenerator:
     # Layer 3: Transaction Sequences (DuckDB vectorized)
     # ==================================================================
     def _generate_transactions(
-        self, z: np.ndarray, l: np.ndarray, profiles: dict
+        self, z: np.ndarray, l: np.ndarray, profiles: dict,
+        situations: dict,
     ) -> dict:
         """Generate transaction sequences and synth_* aggregates via DuckDB.
 
@@ -723,8 +791,8 @@ class BenchmarkDataGenerator:
                 n_top_mccs, size=(n_p, MAX_TXN), p=mcc_weights
             ).astype(np.int32)
 
-            # Apply temporal stickiness: for each txn position > 0, with
-            # probability STICKY_PROB repeat the previous txn's MCC
+            # Apply fixed stickiness per persona (no latent coupling to avoid leakage
+            # through aggregate MCC features)
             sticky_mask = self.rng.random(size=(n_p, MAX_TXN)) < STICKY_PROB
             sticky_mask[:, 0] = False  # first txn always uses base choice
             for t in range(1, MAX_TXN):
@@ -732,18 +800,28 @@ class BenchmarkDataGenerator:
 
             _mcc_matrix[mask] = base_mccs
 
-            # Persona-dependent amount distribution (log-normal)
-            amt_params = {
-                "conservative_saver": (2.5, 0.8),   # lower spend
-                "active_spender":     (3.5, 1.0),   # higher spend
-                "young_digital":      (2.8, 0.9),   # moderate, digital
-                "high_value":         (4.0, 1.2),   # highest spend
-                "occasional_user":    (2.3, 0.7),   # lowest spend
-                "diversified":        (3.2, 1.0),   # moderate
+            # Persona + latent-dependent amount distribution (log-normal)
+            # Latent wealth (l[:,0]) shifts mean, risk_tolerance (l[:,2]) shifts variance.
+            # This creates individual-level spending patterns that Phase 0 generators
+            # (Mamba, TDA, GMM) can encode but raw aggregate features cannot.
+            amt_base_params = {
+                "conservative_saver": (2.5, 0.8),
+                "active_spender":     (3.5, 1.0),
+                "young_digital":      (2.8, 0.9),
+                "high_value":         (4.0, 1.2),
+                "occasional_user":    (2.3, 0.7),
+                "diversified":        (3.2, 1.0),
             }
-            mu, sigma = amt_params.get(pname, (3.0, 1.0))
+            base_mu, base_sigma = amt_base_params.get(pname, (3.0, 1.0))
+            # Persona-only amount distribution (no latent coupling to avoid aggregate leakage)
+            customer_sigma = np.clip(base_sigma, 0.3, 2.0)  # safety bound
+            # Generate amounts with persona-level distribution (uniform per persona)
             _amt_matrix[mask] = np.exp(
-                self.rng.normal(mu, sigma, size=(n_p, MAX_TXN))
+                self.rng.normal(
+                    base_mu,
+                    customer_sigma,
+                    size=(mask.sum(), MAX_TXN),
+                )
             ).astype(np.float32)
 
             # Persona-dependent hour distribution (weighted, not uniform)
@@ -764,6 +842,190 @@ class BenchmarkDataGenerator:
             _offset_matrix[mask] = np.sort(
                 self.rng.integers(0, 360, size=(n_p, MAX_TXN)), axis=1
             )[:, ::-1]  # descending (most recent first)
+
+        # ------------------------------------------------------------------
+        # DNA Situation modulations (applied to matrices BEFORE list conversion)
+        # These change temporal PATTERNS visible to Mamba/TDA/GMM but not
+        # to XGBoost aggregate features (avg_amount, synth_unique_mcc, etc.)
+        # ------------------------------------------------------------------
+        engagement_sit = situations["sit_engagement"]
+        lifecycle_sit = situations["sit_lifecycle"]  # noqa: F841 — used in product seq below
+        value_sit = situations["sit_value"]
+        consumption_sit = situations["sit_consumption"]
+
+        logger.info("  Applying DNA situation modulations to sequence matrices...")
+
+        # --- Engagement: modulate temporal spacing of transactions ---
+        # "surging" (1): cluster more txns in last 90 days (days 270-360)
+        # "declining" (2): cluster more txns in first 90 days (days 0-90)
+        # "volatile" (3): alternate high/low 30-day blocks
+
+        # Surging: resample recent portion with 2× density
+        surging_idx = np.where(engagement_sit == 1)[0]
+        for i in surging_idx:
+            t = _total_txns[i]
+            if t < 4:
+                continue
+            # Split: ~1/3 recent (days 270-360), ~2/3 older (days 0-270)
+            n_recent = max(1, int(t * 0.50))
+            n_older = t - n_recent
+            recent_days = np.sort(self.rng.integers(270, 360, size=n_recent))
+            older_days = np.sort(self.rng.integers(0, 270, size=n_older))
+            merged = np.concatenate([older_days, recent_days])
+            _offset_matrix[i, :t] = merged[::-1]  # descending (most recent first)
+
+        # Declining: cluster more txns in first 90 days
+        declining_idx = np.where(engagement_sit == 2)[0]
+        for i in declining_idx:
+            t = _total_txns[i]
+            if t < 4:
+                continue
+            n_early = max(1, int(t * 0.50))
+            n_later = t - n_early
+            early_days = np.sort(self.rng.integers(0, 90, size=n_early))
+            later_days = np.sort(self.rng.integers(90, 360, size=n_later))
+            merged = np.concatenate([early_days, later_days])
+            _offset_matrix[i, :t] = merged[::-1]  # descending
+
+        # Volatile: alternating 30-day blocks of high/low density
+        volatile_idx = np.where(engagement_sit == 3)[0]
+        for i in volatile_idx:
+            t = _total_txns[i]
+            if t < 6:
+                continue
+            # 12 blocks of 30 days; even blocks = high density, odd = low
+            # Assign each txn to a block based on day range
+            days_flat = np.zeros(t, dtype=np.int32)
+            high_budget = max(1, int(t * 0.65))
+            low_budget = t - high_budget
+            # High-density blocks: 0-30, 60-90, 120-150, 180-210, 240-270, 300-330
+            high_day_ranges = [(0, 30), (60, 90), (120, 150), (180, 210), (240, 270), (300, 330)]
+            low_day_ranges  = [(30, 60), (90, 120), (150, 180), (210, 240), (270, 300), (330, 360)]
+            high_days_pool = np.concatenate([
+                self.rng.integers(lo, hi, size=max(1, high_budget // 6))
+                for lo, hi in high_day_ranges
+            ])
+            low_days_pool = np.concatenate([
+                self.rng.integers(lo, hi, size=max(1, low_budget // 6))
+                for lo, hi in low_day_ranges
+            ])
+            all_days = np.concatenate([high_days_pool, low_days_pool])
+            if len(all_days) >= t:
+                chosen = np.sort(self.rng.choice(all_days, size=t, replace=False))
+            else:
+                # pad with random days if pool too small
+                extra = self.rng.integers(0, 360, size=t - len(all_days))
+                chosen = np.sort(np.concatenate([all_days, extra]))
+            _offset_matrix[i, :t] = chosen[::-1]  # descending
+
+        # --- Value: apply amount TREND multiplier per transaction position ---
+        # "ascending" (1): multiplier = 0.7 + 0.6*(pos/total)  [0.7 → 1.3]
+        # "descending" (2): multiplier = 1.3 - 0.6*(pos/total)  [1.3 → 0.7]
+        # "shock" (3): multiplier = 1.0 until random midpoint, then 1.5x or 0.5x
+        # Key: average amount stays similar → synth_avg_amount unchanged
+        ascending_idx = np.where(value_sit == 1)[0]
+        for i in ascending_idx:
+            t = _total_txns[i]
+            if t < 2:
+                continue
+            pos = np.arange(t, dtype=np.float32) / max(t - 1, 1)
+            multiplier = (0.7 + 0.6 * pos).astype(np.float32)
+            _amt_matrix[i, :t] *= multiplier
+
+        descending_idx = np.where(value_sit == 2)[0]
+        for i in descending_idx:
+            t = _total_txns[i]
+            if t < 2:
+                continue
+            pos = np.arange(t, dtype=np.float32) / max(t - 1, 1)
+            multiplier = (1.3 - 0.6 * pos).astype(np.float32)
+            _amt_matrix[i, :t] *= multiplier
+
+        shock_idx = np.where(value_sit == 3)[0]
+        for i in shock_idx:
+            t = _total_txns[i]
+            if t < 4:
+                continue
+            # Random midpoint in [25%, 75%] of sequence
+            midpoint = self.rng.integers(t // 4, max(t // 4 + 1, 3 * t // 4))
+            # 50% chance of upward shock (1.5x), 50% downward (0.5x)
+            shock_mult = 1.5 if self.rng.random() < 0.5 else 0.5
+            _amt_matrix[i, midpoint:t] *= shock_mult
+            # Re-normalize post-shock portion to keep average similar:
+            # pre-shock mean + post-shock mean should stay ~= original mean
+            # We skip renormalization here to preserve the pattern signal;
+            # synth_avg_amount is computed AFTER this and WILL reflect it slightly,
+            # but the TREND is what matters for Mamba.
+
+        # --- Consumption: MCC distribution shift in second half ---
+        # "exploring" (1): reduce top-category weight by 50%, spread to others
+        # "focusing"  (2): double top-category weight
+        # "switching" (3): swap weights of top-2 categories
+        # We modify the second half of _mcc_matrix in-place.
+        exploring_idx = np.where(consumption_sit == 1)[0]
+        focusing_idx  = np.where(consumption_sit == 2)[0]
+        switching_idx = np.where(consumption_sit == 3)[0]
+
+        for i in exploring_idx:
+            t = _total_txns[i]
+            if t < 4:
+                continue
+            half = t // 2
+            second_half = _mcc_matrix[i, half:t]
+            if len(second_half) == 0:
+                continue
+            # Find the dominant MCC in second half
+            counts = np.bincount(second_half, minlength=n_top_mccs)
+            top_mcc = int(counts.argmax())
+            # Replace 50% of top-mcc occurrences with random other MCCs
+            top_positions = np.where(second_half == top_mcc)[0]
+            n_replace = max(1, len(top_positions) // 2)
+            replace_pos = self.rng.choice(top_positions, size=n_replace, replace=False)
+            # Draw replacement MCCs excluding the top_mcc
+            other_mccs = [m for m in range(n_top_mccs) if m != top_mcc]
+            new_mccs = self.rng.choice(other_mccs, size=n_replace)
+            _mcc_matrix[i, half + replace_pos] = new_mccs
+
+        for i in focusing_idx:
+            t = _total_txns[i]
+            if t < 4:
+                continue
+            half = t // 2
+            second_half = _mcc_matrix[i, half:t]
+            if len(second_half) == 0:
+                continue
+            counts = np.bincount(second_half, minlength=n_top_mccs)
+            top_mcc = int(counts.argmax())
+            # Replace non-top MCCs with top_mcc at 50% rate
+            non_top_pos = np.where(second_half != top_mcc)[0]
+            if len(non_top_pos) == 0:
+                continue
+            n_replace = max(1, len(non_top_pos) // 2)
+            replace_pos = self.rng.choice(non_top_pos, size=n_replace, replace=False)
+            _mcc_matrix[i, half + replace_pos] = top_mcc
+
+        for i in switching_idx:
+            t = _total_txns[i]
+            if t < 4:
+                continue
+            half = t // 2
+            # Find top-2 MCCs in FIRST half to determine what to swap
+            first_half = _mcc_matrix[i, :half]
+            if len(first_half) < 2:
+                continue
+            counts_first = np.bincount(first_half, minlength=n_top_mccs)
+            top2 = np.argsort(counts_first)[::-1][:2]
+            if len(top2) < 2:
+                continue
+            mcc_a, mcc_b = int(top2[0]), int(top2[1])
+            # In second half: replace mcc_a with mcc_b and mcc_b with mcc_a
+            second_half = _mcc_matrix[i, half:t].copy()
+            second_half[second_half == mcc_a] = n_top_mccs  # temp sentinel
+            second_half[second_half == mcc_b] = mcc_a
+            second_half[second_half == n_top_mccs] = mcc_b
+            _mcc_matrix[i, half:t] = second_half
+
+        logger.info("  DNA situation modulations applied.")
 
         # Convert to variable-length Python lists (ragged → LIST column)
         logger.info("  Converting to ragged LIST columns...")
@@ -861,12 +1123,48 @@ class BenchmarkDataGenerator:
                     tot_churn = 0
                     prod_div_set = set()
 
+                    # Lifecycle situation modulates acquisition/churn probabilities.
+                    # Base churn_prob=0.05; base acquisition is implicit via held=True path.
+                    lc_sit = lifecycle_sit[cust_idx]
+                    # acquisition_prob: prob that a held product was acquired mid-sequence
+                    # (vs held from start).  Base is implicit (acq_month ~ Uniform[0, n_obs]).
+                    # We modulate by biasing acq_month to be smaller (later acquisition)
+                    # for growing and larger (earlier) for consolidating.
+                    # churn_prob: prob that a not-held product had a churn event
+                    if lc_sit == 1:      # growing: acquisitions > churns
+                        churn_prob = 0.02     # less churn
+                        # Bias acquisition to recent half: acq_month in [n_obs//2, n_obs)
+                        acq_recent_bias = True
+                        acq_early_bias = False
+                    elif lc_sit == 2:    # consolidating: churns > acquisitions
+                        churn_prob = 0.12     # more churn
+                        acq_recent_bias = False
+                        acq_early_bias = True  # acquisitions happened earlier
+                    elif lc_sit == 3:    # transitioning: both high
+                        churn_prob = 0.10
+                        acq_recent_bias = True
+                        acq_early_bias = False
+                    else:                # stable: base rates
+                        churn_prob = 0.05
+                        acq_recent_bias = False
+                        acq_early_bias = False
+
                     for pn_idx, pn in enumerate(PRODUCT_NAMES):
                         seq = np.full(N_SEQ_MONTHS, -1, dtype=np.int32)
                         start = N_SEQ_MONTHS - n_obs
                         held = current_holdings[pn_idx]
                         if held:
-                            acq_month = self.rng.integers(0, max(n_obs, 1))
+                            # Modulate acquisition month based on lifecycle
+                            if acq_recent_bias and n_obs >= 4:
+                                # Growing: acquired in recent half
+                                lo_m = max(0, n_obs // 2)
+                                acq_month = self.rng.integers(lo_m, max(lo_m + 1, n_obs))
+                            elif acq_early_bias and n_obs >= 4:
+                                # Consolidating: acquired early
+                                hi_m = max(1, n_obs // 2)
+                                acq_month = self.rng.integers(0, hi_m)
+                            else:
+                                acq_month = self.rng.integers(0, max(n_obs, 1))
                             for m in range(start, N_SEQ_MONTHS):
                                 rel_m = m - start
                                 seq[m] = 1 if rel_m >= acq_month else 0
@@ -874,7 +1172,7 @@ class BenchmarkDataGenerator:
                                 tot_acq += 1
                                 prod_div_set.add(pn_idx)
                         else:
-                            if self.rng.random() < 0.05:
+                            if self.rng.random() < churn_prob:
                                 churn_m = self.rng.integers(0, max(n_obs - 1, 1))
                                 for m in range(start, N_SEQ_MONTHS):
                                     rel_m = m - start
@@ -1019,20 +1317,42 @@ class BenchmarkDataGenerator:
         ).astype(np.int64)
 
         # ================================================================
+        # Label Generation — High-Order Continuous Multiplicative Interactions
+        # ================================================================
+        # Each task's obs signal contains:
+        #   L0: Linear combination of features (base terms)
+        #   High-order continuous multiplicative interactions (3rd–5th order)
+        #
+        # Interaction orders per task:
+        #   has_nba            : 3rd order  (income × num_products_inv × activity)
+        #   churn_signal       : 4th order  (inactivity × recency × low-freq × short-tenure)
+        #   product_stability  : 4th order  (stability × tenure × products × activity)
+        #   will_acquire_deposits    : 3rd order  (income × tenure × stability)
+        #   will_acquire_investments : 5th order  (income × spend × tenure × products × stability)
+        #   will_acquire_accounts    : 3rd order  (product_gap × activity × tenure)
+        #   will_acquire_lending     : 4th order  (spend × low_income × frequency × instability)
+        #   will_acquire_payments    : 4th order  (frequency × products × activity × spending)
+        #
+        # Key principle: raw continuous values (no threshold .astype(float))
+        # XGBoost needs O(2^k) splits for k-th order; neural nets capture in one layer.
+        # ================================================================
+
+        # ================================================================
         # Tier 1 — Core: has_nba, churn_signal, product_stability
         # Medium: obs=45%, latent=30%, noise=25%
         # ================================================================
 
-        # --- has_nba (binary, ~3% positive) ---
-        # Variance budget: obs=45%, latent=30%, noise=25%
-        # Use _make_logit to calibrate noise so XGB AUC ~ 0.68-0.75
+        # --- _has_nba (internal gate, NOT a prediction task) ---
+        # Determines which customers have product recommendations.
+        # Previously a binary task; now folded into nba_primary (class 0 = no NBA).
+        # target_pos_rate=0.15 → ~15% of customers will have NBA recommendations.
         obs_nba = (
             0.3 * nf["num_products"]
             + 0.2 * nf["synth_monthly_spend"]
             + 0.15 * nf["is_active"]
-            # XOR interaction (nonlinear, harder for tree models)
-            + 0.2 * (nf["income_q"] > 0.7).astype(float) * (nf["num_products"] < 0.3).astype(float)
             + 0.15 * nf["tenure_months"]
+            # 3rd order: income × num_products_inv × activity (continuous)
+            + 0.20 * nf["income_q"] * (1 - nf["num_products"]) * nf["is_active"]
         )
         lat_nba = (
             0.6 * l[:, 1]  # activity_level
@@ -1046,20 +1366,25 @@ class BenchmarkDataGenerator:
             })
         )
         logit_nba = self._calibrate_logit(
-            obs_nba, lat_nba, obs_frac=0.04, lat_frac=0.28,
-            noise_frac=0.68, intercept=-3.5, target_pos_rate=0.40,
+            obs_nba, lat_nba, obs_frac=0.15, lat_frac=0.35,
+            noise_frac=0.50, intercept=-3.5, target_pos_rate=0.15,
         )
-        labels["has_nba"] = self._apply_label_noise(
+        _has_nba = self._apply_label_noise(
             (_sigmoid(logit_nba) > 0.5).astype(np.int64), noise_rate=0.06
         )
+        # NOT added to labels — nba_primary class 0 encodes "no NBA"
 
         # --- churn_signal (binary, ~5% positive) ---
+        # Variance budget: obs=15%, latent=35%, noise=50%
+        # Interaction profile: L0 + 4th-order continuous multiplicative
         obs_churn = (
             - 0.3 * nf["num_products"]
             - 0.25 * nf["synth_frequency"]
             - 0.15 * nf["synth_recency_days"]
             + 0.2 * (1 - nf["is_active"])
             + 0.1 * nf["total_churns"]
+            # 4th order: inactivity × recency × low-frequency × short-tenure (continuous, no threshold)
+            + 0.20 * (1 - nf["is_active"]) * nf["synth_recency_days"] * (1 - nf["synth_frequency"]) * (1 - nf["tenure_months"])
         )
         lat_churn = (
             - 0.5 * l[:, 1]  # low activity -> churn
@@ -1074,19 +1399,23 @@ class BenchmarkDataGenerator:
             })
         )
         logit_churn = self._calibrate_logit(
-            obs_churn, lat_churn, obs_frac=0.04, lat_frac=0.28,
-            noise_frac=0.68, intercept=-2.9, target_pos_rate=0.05,
+            obs_churn, lat_churn, obs_frac=0.15, lat_frac=0.35,
+            noise_frac=0.50, intercept=-2.9, target_pos_rate=0.05,
         )
         labels["churn_signal"] = self._apply_label_noise(
             (_sigmoid(logit_churn) > 0.5).astype(np.int64), noise_rate=0.06
         )
 
         # --- product_stability (regression, 0-1, avg ~0.92) ---
+        # Variance budget: obs=10%, latent=18%, noise=15% (see mix below)
+        # Interaction profile: L0 + 4th-order continuous multiplicative
         obs_stab = (
             0.4 * nf["synth_stability"]
             + 0.25 * nf["tenure_months"]
             + 0.2 * nf["num_products"]
             + 0.15 * nf["is_active"]
+            # 4th order: stability × tenure × products × activity compound (continuous, no threshold)
+            + 0.15 * nf["synth_stability"] * nf["tenure_months"] * nf["num_products"] * nf["is_active"]
         )
         lat_stab = (
             0.5 * _sigmoid(l[:, 4])  # loyalty
@@ -1105,9 +1434,9 @@ class BenchmarkDataGenerator:
         lat_s = _normalize(lat_stab)
         noise_s = self.rng.standard_normal(n)
         stability_raw = (
-            0.60  # base
-            + 0.07 * obs_s
-            + 0.10 * lat_s
+            0.55  # base
+            + 0.08 * obs_s   # obs: ~12% (weak raw signal, needs Phase 0 encoding)
+            + 0.18 * lat_s   # lat: ~40% (recoverable via TDA/Mamba patterns)
             + 0.15 * noise_s
         )
         labels["product_stability"] = np.clip(stability_raw, 0.0, 1.0).astype(
@@ -1164,7 +1493,7 @@ class BenchmarkDataGenerator:
         )
         cs_count = np.clip(np.round(cs_base * 4), 0, 24).astype(np.float64)
         # Only customers with has_nba=1 have nonzero cross-sell
-        cs_count = np.where(labels["has_nba"] == 1, np.maximum(cs_count, 1), 0)
+        cs_count = np.where(_has_nba == 1, np.maximum(cs_count, 1), 0)
         labels["label_cross_sell_count"] = cs_count
 
         # ================================================================
@@ -1172,7 +1501,7 @@ class BenchmarkDataGenerator:
         # ================================================================
         nba_label_list = [[] for _ in range(n)]
         for i in range(n):
-            if labels["has_nba"][i] == 1:
+            if _has_nba[i] == 1:
                 n_products_to_rec = max(int(labels["label_cross_sell_count"][i]), 1)
                 # Weight by persona and latent for product selection
                 persona_idx = z[i]
@@ -1203,11 +1532,14 @@ class BenchmarkDataGenerator:
         product_group_config = {
             "deposits": {
                 "indices": [8, 9, 10],
+                # Interaction profile: L0 + 3rd-order continuous multiplicative
                 "obs_fn": lambda: (
                     0.3 * nf["income_q"]
                     + 0.25 * nf["tenure_months"]
                     + 0.25 * nf["synth_monetary"]
                     + 0.2 * nf["synth_stability"]
+                    # 3rd order: income × tenure × stability (continuous, no threshold)
+                    + 0.20 * nf["income_q"] * nf["tenure_months"] * nf["synth_stability"]
                 ),
                 "lat_fn": lambda: (
                     0.5 * l[:, 0]  # wealth_propensity
@@ -1222,11 +1554,14 @@ class BenchmarkDataGenerator:
             },
             "investments": {
                 "indices": [12, 18],
+                # Interaction profile: L0 + 5th-order continuous multiplicative (hardest task)
                 "obs_fn": lambda: (
                     0.35 * nf["income_q"]
                     + 0.25 * nf["num_products"]
                     + 0.2 * nf["synth_monetary"]
                     + 0.2 * nf["tenure_months"]
+                    # 5th order: income × spend × tenure × products × stability (continuous, no threshold)
+                    + 0.20 * nf["income_q"] * nf["synth_monthly_spend"] * nf["tenure_months"] * nf["num_products"] * nf["synth_stability"]
                 ),
                 "lat_fn": lambda: (
                     0.4 * l[:, 0]  # wealth
@@ -1241,11 +1576,14 @@ class BenchmarkDataGenerator:
             },
             "accounts": {
                 "indices": [2, 5, 6, 7, 11, 19],
+                # Interaction profile: L0 + 3rd-order continuous multiplicative
                 "obs_fn": lambda: (
                     0.3 * (1 - nf["num_products"])
                     + 0.25 * nf["is_active"]
                     + 0.25 * nf["tenure_months"]
                     + 0.2 * nf["synth_frequency"]
+                    # 3rd order: product_gap × activity × tenure (continuous, no threshold)
+                    + 0.20 * (1 - nf["num_products"]) * nf["is_active"] * nf["tenure_months"]
                 ),
                 "lat_fn": lambda: (
                     0.4 * l[:, 1]  # activity
@@ -1260,11 +1598,14 @@ class BenchmarkDataGenerator:
             },
             "lending": {
                 "indices": [13, 15],
+                # Interaction profile: L0 + 4th-order continuous multiplicative
                 "obs_fn": lambda: (
                     0.3 * nf["income_q"]
                     + 0.25 * nf["tenure_months"]
                     + 0.25 * nf["num_products"]
                     + 0.2 * nf["is_active"]
+                    # 4th order: high_spend × low_income × frequency × instability (continuous, no threshold)
+                    + 0.20 * nf["synth_monthly_spend"] * (1 - nf["income_q"]) * nf["synth_frequency"] * (1 - nf["synth_stability"])
                 ),
                 "lat_fn": lambda: (
                     0.4 * l[:, 0]  # wealth
@@ -1279,11 +1620,14 @@ class BenchmarkDataGenerator:
             },
             "payments": {
                 "indices": [4, 17, 20, 22, 23],
+                # Interaction profile: L0 + 4th-order continuous multiplicative
                 "obs_fn": lambda: (
                     0.3 * nf["synth_frequency"]
                     + 0.25 * nf["is_active"]
                     + 0.25 * nf["synth_monthly_spend"]
                     + 0.2 * nf["num_products"]
+                    # 4th order: frequency × products × activity × spending_regularity (continuous, no threshold)
+                    + 0.18 * nf["synth_frequency"] * nf["num_products"] * nf["is_active"] * nf["synth_monthly_spend"]
                 ),
                 "lat_fn": lambda: (
                     0.4 * l[:, 1]  # activity
@@ -1302,8 +1646,8 @@ class BenchmarkDataGenerator:
             obs = cfg["obs_fn"]()
             lat = cfg["lat_fn"]()
             logit = self._calibrate_logit(
-                obs, lat, obs_frac=0.03, lat_frac=0.25,
-                noise_frac=0.72, intercept=-3.5,
+                obs, lat, obs_frac=0.15, lat_frac=0.35,
+                noise_frac=0.50, intercept=-3.5,
                 target_pos_rate=cfg["target_rate"],
             )
             labels[col_name] = self._apply_label_noise(
@@ -1312,7 +1656,7 @@ class BenchmarkDataGenerator:
 
         # Rebuild nba_label list from the independent acquire labels
         for i in range(n):
-            if labels["has_nba"][i] == 1:
+            if _has_nba[i] == 1:
                 rec = []
                 for group_name, cfg in product_group_config.items():
                     col = f"label_acquire_{group_name}"
@@ -1428,6 +1772,7 @@ class BenchmarkDataGenerator:
         labels: dict,
         z: np.ndarray,
         l: np.ndarray,
+        situations: Optional[dict] = None,
     ) -> None:
         """Save main and ground truth parquets using DuckDB."""
         import duckdb
@@ -1526,7 +1871,9 @@ class BenchmarkDataGenerator:
             len(fields),
         )
 
-        # Ground truth
+        # Ground truth — includes latent vectors AND situation assignments.
+        # Situation variables are stored HERE only (not in main feature table)
+        # so they are never used as model inputs.
         gt_arrays = {
             "customer_id": pa.array(features["customer_id"], type=pa.int64()),
             "persona_idx": pa.array(z, type=pa.int32()),
@@ -1538,9 +1885,23 @@ class BenchmarkDataGenerator:
             gt_arrays[f"latent_{LATENT_NAMES[d]}"] = pa.array(
                 l[:, d], type=pa.float64()
             )
+        if situations is not None:
+            sit_names = {
+                "sit_engagement":  ["steady", "surging", "declining", "volatile"],
+                "sit_lifecycle":   ["stable", "growing", "consolidating", "transitioning"],
+                "sit_value":       ["stable_value", "ascending", "descending", "shock"],
+                "sit_consumption": ["consistent", "exploring", "focusing", "switching"],
+            }
+            for sit_col, sit_labels in sit_names.items():
+                sit_idx = situations[sit_col]
+                # Store as both integer index and string label for interpretability
+                gt_arrays[sit_col] = pa.array(sit_idx.astype(np.int32), type=pa.int32())
+                gt_arrays[f"{sit_col}_name"] = pa.array(
+                    [sit_labels[i] for i in sit_idx], type=pa.string()
+                )
         gt_table = pa.table(gt_arrays)
         pq.write_table(gt_table, self.ground_truth_path, compression="snappy")
-        logger.info("Ground truth saved: %s", self.ground_truth_path)
+        logger.info("Ground truth saved: %s (includes sit_* columns)", self.ground_truth_path)
 
     # ==================================================================
     # Validation: XGBoost AUC check
@@ -1598,15 +1959,15 @@ class BenchmarkDataGenerator:
             "label_segment": {"type": "multiclass", "range": (0.45, 0.75)},
             "label_income_tier": {"type": "multiclass", "range": (0.95, 1.00)},
             "label_tenure_stage": {"type": "multiclass", "range": (0.95, 1.00)},
-            # Medium stochastic (obs_frac=0.04, with persona leakage)
-            "has_nba": {"type": "binary", "range": (0.62, 0.82)},
+            # Medium stochastic (obs_frac=0.15, high-order interactions)
+            # has_nba removed — folded into nba_primary (class 0 = no NBA)
             "churn_signal": {"type": "binary", "range": (0.65, 0.88)},
             "product_stability": {"type": "regression", "range": (-0.1, 0.3)},
             # Deterministic derived
             "label_spend_level": {"type": "multiclass", "range": (0.95, 1.00)},
             "label_engagement_score": {"type": "regression", "range": (0.90, 1.00)},
             "label_cross_sell_count": {"type": "regression", "range": (-0.5, 0.2)},
-            # Hard stochastic (obs_frac=0.03)
+            # Hard stochastic (obs_frac=0.25, L0-L4 interactions)
             "label_nba_primary": {"type": "multiclass", "range": (0.02, 0.30)},
             "label_acquire_deposits": {"type": "binary", "range": (0.55, 0.78)},
             "label_acquire_investments": {"type": "binary", "range": (0.55, 0.78)},

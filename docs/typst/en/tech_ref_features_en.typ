@@ -283,7 +283,7 @@ In multidisciplinary feature engineering, "analogy" is not mere metaphor — it 
 
 Features in this system serve two simultaneous roles.
 
-+ *Predictive input*: As input tensors to the PLE-adaTT model, they contribute to the prediction of 14 tasks.
++ *Predictive input*: As input tensors to the PLE-adaTT model, they contribute to the prediction of 13 tasks.
 + *Expert routing signal*: The soft assignment probabilities ($gamma_(n k)$) from GMM are used as routing signals that weighted-combine the 20 sub-heads of the GroupTaskExpertBasket, and the 48D HMM output is fed to a dedicated Projector through a separate input path.
 
 #note[Expert Routing Granularity][

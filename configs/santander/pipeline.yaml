@@ -1,7 +1,7 @@
 # =============================================================================
 # Santander Customer Transactions Pipeline Configuration
-# 941,132 users x 89 columns x 14 tasks x 7 shared experts
-# (was 18 tasks; 4 deterministic-leakage tasks removed 2026-04-10)
+# 941,132 users x 89 columns x 13 tasks x 7 shared experts
+# (was 18 tasks; 4 deterministic-leakage removed 2026-04-10, has_nba folded 2026-04-12)
 # =============================================================================
 # User-level synthetic dataset with product holdings, transaction sequences,
 # and demographic attributes.  Pre-aggregated -- no transaction-level joins.
@@ -16,10 +16,10 @@ adapter: santander
 feature_groups_file: configs/santander/feature_groups.yaml
 
 # ---------------------------------------------------------------------------
-# Tasks -- 14 tasks across 4 tiers  (was 18; 4 removed 2026-04-10)
+# Tasks -- 13 tasks across 4 tiers  (was 18→14→13; has_nba folded into nba_primary)
 # ---------------------------------------------------------------------------
 # NOTE: fraud_risk excluded -- synth_fraud_ratio is ALL ZERO (useless label)
-# NOTE: has_nba is only 2.98% positive -- focal loss with high alpha
+# NOTE: has_nba folded into nba_primary (class 0 = no NBA, 2026-04-12)
 # NOTE: Tier 4 per-product tasks dropped (redundant with Tier 3 groups)
 # NOTE: 3 txn-based NBA tasks added (Tier 5)
 # NOTE: 4 tasks removed for deterministic leakage (feature → bucket(feature)):
@@ -32,15 +32,9 @@ tasks:
   # ===== Tier 1 — Core targets (4 tasks) =====
   # Direct labels from the dataset
 
-  - name: has_nba
-    type: binary
-    loss: focal
-    loss_params:
-      alpha: 0.90
-      gamma: 2.0
-    loss_weight: 2.5
-    label_col: has_nba
-    description: "Did customer acquire any new product in last month? (2.98% positive)"
+  # REMOVED: has_nba — folded into nba_primary (class 0 = no NBA).
+  # Binary "will acquire any product?" is derivable from nba_primary != 0.
+  # Keeping it as a separate task was redundant and inflated avg_auc.
 
   - name: churn_signal
     type: binary
@@ -302,9 +296,7 @@ tasks:
 # ---------------------------------------------------------------------------
 labels:
   # Tier 1: direct from dataset (3 labels exist as raw columns)
-  has_nba:
-    source: has_nba
-    type: direct
+  # REMOVED: has_nba — folded into nba_primary (class 0 = no NBA, 2026-04-12)
   churn_signal:
     source: churn_signal
     type: direct
@@ -464,7 +456,8 @@ task_groups:
   - name: engagement
     description: "고객이 반응하는가"
     # REMOVED from tasks: engagement_score (deterministic leakage)
-    tasks: [has_nba, next_mcc, top_mcc_shift]
+    # REMOVED: has_nba — folded into nba_primary (2026-04-12)
+    tasks: [next_mcc, top_mcc_shift]
     adatt_intra_strength: 0.8
     adatt_inter_strength: 0.3
 
@@ -501,11 +494,7 @@ adatt:
 # Task Relationships — logit transfer between tasks
 # ---------------------------------------------------------------------------
 task_relationships:
-  - source: has_nba
-    target: nba_primary
-    type: sequential
-    transfer_method: output_concat
-    description: "가입 여부 → 어떤 상품"
+  # REMOVED: has_nba → nba_primary (has_nba folded into nba_primary, 2026-04-12)
 
   - source: churn_signal
     target: product_stability
@@ -543,11 +532,11 @@ logit_transfer_strength: 0.5
 scoring:
   method: fd_tvs
   weights:
-    has_nba: 0.20
-    nba_primary: 0.30
-    cross_sell_count: 0.15
-    churn_signal: 0.15
-    product_stability: 0.10
+    # REMOVED: has_nba — folded into nba_primary (2026-04-12), weight redistributed
+    nba_primary: 0.35
+    cross_sell_count: 0.20
+    churn_signal: 0.25
+    product_stability: 0.20
     # engagement_score removed (deterministic leakage) — redistribute weight as needed
     # engagement_score: 0.10
   dna_modifier:
@@ -648,7 +637,7 @@ data:
       tasks: [churn_signal, product_stability, segment_prediction]
       val_method: random
     future_tasks:
-      tasks: [has_nba, nba_primary, will_acquire_deposits, will_acquire_investments,
+      tasks: [nba_primary, will_acquire_deposits, will_acquire_investments,
               will_acquire_accounts, will_acquire_lending, will_acquire_payments, cross_sell_count]
       val_method: temporal_latest
     sequence_tasks:
@@ -884,54 +873,40 @@ ablation:
   # NOTE: tasks_8/tasks_15/tasks_18 renamed to tasks_6/tasks_11/tasks_14 because
   # 4 deterministic-leakage tasks were removed (tenure_stage, spend_level,
   # engagement_score, income_tier). Old tier names kept as comments for reference.
+  # Task tiers updated 2026-04-12: has_nba folded into nba_primary (18→14→13)
   task_tiers:
-    tasks_4:
-      - has_nba
+    tasks_3:  # was tasks_4; removed has_nba
       - churn_signal
       - product_stability
       - nba_primary
-    tasks_6:  # was tasks_8; removed tenure_stage, spend_level, engagement_score
-      - has_nba
+    tasks_5:  # was tasks_6; removed has_nba
       - churn_signal
       - product_stability
       - nba_primary
-      # REMOVED: tenure_stage (deterministic leakage)
-      # REMOVED: spend_level (deterministic leakage)
       - cross_sell_count
-      # REMOVED: engagement_score (deterministic leakage)
       - segment_prediction
-    tasks_11:  # was tasks_15; removed tenure_stage, spend_level, engagement_score, income_tier
-      - has_nba
+    tasks_10:  # was tasks_11; removed has_nba
       - churn_signal
       - product_stability
       - nba_primary
-      # REMOVED: tenure_stage (deterministic leakage)
-      # REMOVED: spend_level (deterministic leakage)
       - cross_sell_count
-      # REMOVED: engagement_score (deterministic leakage)
       - will_acquire_deposits
       - will_acquire_investments
       - will_acquire_accounts
       - will_acquire_lending
       - will_acquire_payments
       - segment_prediction
-      # REMOVED: income_tier (deterministic leakage)
-    tasks_14:  # was tasks_18; removed tenure_stage, spend_level, engagement_score, income_tier
-      - has_nba
+    tasks_13:  # was tasks_14; removed has_nba — this is the full task set
       - churn_signal
       - product_stability
       - nba_primary
-      # REMOVED: tenure_stage (deterministic leakage)
-      # REMOVED: spend_level (deterministic leakage)
       - cross_sell_count
-      # REMOVED: engagement_score (deterministic leakage)
       - will_acquire_deposits
       - will_acquire_investments
       - will_acquire_accounts
       - will_acquire_lending
       - will_acquire_payments
       - segment_prediction
-      # REMOVED: income_tier (deterministic leakage)
       - next_mcc
       - mcc_diversity_trend
       - top_mcc_shift

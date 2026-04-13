@@ -3242,7 +3242,7 @@ scripts/hooks/
     #set text(size: 6.5pt)
     #align(center)[
       #grid(
-        columns: (1fr, auto, 1fr, auto, 1fr, auto, 1fr),
+        columns: (1fr, auto, 1fr, auto, 1fr, auto, 1fr, auto, 1fr),
         align: center + horizon,
         gutter: 2pt,
 

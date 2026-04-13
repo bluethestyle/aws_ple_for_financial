@@ -808,7 +808,7 @@ Feature Groups:                Expert Networks:
    Total model parameters: **~2.8M** (down from 4.77M pre-routing, input dims decreased).
 
 4. If `target_experts` is empty, the group is broadcast to all experts
-   (equivalent to the old uniform 316D behaviour).
+   (equivalent to the old uniform ~350D behaviour).
 
 ### Accessing the routing map
 

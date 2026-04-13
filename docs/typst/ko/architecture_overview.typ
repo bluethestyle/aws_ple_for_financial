@@ -449,19 +449,19 @@ Expert Basket (core.model.ple.experts.ExpertBasket)
 
 == 4개 금융 DNA 그룹
 
-초기 설계에서는 GMM 클러스터별 태스크 서브헤드를 두려 했으나, K=20, T=14이면 서브헤드 280개 → 관리 불가, 과적합 위험. 방향을 전환하여 *태스크를 금융적 DNA 관점으로 그룹핑*했다:
+초기 설계에서는 GMM 클러스터별 태스크 서브헤드를 두려 했으나, K=20, T=13이면 서브헤드 260개 → 관리 불가, 과적합 위험. 방향을 전환하여 *태스크를 금융적 DNA 관점으로 그룹핑*했다:
 
 #table(
   columns: (auto, 1fr, 1fr, auto, auto),
   align: (left, left, left, center, center),
   table.header[*Group*][*금융 DNA*][*포함 태스크*][*intra*][*inter*],
-  [engagement], [고객이 반응하는가], [has\_nba, next\_mcc, top\_mcc\_shift], [0.8], [0.3],
+  [engagement], [고객이 반응하는가], [next\_mcc, top\_mcc\_shift], [0.8], [0.3],
   [lifecycle], [고객이 어디에 있는가], [churn\_signal, product\_stability, segment\_prediction], [0.7], [0.3],
   [value], [고객이 얼마나 가치있는가], [mcc\_diversity\_trend], [0.6], [0.3],
   [consumption], [고객이 무엇을 살 것인가], [nba\_primary, cross\_sell\_count, will\_acquire\_\* (5개)], [0.7], [0.3],
 )
 
-총 *14개 태스크*가 4개 의미 그룹으로 구성된다.
+총 *13개 태스크*가 4개 의미 그룹으로 구성된다.
 
 == Adaptive Task Transfer (adaTT)
 
@@ -741,12 +741,10 @@ LGBM Student (CPU 학습)
   columns: (auto, auto),
   align: (left, center),
   table.header[*태스크*][*가중치*],
-  [has\_nba], [0.20],
   [nba\_primary], [0.30],
   [cross\_sell\_count], [0.15],
   [churn\_signal], [0.15],
   [product\_stability], [0.10],
-  [engagement\_score], [0.10],
 )
 
 === DNA Modifier
@@ -887,7 +885,7 @@ EncryptionPipeline.process_source()
       node((0, 4), [*Stage 2: SchemaClassifier* #text(size: 6pt)[(5-Axis 분류)]], width: 55mm, fill: proc-fill, name: <s2>),
       node((0, 5), [*Stage 3: EncryptionPipeline* #text(size: 6pt)[(PII → SHA256 → INT32)]], width: 55mm, fill: proc-fill, name: <s3e>),
       node((0, 6), [*Stage 4: FeatureGroupPipeline* #text(size: 6pt)[(8 Generators + Normalization)]], width: 55mm, fill: proc-fill, name: <s4>),
-      node((0, 7), [*Stage 5: LabelDeriver* #text(size: 6pt)[(14 tasks, config-driven)]], width: 55mm, fill: proc-fill, name: <s5>),
+      node((0, 7), [*Stage 5: LabelDeriver* #text(size: 6pt)[(13 tasks, config-driven)]], width: 55mm, fill: proc-fill, name: <s5>),
       node((0, 8), [*Stage 5.5: LeakageValidator* #text(size: 6pt)[(4-check, auto-drop)]], width: 55mm, fill: valid-fill, name: <s55>),
       node((0, 9), [*Stage 6: SequenceBuilder* #text(size: 6pt)[(flat → 3D tensors)]], width: 55mm, fill: proc-fill, name: <s6>),
 
@@ -1066,7 +1064,7 @@ class PLEInput:
 시스템의 모든 파라미터는 2개 YAML 파일로 관리된다:
 
 *`pipeline.yaml`*: 태스크 정의, 모델 구조, 학습 파라미터, AWS 인프라 설정
-- `tasks`: 14개 태스크 (name, type, loss, loss\_weight, label\_col)
+- `tasks`: 13개 태스크 (name, type, loss, loss\_weight, label\_col)
 - `model.ple`: num\_layers, extraction\_dim, expert\_basket
 - `model.adatt`: task\_groups, intra/inter strength
 - `model.logit_transfers`: 3개 전이 엣지

@@ -52,10 +52,13 @@ from core.training.config import TrainingConfig
 # Logging — SageMaker captures stdout/stderr for CloudWatch
 # ---------------------------------------------------------------------------
 
+# Force UTF-8 on stdout to avoid cp949 UnicodeEncodeError on Windows
+# when log messages contain em-dash or other non-ASCII characters.
+_utf8_stdout = open(sys.stdout.fileno(), mode="w", encoding="utf-8", closefd=False)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    handlers=[logging.StreamHandler(_utf8_stdout)],
 )
 logger = logging.getLogger("sagemaker-training")
 
@@ -723,6 +726,42 @@ def build_model(feature_schema, label_schema, hp, input_dim, device, config=None
             model_config["adatt"] = {"enabled": False}
             logger.info("Structure ablation: adaTT disabled")
 
+    # -- Structure ablation: CGC gate toggle --
+    # use_cgc_gate=false → CGC attention not built; tasks use raw shared expert output.
+    use_cgc_gate_raw = hp.get("use_cgc_gate")
+    if use_cgc_gate_raw is not None:
+        use_cgc_gate = json.loads(use_cgc_gate_raw) if isinstance(use_cgc_gate_raw, str) else use_cgc_gate_raw
+        if not use_cgc_gate:
+            model_config.setdefault("cgc", {})["enabled"] = False
+            logger.info("Structure ablation: CGC gate disabled")
+
+    # -- Structure ablation: GroupTaskExpert toggle --
+    # use_group_task_expert=false → GroupTaskExpertBasket not built; falls back to legacy MLP per task.
+    use_gte_raw = hp.get("use_group_task_expert")
+    if use_gte_raw is not None:
+        use_gte = json.loads(use_gte_raw) if isinstance(use_gte_raw, str) else use_gte_raw
+        if not use_gte:
+            model_config.setdefault("group_task_expert", {})["enabled"] = False
+            logger.info("Structure ablation: GroupTaskExpert disabled")
+
+    # -- Structure ablation: Logit transfer toggle --
+    # use_logit_transfer=false → clears all task-to-task logit transfer relationships.
+    use_lt_raw = hp.get("use_logit_transfer")
+    if use_lt_raw is not None:
+        use_lt = json.loads(use_lt_raw) if isinstance(use_lt_raw, str) else use_lt_raw
+        if not use_lt:
+            label_schema["task_relationships"] = []
+            logger.info("Structure ablation: Logit transfers disabled")
+
+    # -- Structure ablation: HMM projectors toggle --
+    # use_hmm_projectors=false → HMM triple-mode projectors not built.
+    use_hmm_raw = hp.get("use_hmm_projectors")
+    if use_hmm_raw is not None:
+        use_hmm = json.loads(use_hmm_raw) if isinstance(use_hmm_raw, str) else use_hmm_raw
+        if not use_hmm:
+            model_config["_disable_hmm_projectors"] = True
+            logger.info("Structure ablation: HMM projectors disabled")
+
     # -- Loss weighting --
     lw_cfg = model_config.get("loss_weighting", {})
     loss_weighting = LossWeightingConfig(
@@ -753,6 +792,12 @@ def build_model(feature_schema, label_schema, hp, input_dim, device, config=None
     if gate_type_raw != "softmax":
         logger.info("Structure ablation: gate_type=%s", gate_type_raw)
 
+    # -- CGC enabled/disabled (ablation toggle) --
+    cgc_cfg_raw = model_config.get("cgc", {})
+    if cgc_cfg_raw and not cgc_cfg_raw.get("enabled", True):
+        from core.model.ple.config import CGCConfig
+        ple_config.cgc = CGCConfig(enabled=False)
+        logger.info("PLEConfig: CGC attention disabled")
 
     # -- Per-expert input dimensions from model config --
     expert_input_dims_raw = model_config.get("expert_input_dims", {})
@@ -893,7 +938,7 @@ def build_model(feature_schema, label_schema, hp, input_dim, device, config=None
             inter_group_strength=adatt_cfg_raw.get("inter_group_strength", 0.3),
             transfer_lambda=adatt_cfg_raw.get("transfer_lambda", 0.1),
             temperature=adatt_cfg_raw.get("temperature", 1.0),
-            warmup_epochs=adatt_cfg_raw.get("warmup_epochs", 10),
+            warmup_epochs=adatt_cfg_raw.get("warmup_epochs", 3),
             freeze_epoch=_freeze,
             grad_interval=adatt_cfg_raw.get("grad_interval", 10),
         )
@@ -938,6 +983,10 @@ def build_model(feature_schema, label_schema, hp, input_dim, device, config=None
     hmm_gm_map = model_config.get("hmm_group_mode_map", {})
     if hmm_gm_map:
         ple_config.hmm_group_mode_map = {str(k): str(v) for k, v in hmm_gm_map.items()}
+
+    # -- HMM projectors enabled/disabled (ablation toggle) --
+    if model_config.get("_disable_hmm_projectors"):
+        ple_config.hmm_projectors_enabled = False
 
     # -- Multidisciplinary routing from schema --
     md_routing = model_config.get("multidisciplinary_routing", {})
@@ -2029,19 +2078,33 @@ def main() -> None:
     trainer_phase = _phase_map.get(phase, "full")
 
     # Build TrainingConfig
+    # All scheduler/optimizer params read from hp first, then YAML config, then safe defaults.
+    _warmup_epochs = int(hp.get("warmup_epochs", max(3, epochs // 3)))
+    _weight_decay = float(hp.get("weight_decay", 0.01))
+    _clip_norm = float(hp.get("clip_norm", 5.0))
+    _cosine_t0 = int(hp.get("cosine_t0", max(10, epochs // 3)))
+    _cosine_t_mult = int(hp.get("cosine_t_mult", 2))
+    _phase2_warmup_epochs = int(hp.get("phase2_warmup_epochs", 2))
+    _phase2_cosine_t0 = int(hp.get("phase2_cosine_t0", max(6, epochs // 5)))
+    logger.info(
+        "Scheduler/optimizer HPs: warmup=%d, cosine_t0=%d, cosine_t_mult=%d, "
+        "phase2_warmup=%d, phase2_cosine_t0=%d, weight_decay=%.4f, clip_norm=%.1f",
+        _warmup_epochs, _cosine_t0, _cosine_t_mult,
+        _phase2_warmup_epochs, _phase2_cosine_t0, _weight_decay, _clip_norm,
+    )
     training_cfg_dict: Dict[str, Any] = {
         "batch_size": batch_size,
-        "optimizer": {"name": "adamw", "learning_rate": lr, "weight_decay": 0.01},
+        "optimizer": {"name": "adamw", "learning_rate": lr, "weight_decay": _weight_decay},
         "scheduler": {
             "name": "cosine",
-            "warmup_epochs": 3,
-            "cosine_t0": max(10, epochs // 3),
-            "cosine_t_mult": 2,
-            "phase2_warmup_epochs": 2,
-            "phase2_cosine_t0": max(6, epochs // 5),
+            "warmup_epochs": _warmup_epochs,
+            "cosine_t0": _cosine_t0,
+            "cosine_t_mult": _cosine_t_mult,
+            "phase2_warmup_epochs": _phase2_warmup_epochs,
+            "phase2_cosine_t0": _phase2_cosine_t0,
         },
         "amp": {"enabled": use_amp},
-        "gradient": {"clip_norm": 5.0, "accumulation_steps": grad_accum_steps},
+        "gradient": {"clip_norm": _clip_norm, "accumulation_steps": grad_accum_steps},
         "early_stopping": {"enabled": True, "patience": patience, "auc_decline_patience": patience},
         "checkpoint": {"dir": checkpoint_dir, "save_every_n_epochs": 1, "max_to_keep": 3},
         "phase1": {"epochs": epochs if trainer_phase in ("phase1", "full") else 0},
@@ -2050,6 +2113,7 @@ def main() -> None:
     }
 
     # Merge YAML training block if present
+    # HP (SM_HPS) values in training_cfg_dict take priority over YAML defaults.
     yaml_training = config.get("training", {})
     if yaml_training:
         import copy
@@ -2059,6 +2123,9 @@ def main() -> None:
         merged.setdefault("amp", {}).update(training_cfg_dict["amp"])
         merged.setdefault("early_stopping", {}).update(training_cfg_dict["early_stopping"])
         merged.setdefault("checkpoint", {}).update(training_cfg_dict["checkpoint"])
+        # CRITICAL: scheduler must be merged too — otherwise YAML's warmup_epochs
+        # silently overrides the HP value. This was the source of the warmup=3 bug.
+        merged.setdefault("scheduler", {}).update(training_cfg_dict["scheduler"])
         merged["batch_size"] = batch_size
         merged["experiment_name"] = task_name
         merged.setdefault("phase1", {})["epochs"] = training_cfg_dict["phase1"]["epochs"]

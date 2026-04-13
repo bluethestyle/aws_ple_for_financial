@@ -1392,8 +1392,8 @@ def run_phase3(
     cross_scenarios = []
     for tier_name, task_list in TASK_TIERS.items():
         for struct_name, struct_flags in STRUCTURE_VARIANTS.items():
-            # Skip tasks_18 × full — same as Phase 1 "full" baseline
-            if tier_name == "tasks_18" and struct_name == "full":
+            # Skip tasks_13 × full — same as Phase 1 "full" baseline
+            if tier_name == "tasks_13" and struct_name == "full":
                 continue
             cross_scenarios.append({
                 "name": f"{tier_name}-{struct_name}",
@@ -1462,11 +1462,11 @@ def _select_best_config(
     best: Dict[str, Any] = {
         "feature_scenario": "full",
         "expert_scenario": "full_basket",
-        "task_tier": "tasks_18",
+        "task_tier": "tasks_13",
         "structure_variant": "full",
         "use_ple": True,
         "use_adatt": True,
-        "active_tasks": TASK_TIERS["tasks_18"],
+        "active_tasks": TASK_TIERS["tasks_13"],
         "best_metric": None,
     }
 
@@ -1507,11 +1507,11 @@ def _select_best_config(
             score = metrics.get("aggregate_score", 0.0)
             if score > best_cross_score:
                 best_cross_score = score
-                tier = r.get("tier", "tasks_18")
+                tier = r.get("tier", "tasks_13")
                 struct = r.get("structure", "full")
                 best["task_tier"] = tier
                 best["structure_variant"] = struct
-                best["active_tasks"] = TASK_TIERS.get(tier, TASK_TIERS["tasks_18"])
+                best["active_tasks"] = TASK_TIERS.get(tier, TASK_TIERS["tasks_13"])
                 best["use_ple"] = STRUCTURE_VARIANTS.get(struct, STRUCTURE_VARIANTS["full"])["use_ple"]
                 best["use_adatt"] = STRUCTURE_VARIANTS.get(struct, STRUCTURE_VARIANTS["full"])["use_adatt"]
 
@@ -1549,11 +1549,11 @@ def run_phase4(
         best_config = {
             "feature_scenario": "full",
             "expert_scenario": "full_basket",
-            "task_tier": "tasks_18",
+            "task_tier": "tasks_13",
             "structure_variant": "full",
             "use_ple": True,
             "use_adatt": True,
-            "active_tasks": TASK_TIERS["tasks_18"],
+            "active_tasks": TASK_TIERS["tasks_13"],
         }
 
     # -- Step 4a: Train teacher with best config (or use provided model-uri) --
@@ -1581,7 +1581,7 @@ def run_phase4(
             "ablation_type": "best_config",
             "removed_feature_groups": json.dumps(feature_scenario["remove"]),
             "shared_experts": json.dumps(expert_scenario["experts"]),
-            "active_tasks": json.dumps(best_config.get("active_tasks", TASK_TIERS["tasks_18"])),
+            "active_tasks": json.dumps(best_config.get("active_tasks", TASK_TIERS["tasks_13"])),
             "use_ple": json.dumps(best_config.get("use_ple", True)),
             "use_adatt": json.dumps(best_config.get("use_adatt", True)),
             **TRAINING_DEFAULTS,
@@ -1743,12 +1743,12 @@ def run_phase5(
         if metrics:
             collected_metrics[f"p2_{scenario['name']}"] = metrics
 
-    # Phase 3 metrics (task x structure cross; tasks_18-full = Phase 1 "full")
+    # Phase 3 metrics (task x structure cross; tasks_13-full = Phase 1 "full")
     if p1_full:
-        collected_metrics["p3_tasks_18-full"] = p1_full  # reuse as baseline
+        collected_metrics["p3_tasks_13-full"] = p1_full  # reuse as baseline
     for tier_name in TASK_TIERS:
         for struct_name in STRUCTURE_VARIANTS:
-            if tier_name == "tasks_18" and struct_name == "full":
+            if tier_name == "tasks_13" and struct_name == "full":
                 continue  # already reused from Phase 1
             scenario_name = f"{tier_name}-{struct_name}"
             s3_path = f"{s3_base}/phase3/{scenario_name}/output/eval_metrics.json"

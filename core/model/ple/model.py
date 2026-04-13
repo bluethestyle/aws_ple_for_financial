@@ -685,6 +685,12 @@ class PLEModel(nn.Module):
             self.hmm_projectors = None
             return
 
+        # Ablation toggle: disable HMM projectors when requested
+        if not getattr(cfg, "hmm_projectors_enabled", True):
+            self.hmm_projectors = None
+            logger.info("HMM projectors: disabled (ablation toggle)")
+            return
+
         # Resolve group -> mode mapping (config override or default)
         self._hmm_group_mode_map: Dict[str, str] = (
             dict(cfg.hmm_group_mode_map)
@@ -1058,6 +1064,7 @@ class PLEModel(nn.Module):
                 "temperature": cfg.dwa_temperature,
                 "window_size": cfg.dwa_window_size,
             },
+            task_loss_weights=self.config.task_loss_weights or None,
         )
 
     # ------------------------------------------------------------------

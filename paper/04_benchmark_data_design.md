@@ -31,14 +31,14 @@
 | Tier | 레이블 | obs_frac | lat_frac | noise_frac | label_noise | XGB AUC ceiling |
 |------|--------|----------|----------|------------|-------------|-----------------|
 | Easy | segment | 결정론적 | - | - | - | 0.95-1.0 |
-| Core | has_nba, churn_signal | 0.04 | 0.28 | 0.68 | 6% | 0.58-0.65 |
+| Core | churn_signal | 0.04 | 0.28 | 0.68 | 6% | 0.58-0.65 |
 | Hard | will_acquire_* (5개) | 0.03 | 0.25 | 0.72 | 8% | 0.50-0.56 |
 | Regression | product_stability | 연속 | - | 직접 가산 | - | R2 0.0-1.0 |
 | Very Hard | next_mcc, top_mcc_shift | 0.02 | 0.20 | 0.78 | 5% | 0.50-0.51 |
 
 ### Label Noise (Post-hoc Flipping)
 - 목적: AUC ceiling을 강제로 제한 (feature-latent 상관 통한 우회 방지)
-- has_nba/churn_signal: 6% 랜덤 플립
+- churn_signal: 6% 랜덤 플립 (has_nba는 nba_primary class 0으로 통합되어 별도 레이블 없음)
 - will_acquire_*: 8% 랜덤 플립
 - top_mcc_shift: 5% 랜덤 플립
 
@@ -49,13 +49,13 @@
 - 해결: run_generators_duckdb()에서 label_cols 자동 제외
 - 검증: XGBoost AUC가 1.0 → 0.60으로 정상화
 
-### 검증 수치 (수정 후)
+### 검증 수치 (수정 후, benchmark v4 기준 — v12에서 has_nba는 nba_primary class 0으로 통합)
 ```
 XGBoost AUC (all 316 features):
-  has_nba:      0.6081
+  has_nba:      0.6081  # v4 기준; v12에서 nba_primary로 통합
   churn_signal: 0.6531
 
-Per-group AUC (has_nba):
+Per-group AUC (has_nba, v4 기준):
   demographics:        0.5932
   txn_behavior:        0.6051
   hmm_states:          0.5803
@@ -71,6 +71,6 @@ Per-group AUC (has_nba):
 
 - 고객 수: 1,000,000
 - 컬럼 수: 106 (raw) → 316 (Phase 0 후 features)
-- 레이블: 14 tasks
+- 레이블: 13 tasks (benchmark v12; has_nba → nba_primary class 0 통합)
 - 파일 크기: ~1.1GB (raw), ~1.2GB (Phase 0 output)
 - 시퀀스: LIST 컬럼 (ragged tensor), 최대 12개월 × 30 거래

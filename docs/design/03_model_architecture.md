@@ -65,7 +65,7 @@ Model Architecture는 Stage 8 (PLETrainer)의 모델 구조를 정의한다.
 │                               │                                         │
 │                               ▼                                         │
 │          ┌──────────────────────────────────────────────────┐           │
-│          │   Task Towers (14개) — TowerRegistry             │           │
+│          │   Task Towers (13개) — TowerRegistry             │           │
 │          │   standard: binary/regression/multiclass          │           │
 │          │   contrastive: brand_prediction 등                │           │
 │          ├──────────────────────────────────────────────────┤           │
@@ -255,10 +255,12 @@ Per-group Linear projection → tower input에 additive fusion.
 
 | Group | 태스크 | intra 강도 | inter 강도 |
 |-------|--------|-----------|-----------|
-| **engagement** | has_nba, next_mcc, top_mcc_shift | 0.8 | 0.3 |
+| **engagement** | next_mcc, top_mcc_shift | 0.8 | 0.3 |
 | **lifecycle** | churn_signal, product_stability, segment_prediction | 0.7 | 0.3 |
 | **value** | mcc_diversity_trend, cross_sell_count | 0.6 | 0.3 |
 | **consumption** | nba_primary, will_acquire_* (5개) | 0.7 | 0.3 |
+
+> **참고 (2026-04-12)**: has_nba는 nba_primary (multiclass)로 통합됨 — nba_primary의 class 0 = no NBA. engagement 그룹은 [next_mcc, top_mcc_shift]로 축소 (총 13 tasks, binary 7개).
 
 ### adaTT Config
 
@@ -277,13 +279,14 @@ class AdaptiveTaskTransfer(nn.Module):
 
 ## Logit Transfer (3-Method Dispatch)
 
-### 3개 전이 엣지
+### 2개 전이 엣지
 
 | Source | Target | Method | 의미 |
 |--------|--------|--------|------|
-| `has_nba` | `nba_primary` | output_concat | 가입 여부 → 어떤 상품 |
 | `churn_signal` | `product_stability` | output_concat | 이탈 → 상품 안정성 |
 | `next_mcc` | `nba_primary` | output_concat | 다음 업종 → 다음 상품 |
+
+> **참고 (2026-04-12)**: has_nba→nba_primary 전이 엣지 제거됨 — has_nba가 nba_primary로 통합되어 중복 전이가 불필요해짐.
 
 ### 3가지 전이 방법
 
@@ -377,11 +380,11 @@ FP16 tower outputs는 +/-65504 범위를 초과할 수 있으므로, loss 계산
 Binary 태스크의 focal_alpha는 양성 비율(positive rate)에 기반하여 calibrated:
 
 ```yaml
-# 예: has_nba (2.98% positive)
-- name: has_nba
+# 예: churn_signal (5.1% positive)
+- name: churn_signal
   loss: focal
   loss_params:
-    alpha: 0.90    # 높은 alpha → 양성 샘플 가중치 증가
+    alpha: 0.85    # 높은 alpha → 양성 샘플 가중치 증가
     gamma: 2.0
 ```
 
@@ -444,11 +447,10 @@ task_tower:
 scoring:
   method: fd_tvs
   weights:
-    has_nba: 0.25
-    nba_primary: 0.30
-    cross_sell_count: 0.20
-    churn_signal: 0.15
-    product_stability: 0.10
+    nba_primary: 0.40    # class 0 = no NBA; has_nba 통합으로 가중치 상향
+    cross_sell_count: 0.25
+    churn_signal: 0.20
+    product_stability: 0.15
 ```
 
 ### DNA Modifier
@@ -573,7 +575,7 @@ class PLEInput:
 | Expert 라우팅 | 암묵적 (코드 내 분기) | **5-Axis FeatureRouter — 현재 활성** (`feature_groups.yaml` target_experts 기반 자동 생성) | 피처→Expert 매핑 투명화, config-driven |
 | Expert 선택 | 전체 사용 | **Pool→Basket→CGC 3계층** | Config-driven subset selection |
 | CGC | 기본 | **dim_normalize=True** + entropy regularization | Expert 출력 균형 + collapse 방지 |
-| 태스크 수 | 16개 고정 | **14개** (config 확장 가능) | Tier 5 txn-based NBA 추가 |
+| 태스크 수 | 16개 고정 | **13개** (config 확장 가능) | has_nba → nba_primary 통합(2026-04-12); Tier 5 txn-based NBA 포함 |
 | 태스크 그룹 | 4그룹 하드코딩 | YAML task_groups (4 semantic groups) | adaTT + routing 공통 참조 |
 | HMM Routing | 없음 | **Triple-Mode → task group 라우팅** | 모드별 특화 정보 전달 |
 | Multidisciplinary | Flat 피처 | **24D → 4×6D per-task-group 라우팅** | 학제별 도메인 전문성 |
