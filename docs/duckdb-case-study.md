@@ -262,6 +262,32 @@ pandas is never in the critical path.
 
 ---
 
+## The register/unregister Pattern
+
+Every DuckDB interaction in the codebase follows the same idiom:
+
+```python
+con = duckdb.connect()
+try:
+    con.register("_table_name", df)          # zero-copy — no data copied
+    result = con.execute("SELECT ...").df()  # or .arrow() / .fetchnumpy()
+finally:
+    con.unregister("_table_name")
+    con.close()
+```
+
+`con.register()` exposes a pandas DataFrame, Arrow Table, or numpy array
+to DuckDB SQL without copying the underlying buffers. The `finally` block
+is important: the pipeline opens multiple DuckDB connections sequentially
+within a single training job, and leaked connections accumulate memory.
+
+This pattern appears in every pipeline stage — adapter, label deriver,
+normalizer, sequence builder, feature merger, data loader — making
+DuckDB's SQL engine a transparent layer between Python objects and
+columnar operations.
+
+---
+
 ## Pattern 6: Synthetic Data Generation
 
 DuckDB is not just used for *processing* data — it is also used for
