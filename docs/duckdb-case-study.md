@@ -12,26 +12,31 @@
 
 This project is the AWS cloud extension of an on-premises financial
 recommendation system running inside a Korean public financial institution.
-The on-premises environment is extreme: an air-gapped network, a desktop PC
-in a server room without dedicated cooling, an RTX 4070 (12 GB VRAM),
-and 64 GB RAM. No Spark, no Hadoop, no distributed compute.
-Requesting a GPU cluster in a financial institution is not a technical
-problem — it is a budget approval problem that does not get approved.
 
-The system processes 13 prediction tasks, 7 heterogeneous expert networks
-(PLE architecture), 941K customers, ~403 features after Phase 0
-feature engineering, and 24M transaction rows for temporal sequences.
+**On-premises production scale**: 12 million customers, 734 features,
+16 prediction tasks, 7 heterogeneous expert networks (PLE architecture).
+The environment has Hive for data lake storage but no Spark or Impala.
+All post-Hive processing — feature engineering, label derivation,
+normalization, model input construction — runs on a single workstation
+(RTX 4070 12 GB VRAM, 128 GB RAM) in an air-gapped network.
+Requesting a Spark cluster or GPU infrastructure in a financial institution
+is not a technical problem — it is a budget approval problem that does not
+get approved.
 
-**With pandas, this pipeline would not exist.**
-The 941K × 403 feature matrix consumed ~3 GB as a DataFrame, but intermediate
-operations — 13 sequential `.groupby().apply(lambda)` for label derivation,
-wide joins for feature merging, sliding windows over 24M rows — pushed peak
-memory well beyond 64 GB. A single label derivation pass took 40+ minutes.
-On the on-premises desktop, pandas OOM-killed the process before Phase 0
-could complete.
+With pandas or SQLite on this workstation, the pipeline hit severe bottlenecks:
+OOM on wide joins, 40+ minute label derivation passes, and no memory headroom
+for the PyTorch training that follows in the same process. Running Spark locally
+was not viable — JVM overhead alone consumed too much of the 128 GB.
 
 The question was not "how do we make it faster?" but
 "how do we make it *possible* on this machine?"
+
+**This case study** documents the DuckDB patterns from the AWS benchmark
+version of the pipeline (1M synthetic customers, ~403 features after Phase 0,
+open-source). The benchmarks below use this synthetic dataset.
+The on-premises codebase (12M real customers, 734 features, 240+ DuckDB
+source files) uses identical patterns and is being prepared for public
+release separately. Production data is not included for regulatory reasons.
 
 ---
 
@@ -367,8 +372,11 @@ directions: **generation** (numpy → Arrow → Parquet) and **consumption**
 
 ## Benchmarks
 
-Measured on the Phase 0 output (941K × 403 columns, benchmark_v12)
-on the development workstation (RTX 4070, 64 GB RAM).
+Measured on the AWS benchmark synthetic dataset (941K × 403 columns,
+Phase 0 output from benchmark_v12) on the development workstation
+(RTX 4070, 64 GB RAM). Production-scale benchmarks (12M × 734)
+on the on-premises workstation (128 GB RAM) will be added when the
+on-premises codebase is publicly released.
 Reproducible with `scripts/benchmark_duckdb_vs_pandas.py`.
 
 ### Speed

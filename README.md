@@ -60,7 +60,7 @@ Customer Data (bank/card transactions)
 
 | Layer | Technology |
 |-------|-----------|
-| Data Processing | DuckDB, cuDF, PyArrow (pandas-free) |
+| Data Processing | DuckDB (sole backend, 240+ files on-prem), cuDF, PyArrow — [pandas-free pipeline](docs/duckdb-case-study.md) |
 | Training | PyTorch, SageMaker Spot |
 | Feature Engineering | 10 GPU-accelerated generators |
 | Serving | AWS Lambda (serverless, no GPU) |
