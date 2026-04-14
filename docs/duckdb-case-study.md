@@ -54,7 +54,7 @@ through training:
 │  DATA GENERATION (scripts/generate_benchmark_data.py)       │
 │                                                             │
 │  numpy random     DuckDB SQL aggregation     Arrow → Parquet│
-│  (raw matrices) → (synth_* features)       → (1.2 GB file) │
+│  (raw matrices) → (synth_* features)       → (1.5 GB file) │
 └────────────────────────────┬────────────────────────────────┘
                              │
                              ▼
@@ -373,8 +373,9 @@ directions: **generation** (numpy → Arrow → Parquet) and **consumption**
 ## Benchmarks
 
 Measured on the AWS benchmark synthetic dataset (941K × 403 columns,
-Phase 0 output from benchmark_v12) on the development workstation
-(RTX 4070, 64 GB RAM). Production-scale benchmarks (12M × 734)
+Phase 0 output from benchmark_v12) on the local development workstation
+(RTX 4070, 64 GB RAM) — the same machine used for all development
+before submitting to SageMaker. Production-scale benchmarks (12M × 734)
 on the on-premises workstation (128 GB RAM) will be added when the
 on-premises codebase is publicly released.
 Reproducible with `scripts/benchmark_duckdb_vs_pandas.py`.
@@ -406,12 +407,12 @@ tensor construction boundary.
 | Filter + aggregate | **15.4 GB** | **1.1 MB** | 14,000× |
 | Parquet full read | 15.1 GB | 14.4 GB | ~1× |
 
-This is why DuckDB matters for this project. On the on-premises desktop
-with 64 GB RAM, *every pandas operation* that touches the full dataset
-consumes 15 GB. With 13 label derivations, feature merging, normalization,
-and tensor construction happening sequentially, pandas peak memory easily
-exceeds 40 GB — leaving no headroom for PyTorch training that follows
-immediately after.
+This is why DuckDB matters for this project. On the on-premises workstation
+with 128 GB RAM, *every pandas operation* that touches the full dataset
+(12M × 734) consumes far more than the 15 GB shown here at 1M scale.
+With 16 label derivations, feature merging, normalization,
+and tensor construction happening sequentially, pandas peak memory
+leaves no headroom for PyTorch training that follows immediately after.
 
 DuckDB performs the same aggregations in **1 MB**. This is not an optimization;
 it is the difference between "the pipeline runs" and "the pipeline OOM-kills."
@@ -429,8 +430,8 @@ it is the difference between "the pipeline runs" and "the pipeline OOM-kills."
 - **Synthetic data generation** — the original Python-loop implementation
   required 20+ GB RAM for transaction sequence aggregation alone.
   DuckDB SQL aggregation reduced this to ~8 GB.
-- **On-premises air-gapped environment** — no Spark cluster, no Airflow,
-  no cloud fallback. If it does not fit in 64 GB RAM on a single desktop PC,
+- **On-premises air-gapped environment** — Hive for storage but no Spark
+  or Impala for processing. If it does not fit on the workstation (128 GB RAM),
   it does not run. DuckDB made it fit.
 
 The same DuckDB-based pipeline was then ported to AWS SageMaker with zero
@@ -465,14 +466,17 @@ types not yet ported to SQL, and for `<10K` row paths in unit tests.
 ## Key Takeaways
 
 1. **DuckDB made an impossible pipeline possible.** The on-premises
-   financial institution could not procure a Spark cluster or cloud access.
-   DuckDB replaced the entire data processing layer with `pip install duckdb`
-   on a single desktop PC, enabling a production-scale ML pipeline that
-   pandas could not run on the same hardware.
+   financial institution had Hive but no Spark or Impala.
+   DuckDB replaced the entire post-Hive processing layer with
+   `pip install duckdb` on a single workstation, enabling a production-scale
+   ML pipeline (12M customers, 734 features) that pandas could not run
+   on the same hardware.
 
 2. **The real win is memory, not speed.** 310× on group-by is impressive,
    but 15 GB → 1 MB memory reduction is what kept the pipeline within
-   64 GB RAM alongside PyTorch training.
+   128 GB RAM alongside PyTorch training on the on-premises workstation.
+   On AWS, the same memory reduction translates directly to smaller
+   (cheaper) instance types — RAM is the most expensive SageMaker dimension.
 
 3. **POSITIONAL JOIN** is underrated for ML workflows where row alignment
    is guaranteed. It replaces `pd.concat(axis=1)` without memory overhead.

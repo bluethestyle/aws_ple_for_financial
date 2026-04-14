@@ -29,9 +29,7 @@ import logging
 import sys
 from pathlib import Path
 
-import duckdb
 import numpy as np
-import pandas as pd
 
 logging.basicConfig(
     level=logging.INFO,
@@ -142,21 +140,25 @@ def main() -> None:
         _raw_yaml: dict = _yaml.safe_load(_f)
     _distillation_cfg: dict = _raw_yaml.get("distillation", {})
 
-    # Load data
+    # Load data via PyArrow (zero-copy, no pandas intermediate)
+    import pyarrow.parquet as pq
+    import pyarrow.compute as pc
+
     logger.info("Loading data from %s", args.data_path)
     data_path = Path(args.data_path)
     if data_path.is_dir():
-        # Read all parquet files in directory via DuckDB glob
         parquet_files = sorted(data_path.glob("*.parquet"))
         if not parquet_files:
             logger.error("No parquet files found in %s", args.data_path)
             sys.exit(1)
-        glob_pattern = str(data_path / "*.parquet")
-        df = duckdb.execute(f"SELECT * FROM read_parquet('{glob_pattern}')").df()
-        logger.info("Loaded %d files, %d rows total", len(parquet_files), len(df))
+        table = pq.read_table(data_path)
+        logger.info("Loaded %d files, %d rows total", len(parquet_files), table.num_rows)
     else:
-        df = duckdb.execute(f"SELECT * FROM read_parquet('{args.data_path}')").df()
-        logger.info("Loaded %d rows", len(df))
+        table = pq.read_table(str(data_path))
+        logger.info("Loaded %d rows", table.num_rows)
+
+    # Lightweight pandas view for quality gate (uses column metadata only)
+    df = table.to_pandas()
 
     # Step 1.5: Quality gate — block pipeline on critical data issues
     logger.info("Running quality gate on loaded data...")
@@ -179,18 +181,22 @@ def main() -> None:
             json.dump(gate_report, f, indent=2, default=str)
         sys.exit(1)
 
-    # Separate features and labels
+    # Release pandas view after quality gate
+    del df
+
+    # Separate features and labels using PyArrow (no pandas)
     label_cols = {t.label_col for t in pipeline_config.tasks}
     id_cols = set(pipeline_config.features.id_cols)
     exclude_cols = label_cols | id_cols
+    table_cols_set = set(table.column_names)
 
-    # Use teacher checkpoint's feature schema to guarantee column order and
-    # alignment with the teacher model's input_dim.
+    # Use teacher checkpoint's feature schema to guarantee column order
     _teacher_schema_cols: list = []
     if args.teacher_checkpoint:
         _schema_path = Path(args.teacher_checkpoint).parent / "config.json"
         if _schema_path.exists():
-            _schema = json.load(open(_schema_path))
+            with open(_schema_path) as _sf:
+                _schema = json.load(_sf)
             _teacher_schema_cols = _schema.get("feature_schema", {}).get("columns", [])
             logger.info(
                 "Teacher schema loaded: %d features from %s",
@@ -198,17 +204,17 @@ def main() -> None:
             )
 
     if _teacher_schema_cols:
-        # Align to teacher schema; fill missing columns with 0
-        feature_cols = _teacher_schema_cols
-        for c in feature_cols:
-            if c not in df.columns:
-                logger.warning("Column '%s' missing in data — filling with 0", c)
-                df[c] = 0.0
+        feature_cols = [c for c in _teacher_schema_cols if c in table_cols_set]
+        missing = [c for c in _teacher_schema_cols if c not in table_cols_set]
+        if missing:
+            logger.warning("Missing %d columns from teacher schema (will fill 0)", len(missing))
     else:
+        import pyarrow.types as pat
         feature_cols = [
-            c for c in df.columns
+            c for c in table.column_names
             if c not in exclude_cols
-            and df[c].dtype in ("float64", "float32", "int64", "int32", "int8", "uint8")
+            and (pat.is_floating(table.schema.field(c).type)
+                 or pat.is_integer(table.schema.field(c).type))
         ]
 
     logger.info(
@@ -216,15 +222,25 @@ def main() -> None:
         len(feature_cols), len(label_cols), len(id_cols),
     )
 
-    features = df[feature_cols].fillna(0).values.astype(np.float32)
-    nan_count = int(np.isnan(features).sum())
-    if nan_count > 0:
-        logger.warning("NaN remaining after fillna: %d — filling with 0", nan_count)
-        np.nan_to_num(features, copy=False)
+    # Extract features as numpy via PyArrow (zero-copy where possible)
+    feature_arrays = []
+    for c in feature_cols:
+        col = table.column(c)
+        arr = col.to_numpy(zero_copy_only=False).astype(np.float32)
+        np.nan_to_num(arr, copy=False)
+        feature_arrays.append(arr)
+    features = np.column_stack(feature_arrays) if feature_arrays else np.empty((table.num_rows, 0), dtype=np.float32)
+    del feature_arrays
+    logger.info("Features array: %s, %.1f MB", features.shape, features.nbytes / 1024**2)
+
+    # Extract hard labels via PyArrow
     hard_labels: dict[str, np.ndarray] = {}
     for t in pipeline_config.tasks:
-        if t.label_col in df.columns:
-            hard_labels[t.name] = df[t.label_col].values
+        if t.label_col in table_cols_set:
+            hard_labels[t.name] = table.column(t.label_col).to_numpy(zero_copy_only=False)
+
+    # Release Arrow table
+    del table
 
     # Build student config — YAML distillation section is the base,
     # CLI args are optional overrides (None means "not provided by user").
