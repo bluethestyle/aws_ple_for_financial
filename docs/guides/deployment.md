@@ -150,7 +150,7 @@ The training container entry point is `containers/training/train.py`. It:
 
 1. Downloads data from S3
 2. Runs the feature pipeline
-3. Trains the PLE model (2-phase)
+3. Trains the PLE model (2-phase, with checkpoint resume support)
 4. Distills to LGBM
 5. Uploads model artifacts to S3
 
@@ -163,6 +163,40 @@ aws ecr get-login-password --region ap-northeast-2 | \
   docker login --username AWS --password-stdin 123456789.dkr.ecr.ap-northeast-2.amazonaws.com
 docker tag ple-training:latest 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/ple-training:latest
 docker push 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/ple-training:latest
+```
+
+### SageMaker 제출 스크립트
+
+| 스크립트 | 역할 |
+|---------|------|
+| `scripts/package_source.py` | source 디렉토리 스테이징 → tarball 생성 → S3 업로드 (모든 Job에서 재사용) |
+| `scripts/run_sagemaker_teacher.py` | 3-시나리오(baseline/gradsurgery/adaTT) Spot 학습 Job 병렬 제출 |
+| `scripts/run_sagemaker_eval.py` | 평가 Job 제출 (`containers/evaluation/eval_entry.py` 진입점 사용) |
+
+```bash
+# 1. source 패키징 (한 번만 실행)
+python scripts/package_source.py --config configs/pipeline.yaml
+
+# 2. teacher 학습 Job 제출 (3-시나리오 병렬)
+python scripts/run_sagemaker_teacher.py --config configs/pipeline.yaml
+
+# 3. 평가 Job 제출
+python scripts/run_sagemaker_eval.py --config configs/pipeline.yaml \
+  --model-s3 s3://my-ple-bucket/models/ple/v2/
+```
+
+### 평가 컨테이너
+
+**파일:** `containers/evaluation/eval_entry.py`
+
+SageMaker Processing Job 진입점으로, S3에서 모델 아티팩트와 피처 데이터를 내려받아 평가 메트릭(`eval_metrics.json`)을 산출하고 다시 S3에 저장한다.
+
+```
+s3://my-ple-bucket/
+  models/
+    ple/
+      v{n}/
+        eval_metrics.json   ← 평가 결과 (run_sagemaker_eval.py가 존재 여부 확인 후 스킵)
 ```
 
 ---

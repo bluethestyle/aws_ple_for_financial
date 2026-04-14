@@ -83,12 +83,18 @@ EventBridge (스케줄 또는 S3 이벤트 트리거)
 │ ④ training_pipeline                                            │
 │                                                                 │
 │   [Phase 1: Shared Expert]                                     │
-│        ↓ 체크포인트 → S3                                        │
+│        ↓ 체크포인트 → S3  (파일 패턴 고정, epoch 카운트 수정)        │
 │   [Phase 2: Task Head]                                         │
 │        ↓ 최종 모델 → S3                                         │
 │   [평가: Champion/Challenger]                                   │
 │        ├── 합격 → [Model Registry 등록]                          │
 │        └── 불합격 → [알림] → 종료                                 │
+│                                                                 │
+│   스크립트:                                                      │
+│   · run_sagemaker_teacher.py  — 3-시나리오 Spot 병렬 학습 제출    │
+│   · run_sagemaker_eval.py     — 평가 Job 제출 (eval_entry.py)   │
+│   패키징:                                                        │
+│   · package_source.py         — source 스테이징 + tarball + S3   │
 └─────────────────────────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────────────────────────┐

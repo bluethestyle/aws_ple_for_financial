@@ -18,6 +18,23 @@ Stage 10:  CPE + Agentic Reason Orchestrator
 
 `containers/training/train.py`의 `main()`이 SageMaker Training Job의 단일 진입점이다.
 
+### train.py 리팩토링 (2026-04-14)
+
+Model build 로직(435줄)이 `core/model/config_builder.py`로 추출되었다. train.py는 2317줄 → 1882줄로 감소하였으며, PLEConfig 생성은 `build_ple_config()`를 호출하는 방식으로 위임된다.
+
+```python
+# containers/training/train.py (리팩토링 후)
+from core.model.config_builder import build_ple_config
+
+def main():
+    ...
+    ple_config = build_ple_config(pipeline_cfg, feature_schema, label_schema)
+    model = PLEModel(ple_config)
+    ...
+```
+
+`build_ple_config()`는 train.py와 PLEPredictor 양쪽에서 공유하는 단일 진실 공급원(single source of truth)이다. PLEConfig가 두 곳에서 다르게 재구성되는 동기화 오류를 원천 차단한다.
+
 ### 데이터 로딩: PyArrow (no pandas in hot path)
 
 ```python
@@ -431,6 +448,84 @@ ablation_hps = {
 
 ---
 
+## 신규 모듈 (2026-04-14)
+
+### core/model/config_builder.py
+
+PLEConfig 생성의 단일 진실 공급원. train.py와 PLEPredictor 양쪽에서 import하여 사용한다.
+
+```python
+# core/model/config_builder.py
+def build_ple_config(pipeline_cfg: dict, feature_schema: dict, label_schema: dict) -> PLEConfig:
+    """
+    pipeline.yaml + feature_schema.json + label_schema.json으로부터
+    PLEConfig를 완전히 재구성한다.
+    - task_loss_weights: pipeline.yaml에서 읽어 전달
+    - adaTT task_groups: AdaTTConfig.from_pipeline_groups() 호출
+    - task_group_map: adaTT groups에서 자동 빌드
+    - logit_transfers: pipeline.yaml task_relationships에서 읽어 전달
+    - feature_group_ranges: feature_schema["group_ranges"]에서 읽어 전달
+    """
+```
+
+### core/inference/predictor.py
+
+체크포인트를 로드하고 PLEConfig를 재구성하여 AMP 추론을 수행하는 서빙 컴포넌트.
+
+```python
+# core/inference/predictor.py
+class PLEPredictor:
+    """
+    pipeline.yaml + feature_schema.json에서 build_ple_config()를 호출하여
+    PLEConfig를 재구성한다 (train.py와 동일 경로 — 동기화 오류 불가).
+    AMP (fp16) 추론 지원. batch 단위 또는 단건 추론 모두 지원.
+    """
+    def load_checkpoint(self, checkpoint_path: str): ...
+    def predict(self, features: np.ndarray) -> dict[str, np.ndarray]: ...
+```
+
+### core/evaluation/evaluator.py
+
+태스크 유형별 분리 집계를 포함한 평가 컴포넌트.
+
+```python
+# core/evaluation/evaluator.py
+class PLEEvaluator:
+    """
+    Per-task metrics:
+      - Binary  → AUC, confusion matrix
+      - Multiclass → F1 macro, F1 per-class
+      - Ranking  → NDCG@K, Recall@K
+      - Regression → MAE, RMSE
+
+    집계:
+      avg_auc       → binary tasks only
+      avg_f1_macro  → multiclass tasks only
+      avg_mae       → regression tasks only
+    (전 task 단일 평균 사용 금지 — metric semantics 충돌)
+    """
+    def evaluate(self, model, dataloader, tasks) -> dict: ...
+    def save_metrics(self, metrics: dict, path: str): ...  # eval_metrics.json
+```
+
+### containers/evaluation/eval_entry.py
+
+SageMaker Processing Job용 평가 진입점. SM_CHANNEL_TRAIN(피처·레이블)과 SM_CHANNEL_MODEL(체크포인트)을 읽어 PLEEvaluator를 실행하고 결과를 S3에 저장한다.
+
+### scripts/run_sagemaker_teacher.py
+
+3개 시나리오를 병렬 Spot 학습으로 제출하는 오케스트레이션 스크립트. 제출 전 S3에 `eval_metrics.json`이 존재하면 해당 시나리오를 스킵한다.
+
+### scripts/run_sagemaker_eval.py
+
+체크포인트를 S3에 업로드하고 평가 Job을 제출한 뒤 결과를 로컬로 다운로드하는 스크립트.
+
+### scripts/package_source.py
+
+소스 패키징을 재사용 가능하게 분리한 유틸리티. staging 디렉토리 생성 → tarball 빌드 → S3 업로드의 3단계를 수행한다. 모든 Job이 동일 패키지를 재사용하여 1회 빌드 원칙을 준수한다.
+
+---
+
 ## SageMaker Training 래퍼
 
 ```python
@@ -442,6 +537,31 @@ class SageMakerTrainer:
     데이터 로딩: PLEDataset → DataLoader 단일 경로.
     소스 패키징: 동적 패키징만 (_source_pkg/ 제거됨).
     """
+```
+
+### Metric Definitions (SageMaker 콘솔 자동 추적)
+
+SageMaker Estimator에 regex 패턴을 등록하면 CloudWatch 및 SageMaker Experiments에 자동으로 메트릭이 기록된다:
+
+```python
+metric_definitions = [
+    {"Name": "train:loss",      "Regex": r"train_loss=([0-9.]+)"},
+    {"Name": "val:loss",        "Regex": r"val_loss=([0-9.]+)"},
+    {"Name": "val:avg_auc",     "Regex": r"val_avg_auc=([0-9.]+)"},
+    {"Name": "val:avg_f1",      "Regex": r"val_avg_f1_macro=([0-9.]+)"},
+    {"Name": "val:avg_mae",     "Regex": r"val_avg_mae=([0-9.]+)"},
+    {"Name": "epoch",           "Regex": r"epoch=([0-9]+)"},
+]
+```
+
+### SageMaker Experiments — Region 자동 감지
+
+Experiments tracker 초기화 시 region을 하드코딩하지 않고 boto3 session에서 자동 감지한다:
+
+```python
+import boto3
+region = boto3.session.Session().region_name  # 환경 변수 / IMDSv2 자동 조회
+run = sagemaker.experiments.Run(..., sagemaker_session=Session(boto_session=boto3.Session(region_name=region)))
 ```
 
 ---
@@ -509,6 +629,49 @@ resume 지원: 이미 완료된 stage는 skip하고 이어서 실행.
 
 ---
 
+## Checkpoint Resume 수정사항 (2026-04-14)
+
+체크포인트 재개 로직에서 발견된 두 가지 버그를 수정하였다.
+
+### 파일 패턴 인식
+
+CheckpointManager가 기존에는 `checkpoint_epoch*.pt` 패턴만 인식하였다. 수정 후 `epoch_*.pt` 및 `best.pt` 패턴도 함께 인식한다:
+
+```python
+# core/training/checkpoint.py
+CHECKPOINT_PATTERNS = [
+    "checkpoint_epoch*.pt",   # 기존
+    "epoch_*.pt",             # 추가
+    "best.pt",                # 추가
+]
+```
+
+### Epoch 카운팅
+
+재개 시 남은 epoch 수 계산 오류를 수정하였다:
+
+```python
+# 수정 전 (버그): target_epoch를 처음부터 다시 학습하는 횟수로 해석
+remaining = target_epoch
+
+# 수정 후 (정상): 현재까지 완료된 epoch을 빼서 잔여 epoch 계산
+remaining = target_epoch - current_epoch
+```
+
+### eval_metrics.json 저장 시점
+
+기존에는 모든 epoch 완료 후 마지막에 한 번만 저장되었다. Spot 중단 시 최종 결과가 유실되는 문제를 방지하기 위해 **best epoch 갱신 시마다** 저장하도록 변경하였다:
+
+```python
+# core/training/trainer.py (callback 내부)
+if val_loss < self.best_val_loss:
+    self.best_val_loss = val_loss
+    self._save_checkpoint(epoch, tag="best")
+    self._save_eval_metrics(epoch)   # best 갱신마다 즉시 저장
+```
+
+---
+
 ## Spot 인스턴스 전략
 
 ```
@@ -520,6 +683,8 @@ Spot 중단 대비:
   1. 매 epoch마다 S3에 체크포인트 저장
   2. SageMaker CheckpointConfig 설정 → 자동 재개
   3. max_wait = max_run + 1hr (Spot 재할당 대기)
+  4. eval_metrics.json을 best epoch 갱신마다 저장 (중단 시 결과 보존)
+  5. CheckpointManager: checkpoint_epoch*.pt + epoch_*.pt + best.pt 모두 인식
 
 Santander ablation 기준 (10 epochs, ~1시간):
   On-Demand: $0.53

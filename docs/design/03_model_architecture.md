@@ -579,6 +579,22 @@ distillation:
 
 ## 모델 빌드 자동화 — PLEModel.__init__() / build_model()
 
+### PLEConfig 단일 진실 소스 — config_builder.py
+
+> **2026-04-14 변경**: `PLEConfig` 생성은 `core/model/config_builder.py`가 전담한다.
+> train.py에서 인라인으로 구성하던 방식을 폐기하였다 (435줄 위임).
+> **단일 진실 소스(Single Source of Truth)**: `PLEConfig`에 관한 모든 조합 로직은
+> `config_builder.py` 한 곳에서만 관리한다. train.py는 `build_ple_config(pipeline_cfg, feature_schema)`를 호출하기만 한다.
+
+```python
+# core/model/config_builder.py
+def build_ple_config(pipeline_cfg: dict, feature_schema: dict) -> PLEConfig:
+    """pipeline.yaml + feature_schema → PLEConfig 완전 조립.
+    - task_loss_weights, adaTT task_groups, logit_transfers 등 모든 서브설정 포함.
+    - train.py는 이 함수만 호출하면 된다.
+    """
+```
+
 ### FeatureRouter 자동 생성 (Config-Driven)
 
 `build_model()`은 `feature_groups.yaml`의 `target_experts` 선언을 읽어
@@ -615,6 +631,41 @@ class PLEModel(nn.Module):
         self._build_sae()                     # Sparse Autoencoder (config-gated)
         self._build_task_loss_fns()           # build_loss() per task
         self._build_loss_weighting()          # Uncertainty / GradNorm / DWA / Fixed
+```
+
+---
+
+## 추론 및 평가 모듈
+
+### PLEPredictor (`core/inference/predictor.py`)
+
+학습된 모델 체크포인트를 로드하고 배치 추론을 수행하는 전담 클래스.
+train.py / eval.py 어느 쪽에서도 `PLEModel`을 직접 instantiate하지 않고
+`PLEPredictor`를 통해 일관된 인터페이스로 추론한다.
+
+```python
+# core/inference/predictor.py
+class PLEPredictor:
+    """모델 로딩 + 배치 추론 단일 인터페이스.
+    - from_checkpoint(path, device): 체크포인트에서 config + 가중치 복원
+    - predict(dataloader) → Dict[task_name, np.ndarray]: 태스크별 예측값 반환
+    """
+```
+
+### PLEEvaluator (`core/evaluation/evaluator.py`)
+
+태스크 타입별 메트릭을 분리 집계한다.
+전 태스크 평균은 metric semantics 비호환으로 금지 (CLAUDE.md §1.7 참조).
+
+```python
+# core/evaluation/evaluator.py
+class PLEEvaluator:
+    """per-task 메트릭 계산 전담.
+    - binary 태스크   → avg_auc  (AUC-ROC 평균)
+    - multiclass 태스크 → avg_f1_macro
+    - regression 태스크 → avg_mae
+    - evaluate(predictions, labels, task_configs) → EvalResult
+    """
 ```
 
 ---

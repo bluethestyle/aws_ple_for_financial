@@ -59,13 +59,16 @@ learning -- where improving one task degrades another.
 
 | Component | File | Purpose |
 |---|---|---|
-| `PLEConfig` | `core/model/ple/config.py` | All model hyperparameters |
+| `PLEConfig` | `core/model/ple/config.py` | All model hyperparameters — **생성은 config_builder.py에서 전담** (단일 진실 소스) |
+| `build_ple_config()` | `core/model/config_builder.py` | PLEConfig 조립 단일 진실 소스 — train.py는 이 함수만 호출한다 |
 | `PLEModel` | `core/model/ple/model.py` | Main model class |
 | `CGCLayer` | `core/model/ple/gating.py` | Customized Gate Control |
 | `AdaTT` | `core/model/ple/adatt.py` | Adaptive Task Transfer |
 | `FeatureRouter` | `core/model/ple/feature_router.py` | Expert input routing — **active**, auto-built from `feature_groups.yaml` `target_experts`; routes heterogeneous input dims per expert (32D–316D) |
 | `ExpertRegistry` | `core/model/experts/registry.py` | Expert plugin system |
 | `TaskRegistry` | `core/task/registry.py` | Task head plugin system |
+| `PLEPredictor` | `core/inference/predictor.py` | 모델 로딩 + 배치 추론 단일 인터페이스 |
+| `PLEEvaluator` | `core/evaluation/evaluator.py` | per-task 메트릭 집계 (task type별 분리) |
 
 ---
 
@@ -830,4 +833,64 @@ distill_config = pipeline.distillation_config
 #   {"name": "tda_topology", "dim_range": (4, 74), "weight": 0.5, "output_dim": 70},
 #   {"name": "base_profile", "dim_range": (0, 4), "weight": 1.0, "output_dim": 4},
 # ]
+```
+
+---
+
+## PLEConfig 빌드 — config_builder.py (단일 진실 소스)
+
+> **2026-04-14 변경**: `PLEConfig` 인라인 구성을 `core/model/config_builder.py`로 위임하였다.
+> train.py에서 435줄의 모델 빌드 로직을 직접 관리하던 방식을 폐기한다.
+> **config_builder.py 한 곳에서만** task_loss_weights, adaTT task_groups,
+> logit_transfers, FeatureRouter 주입 등 모든 서브설정을 조립한다.
+
+```python
+# train.py — 호출 측 (3줄로 PLEConfig 완성)
+from core.model.config_builder import build_ple_config
+
+ple_config = build_ple_config(pipeline_cfg, feature_schema)
+model = PLEModel(ple_config)
+```
+
+새 파라미터를 추가할 때는 `config_builder.py`만 수정한다. train.py는 변경하지 않는다.
+
+---
+
+## PLEPredictor 사용법
+
+`core/inference/predictor.py`의 `PLEPredictor`는 체크포인트 로딩과 배치 추론을 단일 인터페이스로 제공한다.
+
+```python
+from core.inference.predictor import PLEPredictor
+
+# 체크포인트에서 config + 가중치 복원
+predictor = PLEPredictor.from_checkpoint(
+    checkpoint_path="/opt/ml/model/best_model.pt",
+    device="cuda",
+)
+
+# 배치 추론 — task_name → numpy array
+predictions = predictor.predict(eval_dataloader)
+# {
+#   "churn_signal": np.ndarray(shape=(N,)),      # binary sigmoid
+#   "nba_primary":  np.ndarray(shape=(N, 5)),    # multiclass softmax
+#   "cross_sell_count": np.ndarray(shape=(N,)),  # regression
+# }
+```
+
+## PLEEvaluator 사용법
+
+`core/evaluation/evaluator.py`의 `PLEEvaluator`는 task type별 메트릭을 분리 집계한다.
+전 태스크 단순 평균은 metric semantics가 호환되지 않아 사용하지 않는다.
+
+```python
+from core.evaluation.evaluator import PLEEvaluator
+
+evaluator = PLEEvaluator(task_configs)  # pipeline.yaml tasks 리스트
+result = evaluator.evaluate(predictions, labels)
+
+# result.avg_auc        → binary 태스크 평균 AUC-ROC
+# result.avg_f1_macro   → multiclass 태스크 평균 Macro-F1
+# result.avg_mae        → regression 태스크 평균 MAE
+# result.per_task       → {task_name: {"metric": value, ...}}
 ```

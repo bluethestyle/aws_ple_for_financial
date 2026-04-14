@@ -86,7 +86,7 @@ Store (RAG)        Reason Orchestrator
 | **5.5** | LeakageValidator + auto-drop | 시퀀스/상관관계/제품/시간 4중 누수 검증, >0.95 상관 피처 자동 제거 | `core/pipeline/leakage_validator.py` | - |
 | **6** | SequenceBuilder | Time-based + sliding window → 3D 텐서 (txn_day_offset_seq 기반) | `core/pipeline/sequence_builder.py` | - |
 | **7** | DataLoader | Cross-sectional auto-detect → random split / temporal split, PyArrow 로딩 | `containers/training/train.py` | - |
-| **8** | PLETrainer (2-phase) | PLE + adaTT + 7 heterogeneous experts, AMP FP32 loss, VRAM diagnostics | `core/training/trainer.py` | GPU required |
+| **8** | PLETrainer (2-phase) | PLE + adaTT + 7 heterogeneous experts, AMP FP32 loss, VRAM diagnostics; 체크포인트 재개 지원 (파일 패턴 고정, epoch 카운트 수정) | `core/training/trainer.py` | GPU required |
 | **8.5** | Model Analysis | IG, CCA, Gate Analysis, HGCN Interpretable, Multi Interpreter, Template Engine, XAI Quality, Model Card | `core/analysis/` | GPU partial |
 | **9** | StudentTrainer (Distillation) | PLE teacher → LGBM students (soft label + fidelity validation) | `core/distillation/` | - |
 | **9.5** | Context Vector Store | 추천 사유 임베딩 저장소 (RAG retrieval) | `core/serving/context_store.py` | - |
@@ -121,7 +121,7 @@ Great Expectations (로컬)              CloudWatch + SageMaker Monitor
 | **저장소** | 로컬 Parquet + GCS | S3 (버전 관리 활성화) | 내구성, 비용, IAM 통합 |
 | **쿼리 엔진** | DuckDB 전용 | DuckDB 전용 (단일 머신 최강) | 수백 GB까지 DuckDB로 충분. TB급 필요 시 Athena 옵션 |
 | **오케스트레이션** | Airflow 86 DAGs (상시 가동) | Step Functions 5개 (실행당 과금) | $300/월 → $0/월 |
-| **학습** | 로컬 GPU (전용 머신) | SageMaker Training Job (Spot) | 70% 비용 절감, 자동 체크포인트 |
+| **학습** | 로컬 GPU (전용 머신) | SageMaker Training Job (Spot) — `scripts/run_sagemaker_teacher.py` (3-시나리오 병렬), `scripts/run_sagemaker_eval.py` (평가 Job 제출) | 70% 비용 절감, 자동 체크포인트 |
 | **실험 관리** | MLflow (Docker) | SageMaker Experiments | 서버 유지 비용 제거 |
 | **서빙** | FastAPI + Docker Compose (상시) | Lambda (기본) / ECS Fargate (대규모) | 규모별 자동 전환 |
 | **피처 스토어** | 로컬 파일 | Lambda 메모리 (기본) / DynamoDB (대규모) | 규모별 자동 전환 |
@@ -231,6 +231,7 @@ EncryptionPipeline.process_source()
 
 | 구성요소 | 설명 | 구현 위치 |
 |---------|------|-----------|
+| **ConfigBuilder** | 모델 설정(PLEConfig, AdaTTConfig, logit_transfers 등)의 단일 진실 공급원 — YAML 읽기/병합/검증 담당 | `core/pipeline/config_builder.py` |
 | **Expert Basket** | Pool → Basket → CGC 3계층 선택 | `core/model/ple/experts.py` |
 | **FeatureRouter** | feature_groups.yaml target_experts 기반 전문가별 이종 입력 슬라이싱 — build_model()에서 자동 생성 (활성화) | `core/model/ple/model.py` |
 | **CGC + Attention** | 태스크별 Expert 가중 결합 + dim_normalize | `core/model/ple/experts.py` |
