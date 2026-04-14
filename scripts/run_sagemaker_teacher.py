@@ -184,56 +184,12 @@ def upload_phase0_data(s3_bucket: str) -> None:
 # ---------------------------------------------------------------------------
 
 def build_staging_dir() -> str:
-    """Create a lightweight staging directory with only the files needed for training.
+    """Create a lightweight staging directory for SageMaker jobs.
 
-    Copies:
-      - containers/training/train.py (entry point)
-      - core/ (model, training, data, pipeline — excludes __pycache__)
-      - configs/santander/ (pipeline.yaml, feature_groups.yaml)
-
-    Returns the path to the staging directory.
+    Delegates to the shared packaging utility in scripts/package_source.py.
     """
-    import shutil
-
-    staging_dir = PROJECT_ROOT / "outputs" / "_sagemaker_staging"
-
-    # Clean previous staging
-    if staging_dir.exists():
-        shutil.rmtree(str(staging_dir))
-
-    include_dirs = ["core", "configs/santander", "containers/training"]
-    include_files = ["containers/training/train.py"]
-
-    logger.info("Building staging directory: %s", staging_dir)
-    total_files = 0
-
-    for rel_dir in include_dirs:
-        src = PROJECT_ROOT / rel_dir
-        if not src.is_dir():
-            continue
-        for fpath in src.rglob("*"):
-            if not fpath.is_file():
-                continue
-            if "__pycache__" in str(fpath) or fpath.suffix == ".pyc":
-                continue
-            rel = fpath.relative_to(PROJECT_ROOT)
-            dst = staging_dir / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(fpath), str(dst))
-            total_files += 1
-
-    # Also copy core/__init__.py if it exists (needed for imports)
-    init_py = PROJECT_ROOT / "core" / "__init__.py"
-    if init_py.exists():
-        dst = staging_dir / "core" / "__init__.py"
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if not dst.exists():
-            shutil.copy2(str(init_py), str(dst))
-
-    # Calculate size
-    total_size = sum(f.stat().st_size for f in staging_dir.rglob("*") if f.is_file())
-    logger.info("Staging: %d files, %.1f MB", total_files, total_size / (1024 * 1024))
-    return str(staging_dir)
+    from scripts.package_source import build_staging
+    return build_staging(project_root=str(PROJECT_ROOT))
 
 
 # ---------------------------------------------------------------------------
