@@ -580,8 +580,8 @@ def _inject_sequences_into_ple_dataset(dataset, event_sequences, seq_lengths=Non
 def build_model(feature_schema, label_schema, hp, input_dim, device, config=None):
     """Build PLEModel from schema + hyperparameters.
 
-    ALL config comes from schema (produced by PipelineRunner).
-    No hardcoded column names or domain logic.
+    Delegates PLEConfig construction to core.model.config_builder
+    (single source of truth shared with PLEPredictor and eval_entry).
 
     Returns
     -------
@@ -591,432 +591,22 @@ def build_model(feature_schema, label_schema, hp, input_dim, device, config=None
         config = {}
 
     from core.model.ple.model import PLEModel
-    from core.model.ple.config import (
-        PLEConfig, ExpertConfig, ExpertBasketConfig,
-        LossWeightingConfig, LogitTransferDef,
-        GroupTaskExpertConfig, AdaTTConfig, TaskGroupDef,
-    )
+    from core.model.config_builder import build_ple_config
 
-    tasks = label_schema.get("tasks", [])
-    task_names = [t["name"] for t in tasks]
-
-    # -- Expert config from schema or defaults --
-    model_config = label_schema.get("model", {})
-    ple_cfg = model_config.get("ple", {})
-    expert_cfg = model_config.get("expert_config", {})
-    tower_cfg = model_config.get("task_tower", {})
-
-    mlp_cfg = expert_cfg.get("mlp", {})
-    expert_hidden = mlp_cfg.get("hidden_dims", [input_dim * 2, input_dim])
-    expert_output = ple_cfg.get("extraction_dim", 32)
-
-    shared_expert = ExpertConfig(
-        hidden_dims=expert_hidden, output_dim=expert_output,
-        dropout=model_config.get("dropout", 0.1),
-    )
-    task_expert = ExpertConfig(
-        hidden_dims=expert_hidden, output_dim=expert_output,
-        dropout=model_config.get("dropout", 0.1),
-    )
-
-    # -- Ablation overrides: num_layers --
-    num_extraction_layers = ple_cfg.get("num_layers", 2)
-    hp_num_layers = hp.get("num_layers")
-    if hp_num_layers is not None:
-        num_extraction_layers = int(hp_num_layers)
-        logger.info("Ablation: num_extraction_layers -> %d", num_extraction_layers)
-
-    # -- Ablation overrides: shared experts --
-    num_shared_experts = ple_cfg.get("num_shared_experts", 2)
-    expert_basket = None
-
-    shared_experts_raw = hp.get("shared_experts", "")
-    if isinstance(shared_experts_raw, str) and shared_experts_raw:
-        try:
-            shared_experts_override = json.loads(shared_experts_raw)
-        except (json.JSONDecodeError, ValueError):
-            shared_experts_override = None
-    elif isinstance(shared_experts_raw, list):
-        shared_experts_override = shared_experts_raw
-    else:
-        shared_experts_override = None
-
-    if shared_experts_override is not None:
-        num_shared_experts = len(shared_experts_override)
-        expert_basket_cfg = model_config.get("expert_basket", {})
-        expert_basket = ExpertBasketConfig(
-            shared_experts=shared_experts_override,
-            task_experts=expert_basket_cfg.get("task", ["mlp"]),
-            expert_configs={
-                name: expert_cfg.get(name, {})
-                for name in shared_experts_override if name in expert_cfg
-            },
-        )
-        logger.info("Ablation: shared experts -> %s (%d)", shared_experts_override, num_shared_experts)
-    else:
-        eb_cfg = model_config.get("expert_basket", {})
-        if eb_cfg.get("shared"):
-            expert_basket = ExpertBasketConfig(
-                shared_experts=eb_cfg["shared"],
-                task_experts=eb_cfg.get("task", ["mlp"]),
-                expert_configs={
-                    name: expert_cfg.get(name, {}) for name in eb_cfg["shared"] if name in expert_cfg
-                },
-            )
-
-    # -- Expert ablation: active_experts / removed_experts --
-    # These hyperparameters filter expert_basket.expert_configs before model build.
-    # active_experts: JSON list of expert names to KEEP (remove all others)
-    # removed_experts: JSON list of expert names to REMOVE
-    if expert_basket is not None:
-        _active_raw = hp.get("active_experts")
-        _removed_raw = hp.get("removed_experts")
-
-        _active_experts = None
-        if _active_raw:
-            _active_experts = json.loads(_active_raw) if isinstance(_active_raw, str) else _active_raw
-
-        _removed_experts = None
-        if _removed_raw:
-            _removed_experts = json.loads(_removed_raw) if isinstance(_removed_raw, str) else _removed_raw
-
-        if _active_experts is not None:
-            # Keep only experts in the active list
-            filtered_shared = [e for e in expert_basket.shared_experts if e in _active_experts]
-            filtered_task = [e for e in expert_basket.task_experts if e in _active_experts]
-            filtered_configs = {k: v for k, v in expert_basket.expert_configs.items() if k in _active_experts}
-            expert_basket = ExpertBasketConfig(
-                shared_experts=filtered_shared,
-                task_experts=filtered_task,
-                expert_configs=filtered_configs,
-            )
-            num_shared_experts = len(filtered_shared)
-            logger.info("Expert ablation (active_experts): kept %s, shared=%d, task=%s",
-                        filtered_shared, num_shared_experts, filtered_task)
-
-        elif _removed_experts is not None:
-            # Remove specified experts
-            filtered_shared = [e for e in expert_basket.shared_experts if e not in _removed_experts]
-            filtered_task = [e for e in expert_basket.task_experts if e not in _removed_experts]
-            filtered_configs = {k: v for k, v in expert_basket.expert_configs.items() if k not in _removed_experts}
-            expert_basket = ExpertBasketConfig(
-                shared_experts=filtered_shared,
-                task_experts=filtered_task,
-                expert_configs=filtered_configs,
-            )
-            num_shared_experts = len(filtered_shared)
-            logger.info("Expert ablation (removed_experts): removed %s, remaining shared=%s, task=%s",
-                        _removed_experts, filtered_shared, filtered_task)
-
-    # -- Structure ablation: PLE toggle --
-    # use_ple=false: disable PLE layering/CGC gating but KEEP all heterogeneous experts.
-    use_ple_raw = hp.get("use_ple")
-    if use_ple_raw is not None:
-        use_ple = json.loads(use_ple_raw) if isinstance(use_ple_raw, str) else use_ple_raw
-        if not use_ple:
-            num_extraction_layers = 1
-            # Keep num_shared_experts and expert_basket intact
-            logger.info("Structure ablation: PLE disabled (single layer, all experts preserved)")
-
-    # -- Structure ablation: adaTT toggle --
-    use_adatt_raw = hp.get("use_adatt")
-    if use_adatt_raw is not None:
-        use_adatt = json.loads(use_adatt_raw) if isinstance(use_adatt_raw, str) else use_adatt_raw
-        if not use_adatt:
-            model_config["adatt"] = {"enabled": False}
-            logger.info("Structure ablation: adaTT disabled")
-
-    # -- Structure ablation: CGC gate toggle --
-    # use_cgc_gate=false → CGC attention not built; tasks use raw shared expert output.
-    use_cgc_gate_raw = hp.get("use_cgc_gate")
-    if use_cgc_gate_raw is not None:
-        use_cgc_gate = json.loads(use_cgc_gate_raw) if isinstance(use_cgc_gate_raw, str) else use_cgc_gate_raw
-        if not use_cgc_gate:
-            model_config.setdefault("cgc", {})["enabled"] = False
-            logger.info("Structure ablation: CGC gate disabled")
-
-    # -- Structure ablation: GroupTaskExpert toggle --
-    # use_group_task_expert=false → GroupTaskExpertBasket not built; falls back to legacy MLP per task.
-    use_gte_raw = hp.get("use_group_task_expert")
-    if use_gte_raw is not None:
-        use_gte = json.loads(use_gte_raw) if isinstance(use_gte_raw, str) else use_gte_raw
-        if not use_gte:
-            model_config.setdefault("group_task_expert", {})["enabled"] = False
-            logger.info("Structure ablation: GroupTaskExpert disabled")
-
-    # -- Structure ablation: Logit transfer toggle --
-    # use_logit_transfer=false → clears all task-to-task logit transfer relationships.
-    use_lt_raw = hp.get("use_logit_transfer")
-    if use_lt_raw is not None:
-        use_lt = json.loads(use_lt_raw) if isinstance(use_lt_raw, str) else use_lt_raw
-        if not use_lt:
-            label_schema["task_relationships"] = []
-            logger.info("Structure ablation: Logit transfers disabled")
-
-    # -- Structure ablation: HMM projectors toggle --
-    # use_hmm_projectors=false → HMM triple-mode projectors not built.
-    use_hmm_raw = hp.get("use_hmm_projectors")
-    if use_hmm_raw is not None:
-        use_hmm = json.loads(use_hmm_raw) if isinstance(use_hmm_raw, str) else use_hmm_raw
-        if not use_hmm:
-            model_config["_disable_hmm_projectors"] = True
-            logger.info("Structure ablation: HMM projectors disabled")
-
-    # -- Gradient Surgery toggle --
-    # use_grad_surgery=true → enable task-type gradient projection (replaces adaTT loss transfer)
-    _gs_cfg_raw = label_schema.get("grad_surgery", {})
-    if not _gs_cfg_raw:
-        _gs_cfg_raw = config.get("grad_surgery", {})
-    use_gs_raw = hp.get("use_grad_surgery")
-    if use_gs_raw is not None:
-        _gs_enabled = json.loads(use_gs_raw) if isinstance(use_gs_raw, str) else use_gs_raw
-        _gs_cfg_raw["enabled"] = _gs_enabled
-    if _gs_cfg_raw.get("enabled"):
-        logger.info("Structure ablation: GradSurgery enabled (task-type gradient projection)")
-
-    # -- Loss weighting --
-    lw_cfg = model_config.get("loss_weighting", {})
-    loss_weighting = LossWeightingConfig(
-        strategy=lw_cfg.get("strategy", "fixed"),
-        gradnorm_alpha=lw_cfg.get("gradnorm_alpha", 1.5),
-        gradnorm_interval=lw_cfg.get("gradnorm_interval", 1),
-        dwa_temperature=lw_cfg.get("dwa_temperature", 2.0),
-        dwa_window_size=lw_cfg.get("dwa_window_size", 5),
-    )
-    logger.info("Loss weighting strategy: %s", loss_weighting.strategy)
-
-    # -- Build PLEConfig --
-    ple_config = PLEConfig(
+    ple_config = build_ple_config(
+        config=config,
+        feature_schema=feature_schema,
+        label_schema=label_schema,
         input_dim=input_dim,
-        task_names=task_names,
-        num_shared_experts=num_shared_experts,
-        num_extraction_layers=num_extraction_layers,
-        num_task_experts_per_task=ple_cfg.get("num_task_experts", 1),
-        shared_expert=shared_expert,
-        task_expert=task_expert,
-        dropout=model_config.get("dropout", 0.1),
-        expert_basket=expert_basket,
-        loss_weighting=loss_weighting,
+        hp=hp,
     )
-    # -- Structure ablation: gate type (softmax vs sigmoid) --
-    gate_type_raw = hp.get("gate_type", "softmax")
-    ple_config.gate_type = gate_type_raw
-    if gate_type_raw != "softmax":
-        logger.info("Structure ablation: gate_type=%s", gate_type_raw)
-
-    # -- CGC enabled/disabled (ablation toggle) --
-    cgc_cfg_raw = model_config.get("cgc", {})
-    if cgc_cfg_raw and not cgc_cfg_raw.get("enabled", True):
-        from core.model.ple.config import CGCConfig
-        ple_config.cgc = CGCConfig(enabled=False)
-        logger.info("PLEConfig: CGC attention disabled")
-
-    # -- Per-expert input dimensions from model config --
-    expert_input_dims_raw = model_config.get("expert_input_dims", {})
-    if expert_input_dims_raw:
-        ple_config.expert_input_dims = {
-            k: int(v) for k, v in expert_input_dims_raw.items()
-        }
-        logger.info("Expert input_dim overrides: %s", ple_config.expert_input_dims)
-
-    # -- Task loss weights from label schema --
-    ple_config.task_loss_weights = {t["name"]: t.get("loss_weight", 1.0) for t in tasks}
-
-    # -- Task overrides (type + output_dim + loss) --
-    for t in tasks:
-        task_override = {
-            "task_type": t.get("type", "binary"),
-            "output_dim": t.get("num_classes", 1),
-        }
-        if "loss" in t:
-            task_override["loss"] = t["loss"]
-        if "loss_params" in t:
-            task_override["loss_params"] = t["loss_params"]
-        if "topk_k" in t:
-            task_override["topk_k"] = t["topk_k"]
-        ple_config.task_overrides[t["name"]] = task_override
-
-    # -- Logit transfers from schema --
-    logit_transfers_raw = label_schema.get("task_relationships", [])
-    if logit_transfers_raw:
-        ple_config.logit_transfers = [
-            LogitTransferDef(
-                source=lt["source"], target=lt["target"],
-                enabled=lt.get("enabled", True),
-                transfer_method=lt.get("transfer_method", "residual"),
-            )
-            for lt in logit_transfers_raw
-        ]
-        ple_config.logit_transfer_strength = float(
-            label_schema.get("logit_transfer_strength", 0.5)
-        )
-        logger.info("Logit transfers: %d relationships", len(ple_config.logit_transfers))
-
-    # -- Feature group ranges from schema --
-    # Use group-level ranges (e.g. "demographics": [0, 29]) for FeatureRouter
-    # Fall back to column-level ranges if group-level not available
-    group_ranges = feature_schema.get("feature_group_ranges",
-                                       feature_schema.get("group_ranges", {}))
-    if group_ranges:
-        ple_config.feature_group_ranges = {k: tuple(v) for k, v in group_ranges.items()}
-    # Also keep column-level ranges for DeepFM field splitting
-    col_ranges = feature_schema.get("group_ranges", {})
-
-    # -- Inject feature_group_ranges into DeepFM expert config ----------------
-    # When field_dims="auto", the DeepFM expert reads feature_group_ranges
-    # from its config dict to derive per-field boundaries for FM interaction.
-    if col_ranges and ple_config.expert_basket is not None:
-        deepfm_cfg = ple_config.expert_basket.expert_configs.get("deepfm")
-        if deepfm_cfg is not None and deepfm_cfg.get("field_dims") == "auto":
-            deepfm_cfg["feature_group_ranges"] = {
-                k: tuple(v) for k, v in col_ranges.items()
-            }
-            logger.info(
-                "Injected %d feature_group_ranges into DeepFM expert config "
-                "for auto field splitting",
-                len(group_ranges),
-            )
-
-    # -- Expert routing from schema or feature_groups.yaml --
-    expert_routing = feature_schema.get("expert_routing", {})
-    if not expert_routing and group_ranges:
-        # Auto-build from feature_groups.yaml target_experts
-        fg_cfg = config.get("feature_groups", [])
-        if not fg_cfg:
-            _fg_path = config.get("feature_groups_file", "")
-            if _fg_path:
-                _fg_p = Path(_fg_path)
-                if not _fg_p.exists():
-                    _fg_p = Path("/opt/ml/code") / _fg_path
-                if _fg_p.exists():
-                    import yaml as _yaml_fg
-                    with open(_fg_p, encoding="utf-8") as _f_fg:
-                        fg_cfg = _yaml_fg.safe_load(_f_fg).get("feature_groups", [])
-        if fg_cfg:
-            from collections import defaultdict
-            _expert_to_groups = defaultdict(list)
-            for fg in fg_cfg:
-                for exp in fg.get("target_experts", []):
-                    if fg["name"] in group_ranges:
-                        _expert_to_groups[exp].append(fg["name"])
-            expert_routing = [
-                {"expert_name": exp, "input_groups": grps}
-                for exp, grps in _expert_to_groups.items()
-            ]
-            if expert_routing:
-                logger.info("Auto-built expert_input_routing from feature_groups.yaml: %d experts",
-                            len(expert_routing))
-    if expert_routing:
-        from core.model.ple.config import ExpertInputConfig
-        ple_config.expert_input_routing = [
-            ExpertInputConfig(**r) if isinstance(r, dict) else r
-            for r in expert_routing
-        ]
-
-    # -- Task group map from schema --
-    task_group_map = label_schema.get("task_group_map", {})
-    if task_group_map:
-        ple_config.task_group_map = task_group_map
-
-    # -- adaTT task_groups from schema (enables build_task_group_map_from_groups) --
-    raw_task_groups = label_schema.get("task_groups", [])
-    if raw_task_groups:
-        # Try model-level first, then root-level label_schema (where
-        # runner.py stores the pipeline.yaml root-level adatt section).
-        adatt_cfg_raw = model_config.get("adatt", {})
-        if not adatt_cfg_raw:
-            adatt_cfg_raw = label_schema.get("adatt", {})
-        if not adatt_cfg_raw:
-            adatt_cfg_raw = config.get("adatt", {})
-        adatt_task_groups: Dict[str, TaskGroupDef] = {}
-        for tg in raw_task_groups:
-            tg_name = tg["name"] if isinstance(tg, dict) else tg.name
-            tg_tasks = tg["tasks"] if isinstance(tg, dict) else tg.tasks
-            tg_intra = (
-                tg.get("adatt_intra_strength", 0.7) if isinstance(tg, dict)
-                else getattr(tg, "adatt_intra_strength", 0.7)
-            )
-            adatt_task_groups[tg_name] = TaskGroupDef(
-                members=list(tg_tasks),
-                intra_strength=tg_intra,
-            )
-
-        _freeze = adatt_cfg_raw.get("freeze_epoch")
-        if _freeze is not None:
-            _freeze = int(_freeze)
-        ple_config.adatt = AdaTTConfig(
-            enabled=adatt_cfg_raw.get("enabled", True),
-            task_groups=adatt_task_groups,
-            inter_group_strength=adatt_cfg_raw.get("inter_group_strength", 0.3),
-            transfer_lambda=adatt_cfg_raw.get("transfer_lambda", 0.1),
-            temperature=adatt_cfg_raw.get("temperature", 1.0),
-            warmup_epochs=adatt_cfg_raw.get("warmup_epochs", 3),
-            freeze_epoch=_freeze,
-            grad_interval=adatt_cfg_raw.get("grad_interval", 10),
-        )
-        logger.info(
-            "AdaTT task_groups: %d groups (%s)",
-            len(adatt_task_groups), list(adatt_task_groups.keys()),
-        )
-        logger.info(
-            "AdaTT config: warmup=%d, freeze=%s, grad_interval=%d, "
-            "lambda=%.3f, tau=%.1f, inter_group=%.2f, source=%s",
-            ple_config.adatt.warmup_epochs,
-            ple_config.adatt.freeze_epoch,
-            ple_config.adatt.grad_interval,
-            ple_config.adatt.transfer_lambda,
-            ple_config.adatt.temperature,
-            ple_config.adatt.inter_group_strength,
-            "model" if model_config.get("adatt") else
-            "label_schema" if label_schema.get("adatt") else
-            "config(root)" if config.get("adatt") else "defaults",
-        )
-
-    # -- GroupTaskExpert config from model section --
-    gte_cfg_raw = model_config.get("group_task_expert", {})
-    if gte_cfg_raw:
-        ple_config.group_task_expert = GroupTaskExpertConfig(
-            enabled=gte_cfg_raw.get("enabled", True),
-            group_hidden_dim=gte_cfg_raw.get("group_hidden_dim",
-                                              gte_cfg_raw.get("group_hidden", 128)),
-            group_output_dim=gte_cfg_raw.get("group_output_dim",
-                                              gte_cfg_raw.get("group_output", 64)),
-            cluster_embed_dim=gte_cfg_raw.get("cluster_embed_dim", 32),
-            dropout=gte_cfg_raw.get("dropout", 0.2),
-        )
-        logger.info(
-            "GroupTaskExpert: hidden=%d, output=%d, cluster_embed=%d",
-            ple_config.group_task_expert.group_hidden_dim,
-            ple_config.group_task_expert.group_output_dim,
-            ple_config.group_task_expert.cluster_embed_dim,
-        )
-
-    # -- HMM group-to-mode mapping from model section --
-    hmm_gm_map = model_config.get("hmm_group_mode_map", {})
-    if hmm_gm_map:
-        ple_config.hmm_group_mode_map = {str(k): str(v) for k, v in hmm_gm_map.items()}
-
-    # -- HMM projectors enabled/disabled (ablation toggle) --
-    if model_config.get("_disable_hmm_projectors"):
-        ple_config.hmm_projectors_enabled = False
-
-    # -- Multidisciplinary routing from schema --
-    md_routing = model_config.get("multidisciplinary_routing", {})
-    if md_routing:
-        ple_config.multidisciplinary_routing = {str(k): list(v) for k, v in md_routing.items()}
-
-    # -- Task tower dims --
-    default_tower_dims = tower_cfg.get("default_dims", [expert_output, expert_output // 2])
-    ple_config.task_tower.default_dims = default_tower_dims
 
     logger.info(
-        "PLEConfig: input_dim=%d, expert_hidden=%s, expert_output=%d, "
-        "shared=%d, task_experts=%d, layers=%d, tower=%s",
-        input_dim, expert_hidden, expert_output,
+        "PLEConfig: input_dim=%d, shared=%d, task_experts=%d, layers=%d",
+        input_dim,
         ple_config.num_shared_experts,
         ple_config.num_task_experts_per_task,
         ple_config.num_extraction_layers,
-        default_tower_dims,
     )
 
     model = PLEModel(ple_config).to(device)
@@ -2193,9 +1783,16 @@ def main() -> None:
         trainer.set_task_val_masks(task_val_masks)
 
     # Resume from checkpoint (Spot restart)
-    resume_state = ckpt_mgr.load_latest(
-        model, trainer.optimizer, trainer.scheduler, map_location=device,
-    )
+    # Wrapped in try/except: when experts are removed via ablation,
+    # stale checkpoints from previous scenarios may have incompatible state_dict.
+    try:
+        resume_state = ckpt_mgr.load_latest(
+            model, trainer.optimizer, trainer.scheduler, map_location=device,
+        )
+    except RuntimeError as e:
+        logger.warning("Checkpoint load failed (likely model structure mismatch): %s", str(e)[:200])
+        logger.warning("Starting from scratch instead of resuming.")
+        resume_state = None
     if resume_state:
         trainer.current_epoch = resume_state.get("epoch", 0)
         trainer.global_step = resume_state.get("global_step", 0)
