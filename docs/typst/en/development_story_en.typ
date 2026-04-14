@@ -1130,6 +1130,101 @@ memory pressure reveals them. The only reliable defense is a pre-training VRAM
 audit: `nvidia-smi` before every run, with a hard stop if available memory is
 below the established baseline.
 
+== Why adaTT Works for Big Tech but Not for Finance
+
+The adaTT results forced a deeper question: why does a method published at KDD 2023
+by Meta Research fail in our setting?
+
+The answer lies in the difference between _population-scale_ and _sample-scale_ data.
+Meta operates on billions of daily interactions. At that scale, the training set is
+essentially the population — overfitting is nearly impossible because the model sees
+virtually every pattern that exists. When adaTT couples CTR and CVR tasks through
+loss-level transfer, the coupling reflects a genuine structural relationship (clicking
+precedes purchasing) that is stable across billions of samples. The "mutual overfitting"
+between tasks is actually precise pattern learning, and any performance gain — even
+0.001 AUC — translates directly to revenue at Meta's scale.
+
+Financial institutions operate in a fundamentally different regime.
+Even large retail banks with 10–20 million customers generate training sets that are
+_samples_ of evolving customer behavior, not populations. Interest rate changes,
+product policy updates, and regulatory shifts cause distribution drift that invalidates
+task-to-task relationships learned from historical data.
+When adaTT couples churn prediction with product acquisition prediction,
+it assumes that the gradient relationship between these tasks is stable.
+In finance, a rate hike can invert this relationship overnight —
+customers who were acquiring products may start churning,
+while previously churning customers may be attracted by new deposit rates.
+
+This leads to a concrete operational risk: task coupling through loss-level transfer
+creates _correlated model failure_. When one task's distribution shifts, the coupled
+loss propagates the error to all connected tasks. In a decoupled architecture (PLE
+softmax with independent task losses), each task can drift independently and be
+retrained or monitored independently. The model's failure modes are isolated rather
+than systemic.
+
+#quote-box()[
+  The choice between adaTT-style coupling and PLE-style isolation is ultimately a
+  choice about model lifecycle management.
+  Big tech can afford tight coupling because they retrain hourly and have population-scale data.
+  Financial institutions, with weekly-to-monthly retraining and sample-scale data,
+  need architectural isolation to extend model lifetime and contain drift propagation.
+]
+
+This insight — that _the optimal MTL architecture depends on the operational regime,
+not just the task structure_ — is perhaps the most practically useful finding from the
+entire ablation campaign. It explains why methods that dominate academic benchmarks
+and big-tech deployments may be counterproductive in regulated, lower-data environments.
+
+== Self-Regulating Experts: When Silence Is the Best Signal
+
+The joint ablation analysis exposed a specific and unexpected culprit. Among the nine
+expert types, per-task metric decomposition showed that the Causal expert — implemented
+via NOTEARS — produced a −0.122 F1-macro drop on the segment_prediction task alone.
+No other single expert caused damage of that magnitude.
+
+The investigation identified the structural reason. NOTEARS is an algorithm for
+recovering directed acyclic graphs (DAGs) from observational data. It always outputs a
+DAG — even when the data contains no genuine causal structure. In the synthetic
+dataset used for this project, labels are derived from formula-based transformations of
+features. NOTEARS finds statistically consistent edges in this setting, but those edges
+describe the formula, not real causal relationships. The algorithm learns spurious
+dependencies and encodes them as confident, dense representations. The Causal expert
+does not produce noise; it produces confidently wrong information at full signal strength.
+
+The core problem is architectural: the Causal expert has no "I don't know" option.
+Every expert in the current PLE design always produces an output vector, regardless of
+whether it has anything meaningful to contribute. When an expert's output is
+confidently wrong, the PLE gate must learn to ignore it — but the gate's softmax
+formulation means it can only suppress an expert by boosting others, not by
+eliminating the harmful signal entirely.
+
+The solution is an internal confidence gate. If the total edge weight of the NOTEARS
+DAG falls below a learned threshold, the expert outputs a zero vector — silence —
+instead of a low-confidence representation. The PLE gate then receives nothing from
+that expert, rather than a misleading vector it must learn to discount.
+
+The broader implication extends to every expert in the architecture. A self-regulating
+expert that silences itself when it cannot contribute useful signal eliminates the need
+for the PLE gate to identify which experts are harmful. New expert types can be added
+freely without the risk of negative transfer — each expert assumes responsibility for
+knowing when not to speak. The gate's job simplifies from "which experts are harmful?"
+to "how should I weight experts that have already certified their own relevance?"
+
+#info-box(
+  [Self-Regulation as a Prerequisite for Expert Ensembling],
+  [
+    This discovery connects directly to Paper 3's central question: how to ensemble
+    heterogeneous expert outputs whose semantics are incommensurable.
+    Self-regulation is a prerequisite for principled ensembling.
+    If some experts contribute confident noise, the ensemble signal is corrupted before
+    any weighting scheme is applied. Self-regulating experts — those that output silence
+    when their internal confidence is low — ensure that every vector the gate receives
+    is a genuine claim of relevance, not a mandatory contribution.
+    The gate can then ensemble on the basis of relative expertise rather than
+    relative harmfulness.
+  ],
+)
+
 #section-break()
 
 

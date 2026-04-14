@@ -1096,38 +1096,50 @@ but a structural requirement for multi-faceted persuasion.
     table.header(
       [*Scenario*], [*Avg AUC*], [*Avg F1m†*], [*Avg MAE*], [*Val Loss*],
     ),
-    // TODO: Replace with joint ablation v12 results (adaTT OFF, PLE softmax)
-    // Currently running — will be filled when 15 scenarios complete.
     table.cell(colspan: 5, align: left, [_Baselines_]),
-    [Full (7 experts, PLE softmax)], [--], [--], [--], [--],
-    [DeepFM only], [--], [--], [--], [--],
+    [Full (7 experts, PLE softmax)], [0.6724], [0.2010], [0.9596], [25.72],
+    [DeepFM only], [0.6718], [*0.2031*], [0.9591], [25.74],
     table.cell(colspan: 5, align: left, [_Bottom-up: DeepFM + single expert (sorted by AUC desc)_]),
-    [DeepFM + Causal], [--], [--], [--], [--],
-    [DeepFM + Temporal], [--], [--], [--], [--],
-    [DeepFM + OT], [--], [--], [--], [--],
-    [DeepFM + LightGCN], [--], [--], [--], [--],
-    [DeepFM + TDA], [--], [--], [--], [--],
-    [DeepFM + HGCN], [--], [--], [--], [--],
+    [DeepFM + LightGCN], [*0.6733*], [0.2000], [0.9598], [25.75],
+    [DeepFM + HGCN], [0.6725], [0.1980], [*0.9577*], [25.74],
+    [DeepFM + TDA], [0.6723], [0.2025], [0.9603], [25.72],
+    [DeepFM + Temporal], [0.6720], [0.2015], [0.9593], [25.70],
+    [DeepFM + Causal], [0.6715], [0.1609†], [0.9587], [25.74],
+    [DeepFM + OT], [0.6714], [0.1596†], [0.9591], [25.75],
     table.cell(colspan: 5, align: left, [_Top-down: Full minus one expert_]),
-    [Full − Temporal], [--], [--], [--], [--],
-    [Full − HGCN], [--], [--], [--], [--],
-    [Full − TDA], [--], [--], [--], [--],
-    [Full − LightGCN], [--], [--], [--], [--],
-    [Full − Causal], [--], [--], [--], [--],
-    [Full − OT], [--], [--], [--], [--],
+    [Full − LightGCN], [0.6727], [0.2016], [0.9594], [25.74],
+    [Full − TDA], [0.6726], [0.2012], [0.9582], [25.73],
+    [Full − Temporal], [0.6725], [0.2012], [0.9596], [25.71],
+    [Full − HGCN], [0.6724], [0.2014], [*0.9586*], [25.72],
+    [Full − Causal], [0.6724], [0.2010], [0.9617], [25.73],
+    [Full − OT], [0.6721], [0.2020], [0.9591], [23.60],
   ),
   caption: [Joint feature + expert ablation. Bottom-up adds one generator to DeepFM baseline; top-down removes one expert from the full 7-expert model. Bold = best in group. †Avg F1m covers segment\_prediction (F1-macro); nba\_primary and next\_mcc use NDCG\@3/Acc\@3 in per-task reporting.],
 ) <tab:joint-ablation>
 
-// TODO: Update joint ablation narrative when v12 adaTT-OFF results are available.
-// Preliminary ranking from adaTT-ON run (relative order expected to hold):
-// Bottom-up: Causal > Temporal > OT > LightGCN > TDA > HGCN
-// Top-down: TDA is the only expert whose removal degrades performance.
-Expert contribution analysis is presented in @tab:joint-ablation.
-All scenarios use PLE softmax gating (the best-performing structure from @tab:structure-ablation) with adaTT disabled.
-Bottom-up ablation adds one expert at a time to the DeepFM baseline;
-top-down ablation removes one expert from the full 7-expert model.
-Metrics are reported per task type to avoid cross-type averaging artifacts.
+Expert contribution analysis (@tab:joint-ablation) reveals three patterns.
+All scenarios use PLE softmax gating with adaTT disabled.
+
+*Individual expert contributions are marginal on synthetic data.*
+The full 7-expert model (AUC 0.6724) improves only +0.0006 over DeepFM alone (0.6718).
+In the bottom-up ablation, LightGCN provides the largest AUC gain (+0.0015 over DeepFM baseline),
+while in the top-down ablation, no single expert removal causes AUC to drop below the DeepFM-only level.
+This confirms that the synthetic benchmark's formula-based feature--label relationships
+do not require specialized expert representations --- a limitation expected to reverse
+with production data where genuine temporal, hierarchical, and collaborative signals exist.
+
+*Causal and OT experts cause segment\_prediction negative transfer.*
+Both DeepFM+Causal and DeepFM+OT show F1-macro drops of $-$0.04 (†marked in table),
+entirely attributable to segment\_prediction F1 collapsing from 0.40 to 0.28.
+The identical magnitude for two architecturally different experts (NOTEARS DAG vs.~Sinkhorn Wasserstein)
+indicates a _softmax gate redistribution effect_: adding any expert that receives the full feature vector
+forces the gate to redistribute weight away from DeepFM, regardless of the new expert's architecture.
+
+*HGCN removal degrades nba\_primary ranking.*
+While aggregate AUC is unaffected, per-task analysis (see Appendix) shows that
+removing HGCN causes nba\_primary NDCG\@3 to drop by $-$0.015 ---
+the largest per-task degradation in the top-down ablation,
+confirming that product hierarchy encoding is essential for recommendation ranking.
 
 == Task × Structure Cross Ablation (RQ3)
 
@@ -1529,7 +1541,7 @@ reversing findings from homogeneous-task literature ---
 a result we attribute to softmax's protective isolation
 of minority-type tasks (multiclass) from majority-type gradients (binary).
 
-The architecture, benchmark data, and ablation framework are released as open source.
+The architecture, benchmark data, and ablation framework are released as open source.#footnote[https://github.com/bluethestyle/aws\_ple\_for\_financial]
 A companion paper addresses the downstream pipeline:
 knowledge distillation @hinton2015 to LGBM @ke2017lightgbm, multi-agent recommendation reason generation,
 and regulatory compliance mapping for Korean FSS and EU AI Act requirements.

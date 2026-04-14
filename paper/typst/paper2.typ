@@ -1245,6 +1245,41 @@ features derived from domain-specific questions
 enrich the internal reasoning context, enabling more nuanced business-language explanations
 than any amount of architectural sophistication applied to shallow statistical summaries.
 
+== Dual Causal Pathways: Designed vs.~Discovered
+
+The architecture provides two complementary mechanisms for encoding causal relationships between tasks:
+
+*Logit transfer* encodes _known_ causal pathways that domain experts design explicitly.
+For example, churn signal → product stability (customers who churn show declining product engagement)
+and next MCC category → NBA primary (consumption patterns predict product affinity).
+These are _codified domain knowledge_ --- the system encodes relationships
+that practitioners already understand.
+
+*The Causal expert (NOTEARS DAG)* discovers _unknown_ causal pathways from data.
+By learning a directed acyclic graph over the feature space,
+it can identify relationships that practitioners have not anticipated ---
+for instance, that a specific channel usage pattern causes increased overseas transactions,
+which in turn predicts interest in investment products.
+
+This dual structure has a concrete regulatory advantage:
+when a regulator asks "why did the model recommend this product to this customer?",
+the answer can cite both _designed pathways_ (logit transfer: "we encoded the known relationship
+between churn risk and product stability")
+and _discovered pathways_ (Causal expert: "the model identified a data-driven relationship
+between this customer's channel behavior and investment interest").
+
+Furthermore, the Causal expert's discovered DAG can inform future logit transfer design ---
+if the DAG consistently identifies an A→B pathway across retraining cycles,
+practitioners can promote it to an explicit logit transfer in the next model version.
+This creates a _feedback loop_ where data-driven discovery
+gradually enriches the designed causal structure.
+
+Note: in the companion paper's synthetic data ablation, the Causal expert showed negative transfer
+on the segment classification task, attributed to input routing overlap with DeepFM
+(both receive the full feature vector) rather than a fundamental limitation of causal discovery.
+Validation on production data with genuine causal structure is required to assess the expert's
+contribution to both predictive performance and explanation quality.
+
 == Practical Deployment Considerations
 
 - *LLM selection*: On-premises LLM vs API (latency, cost, data residency).
@@ -1351,7 +1386,7 @@ of a small team and these tools.
 #heading(numbering: none, level: 1)[Appendix A. Implementation Reference]
 
 The concepts described in this paper have concrete Python implementations
-available in the public code repository. The mapping between paper concepts
+available in the public code repository.#footnote[https://github.com/bluethestyle/aws\_ple\_for\_financial] The mapping between paper concepts
 and implementation modules is as follows:
 
 #figure(placement: top, scope: "parent",
