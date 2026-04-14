@@ -408,10 +408,15 @@ class CheckpointManager:
     def _download_latest_from_s3(self) -> Optional[Path]:
         """Find and download the latest checkpoint from S3.
 
+        Searches for both CheckpointManager format (checkpoint_epoch0001.pt)
+        and CheckpointCallback format (epoch_1.pt, best.pt).
+
         Returns
         -------
         Path or None
         """
+        import re
+
         try:
             prefix = f"{self.s3_prefix}/" if self.s3_prefix else ""
             response = self._s3.list_objects_v2(
@@ -419,21 +424,41 @@ class CheckpointManager:
                 Prefix=prefix,
             )
             contents = response.get("Contents", [])
-            checkpoint_keys = [
-                obj["Key"]
-                for obj in contents
-                if obj["Key"].endswith(".pt") and self.BEST_FILENAME not in obj["Key"]
-            ]
-            if not checkpoint_keys:
-                return None
 
-            # Sort by key name (contains epoch number)
-            latest_key = sorted(checkpoint_keys)[-1]
-            filename = latest_key.split("/")[-1]
-            local_path = self.local_dir / filename
-            self._s3.download_file(self.s3_bucket, latest_key, str(local_path))
-            logger.info(f"Downloaded latest checkpoint from S3: {latest_key}")
-            return local_path
+            # Collect all .pt files except best/best_model
+            epoch_keys = []
+            best_key = None
+            for obj in contents:
+                key = obj["Key"]
+                if not key.endswith(".pt"):
+                    continue
+                fname = key.split("/")[-1]
+                if fname in ("best.pt", self.BEST_FILENAME):
+                    best_key = key
+                    continue
+                # Extract epoch number from either format
+                m = re.search(r"(?:checkpoint_epoch|epoch_)(\d+)", fname)
+                if m:
+                    epoch_keys.append((int(m.group(1)), key))
+
+            # Prefer latest epoch checkpoint
+            if epoch_keys:
+                epoch_keys.sort(key=lambda x: x[0])
+                latest_epoch, latest_key = epoch_keys[-1]
+                filename = latest_key.split("/")[-1]
+                local_path = self.local_dir / filename
+                self._s3.download_file(self.s3_bucket, latest_key, str(local_path))
+                logger.info(f"Downloaded latest checkpoint from S3: {latest_key} (epoch {latest_epoch})")
+                return local_path
+
+            # Fallback to best.pt
+            if best_key:
+                local_path = self.local_dir / "best.pt"
+                self._s3.download_file(self.s3_bucket, best_key, str(local_path))
+                logger.info(f"Downloaded best checkpoint from S3: {best_key}")
+                return local_path
+
+            return None
 
         except Exception as e:
             logger.warning(f"Failed to list/download checkpoints from S3: {e}")
@@ -444,19 +469,54 @@ class CheckpointManager:
     # ------------------------------------------------------------------
 
     def _find_latest_local(self) -> Optional[Path]:
-        """Find the most recent checkpoint file in *local_dir*."""
-        candidates = sorted(
+        """Find the most recent checkpoint file in *local_dir*.
+
+        Searches for both CheckpointManager format (checkpoint_epoch0001.pt)
+        and CheckpointCallback format (epoch_1.pt, best.pt) to handle
+        Spot instance resume regardless of which system saved the checkpoint.
+        """
+        import re
+
+        # Pattern 1: CheckpointManager format — checkpoint_epoch0001.pt
+        candidates_mgr = sorted(
             self.local_dir.glob("checkpoint_epoch*.pt"),
             key=lambda p: p.name,
         )
-        return candidates[-1] if candidates else None
+        if candidates_mgr:
+            return candidates_mgr[-1]
+
+        # Pattern 2: CheckpointCallback format — epoch_N.pt
+        candidates_cb = sorted(
+            self.local_dir.glob("epoch_*.pt"),
+            key=lambda p: int(re.search(r"epoch_(\d+)", p.name).group(1))
+            if re.search(r"epoch_(\d+)", p.name) else 0,
+        )
+        if candidates_cb:
+            return candidates_cb[-1]
+
+        # Pattern 3: best.pt fallback
+        best_path = self.local_dir / "best.pt"
+        if best_path.exists():
+            return best_path
+
+        return None
 
     def _scan_existing(self) -> None:
-        """Discover existing checkpoint files on startup."""
-        self._saved_checkpoints = sorted(
-            self.local_dir.glob("checkpoint_epoch*.pt"),
-            key=lambda p: p.name,
-        )
+        """Discover existing checkpoint files on startup.
+
+        Scans both CheckpointManager (checkpoint_epoch*.pt) and
+        CheckpointCallback (epoch_*.pt) formats.
+        """
+        import re
+
+        all_ckpts = list(self.local_dir.glob("checkpoint_epoch*.pt"))
+        all_ckpts.extend(self.local_dir.glob("epoch_*.pt"))
+
+        def _sort_key(p):
+            m = re.search(r"(\d+)", p.stem)
+            return int(m.group(1)) if m else 0
+
+        self._saved_checkpoints = sorted(all_ckpts, key=_sort_key)
         if self._saved_checkpoints:
             logger.info(
                 f"Found {len(self._saved_checkpoints)} existing checkpoint(s) "

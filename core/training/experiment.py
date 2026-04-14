@@ -231,10 +231,17 @@ class SageMakerTracker(ExperimentTracker):
         tags: Optional[Dict[str, str]] = None,
     ) -> None:
         try:
+            import boto3
             from sagemaker.experiments.run import Run
             from sagemaker.session import Session
 
-            session = Session()
+            # Auto-detect region from environment or boto3 config
+            region = os.environ.get(
+                "AWS_DEFAULT_REGION",
+                boto3.session.Session().region_name or "ap-northeast-2",
+            )
+            boto_session = boto3.session.Session(region_name=region)
+            session = Session(boto_session=boto_session)
             self._run = Run(
                 experiment_name=experiment_name,
                 run_name=run_name,
@@ -242,8 +249,8 @@ class SageMakerTracker(ExperimentTracker):
             )
             self._run.__enter__()
             self._run_id_str = run_name or experiment_name
-            logger.info("SageMakerTracker: run started (%s / %s)",
-                        experiment_name, run_name)
+            logger.info("SageMakerTracker: run started (%s / %s, region=%s)",
+                        experiment_name, run_name, region)
         except Exception as e:
             logger.warning("SageMakerTracker: failed to start run: %s. "
                            "Metrics will not be logged.", e)

@@ -763,7 +763,20 @@ class PLETrainer:
         phase_state = self._make_state(phase_name=phase_name)
         self.callbacks.on_phase_begin(phase_state)
 
-        for epoch_idx in range(max_epochs):
+        # If resuming from checkpoint, only run remaining epochs up to target.
+        # max_epochs is the TARGET epoch count (e.g. 30), not "epochs to add".
+        remaining = max_epochs - self.current_epoch
+        if remaining < max_epochs:
+            logger.info(
+                "[%s] Resuming from epoch %d, running %d more epochs (target=%d)",
+                phase_name, self.current_epoch, remaining, max_epochs,
+            )
+        if remaining <= 0:
+            logger.info("[%s] Already at epoch %d >= target %d, skipping.",
+                        phase_name, self.current_epoch, max_epochs)
+            return
+
+        for epoch_idx in range(remaining):
             self.current_epoch += 1
 
             # Clear VRAM cache between epochs to prevent retain_graph

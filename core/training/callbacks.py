@@ -238,6 +238,9 @@ class CheckpointCallback(TrainingCallback):
         if val_loss is not None and val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
             self._save(state, "best")
+            # Save eval_metrics snapshot alongside best checkpoint
+            # so metrics survive even if the job is interrupted/stopped
+            self._save_eval_metrics(state)
 
         # Periodic checkpoint
         if epoch > 0 and epoch % self.save_every_n_epochs == 0:
@@ -245,6 +248,32 @@ class CheckpointCallback(TrainingCallback):
             self._cleanup_old()
 
         return False  # never stops training
+
+    def _save_eval_metrics(self, state: Dict[str, Any]) -> None:
+        """Save current validation metrics as eval_metrics.json.
+
+        Written alongside checkpoints so that metrics are preserved
+        even if the training job is stopped or interrupted before the
+        final evaluation step runs.
+        """
+        import json
+
+        metrics = {}
+        for k in ("val_loss", "val_metrics", "epoch", "global_step"):
+            if k in state and state[k] is not None:
+                metrics[k] = state[k]
+
+        # Flatten val_metrics dict into top-level keys
+        if "val_metrics" in metrics and isinstance(metrics["val_metrics"], dict):
+            flat = metrics.pop("val_metrics")
+            metrics.update(flat)
+
+        metrics["best_val_loss"] = self.best_val_loss
+
+        path = self.checkpoint_dir / "eval_metrics.json"
+        with open(path, "w") as f:
+            json.dump(metrics, f, indent=2, default=str)
+        logger.debug("Eval metrics snapshot saved: %s (epoch %d)", path, state.get("epoch", 0))
 
     def _save(self, state: Dict[str, Any], name: str) -> None:
         """Save a checkpoint to disk."""
