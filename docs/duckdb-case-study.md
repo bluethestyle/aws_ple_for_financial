@@ -59,7 +59,7 @@ through training:
 │  [1] DuckDB: read_parquet() ─────── Adapter                │
 │  [2] DuckDB: SQL transforms ─────── Feature generators      │
 │  [3] DuckDB: POSITIONAL JOIN ─────── Merge features         │
-│  [4] DuckDB: SQL CASE/COALESCE ──── Label derivation (14×)  │
+│  [4] DuckDB: SQL CASE/COALESCE ──── Label derivation (13×)  │
 │  [5] DuckDB: register()+fetchnumpy() ─ 3-stage normalization│
 │  [6] DuckDB: POSITIONAL JOIN ─────── Combine features+labels│
 │  [7] .df() or .arrow() ─────────── → numpy → torch tensor  │
@@ -86,7 +86,7 @@ df = con.execute(f"SELECT * FROM '{parquet_path}'").df()
 ```
 
 The `QueryEngine` wrapper supports predicate pushdown and column selection,
-so the full 349-column file is never materialized when only a subset is needed:
+so the full 403-column file is never materialized when only a subset is needed:
 
 ```python
 sql = f"SELECT {col_expr} FROM read_parquet('{path}')"
@@ -104,10 +104,10 @@ con.execute(f"COPY {table_name} TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)")
 
 ---
 
-## Pattern 2: SQL Replaces 14 × groupby().apply(lambda)
+## Pattern 2: SQL Replaces 13 × groupby().apply(lambda)
 
-The pipeline derives 13 binary and multi-class labels from raw features.
-The original pandas implementation ran 14 sequential `.apply(lambda)` calls
+The pipeline derives 13 labels (binary, multiclass, regression) from raw features.
+The original pandas implementation ran 13 sequential `.apply(lambda)` calls
 over 941K rows — each holding the full DataFrame in memory and serializing
 row by row through Python.
 
@@ -195,7 +195,7 @@ df = con.execute(
 ).df()
 ```
 
-The same pattern combines the 349-column feature matrix with the 14-column
+The same pattern combines the 403-column feature matrix with the 13-column
 label matrix before DataLoader construction:
 
 ```python
@@ -309,12 +309,14 @@ result = con.execute("""
 """).arrow()
 ```
 
-This reduced memory from 20+ GB to ~8 GB and runtime from ~20 minutes to
-~30 seconds — a **40× speedup** with 60% less memory.
+The DuckDB-based aggregation step alone reduced from ~20 minutes to ~30 seconds
+(**40× speedup**) with memory dropping from 20+ GB to ~8 GB.
+Full data generation (1M customers including all 6 persona types,
+transaction sequences, and label derivation) completes in ~13 minutes end-to-end.
 
 ### Parquet Output via Arrow
 
-The final dataset (349+ scalar columns + LIST columns for sequences) is
+The final dataset (100+ scalar columns + LIST columns for sequences) is
 assembled as a PyArrow Table and written directly — no pandas intermediate:
 
 ```python
@@ -326,8 +328,9 @@ table = pa.table(column_dict, schema=schema)
 pq.write_table(table, output_path, compression="snappy")
 ```
 
-The 1M × 375 column dataset writes as a ~1.2 GB Snappy-compressed Parquet
-file. LIST columns (transaction sequences) are stored natively in Parquet's
+The 1M-customer dataset writes as a ~1.5 GB Snappy-compressed Parquet
+file (105 raw columns; expands to 403 after Phase 0 feature engineering).
+LIST columns (transaction sequences) are stored natively in Parquet's
 nested type system, readable by DuckDB downstream without deserialization hacks.
 
 This means the DuckDB → Arrow → Parquet chain runs end-to-end in both
@@ -399,6 +402,9 @@ it is the difference between "the pipeline runs" and "the pipeline OOM-kills."
 The same DuckDB-based pipeline was then ported to AWS SageMaker with zero
 architecture changes — the SQL queries, `register()` patterns, and
 `POSITIONAL JOIN` calls are identical between on-premises and cloud.
+The on-premises codebase uses DuckDB in over 240 source files across
+ingestion, feature engineering, model input, scoring, monitoring,
+and serving — it is not a partial adoption but the sole data processing backend.
 
 ---
 
