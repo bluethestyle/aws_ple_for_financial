@@ -71,7 +71,7 @@
 ## 3. Knowledge Distillation (~2 pages)
 
 ### 3.1 Teacher-Student Architecture
-- Teacher: PLE 13-task, 7 experts, 350 features (논문 1); HGCN은 `merchant_hierarchy` (MCC L1→L2 Poincaré 임베딩), LightGCN은 상품 공동 보유 이분 그래프로 역할 분리
+- Teacher: PLE 13-task, 7 experts, 349 features (논문 1); HGCN은 `merchant_hierarchy` (MCC L1→L2 Poincaré 임베딩), LightGCN은 상품 공동 보유 이분 그래프로 역할 분리
 - Benchmark: v12 합성 데이터 (MCC 선호 배율 8–12×, 고착성 60%, Financial DNA situation 변수 포함) 기반 teacher 학습
 - Student: LGBM × 13 tasks, CPU 추론
 - 제외된 5개 태스크: income_tier/tenure_stage/spend_level/engagement_score (deterministic leakage) + has_nba (nba_primary class 0으로 통합 — 추천 여부 예측이 추천 상품 예측에 포함됨)

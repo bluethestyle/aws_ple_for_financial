@@ -503,7 +503,7 @@ ablation:
   training_defaults:
     epochs: 5
     batch_size: 6144
-    learning_rate: 0.008
+    learning_rate: 0.0005
     amp: true
     early_stopping_patience: 3
     seed: 42

@@ -145,7 +145,7 @@
 - [Table 4: 레이블별 variance budget + AUC ceiling]
 
 ### 5.2 Experimental Setup
-- 데이터: 1M customers, 350 features, 13 tasks
+- 데이터: 1M customers, 349 features, 13 tasks
 - 하드웨어: RTX 4070 12GB (로컬) / g5.xlarge A10G 24GB (클라우드)
 - 학습 설정: epochs, batch_size, lr, AMP, early stopping
 - 평가 메트릭: AUC (binary), F1 (classification), MAE/RMSE/R² (regression)

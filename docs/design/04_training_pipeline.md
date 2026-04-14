@@ -77,7 +77,7 @@ Step Functions (오케스트레이션)
    │  │ Phase 1     │ SageMaker Training Job #1                  │
    │  │ Joint       │ - Spot Instance (g4dn.xlarge)              │
    │  │ Training    │ - 체크포인트 → S3 (Spot 중단 대비)            │
-   │  │ (30 epoch)  │ - Per-task loss: build_loss() 팩토리         │
+   │  │ (10 epoch)  │ - Per-task loss: build_loss() 팩토리         │
    │  │             │ - Uncertainty weighting: Kendall et al.     │
    │  │             │ - Evidential + SAE (config-gated)           │
    │  └──────┬──────┘                                            │
@@ -186,11 +186,24 @@ Task Towers (14개 출력)
 ├──────────────────────────────────────────────────┤
 │ Uncertainty weighting (Kendall et al.)             │
 │                                                    │
-│ loss_total = Sigma [exp(-log_var_k) * L_k          │
-│              + log_var_k / 2]                      │
+│ loss_total = Sigma [loss_weight_k *                │
+│              (exp(-log_var_k) * L_k                │
+│              + log_var_k / 2)]                     │
 │              + sae_weight * sae_loss               │
 │              + evidential_loss                      │
 │              + cgc_entropy_reg                      │
+│                                                    │
+│ ※ Bug fix (2026-04-13): 이전 구현은 uncertainty    │
+│   weighting 활성 시 task별 loss_weight를 무시했다.  │
+│   수정 후: loss_weight * (precision * L + log_var) │
+│   형태로 적용하며, log_var는 [-10, 10] clamp.       │
+│   이것이 ablation에서 가장 큰 단일 개선이었다.       │
+├──────────────────────────────────────────────────┤
+│ GradSurgery (conflict-aware gradient projection)   │
+│                                                    │
+│ - backward() 직후, optimizer.step() 직전에 동작    │
+│ - retain_graph=True는 grad_interval=10 step마다만  │
+│   사용하여 VRAM 오버헤드를 최소화                   │
 ├──────────────────────────────────────────────────┤
 │ Optimizer step (AMP + gradient accumulation)       │
 │ log_var도 함께 업데이트 (learnable parameter)        │
@@ -205,17 +218,17 @@ Task Towers (14개 출력)
 training:
   experiment_name: santander_ple
   batch_size: 2048             # 941K users / 2048 = ~460 steps/epoch
-  epochs: 50
+  epochs: 10                   # ablation 기준 10 epoch (변경: 50 → 10, 2026-04-13)
   learning_rate: 0.001
   weight_decay: 0.01
   seed: 42
 
   phase1:
-    epochs: 30
+    epochs: 10                 # ablation 기준 (변경: 30 → 10, 2026-04-13)
     description: "Joint training of all tasks"
 
   phase2:
-    epochs: 20
+    epochs: 10
     freeze_extraction: true
     description: "Fine-tune towers with frozen extraction"
 
@@ -225,7 +238,7 @@ training:
 
   scheduler:
     type: cosine
-    warmup_epochs: 3
+    warmup_epochs: 3            # adaTT warmup default: 3 (변경: 10 → 3, 2026-04-13)
 
   loss_weighting:
     strategy: uncertainty       # Kendall et al.
@@ -508,9 +521,26 @@ Spot 중단 대비:
   2. SageMaker CheckpointConfig 설정 → 자동 재개
   3. max_wait = max_run + 1hr (Spot 재할당 대기)
 
-Santander 학습 기준 (50 epochs, ~4시간):
-  On-Demand: $2.10
-  Spot:      ~$0.64
+Santander ablation 기준 (10 epochs, ~1시간):
+  On-Demand: $0.53
+  Spot:      ~$0.16
+```
+
+### Windows 절전 방지 (로컬 야간 학습)
+
+로컬 GPU PC에서 overnight ablation 실행 시 Windows 절전 모드가 프로세스를 종료하는 문제가 있다. orchestrator 스크립트에서 `SetThreadExecutionState`를 호출하여 절전을 방지한다:
+
+```python
+# scripts/run_santander_ablation.py (orchestrator 진입 시 호출)
+import ctypes
+ES_CONTINUOUS       = 0x80000000
+ES_SYSTEM_REQUIRED  = 0x00000001
+ES_AWAYMODE_REQUIRED = 0x00000040
+ctypes.windll.kernel32.SetThreadExecutionState(
+    ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED
+)
+# 실험 완료 후 해제
+ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
 ```
 
 ---

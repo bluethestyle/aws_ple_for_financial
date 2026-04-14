@@ -36,7 +36,7 @@
 ### 1.5 비용 관리
 - **ProfilerReport는 반드시 비활성화**한다 (`disable_profiler=True`를 estimator kwargs에 명시적으로 전달).
 - **AMP (Mixed Precision)는 반드시 활성화**한다 — g4dn T4 GPU에서 ~2배 속도 향상.
-- **batch_size는 VRAM과 데이터 크기에 맞게 최적화**한다 (941K 데이터 → 4096 권장).
+- **batch_size는 VRAM과 데이터 크기에 맞게 최적화**한다 (941K 데이터 → 5632 권장).
 - **spot 인스턴스는 동시 4대 이하**로 제한한다 — 8대 이상 시 같은 AZ 경쟁으로 중단 빈도가 급증한다.
 - **max_wait는 max_run + 1시간**으로 설정한다 — 10시간 대기는 낭비.
 - 실험 전 `aws ce get-cost-and-usage`로 현재 비용을 확인한다.

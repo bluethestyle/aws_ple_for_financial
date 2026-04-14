@@ -641,7 +641,7 @@ The core philosophy of the PLE architecture — Mixture of Experts — was appli
       #text(size: 11pt, fill: anthropic-text, weight: "bold")[Infrastructure and Experimentation]
       #v(4pt)
       #text(size: 10pt, fill: anthropic-text)[
-        • 24 ablation scenarios \
+        • 24 ablation scenarios (9 structure × 15 expert) \
         • AWS SageMaker spot instances \
         • Phase 0 (CPU) + Phase 1\~2 (GPU) separation \
         • Config-driven pipeline architecture
@@ -661,7 +661,7 @@ Two papers have been prepared: one covering the heterogeneous expert PLE archite
 
 == Expert Specialization Revealed by Ablation
 
-Analysis across 24 ablation scenarios clearly demonstrated task-type-specific expert specialization. LightGCN showed the greatest contribution for multiclass tasks (next product prediction), while the Causal expert excelled at regression tasks (customer value estimation). This empirically validates the heterogeneous expert design.
+Analysis across 24 ablation scenarios (9 structure × 15 expert) clearly demonstrated task-type-specific expert specialization. LightGCN showed the greatest contribution for multiclass tasks (next product prediction), while the Causal expert excelled at regression tasks (customer value estimation). This empirically validates the heterogeneous expert design.
 
 == On-Premises Operational Results
 
@@ -930,6 +930,209 @@ distribution shape on the student.
 #section-break()
 
 
+= The Bug That Outweighed Every Architecture Decision (2026-04-13)
+
+#quote-box[
+  "The uncertainty weighting fix yielded +0.018 NDCG\@3 and +0.031 F1-macro.
+  That is larger than any architectural change we had tried.
+  The model had never been running as designed."
+]
+
+== Uncertainty Weighting: A Silent No-Op
+
+The investigation began with a puzzling trend in ablation results: as architectural
+complexity increased — from shared bottom to PLE, from no transfer to adaTT —
+NDCG@3 declined rather than improved. The question that forced a root-cause search
+was simple: why would a more sophisticated architecture produce worse recommendations?
+
+The answer was in the loss computation. The on-prem uncertainty weighting
+implementation applies per-task `loss_weight` inside the uncertainty term:
+
+#set par(first-line-indent: 0pt)
+#block(
+  width: 100%,
+  stroke: (left: 2pt + anthropic-accent),
+  inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
+)[
+  #text(size: 10pt, fill: anthropic-muted, style: "italic")[On-prem (correct):]
+  #text(size: 10pt)[`loss = loss_weight * (precision * task_loss + log_var)`] \
+  #v(6pt)
+  #text(size: 10pt, fill: anthropic-muted, style: "italic")[AWS port (bug):]
+  #text(size: 10pt)[`loss = precision * task_loss + log_var / 2`]
+]
+#set par(first-line-indent: 1.2em)
+
+The AWS port had dropped `loss_weight` entirely and divided `log_var` by 2 as an
+ad-hoc scaling choice that did not appear in the original formulation. The result:
+`task_loss_weights` declared in `pipeline.yaml` had been silently ignored since
+the beginning of experimentation. Every training run had treated all 13 tasks
+as equally weighted, regardless of configuration. Tasks with large loss magnitudes
+dominated gradient updates; tasks representing the system's primary business
+objectives — next-product prediction and churn — were swamped.
+
+The fix was a single line: restore the `loss_weight` multiplication and remove
+the erroneous `/2` on the log-variance term. Outcome: +0.018 NDCG@3,
++0.031 F1-macro. These gains were larger than any architectural modification
+tested across the entire ablation study.
+
+The lesson is uncomfortable but important. Infrastructure-level bugs — bugs in
+the training harness rather than the model architecture — are systematically
+harder to detect than model bugs. A model that misroutes a feature group will
+show inconsistent expert activations. A training harness that silently ignores
+loss weights will train, converge, and produce plausible metrics — all while
+never optimizing what the configuration specifies.
+
+== The Softmax-Sigmoid Reversal
+
+Earlier experiments, run before the uncertainty fix, consistently showed sigmoid
+gating outperforming softmax. This result was coherent with the NeurIPS 2024
+sigmoid gate paper, which argued that competitive softmax normalization hinders
+convergence among heterogeneous experts. The finding was documented as a
+conclusion and used to inform subsequent experiment design.
+
+After the uncertainty fix, the result reversed: softmax now outperforms sigmoid
+on NDCG metrics.
+
+The root cause, in retrospect, is traceable to the broken loss weighting. With
+all 13 tasks weighted equally, binary classification tasks — which are numerous
+in the task set — produced gradients that consistently overwhelmed multiclass
+and regression gradients. Under these conditions, sigmoid gating's non-competitive
+behavior was genuinely beneficial: it allowed all experts to remain active and
+resist being captured by binary task gradients. Softmax's competitive selection
+amplified the problem by concentrating expert capacity on the gradient-dominant
+binary tasks.
+
+With correct loss weighting, multiclass gradients recover their intended strength.
+Softmax's competitive routing then becomes protective: by forcing expert
+specialization, it creates a structural barrier between binary and multiclass
+gradient flows. The weaker experts for each task type are not pulled off course
+by the dominant tasks.
+
+#info-box(
+  [Why Sigmoid Wins in Homogeneous MTL — and Softmax in Heterogeneous],
+  [
+    The homogeneous MTL literature (2--4 tasks, same task type) favors sigmoid gates
+    because competitive routing among structurally similar experts produces collapse.
+    But the 13-task, 3-type setting in this project is not homogeneous MTL.
+    Binary, multiclass, and regression gradients have incompatible scales and
+    update frequencies. In this regime, softmax's competitive expert selection
+    acts as a routing firewall — protecting task-type-specific experts from
+    gradient corruption by other task types. The sigmoid literature result
+    does not transfer. The boundary condition matters.
+  ],
+)
+
+This episode illustrates a broader methodological risk: when a training bug
+corrupts the optimization process, observed results can point toward incorrect
+architectural conclusions. The sigmoid preference was a valid adaptation to a
+broken training environment. Once the environment was fixed, the underlying
+architectural preference reasserted itself. Without the root-cause investigation,
+the "sigmoid is better" conclusion would have been carried forward indefinitely.
+
+== adaTT at Scale: 13 Tasks, 156 Pairs
+
+The five adaTT porting bugs discovered in the previous session had been fixed.
+With those fixes and correct uncertainty weighting, a cleaner picture emerged
+of where adaTT actually fails.
+
+The fundamental challenge is combinatorial. adaTT's affinity estimation is designed
+for the regime in which it was developed: 4 tasks, 12 directed pairs. At 13 tasks
+there are 156 directed pairs. Affinity estimation requires enough gradient history
+per pair to produce a stable signal; with limited training epochs and 156 pairs
+competing for that signal, the affinity matrix is noisy and the transfer schedule
+(warmup, freeze) does not have time to stabilize.
+
+More structurally: PLE and adaTT operate on different decomposition levels.
+PLE separates task representations at the expert layer — each expert specializes
+in a feature modality, and CGC routing determines which experts contribute to
+which tasks. adaTT then re-mixes these task representations at the loss level,
+applying transfer weights that redirect gradient signal between tasks.
+These two mechanisms are not complementary; they pull in opposite directions.
+PLE's separation is undone by adaTT's re-mixing.
+
+The confirming experiment was Shared Bottom + adaTT. Without PLE's separation,
+adaTT is neutral: performance neither improves nor degrades significantly.
+adaTT is not inherently problematic. The conflict is specific to the PLE +
+adaTT combination, where architectural separation at the representation level
+is undermined by loss-level re-mixing.
+
+The conclusion: adaTT's loss-level transfer mechanism does not scale gracefully
+from homogeneous small-task-count settings to heterogeneous large-task-count
+settings with structural separation at the representation level.
+
+== GradSurgery: Gradient-Level Protection Instead of Loss-Level Transfer
+
+The diagnosis of the PLE + adaTT conflict motivated a new approach. Rather than
+attempting to mix task losses after the fact, the question became: can we prevent
+gradient corruption at the point where it occurs — during the backward pass?
+
+GradSurgery (Yu et al., 2020) operates by projecting conflicting task gradients
+onto the normal plane of the interfering gradient, eliminating the component
+that would reduce another task's performance while preserving the component
+that benefits it. The operation is gradient-level, not loss-level.
+
+The architectural fit with PLE is direct. PLE separates tasks at the representation
+level. GradSurgery protects that separation at the gradient level. Instead of
+re-mixing across all 156 task pairs, gradient projection is applied at task-type
+group boundaries: binary tasks as one group, multiclass tasks as another,
+regression as a third. This is a dual-axis design — semantic grouping (Financial
+DNA task groups) for PLE routing, technical grouping (task type) for gradient
+protection.
+
+#info-box(
+  [Two-Axis Expert Architecture vs. Two-Axis Training Design],
+  [
+    The model architecture uses a 2-axis decomposition: Financial DNA (task semantics)
+    $times$ Data Modality (feature type). The training design mirrors this:
+    Financial DNA groups define PLE routing; task-type groups (binary / multiclass /
+    regression) define GradSurgery projection boundaries.
+    The same structural insight that produced heterogeneous experts now produces
+    heterogeneous gradient management.
+  ],
+)
+
+The implementation challenge is computational. GradSurgery requires retaining
+the computation graph across all task backward passes to compute pairwise
+gradient dot products, then projecting and reapplying gradients. This
+`retain_graph=True` overhead is non-trivial on a 12GB GPU.
+
+== VRAM on a 12GB Card: Lessons From GradSurgery
+
+The GradSurgery implementation surfaced a recurring theme from this project:
+every architectural improvement has a VRAM cost, and on a 12GB desktop GPU,
+that cost is always visible.
+
+`retain_graph=True` keeps the full computation graph in memory across all task
+backward passes. For 13 tasks, this is approximately equivalent to holding 13
+separate gradient tapes simultaneously. At batch size 2048 — already the
+established optimum for the base model — this produced memory pressure requiring
+reduction to batch size 1024.
+
+Two mitigations proved effective. First, gradient projection at `grad_interval=10`
+steps (matching the adaTT gradient extraction frequency) rather than every step
+reduces the number of `retain_graph` calls by 10×. The projection signal remains
+stable because affinity relationships between task types change slowly. Second,
+projection across task-type groups rather than all 156 pairs reduces the number
+of pairwise dot products from $O(N^2)$ to $O(G^2 times (N/G)^2)$ where G is
+the number of groups — a meaningful reduction for small G.
+
+A separate VRAM issue emerged from the development environment itself.
+Ollama auto-starts on system boot and loads its language model into GPU memory.
+On a 12GB card, this consumes approximately 2GB — a significant fraction when
+batch size decisions hinge on the difference between 9GB and 11GB of active
+memory. The solution was to disable Ollama auto-start and kill its process before
+initiating any training run. This became a standard step in the pre-training
+checklist alongside LeakageValidator and preflight logging.
+
+The pattern across all VRAM incidents in this project is consistent: background
+processes and framework overhead are not visible until a training run begins and
+memory pressure reveals them. The only reliable defense is a pre-training VRAM
+audit: `nvidia-smi` before every run, with a hard stop if available memory is
+below the established baseline.
+
+#section-break()
+
+
 = Future Plans
 
 == Academic and Industry Publications
@@ -956,4 +1159,13 @@ distribution shape on the student.
     This project was completed not by overcoming a "lack of resources"\ but by "redefining resources."\
     It demonstrates that one desktop GPU combined with AI agents\ can substitute for dedicated infrastructure.
   ]
+]
+
+#v(1cm)
+#line(length: 100%, stroke: 0.5pt + luma(200))
+#v(0.3cm)
+#text(size: 8pt, fill: luma(120))[
+  This document was written with the assistance of Claude Code (Anthropic).
+  The human author directed the architectural decisions, experimental design, and interpretation of results;
+  Claude Code assisted with code implementation, document drafting, and experimental execution.
 ]

@@ -480,7 +480,7 @@ ablation:
   training_defaults:
     epochs: 5
     batch_size: 6144
-    learning_rate: 0.008
+    learning_rate: 0.0005
     amp: true
     early_stopping_patience: 3
     seed: 42
@@ -997,7 +997,7 @@ grep "gradient.*norm.*exceed" output/training.log
   [*Item*], [*On-Demand*], [*Spot*],
   [g4dn.xlarge per hour], [\$0.526], [\~\$0.16 (70% savings)],
   [50 epochs (\~4 hours)], [\$2.10], [\~\$0.64],
-  [24-scenario ablation], [\~\$100], [\~\$30],
+  [24 ablation scenarios (9 structure × 15 expert)], [\~\$100], [\~\$30],
 )
 
 == Cost Check CLI

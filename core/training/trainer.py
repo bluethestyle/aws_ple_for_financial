@@ -49,6 +49,7 @@ except (ImportError, TypeError):
     from torch.cuda.amp import GradScaler, autocast  # type: ignore[no-redef]
 
 from core.model.ple.model import PLEModel, PLEInput, PLEOutput
+from core.model.ple.grad_surgery import GradSurgery
 
 from .callbacks import (
     CallbackList,
@@ -94,8 +95,10 @@ class PLETrainer:
         tracker: Optional[ExperimentTracker] = None,
         callbacks: Optional[List[TrainingCallback]] = None,
         audit_store: Optional[Any] = None,
+        grad_surgery: Optional[GradSurgery] = None,
     ) -> None:
         self._audit_store = audit_store
+        self.grad_surgery = grad_surgery
         self.model = model
         self.config = config
         self.device = device or torch.device(
@@ -175,9 +178,11 @@ class PLETrainer:
         )
 
         logger.info(
-            "PLETrainer initialised: device=%s, AMP=%s, phases=%d+%d epochs",
+            "PLETrainer initialised: device=%s, AMP=%s, phases=%d+%d epochs, "
+            "grad_surgery=%s",
             self.device, config.amp.enabled,
             config.phase1.epochs, config.phase2.epochs,
+            "enabled" if grad_surgery is not None and grad_surgery.config.enabled else "disabled",
         )
 
     # ------------------------------------------------------------------
@@ -761,6 +766,12 @@ class PLETrainer:
         for epoch_idx in range(max_epochs):
             self.current_epoch += 1
 
+            # Clear VRAM cache between epochs to prevent retain_graph
+            # residuals from accumulating (GradSurgery uses retain_graph
+            # every grad_interval steps, leaving cached allocations).
+            if self.grad_surgery is not None and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             epoch_state = self._make_state(phase_name=phase_name)
             self.callbacks.on_epoch_begin(epoch_state)
 
@@ -878,13 +889,37 @@ class PLETrainer:
 
             # Backward pass
             if self.config.amp.enabled and self.scaler is not None:
-                self.scaler.scale(loss).backward()
+                _gs_active_amp = (
+                    self.grad_surgery is not None
+                    and self.grad_surgery.should_run_this_step(self.current_epoch)
+                    and outputs.task_losses is not None
+                )
+                self.scaler.scale(loss).backward(retain_graph=_gs_active_amp)
                 _scaler_backward_count += 1
 
                 if (batch_idx + 1) % accum_steps == 0:
                     if _scaler_backward_count > 0:
                         try:
                             self.scaler.unscale_(self.optimizer)
+
+                            # Gradient surgery after unscale so grads are in full precision
+                            if _gs_active_amp:
+                                if hasattr(self.model, "extraction_layers"):
+                                    _shared_params_amp = [
+                                        p for p in self.model.extraction_layers.parameters()
+                                        if p.requires_grad
+                                    ]
+                                else:
+                                    _shared_params_amp = [
+                                        p for p in self.model.parameters()
+                                        if p.requires_grad
+                                    ]
+                                self.grad_surgery.project(
+                                    shared_params=_shared_params_amp,
+                                    task_losses=outputs.task_losses,
+                                    epoch=self.current_epoch,
+                                )
+
                             grad_norm = torch.nn.utils.clip_grad_norm_(
                                 self.model.parameters(),
                                 self.config.gradient.clip_norm,
@@ -903,9 +938,32 @@ class PLETrainer:
                     self.optimizer.zero_grad()
                     _scaler_backward_count = 0
             else:
-                loss.backward()
+                _gs_active = (
+                    self.grad_surgery is not None
+                    and self.grad_surgery.should_run_this_step(self.current_epoch)
+                    and outputs.task_losses is not None
+                )
+                loss.backward(retain_graph=_gs_active)
 
                 if (batch_idx + 1) % accum_steps == 0:
+                    # Gradient surgery: project conflicting task-type gradients
+                    if _gs_active:
+                        if hasattr(self.model, "extraction_layers"):
+                            _shared_params = [
+                                p for p in self.model.extraction_layers.parameters()
+                                if p.requires_grad
+                            ]
+                        else:
+                            _shared_params = [
+                                p for p in self.model.parameters()
+                                if p.requires_grad
+                            ]
+                        self.grad_surgery.project(
+                            shared_params=_shared_params,
+                            task_losses=outputs.task_losses,
+                            epoch=self.current_epoch,
+                        )
+
                     grad_norm = torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(),
                         self.config.gradient.clip_norm,

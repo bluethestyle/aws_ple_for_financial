@@ -236,6 +236,42 @@ class ExpertBasketConfig:
 
 
 @dataclass
+class GradSurgeryConfig:
+    """Gradient Surgery configuration.
+
+    Gradient Surgery (PCGrad) projects conflicting task gradients onto each
+    other's normal planes to reduce destructive interference during
+    multi-task learning.  Only tasks belonging to different
+    ``task_type_groups`` entries are compared; within-group pairs are always
+    co-operative.
+
+    Args:
+        enabled: Whether gradient surgery is active during training.
+        task_type_groups: Maps a group label (e.g. ``"binary"``,
+            ``"multiclass"``, ``"regression"``) to the list of task names
+            in that group.  Conflict detection is performed across groups.
+            When empty, all tasks are treated as a single group (no
+            cross-group conflicts resolved).
+        conflict_threshold: Cosine-similarity threshold below which two
+            task gradients are considered conflicting.  ``0.0`` (default)
+            means any negative cosine similarity triggers projection.
+        warmup_epochs: Number of epochs to skip gradient surgery at the
+            start of training.  Allows the shared trunk to learn a common
+            representation before conflict resolution is applied.
+        ema_decay: Exponential moving average decay for the per-task-pair
+            conflict-frequency tracker.  Used for logging and optional
+            adaptive thresholding.
+        log_interval: Log gradient conflict statistics every N steps.
+    """
+    enabled: bool = False
+    task_type_groups: Dict[str, List[str]] = field(default_factory=dict)
+    conflict_threshold: float = 0.0
+    warmup_epochs: int = 2
+    ema_decay: float = 0.9
+    log_interval: int = 1
+
+
+@dataclass
 class GroupTaskExpertConfig:
     """Configuration for the GroupEncoder + ClusterEmbedding architecture.
 
@@ -305,6 +341,9 @@ class PLEConfig:
 
     # -- adaTT (Adaptive Task Transfer) ------------------------------------
     adatt: AdaTTConfig = field(default_factory=AdaTTConfig)
+
+    # -- Gradient Surgery (PCGrad) ------------------------------------------
+    grad_surgery: GradSurgeryConfig = field(default_factory=GradSurgeryConfig)
 
     # -- Logit transfer relationships ----------------------------------------
     logit_transfers: List[LogitTransferDef] = field(default_factory=list)

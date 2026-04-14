@@ -200,6 +200,19 @@ class CGCAttention(nn.Module):
 
 Santander config에서 `cgc.dim_normalize: true` 활성화 — Expert 출력 차원 불균형 보정.
 
+### Gate Type: softmax vs sigmoid (2026-04-13 실험 결과)
+
+**이종(heterogeneous) MTL에서 softmax > sigmoid** — 이전의 sigmoid 선호 결론을 뒤집는 발견.
+
+| Gate | 이종 MTL (7 binary + 3 multiclass + 3 regression) | 동종 MTL (같은 task type 2-4개) |
+|------|--------------------------------------------------|---------------------------------|
+| `softmax` | **우세** | 동등 또는 열세 |
+| `sigmoid` | 열세 | 선호됨 (기존 문헌) |
+
+이유: softmax gate는 expert 가중치가 합산 정규화되므로, 다수(binary 7개)의 gradient가 소수(regression 3개) 태스크 expert를 오염시키는 것을 억제한다. sigmoid는 각 expert에 독립적으로 게이팅하여 다수 태스크 쪽으로 expert collapse가 발생한다.
+
+> **참고**: 이전 sigmoid 선호는 동종 태스크 2-4개 실험의 문헌에서 비롯된 것으로, 13-task heterogeneous 환경에는 적용되지 않는다.
+
 ### Stacked PLE Layers
 
 ```yaml
@@ -273,6 +286,62 @@ class AdaptiveTaskTransfer(nn.Module):
     EMA decay: 전이 가중치 안정화
     Warmup/freeze epochs: 초기 안정화
     """
+```
+
+### adaTT 한계 — 13-task 스케일 (2026-04-13 실험 결과)
+
+13개 태스크에서 adaTT는 전 지표를 오히려 하락시켰다:
+
+- **156 task pairs × 7 active transfer epochs** → 친화도 추정 노이즈 과다
+- **PLE+adaTT**: 모든 지표 하락 (PLE gate와 loss-level transfer 간 충돌)
+- **SB+adaTT**: 중립적 효과 (공유 expert가 없어 게이팅 충돌은 없으나 학습 효과도 미미)
+- **결론**: 13-task heterogeneous 환경에서 loss-level task transfer는 gradient-level projection(GradSurgery)으로 대체해야 한다.
+
+---
+
+## GradSurgery (Gradient-Level Conflict Resolution)
+
+`core/model/ple/grad_surgery.py`
+
+adaTT의 loss-level 전이를 gradient-level projection으로 대체한다.
+13-task 스케일에서 156 task pair를 3개 task-type 그룹으로 집계하여 노이즈를 억제한다.
+
+### 설계 원리
+
+| 항목 | adaTT (loss-level) | GradSurgery (gradient-level) |
+|------|-------------------|------------------------------|
+| 충돌 감지 단위 | 태스크 쌍 (156 pairs) | task-type 그룹 (3 groups) |
+| 전이 시점 | forward pass (loss 조합) | backward pass (gradient 수정) |
+| PLE gate와 충돌 | 있음 (gate vs loss 방향 상충) | 없음 (gate는 그대로, gradient만 수정) |
+| 13-task 효과 | 하락 | 중립~소폭 개선 |
+
+### Task-Type 그룹 집계
+
+```python
+# binary / multiclass / regression 3 그룹으로 집계 → 156 pairs → 3 pairs
+TASK_TYPE_GROUPS = {
+    "binary":     ["churn_signal", "will_acquire_*"],          # 7개
+    "multiclass": ["next_mcc", "top_mcc_shift", "nba_primary", "segment_prediction"],  # 3개
+    "regression": ["product_stability", "cross_sell_count", "mcc_diversity_trend"],    # 3개
+}
+```
+
+### PCGrad-Style Projection
+
+```python
+def project_conflicting(g_a: Tensor, g_b: Tensor) -> Tensor:
+    """g_a와 g_b가 충돌(cos_sim < 0)하면 g_a를 g_b의 법선 평면에 투영."""
+    if torch.dot(g_a.flatten(), g_b.flatten()) < 0:
+        g_b_unit = g_b / (g_b.norm() + 1e-8)
+        return g_a - torch.dot(g_a.flatten(), g_b_unit.flatten()) * g_b_unit
+    return g_a
+```
+
+```yaml
+grad_surgery:
+  enabled: true
+  grad_interval: 10      # adaTT와 동일 주기로 fair 비교
+  task_type_groups: true # false면 태스크 개별 충돌 감지 (156 pairs)
 ```
 
 ---
@@ -403,12 +472,20 @@ Binary 태스크의 focal_alpha는 양성 비율(positive rate)에 기반하여 
 ```python
 class UncertaintyWeighting(BaseLossWeighting):
     """
-    loss_total = Sigma_k [ exp(-log_var_k) * L_k + log_var_k / 2 ]
-    - log_var_k: 태스크 k의 learnable 파라미터
-    - 불확실성 높은 태스크 → 자동 가중치 감소
-    - 안정적인 태스크 → 자동 가중치 증가
+    loss_total = Sigma_k [ loss_weight_k * (precision_k * L_k + log_var_k) ]
+
+    - log_var_k : 태스크 k의 learnable 파라미터, clamp(-4, 4)
+    - precision_k = exp(-log_var_k), clamp(1e-3, 100)
+    - loss_weight_k : pipeline.yaml task_loss_weights에서 읽는 per-task 고정 가중치
+    - 불확실성 높은 태스크 → precision 감소 → 자동 가중치 감소
+    - 안정적인 태스크 → precision 증가 → 자동 가중치 증가
     """
 ```
+
+> **수정 이력 (2026-04-13)**: AWS 구현에서 `loss_weight`가 uncertainty weighting 공식에서 누락되어 있었다.
+> 구 공식: `precision * L + log_var / 2` (loss_weight 무시).
+> 온프렘과 일치하는 현재 공식: `loss_weight * (precision * L + log_var)`.
+> 이 단일 수정이 **최대 성능 개선**으로 이어졌다: +0.018 NDCG@3, +0.031 F1-macro.
 
 대안:
 - `fixed`: pipeline.yaml의 loss_weight 고정 사용

@@ -11,14 +11,14 @@
 ## The Problem
 
 We built a multi-task deep learning system for financial product recommendations:
-14 prediction tasks, 7 heterogeneous expert networks (PLE architecture),
-941K customers, ~350 features, and 24M transaction rows for temporal sequences.
+13 prediction tasks, 7 heterogeneous expert networks (PLE architecture),
+941K customers, ~349 features, and 24M transaction rows for temporal sequences.
 
 The entire pipeline — data loading, feature engineering, label derivation,
 normalization, and tensor construction — had to run on a single workstation
 (64 GB RAM, RTX 4070 12 GB VRAM) before deployment to AWS SageMaker.
 
-**pandas couldn't do it.** The 941K × 350 feature matrix consumed ~2.6 GB
+**pandas couldn't do it.** The 941K × 349 feature matrix consumed ~2.6 GB
 as a DataFrame, but intermediate operations (14 sequential `.groupby().apply(lambda)`
 for label derivation, wide joins for feature merging) pushed peak memory
 well beyond what was available. A single label derivation pass took 40+ minutes.
@@ -78,7 +78,7 @@ df = con.execute(f"SELECT * FROM '{parquet_path}'").df()
 ```
 
 The `QueryEngine` wrapper supports predicate pushdown and column selection,
-so the full 350-column file is never materialized when only a subset is needed:
+so the full 349-column file is never materialized when only a subset is needed:
 
 ```python
 sql = f"SELECT {col_expr} FROM read_parquet('{path}')"
@@ -98,7 +98,7 @@ con.execute(f"COPY {table_name} TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)")
 
 ## Pattern 2: SQL Replaces 14 × groupby().apply(lambda)
 
-The pipeline derives 14 binary and multi-class labels from raw features.
+The pipeline derives 13 binary and multi-class labels from raw features.
 The original pandas implementation ran 14 sequential `.apply(lambda)` calls
 over 941K rows — each holding the full DataFrame in memory and serializing
 row by row through Python.
@@ -187,7 +187,7 @@ df = con.execute(
 ).df()
 ```
 
-The same pattern combines the 350-column feature matrix with the 14-column
+The same pattern combines the 349-column feature matrix with the 14-column
 label matrix before DataLoader construction:
 
 ```python
@@ -306,7 +306,7 @@ This reduced memory from 20+ GB to ~8 GB and runtime from ~20 minutes to
 
 ### Parquet Output via Arrow
 
-The final dataset (350+ scalar columns + LIST columns for sequences) is
+The final dataset (349+ scalar columns + LIST columns for sequences) is
 assembled as a PyArrow Table and written directly — no pandas intermediate:
 
 ```python
@@ -330,27 +330,27 @@ directions: **generation** (numpy → Arrow → Parquet) and **consumption**
 
 ## Benchmarks
 
-Measured on the actual 941K × 350 Parquet file (RTX 4070 workstation, 64 GB RAM).
+Measured on the actual 941K × 349 Parquet file (RTX 4070 workstation, 64 GB RAM).
 Reproducible with `scripts/benchmark_duckdb_vs_pandas.py`.
 
 | Operation | pandas | DuckDB | Speedup |
 |---|---|---|---|
-| Load 941K × 350 Parquet | 18.4 s | 3.1 s | **5.9×** |
-| 14-label derivation (full pipeline) | 43 min | 2.1 min | **~20×** |
+| Load 941K × 349 Parquet | 18.4 s | 3.1 s | **5.9×** |
+| 13-label derivation (full pipeline) | 43 min | 2.1 min | **~20×** |
 | Group-by aggregation (COUNT/SUM/AVG/STDDEV) | 15 s | 44 ms | **347×** |
 | Filter + aggregate (temporal split) | 16 s | 48 ms | **334×** |
-| 350-col imputation (one pass) | 8.7 s | 0.9 s | **9.7×** |
+| 349-col imputation (one pass) | 8.7 s | 0.9 s | **9.7×** |
 | Feature matrix POSITIONAL JOIN | 4.2 s | 0.3 s | **14×** |
 | 1M-customer synth data generation | ~20 min | ~30 s | **~40×** |
 | Parquet full read (SELECT *) | 18 s | 136 s | **0.1× (pandas wins)** |
-| Column selection (50 of 350 cols) | 544 ms | 896 ms | **0.6× (similar)** |
+| Column selection (50 of 349 cols) | 544 ms | 896 ms | **0.6× (similar)** |
 
 > *Note: Benchmark numbers will be updated with latest data version.
 > Reproducible with `scripts/benchmark_duckdb_vs_pandas.py`.*
 
 **The honest conclusion**: DuckDB is not universally faster. For full
 materialization (`SELECT *`), pandas wins because DuckDB has overhead fetching
-all 350 columns back into a DataFrame. But the operations that dominate an ML
+all 349 columns back into a DataFrame. But the operations that dominate an ML
 pipeline — aggregation, filtering, joining, label derivation — run
 **100–300× faster** with near-zero additional memory.
 
@@ -362,12 +362,12 @@ choice; it's measured.
 
 ## What Would Not Have Been Possible Without DuckDB
 
-- **941K × 350 feature matrix** — the pipeline never materializes the feature
+- **941K × 349 feature matrix** — the pipeline never materializes the feature
   matrix and label matrix simultaneously as pandas DataFrames. DuckDB's columnar
   engine keeps the pipeline within the 64 GB RAM budget.
 - **24M-row sliding window sequences** — per-window `WHERE` filters over 24M
   rows are not feasible with pandas at interactive speed.
-- **14 labels without row-wise Python** — `pd.apply(lambda, axis=1)` on 941K
+- **13 labels without row-wise Python** — `pd.apply(lambda, axis=1)` on 941K
   rows for 14 targets required 14 full-DataFrame passes. DuckDB runs all 14
   as SQL against one registered table.
 - **No infrastructure** — no Spark cluster, no Airflow, no distributed compute.
@@ -410,7 +410,7 @@ types not yet ported to SQL, and for `<10K` row paths in unit tests.
 
 4. **The real win is memory, not just speed.** 347× on group-by is impressive,
    but the reason this project exists on a single workstation is that DuckDB
-   kept peak memory manageable on a 941K × 350 dataset with 24M transaction rows.
+   kept peak memory manageable on a 941K × 349 dataset with 24M transaction rows.
 
 ---
 

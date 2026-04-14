@@ -18,7 +18,7 @@
 | **Why it matters** | Expert gate weights *are* the explanation -- "35% spending trend + 28% product fit" |
 | **Regulation** | Korean FSS AI RMF, EU AI Act, Korean AI Basic Act compliance built-in |
 | **Serving** | Distilled to LGBM, runs on Lambda -- no GPU server needed |
-| **Scale** | 1M customers, ~350 features, 5-agent architecture (3 serving + 2 ops/audit) |
+| **Scale** | 1M customers, ~349 features, 5-agent architecture (3 serving + 2 ops/audit) |
 | **Team** | Built by 3 people with AI-augmented development (Claude Code) |
 
 ## Quick Overview
@@ -27,7 +27,7 @@
 Customer Data (bank/card transactions)
     |
     v
-[Phase 0] 10 Feature Generators (11 scientific disciplines, ~350D)
+[Phase 0] 10 Feature Generators (11 scientific disciplines, ~349D)
     |       TDA, Hyperbolic GCN, Mamba, HMM, Chemical Kinetics, SIR, ...
     v
 [Phase 1-3] PLE + 7 Heterogeneous Experts + 13 Tasks

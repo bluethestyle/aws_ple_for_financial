@@ -762,6 +762,18 @@ def build_model(feature_schema, label_schema, hp, input_dim, device, config=None
             model_config["_disable_hmm_projectors"] = True
             logger.info("Structure ablation: HMM projectors disabled")
 
+    # -- Gradient Surgery toggle --
+    # use_grad_surgery=true → enable task-type gradient projection (replaces adaTT loss transfer)
+    _gs_cfg_raw = label_schema.get("grad_surgery", {})
+    if not _gs_cfg_raw:
+        _gs_cfg_raw = config.get("grad_surgery", {})
+    use_gs_raw = hp.get("use_grad_surgery")
+    if use_gs_raw is not None:
+        _gs_enabled = json.loads(use_gs_raw) if isinstance(use_gs_raw, str) else use_gs_raw
+        _gs_cfg_raw["enabled"] = _gs_enabled
+    if _gs_cfg_raw.get("enabled"):
+        logger.info("Structure ablation: GradSurgery enabled (task-type gradient projection)")
+
     # -- Loss weighting --
     lw_cfg = model_config.get("loss_weighting", {})
     loss_weighting = LossWeightingConfig(
@@ -2146,7 +2158,35 @@ def main() -> None:
     for param in model.parameters():
         param.requires_grad = True
 
-    trainer = PLETrainer(model=model, config=training_config, device=device)
+    # Build GradSurgery if enabled
+    # Re-read from config (pipeline.yaml) to ensure task_type_groups is available,
+    # then apply HP override for enabled flag.
+    _grad_surgery_instance = None
+    _gs_build_cfg = config.get("grad_surgery", {})
+    _gs_hp_flag = hp.get("use_grad_surgery")
+    if _gs_hp_flag is not None:
+        _gs_build_cfg["enabled"] = json.loads(_gs_hp_flag) if isinstance(_gs_hp_flag, str) else _gs_hp_flag
+    logger.info("GradSurgery build check: enabled=%s, groups=%s",
+                _gs_build_cfg.get("enabled"), list(_gs_build_cfg.get("task_type_groups", {}).keys()))
+    if _gs_build_cfg.get("enabled"):
+        from core.model.ple.grad_surgery import GradSurgery, GradSurgeryConfig
+        _gs_config = GradSurgeryConfig(
+            enabled=True,
+            task_type_groups=_gs_build_cfg.get("task_type_groups", {}),
+            conflict_threshold=float(_gs_build_cfg.get("conflict_threshold", 0.0)),
+            warmup_epochs=int(_gs_build_cfg.get("warmup_epochs", 3)),
+            grad_interval=int(_gs_build_cfg.get("grad_interval", 10)),
+            ema_decay=float(_gs_build_cfg.get("ema_decay", 0.9)),
+            log_interval=int(_gs_build_cfg.get("log_interval", 1)),
+        )
+        _grad_surgery_instance = GradSurgery(
+            config=_gs_config,
+            task_names=task_names,
+        )
+        _grad_surgery_instance = _grad_surgery_instance.to(device)
+        logger.info("GradSurgery: %d groups, %d tasks", _grad_surgery_instance.n_groups, _grad_surgery_instance.n_tasks)
+
+    trainer = PLETrainer(model=model, config=training_config, device=device, grad_surgery=_grad_surgery_instance)
 
     # Inject per-task validation masks into trainer (for epoch-level validation)
     if task_val_masks:

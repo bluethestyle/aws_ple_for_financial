@@ -54,7 +54,7 @@
 training_defaults:
   epochs: 3 (Phase 1+2 각각, 총 6 epochs/scenario)
   batch_size: 6144
-  learning_rate: 0.008
+  learning_rate: 0.0005
   amp: true
   early_stopping_patience: 3
   num_workers: 2

@@ -258,8 +258,8 @@ Note that the Consumption group mixes 5 binary tasks with
 
 = Results and Analysis
 
-All experiments use 1M synthetic customers, ~350 features (Phase 0 v3/v4),
-10 epochs, batch size 4096, learning rate 0.008, FP32, cosine annealing
+All experiments use 1M synthetic customers, 349 features (Phase 0, benchmark_v12),
+10 epochs, batch size 5632, learning rate 0.0005, AMP (FP16), cosine annealing
 with warm restarts ($T_0 = 10$). Uncertainty weighting is applied in all runs
 unless noted otherwise. Each configuration is run with 3 seeds; we report
 medians. Metrics are reported per task type: Avg AUC (binary), Avg F1-macro

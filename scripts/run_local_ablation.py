@@ -108,7 +108,7 @@ SCENARIOS: List[Dict[str, Any]] = [
     # === Structure ablation (8) — "add one component at a time" progression ===
 
     # TRUE shared_bottom: no CGC gate, no GroupTaskExpert, no logit transfer, no HMM projectors
-    {"name": "struct_14_shared_bottom",
+    {"name": "struct_13_shared_bottom",
      "hp": {
          "use_ple": "false",
          "use_adatt": "false",
@@ -119,7 +119,7 @@ SCENARIOS: List[Dict[str, Any]] = [
      }},
 
     # CGC only: single PLE layer with CGC attention gate
-    {"name": "struct_14_cgc_only",
+    {"name": "struct_13_cgc_only",
      "hp": {
          "use_ple": "false",
          "use_adatt": "false",
@@ -130,7 +130,7 @@ SCENARIOS: List[Dict[str, Any]] = [
      }},
 
     # PLE softmax: multi-layer CGC with softmax gate
-    {"name": "struct_14_ple_softmax",
+    {"name": "struct_13_ple_softmax",
      "hp": {
          "use_ple": "true",
          "use_adatt": "false",
@@ -142,7 +142,7 @@ SCENARIOS: List[Dict[str, Any]] = [
      }},
 
     # PLE sigmoid: multi-layer CGC with sigmoid gate
-    {"name": "struct_14_ple_sigmoid",
+    {"name": "struct_13_ple_sigmoid",
      "hp": {
          "use_ple": "true",
          "use_adatt": "false",
@@ -154,7 +154,7 @@ SCENARIOS: List[Dict[str, Any]] = [
      }},
 
     # PLE sigmoid + GroupTaskExpert (GroupEncoder + ClusterEmbedding)
-    {"name": "struct_14_ple_sigmoid_gte",
+    {"name": "struct_13_ple_sigmoid_gte",
      "hp": {
          "use_ple": "true",
          "use_adatt": "false",
@@ -166,7 +166,7 @@ SCENARIOS: List[Dict[str, Any]] = [
      }},
 
     # PLE sigmoid + GTE + Logit Transfer
-    {"name": "struct_14_ple_sigmoid_gte_lt",
+    {"name": "struct_13_ple_sigmoid_gte_lt",
      "hp": {
          "use_ple": "true",
          "use_adatt": "false",
@@ -178,7 +178,7 @@ SCENARIOS: List[Dict[str, Any]] = [
      }},
 
     # Full PLE: all components except adaTT
-    {"name": "struct_14_ple_full",
+    {"name": "struct_13_ple_full",
      "hp": {
          "use_ple": "true",
          "use_adatt": "false",
@@ -190,7 +190,7 @@ SCENARIOS: List[Dict[str, Any]] = [
      }},
 
     # PLE softmax + adaTT: softmax isolates experts, adaTT selectively shares
-    {"name": "struct_14_ple_softmax_adatt",
+    {"name": "struct_13_ple_softmax_adatt",
      "hp": {
          "use_ple": "true",
          "use_adatt": "true",
@@ -202,7 +202,7 @@ SCENARIOS: List[Dict[str, Any]] = [
      }},
 
     # Full PLE (sigmoid) + adaTT
-    {"name": "struct_14_ple_full_adatt",
+    {"name": "struct_13_ple_full_adatt",
      "hp": {
          "use_ple": "true",
          "use_adatt": "true",
@@ -255,7 +255,7 @@ SCENARIOS: List[Dict[str, Any]] = [
 
     # === adaTT isolated ===
     # shared_bottom + adaTT only: isolates adaTT contribution without PLE/CGC
-    {"name": "struct_14_shared_bottom_adatt",
+    {"name": "struct_13_shared_bottom_adatt",
      "hp": {
          "use_ple": "false",
          "use_adatt": "true",
@@ -263,6 +263,53 @@ SCENARIOS: List[Dict[str, Any]] = [
          "use_group_task_expert": "false",
          "use_logit_transfer": "false",
          "use_hmm_projectors": "false",
+     }},
+
+    # === GradSurgery scenarios ===
+    # GradSurgery replaces adaTT loss-level transfer with gradient-level projection.
+    # adaTT is disabled when GradSurgery is enabled — they address the same problem
+    # (inter-task interference) at different levels.
+
+    # PLE softmax + GradSurgery (no adaTT) — core hypothesis
+    # batch_size=4096: retain_graph for GS increases VRAM ~2.4GB
+    {"name": "struct_13_ple_softmax_gs",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "gate_type": "softmax",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "true",
+         "use_logit_transfer": "true",
+         "use_hmm_projectors": "true",
+         "use_grad_surgery": "true",
+         "batch_size": 4096,
+     }},
+
+    # shared_bottom + GradSurgery — isolates GradSurgery contribution
+    {"name": "struct_13_shared_bottom_gs",
+     "hp": {
+         "use_ple": "false",
+         "use_adatt": "false",
+         "use_cgc_gate": "false",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+         "use_grad_surgery": "true",
+         "batch_size": 4096,
+     }},
+
+    # PLE sigmoid + GradSurgery — sigmoid vs softmax under GradSurgery
+    {"name": "struct_13_ple_sigmoid_gs",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "true",
+         "use_logit_transfer": "true",
+         "use_hmm_projectors": "true",
+         "use_grad_surgery": "true",
+         "batch_size": 4096,
      }},
 ]
 

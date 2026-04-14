@@ -217,7 +217,7 @@ enabling independent improvement of each component.
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((0, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 14 Task, 350D] \ #text(size: 8pt)[GPU, weekly training]], width: 50mm, fill: teacher-fill, name: <teacher>),
+      node((0, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 13 Task, 349D] \ #text(size: 8pt)[GPU, weekly training]], width: 50mm, fill: teacher-fill, name: <teacher>),
 
       node((2, 0), [*Soft Labels* \ #text(size: 8pt)[Per-task probability dist.]], width: 45mm, fill: gray-fill, name: <soft>),
 

@@ -2,7 +2,7 @@
 
 > **프로젝트**: AIOps PLE Financial — Santander Customer Product Recommendation
 > **데이터셋**: 941,132 users x 89 columns x 13 tasks x 7 shared experts x 350D features (benchmark v4)
-> **최종 갱신**: 2026-04-11
+> **최종 갱신**: 2026-04-13
 > **Config 경로**: `configs/santander/pipeline.yaml`, `configs/santander/feature_groups.yaml`, `configs/santander/item_universe.yaml`
 > **Orchestrator**: `scripts/run_santander_ablation.py`
 
@@ -383,13 +383,13 @@ consumption: [18,19,20,21,22,23] # interference 관점
 
 ### 5.1 개요
 
-`scripts/run_santander_ablation.py`가 6-Phase, **48 시나리오** ablation study를 오케스트레이션한다. 모든 시나리오는 config에서 동적 생성된다 (`ablation.feature_scenarios: auto`, `ablation.expert_scenarios: auto`).
+`scripts/run_santander_ablation.py`가 6-Phase, **51 시나리오** ablation study를 오케스트레이션한다. 모든 시나리오는 config에서 동적 생성된다 (`ablation.feature_scenarios: auto`, `ablation.expert_scenarios: auto`).
 
 ```
 Phase 0   데이터 준비          Processing Job (Stage 1-6)
 Phase 1   Feature Group Ablation   16 시나리오 (full + base_only + 7 bottom-up + 7 top-down)
 Phase 2   Expert Ablation         16 시나리오 (deepfm baseline + 7 bottom-up + 7 top-down + mlp_only)
-Phase 3   Task x Structure Cross   16 시나리오 (4 tiers x 4 structures)
+Phase 3   Task x Structure Cross   4 tiers x 9 structures = 36 시나리오 (구조 확장: GradSurgery 추가)
 Phase 4   Best Config Teacher + Distillation
 Phase 5   Analysis + HTML Report
 ```
@@ -456,29 +456,62 @@ DeepFM을 기준선으로 한 bottom-up + top-down 설계:
 
 > **FeatureRouter 활성화에 따른 해석 유의사항**: Expert 제거(ablation)는 단순히 해당 Expert의 연산을 제거하는 것이 아니라, 그 Expert에게만 라우팅되던 **피처 경로(feature routing path)도 함께 제거**한다. 예를 들어 `full-perslay` 시나리오에서는 32D TDA 피처 경로가 완전히 차단된다. 따라서 Expert Ablation 결과는 "Expert 구조의 기여"와 "해당 피처 그룹의 기여"를 동시에 반영하므로, Dim 1 Feature Ablation 결과와 교차 비교하여 해석해야 한다.
 
-### 5.4 Dimension 3: Task x Structure Cross (16 시나리오)
+### 5.4 Dimension 3: Task x Structure Cross (36 시나리오)
 
-4개 태스크 티어 x 4개 구조 변형 = **16 시나리오**.
+4개 태스크 티어 x 9개 구조 변형 = **36 시나리오**.
 
 **태스크 티어**:
 
 | 티어 | 태스크 수 | 포함 범위 |
 |---|---|---|
-| `tasks_3` | 3 | Tier 1 Core only (has_nba 통합 후) |
+| `tasks_3` | 3 | Tier 1 Core only |
 | `tasks_5` | 5 | + Tier 2 Derived + Tier 5 일부 (next_mcc) |
 | `tasks_10` | 10 | + Tier 3 Product Group + Segmentation (일부) + Tier 5 나머지 |
 | `tasks_13` | 13 | 전체 (Tier 3 완전 포함) |
 
-**구조 변형**:
+**구조 변형 (9개)**:
 
-| 변형 | use_ple | use_adatt | 설명 |
-|---|---|---|---|
-| `shared_bottom` | false | false | 기본 Shared-Bottom MTL |
-| `ple_only` | true | false | PLE gating만 |
-| `adatt_only` | false | true | adaTT 전이만 |
-| `full` | true | true | PLE + adaTT 전체 |
+| 변형 | use_ple | gate | use_adatt | use_gs | 설명 |
+|---|---|---|---|---|---|
+| `shared_bottom` | false | — | false | false | 기본 Shared-Bottom MTL (baseline) |
+| `ple_softmax` | true | softmax | false | false | PLE softmax gate — 현재 best gate |
+| `ple_sigmoid` | true | sigmoid | false | false | PLE sigmoid gate |
+| `ple_full_adatt` | true | sigmoid | true | false | sigmoid + adaTT — 전 설정에서 성능 하락 |
+| `ple_softmax_adatt` | true | softmax | true | false | softmax + adaTT |
+| `shared_bottom_adatt` | false | — | true | false | adaTT only — neutral (SB에서는 무해) |
+| `ple_softmax_gs` | true | softmax | false | true | softmax + GradSurgery — **핵심 가설** |
+| `shared_bottom_gs` | false | — | false | true | GradSurgery only |
+| `ple_sigmoid_gs` | true | sigmoid | false | true | sigmoid + GradSurgery |
 
-**핵심 질문**: "태스크를 추가할수록 성능이 향상되는가?" + "PLE/adaTT가 태스크 수에 따라 어떤 차이를 만드는가?"
+**핵심 질문**: "태스크를 추가할수록 성능이 향상되는가?" + "GradSurgery가 태스크 간 gradient 충돌을 완화하는가?" + "PLE gate 방식이 GradSurgery 효과에 영향을 주는가?"
+
+#### 완료된 시나리오 주요 발견 (2026-04-13 기준)
+
+| 발견 | 내용 |
+|---|---|
+| **softmax > sigmoid** | 선행 문헌과 반대. Santander 13-task 환경에서 softmax gate가 일관되게 우위 |
+| **adaTT 성능 하락** | 13-task (156 pairwise 조합) + ablation 10 epoch 환경에서 adaTT가 전반적으로 성능 하락. warmup=3, freeze_epoch=8로는 충분한 수렴 불가 |
+| **Uncertainty weighting 수정 효과** | 아키텍처 변경보다 loss weighting 수정이 더 큰 성능 개선. 구조 선택 전 loss 안정화가 선행되어야 함 |
+| **PLE + adaTT 충돌** | PLE가 expert 수준에서 태스크를 분리하고, adaTT가 loss 수준에서 재혼합 → 두 메커니즘이 서로 상충. SB+adaTT는 neutral이지만 PLE+adaTT는 negative → adaTT 자체의 문제가 아니라 PLE와의 충돌 |
+
+#### GradSurgery 설계 근거
+
+GradSurgery는 두 독립 축(semantic grouping vs. technical grouping)을 분리 적용한다는 점이 핵심이다:
+
+- **Semantic grouping (Financial DNA)**: PLE expert routing 기준 — 고객 라이프사이클/가치/참여도/소비 패턴이라는 금융 의미론적 분류. 어떤 태스크가 어떤 expert에게 라우팅될지 결정
+- **Technical grouping (task type)**: GradSurgery gradient 보호 기준 — binary/multiclass/regression이라는 수치 최적화 유형. 서로 다른 loss scale과 gradient magnitude를 가진 태스크 간 gradient 충돌 방지
+
+두 축은 독립적으로 적용되므로 상호 간섭 없이 결합 가능하다. 예: `nba_primary` (multiclass, consumption expert)는 multiclass 그룹으로 gradient 보호를 받으면서 consumption expert에 라우팅된다.
+
+**학습 설정 (Phase 3)**:
+
+| 파라미터 | 기본 시나리오 (SB/PLE/adaTT) | GradSurgery 시나리오 |
+|---|---|---|
+| epochs | 10 | 10 |
+| batch_size | 5632 | 4096 (GS overhead 보상) |
+| warmup_epochs | 3 | 3 |
+| AMP | true | true |
+| gradient_accumulation_steps | 2 | 2 |
 
 ### 5.5 Phase 4: Best Config Teacher + Distillation
 
@@ -511,14 +544,15 @@ Phase 1-3의 `eval_metrics.json`에서 `aggregate_score`가 가장 높은 설정
 
 Ablation 시나리오별 학습 설정 (Phase 1-3):
 
-| 파라미터 | 값 | 근거 |
-|---|---|---|
-| batch_size | 4096 | 941K / 4096 = ~230 steps/epoch, GPU utilization 최대화 |
-| AMP | true | Mixed precision으로 GPU 메모리 50% 절감, 속도 1.5x |
-| learning_rate | 0.008 | 큰 batch에 맞춰 상향 (linear scaling rule) |
-| epochs | 10 | Ablation에는 수렴 불필요, 상대 비교만 필요 |
-| early_stopping_patience | 3 | 빠른 중단으로 비용 절감 |
-| gradient_accumulation_steps | 2 | effective batch = 8192 |
+| 파라미터 | 값 (기본) | 값 (GradSurgery) | 근거 |
+|---|---|---|---|
+| batch_size | 5632 | 4096 | GS: per-step overhead 보상을 위해 축소 |
+| AMP | true | true | Mixed precision으로 GPU 메모리 50% 절감, 속도 1.5x |
+| learning_rate | 0.008 | 0.008 | 큰 batch에 맞춰 상향 (linear scaling rule) |
+| epochs | 10 | 10 | Ablation에는 수렴 불필요, 상대 비교만 필요 |
+| warmup_epochs | 3 | 3 | adaTT gate stabilization 전 warmup |
+| early_stopping_patience | 3 | 3 | 빠른 중단으로 비용 절감 |
+| gradient_accumulation_steps | 2 | 2 | effective batch = 11264 / 8192 |
 
 > Phase 4 Teacher: epochs=30(phase1)+20(phase2), patience=7, lr=0.001
 
@@ -726,7 +760,7 @@ top_k:
 
 ### 9.6 향후 과제
 
-1. **2차 Ablation**: PLE/adaTT 구조 + 피처-전문가 연동 + Loss weighting (project_ablation_round2.md 참조)
+1. **GradSurgery Ablation**: Phase 3 구조 확장 (9 structures) — ple_softmax_gs / shared_bottom_gs / ple_sigmoid_gs 진행 중 (2026-04-13~)
 2. **Serving Pipeline**: Stage C (CPE, Agentic Orchestrator, Vector Store) 구현
 3. **Real-time Inference**: SageMaker Endpoint + Lambda 파이프라인
 4. **A/B Testing**: SageMaker Experiments 기반 온라인 평가
