@@ -809,6 +809,33 @@ def _emit_metrics(
                 "Unit": "None",
             })
 
+    # Layer usage metrics (3-layer fallback observability)
+    layer_used_map = result_meta.get("layer_used_per_task", {}) if result_meta else {}
+    for task_name, layer in layer_used_map.items():
+        metric_data.append({
+            "MetricName": "LayerUsed",
+            "Dimensions": [
+                {"Name": "Version", "Value": version},
+                {"Name": "Task", "Value": str(task_name)},
+            ],
+            "Value": float(layer),
+            "Unit": "None",
+        })
+
+    # Layer distribution summary (count per layer)
+    from collections import Counter
+    layer_counts = Counter(layer_used_map.values())
+    for layer_num, count in layer_counts.items():
+        metric_data.append({
+            "MetricName": "LayerDistribution",
+            "Dimensions": [
+                {"Name": "Version", "Value": version},
+                {"Name": "Layer", "Value": str(layer_num)},
+            ],
+            "Value": float(count),
+            "Unit": "Count",
+        })
+
     # CloudWatch put_metric_data accepts up to 20 items per call
     for i in range(0, len(metric_data), 20):
         cw.put_metric_data(
