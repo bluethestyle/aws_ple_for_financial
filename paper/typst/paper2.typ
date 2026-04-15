@@ -100,7 +100,7 @@ Existing explanation approaches are insufficient:
 
 We propose a full-chain solution from prediction to persuasion:
 
-+ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 349 features; organized by the companion paper's reductionist two-axis framework of Financial DNA $times$ Data Modality) is distilled into per-task LGBM students using IG-guided feature selection. The teacher employs sigmoid CGC gates (inspired by @sigmoid_moe2024) instead of standard softmax gates, enabling independent expert contribution without harmful inter-expert competition --- a critical improvement for heterogeneous expert architectures (detailed in companion paper). This enables GPU-free serving while preserving the features that matter for explanation.
++ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 349 features; organized by the companion paper's reductionist two-axis framework of Financial DNA $times$ Data Modality) is distilled into per-task LGBM students using IG-guided feature selection. The teacher employs softmax CGC gates, which the companion paper's ablation finds superior to sigmoid gating in heterogeneous task settings --- softmax's competitive expert selection protects minority-type tasks (multiclass, regression) from gradient corruption by majority-type tasks (binary). This enables GPU-free serving while preserving the features that matter for explanation.
 
 + *Multi-Agent Reason Generation*: Three specialized LLM agents collaborate in a pipeline --- Feature Selector chooses explanation-worthy features, Reason Generator produces natural-language narratives, and Safety Gate validates regulatory compliance.
 
@@ -261,12 +261,12 @@ This enables:
 (3) interpretable feature importance per task (LGBM's built-in feature importance
 aligns with the business reverse-mapping for explanation generation).
 
-Five tasks from the original 18-task PLE teacher were excluded from the distillation pipeline: income tier, tenure stage, spend level, engagement score, and has\_nba. The first four represent deterministic feature transformations --- for instance, income tier is simply a quantile bucket of the raw income feature, which is already a model input. A student model can perfectly reconstruct such labels from its input features, making the distillation trivially solvable and uninformative. has\_nba (binary "will acquire any product?") was folded into nba\_primary class 0 --- predicting _which_ product to recommend subsumes predicting _whether_ to recommend. The remaining 13 tasks represent genuine prediction objectives where the label cannot be deterministically derived from input features.
+Five tasks were excluded from the task set during development. Four (income tier, tenure stage, spend level, engagement score) represent deterministic feature transformations --- for instance, income tier is simply a quantile bucket of the raw income feature, which is already a model input. A student model can perfectly reconstruct such labels from its input features, making the distillation trivially solvable and uninformative. The fifth, has\_nba (binary "will acquire any product?"), was folded into nba\_primary class 0 --- predicting _which_ product to recommend subsumes predicting _whether_ to recommend. The remaining 13 tasks represent genuine prediction objectives where the label cannot be deterministically derived from input features.
 
 *Lifecycle separation*:
 - *Teacher*: retrained weekly/monthly on SageMaker (GPU required, comprehensive).
-  The teacher captures complex inter-task relationships via adaTT
-  and non-linear expert interactions that LGBM cannot directly learn.
+  The teacher captures complex non-linear expert interactions
+  through heterogeneous expert gating that LGBM cannot directly learn.
 - *Students*: re-distilled daily with fresh soft labels (CPU only, fast).
   Daily re-distillation tracks data drift without the cost of GPU training.
 - *Champion-Challenger*: automatic comparison of new student vs. current production model.
@@ -1595,7 +1595,7 @@ in the public repository.
 // Appendix
 // ============================================================
 
-#pagebreak()
+#colbreak()
 
 = Appendix
 
