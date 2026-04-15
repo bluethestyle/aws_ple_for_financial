@@ -1340,21 +1340,14 @@ def _sagemaker_main() -> None:
     output_dir = os.environ["SM_OUTPUT_DATA_DIR"]
     model_output_dir = os.environ.get("SM_MODEL_DIR", output_dir)
 
-    # Config paths relative to /opt/ml/code (source_dir extraction root)
-    default_config = "configs/pipeline.yaml"
-    config_path_raw: str = hp.get("config", default_config)
-    config_path = Path(config_path_raw)
-    if not config_path.is_absolute():
-        config_path = Path("/opt/ml/code") / config_path_raw
-    config_path_str = str(config_path)
+    # Config paths: centralized resolver (SageMaker + local)
+    from containers.path_resolver import resolve_config_path
+    config_path_str = resolve_config_path(hp.get("config", "configs/pipeline.yaml"))
 
     dataset_config_path_str: Optional[str] = None
     dataset_config_raw: str = hp.get("dataset_config", "")
     if dataset_config_raw:
-        dataset_config_path = Path(dataset_config_raw)
-        if not dataset_config_path.is_absolute():
-            dataset_config_path = Path("/opt/ml/code") / dataset_config_raw
-        dataset_config_path_str = str(dataset_config_path)
+        dataset_config_path_str = resolve_config_path(dataset_config_raw)
 
     batch_size: int = int(hp.get("batch_size", 4096))
     temperature: Optional[float] = None
