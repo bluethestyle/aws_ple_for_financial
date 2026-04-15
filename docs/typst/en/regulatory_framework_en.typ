@@ -799,6 +799,8 @@ DynamoDB-based serverless management (auto-scaling, per-item TTL):
 )
 ]
 
+#pagebreak()
+
 == Fairness Monitoring
 
 3 fairness metrics are continuously monitored across 5 protected attributes.
@@ -866,12 +868,12 @@ Prevents *systemic risk* from excessive recommendation concentration on the same
     node-corner-radius: 3pt,
     spacing: (14pt, 14pt),
     node((0,0), [*Anomaly Detected* \ (drift / fairness / error)], fill: rgb("#fff3e0"), width: 40mm),
-    edge((0,0), (1,0), "->"),
-    node((1,0), [*Level 1* \ Problem model OFF \ Rollback to previous], fill: rgb("#e8f5e9"), width: 42mm),
-    edge((1,0), (2,0), "->", label: [rollback also fails], label-side: center),
-    node((2,0), [*Level 2* \ Serve rolled-back model \ Monitor closely], fill: rgb("#d6e6f0"), width: 42mm),
-    edge((2,0), (3,0), "->", label: [both models fail], label-side: center),
-    node((3,0), [*Level 3* \ All AI models OFF \ Rule-based fallback only], fill: rgb("#ffcdd2"), width: 42mm),
+    edge((0,0), (0,1), "->"),
+    node((0,1), [*Level 1* \ Problem model OFF \ Rollback to previous], fill: rgb("#e8f5e9"), width: 42mm),
+    edge((0,1), (0,2.3), "->", label: [rollback also fails], label-side: center),
+    node((0,2.3), [*Level 2* \ Serve rolled-back model \ Monitor closely], fill: rgb("#d6e6f0"), width: 42mm),
+    edge((0,2.3), (0,3.9), "->", label: [both models fail], label-side: center),
+    node((0,3.9), [*Level 3* \ All AI models OFF \ Rule-based fallback only], fill: rgb("#ffcdd2"), width: 42mm),
   ),
   caption: [Kill switch escalation: 3-level cascade with automatic fallback. Service never fully stops.],
 )
@@ -916,6 +918,8 @@ Prevents *systemic risk* from excessive recommendation concentration on the same
   [Audit trail], [All consent changes and refusal history recorded in consent_audit, opt_out_audit],
 )
 
+#pagebreak()
+
 == Data Retention Policy
 
 Automatically applied via S3 Lifecycle Rules.
@@ -945,13 +949,13 @@ Automated classification and response system by severity.
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
     spacing: (10pt, 14pt),
-    node((1,0), [*Incident Triggered*], fill: luma(240), width: 36mm),
-    edge((1,0), (0,1), "->", label: [kill switch / DI$<$0.6], label-side: left),
-    edge((1,0), (1,1), "->", label: [DI$<$0.8 / herding], label-side: center),
-    edge((1,0), (2,1), "->", label: [drift / quality], label-side: right),
-    node((0,1), [*CRITICAL* \ 1h response \ → MSIT/FSS/CISO], fill: rgb("#ffcdd2"), width: 36mm),
-    node((1,1), [*MAJOR* \ 4h response \ → FSS/AI Committee], fill: rgb("#fff3e0"), width: 36mm),
-    node((2,1), [*MINOR* \ 24h response \ → ML Team], fill: rgb("#e8f5e9"), width: 36mm),
+    node((1.5,0), [*Incident Triggered*], fill: luma(240), width: 40mm),
+    edge((1.5,0), (-3,2), "->", label: [kill switch / DI$<$0.6], label-side: right),
+    edge((1.5,0), (1.5,2), "->", label: [DI$<$0.8 / herding], label-side: center),
+    edge((1.5,0), (6,2), "->", label: [drift / quality], label-side: left),
+    node((-3,2), [*CRITICAL* \ 1h response \ → MSIT/FSS/CISO], fill: rgb("#ffcdd2"), width: 42mm),
+    node((1.5,2), [*MAJOR* \ 4h response \ → FSS/AI Committee], fill: rgb("#fff3e0"), width: 36mm),
+    node((6,2), [*MINOR* \ 24h response \ → ML Team], fill: rgb("#e8f5e9"), width: 36mm),
   ),
   caption: [Incident severity classification with differentiated response SLAs and escalation targets.],
 )
@@ -1089,6 +1093,8 @@ All on-premises models are open-source:
 
 Sequential loading on RTX 4070 (12GB VRAM). Zero vendor lock-in; model replacement requires only config changes.
 
+#pagebreak()
+
 == Ops/Audit Agents
 
 On-premises agents use the *same rule engine, checklist, and tool catalog* as AWS. Differences:
@@ -1143,7 +1149,7 @@ Full-lifecycle model governance aligned with *SR 11-7* (Federal Reserve/OCC), *E
     node((3,0), [*4. Monitor* \ Drift + Fairness \ + Herding], fill: rgb("#d6e6f0"), width: 30mm),
     edge((3,0), (4,0), "->"),
     node((4,0), [*5. Retrain* \ or Retire], fill: rgb("#d6e6f0"), width: 30mm),
-    edge((4,0), (0,0), "->", bend: -40deg, label: [cycle], label-side: center),
+    edge((4,0), (0,0), "->", bend: -30deg, label: [cycle], label-side: center),
   ),
   caption: [MRM lifecycle: 5-stage cycle aligned with SR 11-7, NIST AI RMF, and FSS AI RMF. Stage 3 (Approve) is always manual.],
 )
@@ -1160,6 +1166,8 @@ Full-lifecycle model governance aligned with *SR 11-7* (Federal Reserve/OCC), *E
     [Retrain / Retire], [Triggered retrain or model decommission], [ConsecutiveDriftTracker → dag\_monthly\_retrain],
   )
 ]
+
+#pagebreak()
 
 === Model Inventory
 
