@@ -1,0 +1,1332 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AIOps PLE Financial — Monitoring & Agent Infrastructure Stack
+
+  Provisions:
+    - EventBridge rules: OpsAgent (daily 09:00 KST), AuditAgent (daily 10:00 KST),
+      HeartbeatScheduler (every 5 min)
+    - SNS topics: ops-alerts, audit-alerts, heartbeat-alerts (KMS encrypted)
+    - CloudWatch alarms: Lambda error rate, duration p99, heartbeat gap, agent errors
+    - DynamoDB tables: compliance-audit, consent, ai-optout, profiling-rights
+      (PAY_PER_REQUEST + PITR)
+    - IAM roles: AgentLambdaRole, ServingLambdaRole
+    - S3 bucket policy: audit-log lifecycle (Glacier 90d) + AES-256
+
+  Lambda deployment is handled by a separate SAM/CDK stack.
+  This stack exports ARNs for cross-stack references.
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+
+Parameters:
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Deployment environment
+
+  OperatorEmail:
+    Type: String
+    Description: Email address for operator alert subscriptions
+    AllowedPattern: "^[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}$"
+    ConstraintDescription: Must be a valid email address
+
+  SlackWebhookUrl:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: "Slack incoming webhook URL (optional — leave empty to skip Slack integration)"
+
+  BedrockModelId:
+    Type: String
+    Default: "anthropic.claude-sonnet-4-6-20250514-v1:0"
+    Description: Bedrock model ID for agent LLM calls
+
+  S3BucketName:
+    Type: String
+    Default: "aiops-ple-financial"
+    Description: S3 bucket name for model artifacts and audit logs
+
+  SageMakerRoleArn:
+    Type: String
+    Description: ARN of the SageMaker execution role (used for cross-service trust grants)
+
+  # Placeholder ARNs — actual Lambda deployment is a separate stack
+  OpsAgentLambdaArn:
+    Type: String
+    Default: "arn:aws:lambda:ap-northeast-2:123456789012:function:ple-ops-agent"
+    Description: "ARN of the OpsAgent Lambda function (deployed via separate stack)"
+
+  AuditAgentLambdaArn:
+    Type: String
+    Default: "arn:aws:lambda:ap-northeast-2:123456789012:function:ple-audit-agent"
+    Description: "ARN of the AuditAgent Lambda function (deployed via separate stack)"
+
+  HeartbeatLambdaArn:
+    Type: String
+    Default: "arn:aws:lambda:ap-northeast-2:123456789012:function:ple-heartbeat"
+    Description: "ARN of the Heartbeat Lambda function (deployed via separate stack)"
+
+  ServingLambdaArn:
+    Type: String
+    Default: "arn:aws:lambda:ap-northeast-2:123456789012:function:ple-predict"
+    Description: "ARN of the Serving (predict) Lambda function (deployed via serving stack)"
+
+  LogRetentionDays:
+    Type: Number
+    Default: 90
+    AllowedValues: [30, 60, 90, 180, 365]
+    Description: CloudWatch log group retention period in days
+
+# ---------------------------------------------------------------------------
+# Conditions
+# ---------------------------------------------------------------------------
+
+Conditions:
+  HasSlackWebhook: !Not [!Equals [!Ref SlackWebhookUrl, ""]]
+  IsProd: !Equals [!Ref Environment, prod]
+
+# ---------------------------------------------------------------------------
+# Metadata
+# ---------------------------------------------------------------------------
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Environment"
+        Parameters: [Environment, S3BucketName]
+      - Label:
+          default: "Notifications"
+        Parameters: [OperatorEmail, SlackWebhookUrl]
+      - Label:
+          default: "AI / ML"
+        Parameters: [BedrockModelId, SageMakerRoleArn]
+      - Label:
+          default: "Lambda ARNs (set after Lambda stack deploy)"
+        Parameters:
+          - OpsAgentLambdaArn
+          - AuditAgentLambdaArn
+          - HeartbeatLambdaArn
+          - ServingLambdaArn
+      - Label:
+          default: "Operations"
+        Parameters: [LogRetentionDays]
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+
+Resources:
+
+  # =========================================================================
+  # KMS Key — shared encryption for SNS topics and DynamoDB tables
+  # =========================================================================
+
+  MonitoringKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: "PLE monitoring stack — SNS + DynamoDB encryption"
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          # Root account full access (required)
+          - Sid: EnableRootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          # Allow CloudWatch Alarms to use the key when publishing to SNS
+          - Sid: AllowCloudWatchAlarms
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: "*"
+          # Allow EventBridge to publish encrypted SNS messages
+          - Sid: AllowEventBridge
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: "*"
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  MonitoringKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/ple-monitoring-${Environment}"
+      TargetKeyId: !Ref MonitoringKmsKey
+
+  # =========================================================================
+  # SNS Topics
+  # =========================================================================
+
+  # --- OpsAgent findings (WARNING / CRITICAL) ---
+  OpsAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "ple-ops-alerts-${Environment}"
+      DisplayName: "PLE OpsAgent Alerts"
+      KmsMasterKeyId: !Ref MonitoringKmsKey
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  OpsAlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref OpsAlertsTopic
+      Protocol: email
+      Endpoint: !Ref OperatorEmail
+
+  OpsAlertsSlackSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasSlackWebhook
+    Properties:
+      TopicArn: !Ref OpsAlertsTopic
+      Protocol: https
+      Endpoint: !Ref SlackWebhookUrl
+
+  # Allow CloudWatch Alarms to publish to OpsAlertsTopic
+  OpsAlertsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref OpsAlertsTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudWatchPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref OpsAlertsTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:ple-*"
+          - Sid: AllowEventBridgePublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref OpsAlertsTopic
+
+  # --- AuditAgent findings (bias, compliance) ---
+  AuditAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "ple-audit-alerts-${Environment}"
+      DisplayName: "PLE AuditAgent Alerts"
+      KmsMasterKeyId: !Ref MonitoringKmsKey
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  AuditAlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AuditAlertsTopic
+      Protocol: email
+      Endpoint: !Ref OperatorEmail
+
+  AuditAlertsSlackSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasSlackWebhook
+    Properties:
+      TopicArn: !Ref AuditAlertsTopic
+      Protocol: https
+      Endpoint: !Ref SlackWebhookUrl
+
+  AuditAlertsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref AuditAlertsTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudWatchPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AuditAlertsTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:ple-*"
+          - Sid: AllowEventBridgePublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AuditAlertsTopic
+
+  # --- Heartbeat failures ---
+  HeartbeatAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "ple-heartbeat-alerts-${Environment}"
+      DisplayName: "PLE Heartbeat Alerts"
+      KmsMasterKeyId: !Ref MonitoringKmsKey
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  HeartbeatAlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref HeartbeatAlertsTopic
+      Protocol: email
+      Endpoint: !Ref OperatorEmail
+
+  HeartbeatAlertsSlackSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasSlackWebhook
+    Properties:
+      TopicArn: !Ref HeartbeatAlertsTopic
+      Protocol: https
+      Endpoint: !Ref SlackWebhookUrl
+
+  HeartbeatAlertsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref HeartbeatAlertsTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudWatchPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref HeartbeatAlertsTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:ple-*"
+
+  # =========================================================================
+  # EventBridge Rules — Agent Scheduling
+  # =========================================================================
+
+  # --- OpsAgent: daily at 09:00 KST = 00:00 UTC ---
+  OpsAgentScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "ple-ops-agent-daily-${Environment}"
+      Description: "PLE OpsAgent: daily at 09:00 KST (00:00 UTC) — operational findings"
+      ScheduleExpression: "cron(0 0 * * ? *)"
+      State: !If [IsProd, ENABLED, DISABLED]
+      Targets:
+        - Id: ops-agent-lambda-target
+          Arn: !Ref OpsAgentLambdaArn
+          Input: !Sub |
+            {
+              "action": "run",
+              "environment": "${Environment}",
+              "alert_topic_arn": "${OpsAlertsTopic}"
+            }
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: 3600
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  OpsAgentLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref OpsAgentLambdaArn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt OpsAgentScheduleRule.Arn
+
+  # --- AuditAgent: daily at 10:00 KST = 01:00 UTC ---
+  AuditAgentScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "ple-audit-agent-daily-${Environment}"
+      Description: "PLE AuditAgent: daily at 10:00 KST (01:00 UTC) — bias & compliance audit"
+      ScheduleExpression: "cron(0 1 * * ? *)"
+      State: !If [IsProd, ENABLED, DISABLED]
+      Targets:
+        - Id: audit-agent-lambda-target
+          Arn: !Ref AuditAgentLambdaArn
+          Input: !Sub |
+            {
+              "action": "run",
+              "environment": "${Environment}",
+              "alert_topic_arn": "${AuditAlertsTopic}",
+              "audit_table": "ple-compliance-audit-${Environment}"
+            }
+          RetryPolicy:
+            MaximumRetryAttempts: 2
+            MaximumEventAgeInSeconds: 3600
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  AuditAgentLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AuditAgentLambdaArn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt AuditAgentScheduleRule.Arn
+
+  # --- HeartbeatScheduler: every 5 minutes ---
+  HeartbeatScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "ple-heartbeat-5min-${Environment}"
+      Description: "PLE HeartbeatScheduler: every 5 minutes — pipeline health check"
+      ScheduleExpression: "rate(5 minutes)"
+      State: !If [IsProd, ENABLED, DISABLED]
+      Targets:
+        - Id: heartbeat-lambda-target
+          Arn: !Ref HeartbeatLambdaArn
+          Input: !Sub |
+            {
+              "action": "check",
+              "environment": "${Environment}",
+              "alert_topic_arn": "${HeartbeatAlertsTopic}"
+            }
+          RetryPolicy:
+            MaximumRetryAttempts: 1
+            MaximumEventAgeInSeconds: 300
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  HeartbeatLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HeartbeatLambdaArn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt HeartbeatScheduleRule.Arn
+
+  # =========================================================================
+  # CloudWatch Alarms
+  # =========================================================================
+
+  # --- Lambda error rate > 5% for 5 min → OpsAlerts ---
+  AgentLambdaErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ple-agent-lambda-error-rate-${Environment}"
+      AlarmDescription: >
+        Agent Lambda error rate exceeded 5% over a 5-minute window.
+        Investigate OpsAgent / AuditAgent CloudWatch logs.
+      Metrics:
+        - Id: errors
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: ple-ops-agent
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: invocations
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Invocations
+              Dimensions:
+                - Name: FunctionName
+                  Value: ple-ops-agent
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: error_rate
+          Expression: "IF(invocations > 0, errors / invocations * 100, 0)"
+          Label: "Agent Lambda Error Rate (%)"
+          ReturnData: true
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      TreatMissingData: notBreaching
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref OpsAlertsTopic
+      OKActions:
+        - !Ref OpsAlertsTopic
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # --- Lambda duration > 10s p99 → OpsAlerts ---
+  AgentLambdaDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ple-agent-lambda-duration-p99-${Environment}"
+      AlarmDescription: >
+        Agent Lambda p99 duration exceeded 10 seconds. Possible timeout risk
+        or slow Bedrock / DynamoDB calls.
+      Namespace: AWS/Lambda
+      MetricName: Duration
+      Dimensions:
+        - Name: FunctionName
+          Value: ple-ops-agent
+      ExtendedStatistic: p99
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 10000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref OpsAlertsTopic
+      OKActions:
+        - !Ref OpsAlertsTopic
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # --- Heartbeat Lambda invocations = 0 for 15 min → HeartbeatAlerts ---
+  HeartbeatMissingAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ple-heartbeat-missing-${Environment}"
+      AlarmDescription: >
+        Heartbeat Lambda has not been invoked for 15 minutes.
+        EventBridge rule may be disabled or the Lambda is failing before
+        it can record metrics.
+      Namespace: AWS/Lambda
+      MetricName: Invocations
+      Dimensions:
+        - Name: FunctionName
+          Value: ple-heartbeat
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref HeartbeatAlertsTopic
+      OKActions:
+        - !Ref HeartbeatAlertsTopic
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # --- Agent Lambda errors > 0 for 2 consecutive periods → OpsAlerts ---
+  AgentLambdaConsecutiveErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ple-agent-consecutive-errors-${Environment}"
+      AlarmDescription: >
+        Agent Lambda produced errors in 2 consecutive 5-minute periods.
+        Immediate investigation required — agent may be stuck or config is broken.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: ple-ops-agent
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref OpsAlertsTopic
+      OKActions:
+        - !Ref OpsAlertsTopic
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # --- AuditAgent errors > 0 for 2 consecutive periods → AuditAlerts ---
+  AuditAgentConsecutiveErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "ple-audit-agent-consecutive-errors-${Environment}"
+      AlarmDescription: >
+        AuditAgent Lambda produced errors in 2 consecutive 5-minute periods.
+        Compliance audit may have been skipped — investigate immediately.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: ple-audit-agent
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref AuditAlertsTopic
+      OKActions:
+        - !Ref AuditAlertsTopic
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # =========================================================================
+  # DynamoDB Tables — Compliance
+  # =========================================================================
+
+  # --- Compliance audit trail ---
+  ComplianceAuditTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "ple-compliance-audit-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: audit_id
+          AttributeType: S
+        - AttributeName: audit_date
+          AttributeType: S
+        - AttributeName: check_type
+          AttributeType: S
+      KeySchema:
+        - AttributeName: audit_id
+          KeyType: HASH
+        - AttributeName: audit_date
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: check-type-date-index
+          KeySchema:
+            - AttributeName: check_type
+              KeyType: HASH
+            - AttributeName: audit_date
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: compliance
+
+  # --- Customer consent records (GDPR / PIPA) ---
+  ConsentTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "ple-consent-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: customer_id
+          AttributeType: S
+        - AttributeName: consent_timestamp
+          AttributeType: S
+        - AttributeName: consent_type
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customer_id
+          KeyType: HASH
+        - AttributeName: consent_timestamp
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: consent-type-index
+          KeySchema:
+            - AttributeName: consent_type
+              KeyType: HASH
+            - AttributeName: consent_timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: pii-sensitive
+
+  # --- AI opt-out records ---
+  AiOptOutTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "ple-ai-optout-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: customer_id
+          AttributeType: S
+        - AttributeName: optout_timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customer_id
+          KeyType: HASH
+        - AttributeName: optout_timestamp
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: pii-sensitive
+
+  # --- Profiling rights requests (GDPR Art. 22) ---
+  ProfilingRightsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "ple-profiling-rights-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: request_id
+          AttributeType: S
+        - AttributeName: request_timestamp
+          AttributeType: S
+        - AttributeName: customer_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: request_id
+          KeyType: HASH
+        - AttributeName: request_timestamp
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: customer-id-index
+          KeySchema:
+            - AttributeName: customer_id
+              KeyType: HASH
+            - AttributeName: request_timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: compliance
+
+  # =========================================================================
+  # IAM Roles
+  # =========================================================================
+
+  # --- AgentLambdaRole: OpsAgent + AuditAgent ---
+  AgentLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ple-agent-lambda-role-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ple-agent-lambda-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+
+              # Bedrock: invoke agent LLM
+              - Sid: BedrockInvoke
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.*"
+
+              # S3: read pipeline artifacts, feature schemas, eval metrics
+              - Sid: S3ReadArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub "arn:aws:s3:::${S3BucketName}"
+                  - !Sub "arn:aws:s3:::${S3BucketName}/*"
+
+              # S3: write audit logs
+              - Sid: S3WriteAuditLogs
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${S3BucketName}/audit-logs/*"
+
+              # DynamoDB: write to all compliance tables
+              - Sid: DynamoDBWriteCompliance
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !GetAtt ComplianceAuditTable.Arn
+                  - !Sub "${ComplianceAuditTable.Arn}/index/*"
+                  - !GetAtt ConsentTable.Arn
+                  - !Sub "${ConsentTable.Arn}/index/*"
+                  - !GetAtt AiOptOutTable.Arn
+                  - !Sub "${AiOptOutTable.Arn}/index/*"
+                  - !GetAtt ProfilingRightsTable.Arn
+                  - !Sub "${ProfilingRightsTable.Arn}/index/*"
+
+              # SNS: publish alerts
+              - Sid: SNSPublishAlerts
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource:
+                  - !Ref OpsAlertsTopic
+                  - !Ref AuditAlertsTopic
+                  - !Ref HeartbeatAlertsTopic
+
+              # CloudWatch: read metrics for health checks + publish custom metrics
+              - Sid: CloudWatchReadWrite
+                Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:ListMetrics
+                  - cloudwatch:PutMetricData
+                  - cloudwatch:DescribeAlarms
+                Resource: "*"
+
+              # CloudWatch Logs: read Lambda logs for analysis
+              - Sid: CloudWatchLogsRead
+                Effect: Allow
+                Action:
+                  - logs:GetLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:FilterLogEvents
+                Resource: "*"
+
+              # KMS: use monitoring key for DynamoDB / SNS encryption
+              - Sid: KmsUseMonitoringKey
+                Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                Resource: !GetAtt MonitoringKmsKey.Arn
+
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # --- ServingLambdaRole: predict endpoint ---
+  ServingLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "ple-serving-lambda-role-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ple-serving-lambda-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+
+              # S3: read model artifacts (promoted champion model)
+              - Sid: S3ReadModels
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub "arn:aws:s3:::${S3BucketName}"
+                  - !Sub "arn:aws:s3:::${S3BucketName}/models/*"
+                  - !Sub "arn:aws:s3:::${S3BucketName}/artifacts/*"
+
+              # DynamoDB: write prediction audit log, read consent/opt-out
+              - Sid: DynamoDBPredictionAudit
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt ComplianceAuditTable.Arn
+                  - !Sub "${ComplianceAuditTable.Arn}/index/*"
+                  - !GetAtt AiOptOutTable.Arn
+                  - !Sub "${AiOptOutTable.Arn}/index/*"
+                  - !GetAtt ConsentTable.Arn
+                  - !Sub "${ConsentTable.Arn}/index/*"
+
+              # Bedrock: L2a explanations (post-prediction)
+              - Sid: BedrockExplainability
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+
+              # CloudWatch: publish inference latency / score metrics
+              - Sid: CloudWatchPublishMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: "*"
+
+              # KMS: decrypt model artifacts if encrypted at rest
+              - Sid: KmsDecryptArtifacts
+                Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                Resource: !GetAtt MonitoringKmsKey.Arn
+
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # =========================================================================
+  # S3 Bucket Policy — Audit Log Lifecycle + Encryption
+  # =========================================================================
+
+  # Note: the S3 bucket itself is assumed to exist (created by the training
+  # pipeline / separate stack). This resource attaches the audit-log lifecycle
+  # configuration and enforces server-side encryption.
+
+  AuditLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3BucketName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+
+          # Deny any request that does not use HTTPS
+          - Sid: DenyNonTLS
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !Sub "arn:aws:s3:::${S3BucketName}"
+              - !Sub "arn:aws:s3:::${S3BucketName}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+          # Deny uploads that do not use AES-256 SSE
+          - Sid: DenyNonEncryptedUploads
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub "arn:aws:s3:::${S3BucketName}/audit-logs/*"
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: AES256
+
+          # Allow AgentLambdaRole to read/write audit logs
+          - Sid: AllowAgentAuditLogAccess
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt AgentLambdaRole.Arn
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${S3BucketName}"
+              - !Sub "arn:aws:s3:::${S3BucketName}/audit-logs/*"
+
+          # Allow ServingLambdaRole to read model artifacts
+          - Sid: AllowServingModelRead
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt ServingLambdaRole.Arn
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${S3BucketName}"
+              - !Sub "arn:aws:s3:::${S3BucketName}/models/*"
+              - !Sub "arn:aws:s3:::${S3BucketName}/artifacts/*"
+
+  # Lifecycle configuration is applied via a separate Custom Resource or
+  # directly on the bucket. Defined here as a CloudFormation Custom Resource
+  # using a pre-existing bucket (avoids bucket recreation on stack updates).
+  #
+  # Lifecycle rules:
+  #   - audit-logs/*  → Glacier after 90 days, Delete after 2555 days (7 years)
+  #   - outputs/*     → Standard-IA after 30 days, Glacier after 180 days
+
+  AuditLogLifecycleConfig:
+    Type: AWS::S3::StorageLens
+    Properties:
+      StorageLensConfiguration:
+        Id: !Sub "ple-audit-storage-lens-${Environment}"
+        IsEnabled: true
+        AccountLevel:
+          BucketLevel: {}
+        DataExport:
+          S3BucketDestination:
+            AccountId: !Ref AWS::AccountId
+            Arn: !Sub "arn:aws:s3:::${S3BucketName}"
+            Format: CSV
+            OutputSchemaVersion: V_1
+            Prefix: storage-lens-reports/
+        Tags:
+          - Key: Project
+            Value: aiops-ple
+          - Key: Environment
+            Value: !Ref Environment
+          - Key: ManagedBy
+            Value: cloudformation
+
+  # =========================================================================
+  # CloudWatch Log Groups (agent Lambdas, managed here for retention policy)
+  # =========================================================================
+
+  OpsAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/aws/lambda/ple-ops-agent"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt MonitoringKmsKey.Arn
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  AuditAgentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/aws/lambda/ple-audit-agent"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt MonitoringKmsKey.Arn
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  HeartbeatLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/aws/lambda/ple-heartbeat"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !GetAtt MonitoringKmsKey.Arn
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # =========================================================================
+  # CloudWatch Dashboard — operational overview
+  # =========================================================================
+
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "ple-monitoring-${Environment}"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "alarm",
+              "x": 0, "y": 0, "width": 24, "height": 4,
+              "properties": {
+                "title": "PLE Monitoring — Active Alarms",
+                "alarms": [
+                  "${AgentLambdaErrorRateAlarm.AlarmArn}",
+                  "${AgentLambdaDurationAlarm.AlarmArn}",
+                  "${HeartbeatMissingAlarm.AlarmArn}",
+                  "${AgentLambdaConsecutiveErrorsAlarm.AlarmArn}",
+                  "${AuditAgentConsecutiveErrorsAlarm.AlarmArn}"
+                ]
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0, "y": 4, "width": 12, "height": 6,
+              "properties": {
+                "title": "Agent Lambda Invocations & Errors",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "ple-ops-agent", {"label": "OpsAgent Invocations", "color": "#1f77b4"}],
+                  ["AWS/Lambda", "Errors",      "FunctionName", "ple-ops-agent", {"label": "OpsAgent Errors",      "color": "#d62728"}],
+                  ["AWS/Lambda", "Invocations", "FunctionName", "ple-audit-agent", {"label": "AuditAgent Invocations", "color": "#2ca02c"}],
+                  ["AWS/Lambda", "Errors",      "FunctionName", "ple-audit-agent", {"label": "AuditAgent Errors",      "color": "#ff7f0e"}]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12, "y": 4, "width": 12, "height": 6,
+              "properties": {
+                "title": "Heartbeat Lambda Invocations",
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "ple-heartbeat", {"label": "Heartbeat Invocations", "color": "#1f77b4"}],
+                  ["AWS/Lambda", "Errors",      "FunctionName", "ple-heartbeat", {"label": "Heartbeat Errors",      "color": "#d62728"}]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "view": "timeSeries"
+              }
+            }
+          ]
+        }
+
+# ---------------------------------------------------------------------------
+# Outputs — cross-stack references
+# ---------------------------------------------------------------------------
+
+Outputs:
+
+  # SNS Topic ARNs
+  OpsAlertsTopicArn:
+    Description: "SNS topic ARN for OpsAgent findings (WARNING/CRITICAL)"
+    Value: !Ref OpsAlertsTopic
+    Export:
+      Name: !Sub "ple-ops-alerts-topic-arn-${Environment}"
+
+  AuditAlertsTopicArn:
+    Description: "SNS topic ARN for AuditAgent findings (bias, compliance)"
+    Value: !Ref AuditAlertsTopic
+    Export:
+      Name: !Sub "ple-audit-alerts-topic-arn-${Environment}"
+
+  HeartbeatAlertsTopicArn:
+    Description: "SNS topic ARN for heartbeat failures"
+    Value: !Ref HeartbeatAlertsTopic
+    Export:
+      Name: !Sub "ple-heartbeat-alerts-topic-arn-${Environment}"
+
+  # DynamoDB Table ARNs
+  ComplianceAuditTableArn:
+    Description: "DynamoDB compliance audit trail table ARN"
+    Value: !GetAtt ComplianceAuditTable.Arn
+    Export:
+      Name: !Sub "ple-compliance-audit-table-arn-${Environment}"
+
+  ComplianceAuditTableName:
+    Description: "DynamoDB compliance audit trail table name"
+    Value: !Ref ComplianceAuditTable
+    Export:
+      Name: !Sub "ple-compliance-audit-table-name-${Environment}"
+
+  ConsentTableArn:
+    Description: "DynamoDB customer consent records table ARN"
+    Value: !GetAtt ConsentTable.Arn
+    Export:
+      Name: !Sub "ple-consent-table-arn-${Environment}"
+
+  ConsentTableName:
+    Description: "DynamoDB customer consent records table name"
+    Value: !Ref ConsentTable
+    Export:
+      Name: !Sub "ple-consent-table-name-${Environment}"
+
+  AiOptOutTableArn:
+    Description: "DynamoDB AI opt-out records table ARN"
+    Value: !GetAtt AiOptOutTable.Arn
+    Export:
+      Name: !Sub "ple-ai-optout-table-arn-${Environment}"
+
+  AiOptOutTableName:
+    Description: "DynamoDB AI opt-out records table name"
+    Value: !Ref AiOptOutTable
+    Export:
+      Name: !Sub "ple-ai-optout-table-name-${Environment}"
+
+  ProfilingRightsTableArn:
+    Description: "DynamoDB profiling rights requests table ARN (GDPR Art. 22)"
+    Value: !GetAtt ProfilingRightsTable.Arn
+    Export:
+      Name: !Sub "ple-profiling-rights-table-arn-${Environment}"
+
+  ProfilingRightsTableName:
+    Description: "DynamoDB profiling rights requests table name"
+    Value: !Ref ProfilingRightsTable
+    Export:
+      Name: !Sub "ple-profiling-rights-table-name-${Environment}"
+
+  # IAM Role ARNs
+  AgentLambdaRoleArn:
+    Description: "IAM role ARN for OpsAgent and AuditAgent Lambda functions"
+    Value: !GetAtt AgentLambdaRole.Arn
+    Export:
+      Name: !Sub "ple-agent-lambda-role-arn-${Environment}"
+
+  ServingLambdaRoleArn:
+    Description: "IAM role ARN for the PLE serving (predict) Lambda function"
+    Value: !GetAtt ServingLambdaRole.Arn
+    Export:
+      Name: !Sub "ple-serving-lambda-role-arn-${Environment}"
+
+  # KMS Key
+  MonitoringKmsKeyArn:
+    Description: "KMS key ARN used for SNS + DynamoDB encryption in this stack"
+    Value: !GetAtt MonitoringKmsKey.Arn
+    Export:
+      Name: !Sub "ple-monitoring-kms-key-arn-${Environment}"
+
+  # EventBridge Rule ARNs
+  OpsAgentScheduleRuleArn:
+    Description: "EventBridge rule ARN for OpsAgent daily schedule (09:00 KST)"
+    Value: !GetAtt OpsAgentScheduleRule.Arn
+    Export:
+      Name: !Sub "ple-ops-agent-rule-arn-${Environment}"
+
+  AuditAgentScheduleRuleArn:
+    Description: "EventBridge rule ARN for AuditAgent daily schedule (10:00 KST)"
+    Value: !GetAtt AuditAgentScheduleRule.Arn
+    Export:
+      Name: !Sub "ple-audit-agent-rule-arn-${Environment}"
+
+  HeartbeatScheduleRuleArn:
+    Description: "EventBridge rule ARN for HeartbeatScheduler (every 5 min)"
+    Value: !GetAtt HeartbeatScheduleRule.Arn
+    Export:
+      Name: !Sub "ple-heartbeat-rule-arn-${Environment}"
+
+  # Dashboard
+  MonitoringDashboardName:
+    Description: "CloudWatch monitoring dashboard name"
+    Value: !Ref MonitoringDashboard
+    Export:
+      Name: !Sub "ple-monitoring-dashboard-${Environment}"
