@@ -206,8 +206,6 @@ Benchmark data + Ablation execution
 Distillation + Lambda serving
 ```
 
-#pagebreak()
-
 // ============================================================================
 = PLE + Heterogeneous Expert Basket
 // ============================================================================
@@ -407,8 +405,6 @@ Per-mode 16D -> `task_expert_output_dim` projection, followed by additive fusion
   [consumption], [interference], [\[18:24\]],
 )
 
-#pagebreak()
-
 // ============================================================================
 = Feature Pipeline
 // ============================================================================
@@ -590,8 +586,6 @@ $s_k$: learnable log-variance for task $k$. Tasks with higher uncertainty -> aut
 
 Anthropic-style Sparse Autoencoder. Applied to the shared expert concatenated output. *Detached* so it does not affect main model gradients (analysis-only sidecar). Tied weights, pre-bias centering, ReLU activation.
 
-#pagebreak()
-
 // ============================================================================
 = Distillation + Serving
 // ============================================================================
@@ -680,8 +674,6 @@ Four levels of explanation are provided simultaneously:
 + *contrastive*: "Why this and not that" (contrastive)
 + *evidential*: "How confident is this" (uncertainty quantification)
 + *SAE*: "Which internal concepts were activated" (neuron-level)
-
-#pagebreak()
 
 // ============================================================================
 = Monitoring + Compliance

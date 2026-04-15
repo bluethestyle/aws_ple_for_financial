@@ -822,7 +822,6 @@ DynamoDB 기반 서버리스 관리 (자동 스케일링, 항목별 TTL):
     |SPD| > 0.1 → MINOR 인시던트
   ],
 )
-#pagebreak()
 
 == 드리프트 감시 (Drift)
 

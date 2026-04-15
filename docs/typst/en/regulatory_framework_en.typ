@@ -826,8 +826,6 @@ Note on income: *income* is an input feature and a protected attribute monitored
   ],
 )
 
-#pagebreak()
-
 == Drift Surveillance
 
 Combines SageMaker Model Monitor (default) + custom PSI (extended).
@@ -1123,8 +1121,6 @@ On-premises agents use the *same rule engine, checklist, and tool catalog* as AW
 )
 
 On-premises lacks conversational agent capabilities but offers structurally perfect data protection. From a regulatory perspective, "customer data never leaves the premises" is the strongest possible safeguard.
-
-#pagebreak()
 
 == Model Risk Management (MRM) Framework
 
