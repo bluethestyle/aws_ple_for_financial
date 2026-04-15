@@ -1,7 +1,6 @@
-# Getting Started with the AWS PLE Platform
+# Quickstart Guide
 
-This guide walks you through installing the platform, running the synthetic
-example end-to-end, and understanding the output.
+This guide walks a new user from clone to a running end-to-end pipeline in about 15 minutes, entirely on a local machine (no AWS required for the first run).
 
 ---
 
@@ -12,324 +11,253 @@ example end-to-end, and understanding the output.
 | Python 3.10+ | 3.11 recommended |
 | pip or conda | Package manager |
 | Git | To clone the repository |
-| AWS account | **Optional** -- local mode works without AWS |
-| CUDA toolkit | **Optional** -- GPU experts (Mamba, Temporal) benefit from it |
+| CUDA toolkit | Optional — GPU experts (Temporal, HGCN) benefit from it; CPU fallback works |
+| AWS account | Optional — needed only for SageMaker / S3 workflows |
 
-## Installation
+---
 
-### 1. Clone the repository
+## 1. Install
 
 ```bash
 git clone <repo-url> aws_ple_for_financial
 cd aws_ple_for_financial
-```
 
-### 2. Create a virtual environment
-
-```bash
 python -m venv .venv
-source .venv/bin/activate   # Linux / macOS
-.venv\Scripts\activate      # Windows
-```
+source .venv/bin/activate      # Linux / macOS
+# .venv\Scripts\activate       # Windows
 
-### 3. Install dependencies
+# Core install (CPU, no AWS SDK)
+pip install -e ".[dev]"
 
-```bash
-# Core (CPU-only, no AWS SDK)
-pip install -r requirements.txt
-
-# With AWS support (SageMaker, S3, DynamoDB)
+# With AWS support
 pip install -r requirements-aws.txt
 
-# With GPU support (cuDF, CUDA)
+# With GPU support (cuDF / CUDA)
 pip install -r requirements-gpu.txt
 ```
 
-Key packages installed:
+Key packages:
 
 | Package | Purpose |
 |---|---|
-| `torch` | PLE model, experts, loss functions |
-| `lightgbm` | LGBM student model for distillation |
-| `duckdb` | Default DataFrame backend (fast Parquet I/O) |
-| `pandas`, `numpy`, `scikit-learn` | Data manipulation, transformers |
-| `pyyaml` | Configuration loading |
+| `torch` | PLE model, 7 expert networks, loss functions |
+| `duckdb` | Primary DataFrame backend — fast columnar Parquet I/O |
+| `lightgbm` | Distilled student model (CPU inference) |
+| `pandas`, `numpy`, `scikit-learn` | Small-scale utilities, final tensor conversion |
+| `pyyaml` | Config loading |
 | `boto3` | AWS SDK (optional) |
 
 ---
 
-## Running the Synthetic Example
+## 2. Generate Benchmark Data
 
-The platform ships with a self-contained example that generates synthetic data,
-trains a multi-task model, and produces predictions -- all without AWS.
-
-### Step 1: Run the example
+The platform ships with a synthetic benchmark generator that produces a
+realistic 1 M-customer financial dataset.
 
 ```bash
-python examples/synthetic/run.py
+PYTHONPATH=. python scripts/generate_benchmark_data.py --n-customers 50000
+# Use 1000000 for the full benchmark; 50000 is faster for a first run.
 ```
 
-You can control the data size and output directory:
+Output lands in `data/benchmark/`.
+
+---
+
+## 3. Phase 0 — Feature Engineering
+
+Phase 0 reads raw Parquet files, runs 10 feature generators (TDA, HMM, HGCN,
+Mamba, etc.), applies 3-stage normalization, and writes training-ready tensors.
+
+DuckDB is the data backend throughout this phase — no pandas for large-scale
+loads.
 
 ```bash
-python examples/synthetic/run.py --n 50000 --output outputs/synthetic/
+PYTHONPATH=. python adapters/santander_adapter.py \
+  --input-dir  data/benchmark \
+  --output-dir outputs/phase0
 ```
 
-### Step 2: What happens behind the scenes
-
-The script executes the following pipeline:
+Phase 0 produces:
 
 ```
-                                    examples/synthetic/run.py
-                                             |
-        1. Generate synthetic data           |
-           (user_age, item_price, ...)       |
-                    |                        |
-        2. Save to Parquet                   |
-                    |                        |
-        3. Build PipelineConfig              |
-           - 2 tasks: click (binary),        |
-             convert (binary)                |
-           - 4 numeric + 3 categorical       |
-             features                        |
-           - LGBM model architecture         |
-                    |                        |
-        4. PipelineRunner.run(mode="local")  |
-           - Feature pipeline                |
-             (StandardScaler, LabelEncoder)  |
-           - Train/val split (80/10/10)      |
-           - LGBM multi-task training        |
-           - Evaluation metrics              |
-                    |                        |
-        5. Output results + model artifacts  |
+outputs/phase0/
+  train.pt / val.pt / test.pt   # Training-ready tensors
+  feature_stats.json            # Per-feature statistics (zero-variance, NaN %)
+  label_stats.json              # Class balance + positive rates
+  feature_schema.json           # Column names, group ranges, scaler state
 ```
 
-### Step 3: Understand the output
+Before continuing, verify the output:
 
-After running, the `outputs/synthetic/` directory contains:
-
-```
-outputs/synthetic/
-  data.parquet                # Generated synthetic data
-  model/                      # Trained LGBM model artifacts
-    click.model               # Click prediction model
-    convert.model             # Conversion prediction model
-  metrics/                    # Evaluation metrics
-    evaluation.json           # AUC, accuracy, etc.
-  pipeline/                   # Fitted pipeline artifacts
-    metadata.json             # Pipeline metadata
+```bash
+# Check for zero-variance columns and label distribution
+python -c "
+import json, pathlib
+stats = json.loads(pathlib.Path('outputs/phase0/feature_stats.json').read_text())
+labels = json.loads(pathlib.Path('outputs/phase0/label_stats.json').read_text())
+print('Features after Phase 0:', stats.get('n_features'))   # expect ~403
+print('Tasks:', list(labels.keys()))                         # expect 13 tasks
+"
 ```
 
-Console output shows:
+Expected: ~349 input features, ~403 after Phase 0 (log-transform copies added
+by 3-stage normalization), 13 tasks.
 
-```
-INFO  Generating 10,000 synthetic samples...
-INFO  Data saved: outputs/synthetic/data.parquet | shape=(10000, 9)
-INFO    click rate   : 0.523
-INFO    convert rate : 0.181
-INFO  Pipeline result: {...}
-```
+---
 
-### Step 4: Examine the configuration
+## 4. Train
 
-The synthetic example uses this configuration (from `examples/synthetic/run.py`):
-
-```python
-PipelineConfig(
-    task_name="synthetic_multitask",
-    tasks=[
-        TaskSpec(name="click",   type="binary", loss="focal", loss_weight=1.0, label_col="clicked"),
-        TaskSpec(name="convert", type="binary", loss="focal", loss_weight=1.5, label_col="converted"),
-    ],
-    data=DataSpec(source="outputs/synthetic/data.parquet", format="parquet"),
-    features=FeatureSpec(
-        numeric=["user_age", "item_price", "item_popularity", "days_since_last_visit"],
-        categorical=["user_segment", "item_category", "platform"],
-    ),
-    model=ModelSpec(architecture="lgbm"),
-    training=TrainingSpec(epochs=20, seed=42),
-)
+```bash
+PYTHONPATH=. python containers/training/train.py \
+  --config  configs/santander/pipeline.yaml
 ```
 
-The YAML equivalent (in `configs/examples/multitask_binary.yaml`) demonstrates
-the same configuration in file form -- useful for production workflows.
+To override hyperparameters without editing YAML:
+
+```bash
+PYTHONPATH=. python containers/training/train.py \
+  --config configs/santander/pipeline.yaml \
+  --hp '{"training": {"batch_size": 5632, "lr": 0.0005, "amp_enabled": true}}'
+```
+
+Default training settings (from `configs/santander/pipeline.yaml`):
+
+| Parameter | Value |
+|---|---|
+| `batch_size` | 5632 |
+| `lr` | 0.0005 |
+| `AMP (FP16)` | enabled |
+| `Tasks` | 13 |
+| `Experts` | 7 (DeepFM, Temporal, HGCN, PersLay, Causal, LightGCN, OT) |
+
+Training logs GPU memory, data shape/dtype/NaN rates, label distribution, and
+feature schema before the first epoch.
+
+---
+
+## 5. Evaluate
+
+```bash
+PYTHONPATH=. python scripts/eval_checkpoint.py \
+  --checkpoint outputs/checkpoints/best.pt \
+  --data-dir   outputs/phase0
+```
+
+Metrics are reported by task type — AUC for binary tasks, F1-macro for
+multiclass, MAE for regression — and written to `outputs/eval_metrics.json`.
+
+---
+
+## 6. Run a Local Ablation (optional)
+
+To reproduce the benchmark ablation table locally (no SageMaker):
+
+```bash
+PYTHONPATH=. python scripts/run_local_ablation.py
+```
+
+Results land in `outputs/ablation/`. The orchestrator auto-skips already-
+completed scenarios based on `pipeline_state.json`.
 
 ---
 
 ## Configuration
 
-### Split-config pattern
+Everything is config-driven. Two YAML files control the pipeline:
 
-The platform separates configuration into two layers:
-
-| File | Purpose |
+| File | Controls |
 |---|---|
-| `configs/pipeline.yaml` | Common defaults: model architecture, training HP, distillation, AWS |
-| `configs/datasets/<name>.yaml` | Dataset-specific: tasks, labels, adapter, sequences, ablation |
+| `configs/santander/pipeline.yaml` | Model architecture, training HP, distillation, AWS settings, task definitions |
+| `configs/santander/feature_groups.yaml` | Feature group definitions, generator input filters, expert routing |
 
-Both files are deep-merged at runtime — dataset keys win on collision. This means you only describe _what is different_ in your dataset file; all model and training defaults come from `pipeline.yaml` automatically.
+Edit only these files to change tasks, hyperparameters, or expert assignments.
+Do **not** hardcode values in Python scripts.
 
-```
-configs/
-├── pipeline.yaml                 ← common (model, training, distillation, aws)
-├── datasets/
-│   ├── santander.yaml            ← benchmark dataset
-│   └── example.yaml              ← template for new users
-├── santander/
-│   ├── feature_groups.yaml       ← feature group definitions
-│   └── ...
-└── financial/                    ← on-prem operation configs
-```
+### Adapting to a new dataset
 
-### Creating a dataset config for your data
-
-1. Copy the template:
-
-```bash
-cp configs/datasets/example.yaml configs/datasets/my_bank.yaml
-```
-
-2. Fill in the required sections (replace every `<PLACEHOLDER>`):
-   - `dataset.name` and `adapter`
-   - `tasks`: list of prediction targets with `label_col`, `type`, `loss`
-   - `data.source`: path to your Parquet file or S3 URI
-   - `features.numeric` / `features.categorical`: column names
-   - `feature_groups_file`: path to your feature group YAML
-
-3. Add a feature groups file at `configs/my_bank/feature_groups.yaml`
-   (copy `configs/santander/feature_groups.yaml` as a starting point).
-
-4. Implement a data adapter in `src/adapters/my_bank.py`
-   (copy `src/adapters/santander.py` and adjust raw → standardized DataFrame).
-
-### CLI usage
-
-Pass both files to `train.py` or the orchestrator:
-
-```bash
-# Split-config pattern (recommended)
-python containers/training/train.py \
-  --config configs/pipeline.yaml \
-  --dataset configs/datasets/my_bank.yaml
-
-# Single-file pattern (backward compatible)
-python containers/training/train.py \
-  --config configs/santander/pipeline.yaml
-```
-
-For SageMaker, pass both as hyperparameters:
-
-```python
-hyperparameters = {
-    "config": "configs/pipeline.yaml",
-    "dataset_config": "configs/datasets/my_bank.yaml",
-}
-```
-
-### Backward compatibility
-
-Single-file configs (legacy pattern) still work. If `dataset_config` is not
-provided, `train.py` loads the single config file as before. No migration is
-required for existing setups.
+1. Copy `configs/santander/pipeline.yaml` → `configs/<my_dataset>/pipeline.yaml`
+2. Copy `configs/santander/feature_groups.yaml` → `configs/<my_dataset>/feature_groups.yaml`
+3. Implement a data adapter in `adapters/<my_dataset>_adapter.py`
+   (copy `adapters/santander_adapter.py` as a starting point — adapter converts
+   raw data to a standardized DataFrame; no feature engineering or label
+   derivation in the adapter).
 
 ---
 
-## Next Steps
+## Architecture at a Glance
 
-### Use your own data
+```
+Customer Data (Parquet via DuckDB)
+    |
+    v
+[Phase 0]  10 Feature Generators — ~349 in → ~403 out
+           TDA · HGCN · Mamba · HMM · Chemical Kinetics · SIR · ...
+    |
+    v
+[Train]    PLE + 7 Heterogeneous Experts + 13 Tasks
+           DeepFM | Temporal | HGCN | PersLay | LightGCN | Causal | OT
+           batch_size=5632 · lr=0.0005 · AMP FP16
+    |
+    v
+[Distill]  Knowledge Distillation → 13 LightGBM students (CPU inference)
+    |
+    v
+[Serve]    AWS Lambda · 3 serving agents · 2 ops/audit agents
+```
 
-1. Prepare your data as a Parquet file.
-2. Copy `configs/datasets/example.yaml` → `configs/datasets/my_bank.yaml` and fill in tasks, features, and data source.
-3. Run with `--config configs/pipeline.yaml --dataset configs/datasets/my_bank.yaml`.
-
-### Add feature engineering
-
-Feature groups let you generate new features (TDA, HMM, graph embeddings) or
-transform existing columns (scaling, encoding). See the
-[Feature Engineering Guide](feature_engineering.md).
-
-### Use the PLE neural model instead of LGBM
-
-Change `model.architecture` from `"lgbm"` to `"ple"` and configure experts.
-See the [Model Architecture Guide](model_architecture.md).
-
-### Deploy to AWS
-
-The platform supports SageMaker Training (with Spot instances), Lambda and ECS
-serving, and DynamoDB feature stores. See the
-[Deployment Guide](deployment.md).
-
-### Extend the platform
-
-Add custom generators, transformers, experts, task heads, scorers, or filters
-via the plugin registry pattern. See `configs/` directory for plugin configuration examples.
-
-### Ops / Audit Agents
-
-After pipeline execution completes, two autonomous diagnostic agents run asynchronously:
-
-- **Ops Agent (OpsAgent)**: Monitors 7 checkpoints (from ingestion through A/B testing), analyzes cascading effects between anomalies, and generates reports in `finding + likely_cause + suggested_action` format.
-- **Audit Agent (AuditAgent)**: Evaluates fairness, recommendation-reason quality, and regulatory compliance across 5 viewpoints, performing cross-protected-attribute analysis and 3-tier recommendation-reason quality verification.
-
-Agent configuration: `configs/financial/agent.yaml`
-Detailed design: `docs/design/11_ops_audit_agent.md`
+The 13 tasks span binary classification (product holding, churn, NBA),
+multiclass classification (risk tier, channel preference), and regression
+(spend volume, CLV).
 
 ---
 
-## Project Structure Overview
+## Project Structure
 
 ```
 aws_ple_for_financial/
-  configs/                        # YAML configuration files
-    pipeline.yaml                 # Common: model, training, distillation, aws
-    datasets/                     # Dataset-specific configs
-      santander.yaml              # Santander benchmark
-      example.yaml                # Template for new datasets
-    santander/                    # Santander feature definitions
-      feature_groups.yaml         # Feature group definitions
-    financial/                    # On-prem operation configs
-    recommendation.yaml           # Scoring, filtering, reasons
-    monitoring.yaml               # Fairness, drift, incidents
-  core/                           # Core platform code
-    feature/                      # Feature engineering layer
-      generators/                 # Built-in generators (TDA, HMM, ...)
-      transformers.py             # Built-in transformers
-      group.py                    # FeatureGroupConfig + Registry
-      group_pipeline.py           # FeatureGroupPipeline orchestrator
-    model/                        # Model layer
-      ple/                        # PLE architecture (CGC, adaTT, gating)
-      experts/                    # Expert networks (DeepFM, Mamba, ...)
-      lgbm/                       # LightGBM student model
-    task/                         # Task heads (binary, regression, ...)
-    recommendation/               # Scoring + filtering + reasons
-    serving/                      # Lambda + ECS serving
-    monitoring/                   # Fairness, drift, herding, incidents
-    training/                     # Training loop, 2-phase, distillation
-    data/                         # DataFrame backend (DuckDB/cuDF/pandas)
-  aws/                            # AWS SDK wrappers (S3, SageMaker, Athena)
-  containers/                     # Docker entry points
-    training/train.py             # SageMaker training container
-    inference/lambda_handler.py   # Lambda handler
-    inference/app.py              # ECS FastAPI app
-  examples/                       # Runnable examples
-  tests/                          # Test suite
-  docs/                           # Documentation
+  configs/santander/        pipeline.yaml + feature_groups.yaml (config-driven)
+  core/model/ple/           PLE architecture (CGC gate, adaTT, gating)
+  core/model/experts/       7 expert implementations
+  core/feature/generators/  10 feature generators
+  core/pipeline/            Phase 0: preprocessing, normalization, label derivation
+  core/training/            Trainer, evaluator, callbacks
+  core/recommendation/      Scoring, reason generation, compliance
+  core/agent/               Ops/Audit agents (5-agent architecture)
+  adapters/                 Data adapters (santander, ealtman2019)
+  scripts/                  CLI scripts (generate, train, eval, ablation)
+  containers/training/      train.py — SageMaker / local entry point
+  aws/                      SageMaker, S3, Step Functions wrappers
+  docs/                     Design docs, technical references
+  paper/                    Research papers (Typst)
 ```
 
 ---
 
 ## Troubleshooting
 
-**ImportError: No module named 'duckdb'**
-DuckDB is the default DataFrame backend. Install it with `pip install duckdb`.
-Alternatively, the platform falls back to pandas automatically.
+**`ImportError: No module named 'duckdb'`**
+DuckDB is the primary data backend. Install with `pip install duckdb>=0.10`.
 
 **CUDA not available**
-GPU experts (Mamba, Temporal Ensemble) will use CPU as fallback. Performance
-will be slower but functionally identical. Install CUDA toolkit and
-`pip install torch --index-url https://download.pytorch.org/whl/cu121` for
-GPU support.
+GPU experts fall back to CPU automatically. For GPU: install CUDA toolkit and
+`pip install torch --index-url https://download.pytorch.org/whl/cu121`.
 
-**boto3 not installed**
-AWS features (S3, SageMaker, DynamoDB) require `pip install boto3`. Local mode
-works without it.
+**`boto3` not installed**
+AWS features (S3, SageMaker) require `pip install boto3`. Local mode works
+without it.
+
+**Windows sleep killing the process during overnight training**
+Use `scripts/run_local_ablation.py`, which calls `SetThreadExecutionState` to
+prevent Windows from suspending the process.
+
+---
+
+## Next Steps
+
+| Goal | Where to look |
+|---|---|
+| Full configuration reference | `docs/guides/configuration_reference.md` |
+| Feature engineering details | `docs/guides/feature_engineering.md` |
+| SageMaker deployment | `docs/guides/deployment.md` |
+| Ops/Audit agent design | `docs/design/11_ops_audit_agent.md` |
+| DuckDB pipeline case study | `docs/duckdb-case-study.md` |

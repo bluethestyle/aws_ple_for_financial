@@ -11,14 +11,15 @@ configuration.
 1. [PLE Architecture Overview](#ple-architecture-overview)
 2. [CGC Gating](#cgc-gating)
 3. [Adaptive Task Transfer (adaTT)](#adaptive-task-transfer-adatt)
-4. [Built-in Experts (6 types)](#built-in-experts)
-5. [Adding a Custom Expert](#adding-a-custom-expert)
-6. [Task Types (5 types)](#task-types)
-7. [Adding a Custom Task Head](#adding-a-custom-task-head)
-8. [Loss Functions (9 types)](#loss-functions)
-9. [Multi-task Learning Configuration](#multi-task-learning-configuration)
-10. [2-Phase Training](#2-phase-training)
-11. [Knowledge Distillation (PLE to LGBM)](#knowledge-distillation)
+4. [GradSurgery](#gradsurgery)
+5. [Built-in Experts (7 types)](#built-in-experts)
+6. [Adding a Custom Expert](#adding-a-custom-expert)
+7. [Task Types (5 types)](#task-types)
+8. [Adding a Custom Task Head](#adding-a-custom-task-head)
+9. [Loss Functions (9 types)](#loss-functions)
+10. [Multi-task Learning Configuration](#multi-task-learning-configuration)
+11. [2-Phase Training](#2-phase-training)
+12. [Knowledge Distillation (PLE to LGBM)](#knowledge-distillation)
 
 ---
 
@@ -29,12 +30,12 @@ multi-task learning architecture that solves the "seesaw" problem in multi-task
 learning -- where improving one task degrades another.
 
 ```
-                        Input Features (~350D total)
+                Input Features (~349D raw; 403D after Phase 0 log-transform)
                                |
                     FeatureRouter [ACTIVE]
                     (auto-built from feature_groups.yaml target_experts)
           /         |         |        |         |         |         \
-      [109D]     [129D]     [34D]    [32D]    [103D]    [66D]     [69D]   [~350D]
+      [109D]     [129D]     [27D]    [32D]    [103D]   [100D]     [69D]   [~349D]
         |           |         |        |         |         |         |       |
    +--------+  +------+  +------+  +------+  +------+  +------+  +------+ +-----+
    | DeepFM |  |Temp. |  | HGCN |  |Pers- |  |Causal|  |Light-|  | OT   | | MLP |
@@ -43,10 +44,11 @@ learning -- where improving one task degrades another.
           \        |         |        |         |         |         |       /
            +-------+---------+--------+---------+---------+---------+------+
                              |                  |
-                     CGC Gating          CGC Gating        <-- per-task attention over experts
-                     (Task A)            (Task B)
+                     CGC Gating (softmax)   CGC Gating (softmax)
+                     (Task A)               (Task B)    <-- softmax outperforms sigmoid in heterogeneous MTL
                              |                  |
-                     adaTT Transfer Matrix       <-- gradient-based task affinity
+                     GradSurgery Projection      <-- gradient-level task-type transfer (replaces adaTT)
+                     (3 task-type groups)        <-- adaTT degrades at 13-task scale (156-pair instability)
                              |                  |
                      Task Tower A      Task Tower B        <-- task-specific MLPs
                      [128 -> 64]       [128 -> 64]
@@ -59,16 +61,17 @@ learning -- where improving one task degrades another.
 
 | Component | File | Purpose |
 |---|---|---|
-| `PLEConfig` | `core/model/ple/config.py` | All model hyperparameters — **생성은 config_builder.py에서 전담** (단일 진실 소스) |
-| `build_ple_config()` | `core/model/config_builder.py` | PLEConfig 조립 단일 진실 소스 — train.py는 이 함수만 호출한다 |
+| `PLEConfig` | `core/model/ple/config.py` | All model hyperparameters — constructed exclusively by `config_builder.py` (single source of truth) |
+| `build_ple_config()` | `core/model/config_builder.py` | Single source of truth for PLEConfig assembly — train.py calls only this function |
 | `PLEModel` | `core/model/ple/model.py` | Main model class |
-| `CGCLayer` | `core/model/ple/gating.py` | Customized Gate Control |
-| `AdaTT` | `core/model/ple/adatt.py` | Adaptive Task Transfer |
-| `FeatureRouter` | `core/model/ple/feature_router.py` | Expert input routing — **active**, auto-built from `feature_groups.yaml` `target_experts`; routes heterogeneous input dims per expert (32D–316D) |
+| `CGCLayer` | `core/model/ple/gating.py` | Customized Gate Control (softmax gate) |
+| `GradSurgery` | `core/model/ple/grad_surgery.py` | Gradient-level task-type projection — replaces adaTT at 13-task scale |
+| `AdaTT` | `core/model/ple/adatt.py` | Adaptive Task Transfer (disabled at 13-task scale; 156-pair instability) |
+| `FeatureRouter` | `core/model/ple/feature_router.py` | Expert input routing — **active**, auto-built from `feature_groups.yaml` `target_experts`; routes heterogeneous input dims per expert |
 | `ExpertRegistry` | `core/model/experts/registry.py` | Expert plugin system |
 | `TaskRegistry` | `core/task/registry.py` | Task head plugin system |
-| `PLEPredictor` | `core/inference/predictor.py` | 모델 로딩 + 배치 추론 단일 인터페이스 |
-| `PLEEvaluator` | `core/evaluation/evaluator.py` | per-task 메트릭 집계 (task type별 분리) |
+| `PLEPredictor` | `core/inference/predictor.py` | Checkpoint loading + batch inference single interface |
+| `PLEEvaluator` | `core/evaluation/evaluator.py` | Per-task metric aggregation separated by task type |
 
 ---
 
@@ -78,9 +81,15 @@ Customized Gate Control (CGC) is the per-task attention mechanism that lets each
 task learn which experts are most relevant to it.
 
 Because **FeatureRouter is now active**, each shared expert receives a
-different input dimensionality (32D–316D) rather than the uniform 316D total.
+different input dimensionality rather than a uniform total.
 Expert outputs are projected to a common `output_dim` (default 64) before the
 CGC gate concatenates them, so gating arithmetic remains dimension-agnostic.
+
+**Paper 1 finding**: **Softmax gating outperforms sigmoid in heterogeneous MTL settings.**
+With 13 tasks spanning 7 binary, 3 multiclass, and 3 regression types, softmax provides
+protective isolation of minority-type tasks from majority-type gradient corruption.
+This reverses the conventional preference for sigmoid found in homogeneous-task literature.
+Use `gate_type: softmax` (default); `sigmoid` is available for ablation only.
 
 ### How it works
 
@@ -116,7 +125,14 @@ L_entropy = -entropy_lambda * sum(gate_weights * log(gate_weights))
 
 ## Adaptive Task Transfer (adaTT)
 
-adaTT measures gradient-based task affinity and dynamically transfers knowledge
+> **Status (Paper 1 finding)**: adaTT **degrades** performance at 13-task scale.
+> With 13 tasks there are 156 directed task pairs; affinity estimation becomes
+> unstable and produces $-$0.019 AUC degradation vs. PLE-only baseline.
+> **GradSurgery is now the recommended replacement** — it reduces the 156-pair
+> problem to 3 task-type-group projections.  adaTT config is retained for
+> ablation comparison only; set `enabled: false` in production.
+
+adaTT measures loss-level task affinity and dynamically transfers knowledge
 between related tasks while blocking negative transfer.
 
 ### How it works
@@ -129,6 +145,14 @@ between related tasks while blocking negative transfer.
    definitions) blended with measured affinity.
 4. **Negative transfer detection**: If affinity drops below
    `negative_transfer_threshold`, transfer is zeroed out.
+
+### Why adaTT fails at 13-task scale
+
+With 13 tasks, there are $13 \times 12 = 156$ directed transfer pairs.
+Given only 7 active affinity-measurement epochs (10 total minus 3 warmup),
+each pair receives insufficient gradient samples, producing noisy affinity
+estimates that corrupt transfer. The root cause is a scaling mismatch: the
+original adaTT paper validated on 2–4 tasks, not 13.
 
 ### Configuration
 
@@ -159,30 +183,63 @@ model:
 
 ---
 
-## Built-in Experts
+## GradSurgery
 
-Six expert network architectures ship with the platform. All are registered
-in `core/model/experts/` via `@ExpertRegistry.register()`.
+GradSurgery replaces adaTT as the recommended gradient-level transfer method at
+13-task scale. Instead of estimating all 156 pair-wise affinities, it groups
+tasks into 3 task-type buckets (binary / multiclass / regression) and projects
+conflicting gradients between these groups using PCGrad-style cosine projection.
 
-### 1. MLP Expert (`mlp`)
+### Advantages over adaTT
 
-**File:** `core/model/experts/mlp.py`
+| | adaTT | GradSurgery |
+|---|---|---|
+| Transfer pairs | 156 (13×12) | 3 (task-type groups) |
+| Instability at 13 tasks | High | Low |
+| Ablation result (AUC) | −0.019 vs baseline | +0.030 vs adaTT |
+| Warmup required | 10 epochs | None |
 
-A straightforward multi-layer perceptron. Serves as the baseline expert.
+### Configuration
 
 ```yaml
-experts:
-  mlp:
-    type: mlp
+model:
+  grad_surgery:
     enabled: true
-    output_dim: 64
-    hidden_dims: [128, 64]
-    dropout: 0.2
-    use_layer_norm: true
-    activation: relu          # "relu" or "silu"
+    task_type_groups:
+      binary:   [churn_signal, will_acquire_deposits, will_acquire_investments,
+                 will_acquire_accounts, will_acquire_lending, will_acquire_payments,
+                 top_mcc_shift]
+      multiclass: [nba_primary, segment_prediction, next_mcc]
+      regression: [product_stability, cross_sell_count, mcc_diversity_trend]
+    projection_strength: 1.0   # 1.0 = full PCGrad projection
+
+  # adaTT disabled in production
+  adatt:
+    enabled: false
 ```
 
-### 2. DeepFM Expert (`deepfm`)
+**File:** `core/model/ple/grad_surgery.py`
+
+---
+
+## Built-in Experts
+
+Seven expert network architectures ship with the platform. All are registered
+in `core/model/experts/` via `@ExpertRegistry.register()`.
+
+The 7 shared experts correspond to the 5-axis feature taxonomy:
+- **Snapshot axis**: DeepFM (tabular interactions)
+- **Temporal axis**: Temporal Ensemble (Mamba + PatchTST)
+- **Hierarchy axis**: HGCN (MCC merchant category hierarchy)
+- **Topology axis**: PersLay (TDA behavioral shape)
+- **Causal axis**: Causal (DAG-based representation)
+- **Relations axis**: LightGCN (customer-product graph)
+- **Distribution axis**: Optimal Transport (segment distribution shifts)
+
+The MLP is the per-task expert (not a shared expert) — each task has its own
+MLP tower on top of the shared CGC-gated representation.
+
+### 1. DeepFM Expert (`deepfm`)
 
 **File:** `core/model/experts/deepfm.py`
 
@@ -208,7 +265,7 @@ experts:
     dropout: 0.1
 ```
 
-### 3. Temporal Ensemble Expert (`temporal`)
+### 2. Temporal Ensemble Expert (`temporal`)
 
 **File:** `core/model/experts/temporal.py`
 
@@ -232,28 +289,66 @@ experts:
     dropout: 0.1
 ```
 
-### 4. Mamba Expert (`mamba`)
+### 4. HGCN Expert (`hgcn`)
 
-**File:** `core/model/experts/mamba.py`
+**File:** `core/model/experts/hgcn.py`
 
-Standalone Selective State Space Model (S6) for efficient long-sequence
-modelling. O(L) complexity vs O(L^2) for attention.
+Hyperbolic Graph Convolutional Network that embeds the MCC merchant category
+hierarchy (10 L1 categories → 30 L2 subcategories → 109 leaf codes) into
+Poincare space. Receives `merchant_hierarchy` features (27D) via FeatureRouter.
 
 ```yaml
 experts:
-  mamba:
-    type: mamba
+  hgcn:
+    type: hgcn
     enabled: true
     output_dim: 64
-    d_model: 128
-    d_state: 16
-    d_conv: 4
-    expand_factor: 2
+    hidden_dim: 64
+    curvature: 1.0
+    dropout: 0.1
+```
+
+### 5. PersLay Expert (`perslay`)
+
+**File:** `core/model/experts/perslay.py`
+
+Topological Data Analysis via persistence diagram vectorisation. Captures
+behavioral shape features (e.g., cyclic spending patterns, lifestyle transitions)
+that are invisible to point-cloud methods. Receives `tda_global` and `tda_local`
+features (32D total) via FeatureRouter.
+
+```yaml
+experts:
+  perslay:
+    type: perslay
+    enabled: true
+    output_dim: 64
+    hidden_dim: 64
+    n_elements: 100
+    dropout: 0.1
+```
+
+### 6. LightGCN Expert (`lightgcn`)
+
+**File:** `core/model/experts/lightgcn.py`
+
+Graph convolution for collaborative filtering on the customer-product bipartite
+co-holding graph (24 products). Distinct from HGCN: LightGCN learns
+customer-product affinity, not product taxonomy. Receives `product_hierarchy`
+and `graph_collaborative` features (100D) via FeatureRouter.
+
+```yaml
+experts:
+  lightgcn:
+    type: lightgcn
+    enabled: true
+    output_dim: 64
+    hidden_dim: 64
     n_layers: 2
     dropout: 0.1
 ```
 
-### 5. Causal Expert (`causal`)
+### 7. Causal Expert (`causal`)
 
 **File:** `core/model/experts/causal.py`
 
@@ -274,7 +369,7 @@ experts:
     dropout: 0.2
 ```
 
-### 6. Optimal Transport Expert (`optimal_transport`)
+### 7. Optimal Transport Expert (`optimal_transport`)
 
 **File:** `core/model/experts/ot.py`
 
@@ -631,11 +726,12 @@ tasks:
 ```yaml
 model:
   # Global dimensions
-  input_dim: 316               # Total feature dim (set by FeatureGroupPipeline.total_dim).
+  input_dim: 403               # Total feature dim after Phase 0 (349D raw + 54 log-transform copies).
                                # With FeatureRouter active, each expert receives a
                                # routed subset: deepfm=109D, temporal_ensemble=129D,
-                               # hgcn=34D, perslay=32D, causal=103D, lightgcn=66D,
-                               # optimal_transport=69D, mlp_task=51D.
+                               # hgcn=27D, perslay=32D, causal=103D, lightgcn=100D,
+                               # optimal_transport=69D.
+                               # input_dim is derived dynamically from feature_schema.json.
   task_expert_output_dim: 32
 
   # Task definitions
@@ -712,7 +808,7 @@ model:
 | Strategy | Description | When to use |
 |---|---|---|
 | `fixed` | Static weights from `TaskConfig.loss_weight` | Baseline, well-understood task balance |
-| `uncertainty` | Learned per-task uncertainty (Kendall 2018) | Multiple tasks with unknown noise levels |
+| `uncertainty` | Learned per-task uncertainty (Kendall 2018) with per-task `loss_weight` correction | Multiple tasks with unknown noise levels |
 | `gradnorm` | Gradient-normalisation (Chen 2018) | Tasks with very different loss scales |
 | `dwa` | Dynamic Weight Average | Tasks with varying training speeds |
 
@@ -723,60 +819,41 @@ model:
 The platform supports a 2-phase training strategy that improves multi-task
 generalisation:
 
-### Phase 1: Shared Expert Warmup
+### Phase 1: All-parameter training
 
-- **Duration**: First N epochs (configurable)
-- **What trains**: Shared experts and CGC gating
-- **What is frozen**: Task-specific expert weights and tower weights
-- **Purpose**: Learn good shared representations before tasks diverge
+- **Duration**: First 15 epochs (configurable via `phase1.epochs`)
+- **What trains**: All shared experts, CGC gating, task experts, and towers
+- **Purpose**: Learn joint representations before task-head specialisation
 
-### Phase 2: Task Fine-tuning
+### Phase 2: Shared-frozen task-head fine-tuning
 
-- **Duration**: Remaining epochs
-- **What trains**: Everything (shared + task experts + towers)
-- **What changes**: Lower learning rate, shorter warmup
-- **Purpose**: Specialise each task head while preserving shared structure
+- **Duration**: 8 additional epochs (configurable via `phase2.epochs`)
+- **What is frozen**: Shared expert weights
+- **What trains**: Task-specific tower heads only
+- **Purpose**: Fine-tune task heads without disturbing shared representations
 
-### Configuration
+### Current training hyperparameters (santander, 941K users)
 
 ```yaml
 training:
-  # Phase 1
-  phase1_epochs: 20
-  phase1_lr: 0.001
-  phase1_freeze_task_experts: true
+  batch_size: 5632           # VRAM-optimised for g4dn.xlarge T4
+  learning_rate: 0.0005
+  weight_decay: 0.01
+  gradient_clip_norm: 5.0
+  epochs: 50
+  phase1:
+    epochs: 15
+  phase2:
+    epochs: 8
+    freeze_shared: true
 
-  # Phase 2
-  phase2_epochs: 30
-  phase2_lr: 0.0003
-  phase2_freeze_task_experts: false
-
-  # Scheduler
   scheduler:
-    name: cosine
-    warmup_epochs: 5
-    cosine_t0: 10
-    phase2_warmup_epochs: 2
-    phase2_cosine_t0: 6
+    type: cosine
+    warmup_epochs: 3          # 3-epoch warmup before cosine annealing
 
-  # Optimizer
-  optimizer:
-    name: adamw
-    learning_rate: 0.001
-    weight_decay: 0.01
-    expert_lr_overrides:
-      causal:
-        lr: 0.0005
-        weight_decay: 0.001
-
-  # Mixed precision
   amp:
-    enabled: true
+    enabled: true             # AMP FP16 — ~2x speedup on T4 GPU
     dtype: float16
-
-  # Gradient handling
-  gradient:
-    clip_norm: 5.0
 ```
 
 ---
@@ -837,39 +914,40 @@ distill_config = pipeline.distillation_config
 
 ---
 
-## PLEConfig 빌드 — config_builder.py (단일 진실 소스)
+## PLEConfig Build — config_builder.py (single source of truth)
 
-> **2026-04-14 변경**: `PLEConfig` 인라인 구성을 `core/model/config_builder.py`로 위임하였다.
-> train.py에서 435줄의 모델 빌드 로직을 직접 관리하던 방식을 폐기한다.
-> **config_builder.py 한 곳에서만** task_loss_weights, adaTT task_groups,
-> logit_transfers, FeatureRouter 주입 등 모든 서브설정을 조립한다.
+> **2026-04-14**: `PLEConfig` inline construction delegated to `core/model/config_builder.py`.
+> The previous pattern of managing 435+ lines of model-build logic directly in train.py
+> is retired. **config_builder.py is the only place** where task_loss_weights, adaTT
+> task_groups, logit_transfers, and FeatureRouter injection are assembled.
 
 ```python
-# train.py — 호출 측 (3줄로 PLEConfig 완성)
+# train.py — caller side (3 lines to get a complete PLEConfig)
 from core.model.config_builder import build_ple_config
 
 ple_config = build_ple_config(pipeline_cfg, feature_schema)
 model = PLEModel(ple_config)
 ```
 
-새 파라미터를 추가할 때는 `config_builder.py`만 수정한다. train.py는 변경하지 않는다.
+When adding new parameters, modify only `config_builder.py`. Do not touch train.py.
 
 ---
 
-## PLEPredictor 사용법
+## PLEPredictor Usage
 
-`core/inference/predictor.py`의 `PLEPredictor`는 체크포인트 로딩과 배치 추론을 단일 인터페이스로 제공한다.
+`PLEPredictor` in `core/inference/predictor.py` provides a single interface for
+checkpoint loading and batch inference.
 
 ```python
 from core.inference.predictor import PLEPredictor
 
-# 체크포인트에서 config + 가중치 복원
+# Restore config + weights from checkpoint
 predictor = PLEPredictor.from_checkpoint(
     checkpoint_path="/opt/ml/model/best_model.pt",
     device="cuda",
 )
 
-# 배치 추론 — task_name → numpy array
+# Batch inference — task_name -> numpy array
 predictions = predictor.predict(eval_dataloader)
 # {
 #   "churn_signal": np.ndarray(shape=(N,)),      # binary sigmoid
@@ -878,19 +956,20 @@ predictions = predictor.predict(eval_dataloader)
 # }
 ```
 
-## PLEEvaluator 사용법
+## PLEEvaluator Usage
 
-`core/evaluation/evaluator.py`의 `PLEEvaluator`는 task type별 메트릭을 분리 집계한다.
-전 태스크 단순 평균은 metric semantics가 호환되지 않아 사용하지 않는다.
+`PLEEvaluator` in `core/evaluation/evaluator.py` aggregates metrics separated
+by task type. Cross-task averaging is not used — metric semantics are
+incompatible across binary / multiclass / regression tasks.
 
 ```python
 from core.evaluation.evaluator import PLEEvaluator
 
-evaluator = PLEEvaluator(task_configs)  # pipeline.yaml tasks 리스트
+evaluator = PLEEvaluator(task_configs)  # list from pipeline.yaml tasks
 result = evaluator.evaluate(predictions, labels)
 
-# result.avg_auc        → binary 태스크 평균 AUC-ROC
-# result.avg_f1_macro   → multiclass 태스크 평균 Macro-F1
-# result.avg_mae        → regression 태스크 평균 MAE
-# result.per_task       → {task_name: {"metric": value, ...}}
+# result.avg_auc        -> mean AUC-ROC across binary tasks
+# result.avg_f1_macro   -> mean Macro-F1 across multiclass tasks
+# result.avg_mae        -> mean MAE across regression tasks
+# result.per_task       -> {task_name: {"metric": value, ...}}
 ```

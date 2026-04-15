@@ -15,7 +15,7 @@ through SageMaker training to production serving.
 6. [A/B Testing](#ab-testing)
 7. [Kill Switch](#kill-switch)
 8. [Monitoring and Alerts](#monitoring-and-alerts)
-9. [운영/감사 에이전트 배포](#운영감사-에이전트-배포)
+9. [Ops / Audit Agent Deployment](#ops--audit-agent-deployment)
 
 ---
 
@@ -194,43 +194,43 @@ docker tag ple-training:latest 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/pl
 docker push 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/ple-training:latest
 ```
 
-### SageMaker 제출 스크립트
+### SageMaker Submission Scripts
 
-| 스크립트 | 역할 |
+| Script | Role |
 |---------|------|
-| `scripts/package_source.py` | source 디렉토리 스테이징 → tarball 생성 → S3 업로드 (모든 Job에서 재사용) |
-| `scripts/run_sagemaker_teacher.py` | 3-시나리오(baseline/gradsurgery/adaTT) Spot 학습 Job 병렬 제출 |
-| `scripts/run_sagemaker_eval.py` | 평가 Job 제출 (`containers/evaluation/eval_entry.py` 진입점 사용) |
+| `scripts/package_source.py` | Stage source directory → build tarball → upload to S3 (reused by all Jobs) |
+| `scripts/run_sagemaker_teacher.py` | Submit 3-scenario (baseline/gradsurgery/adaTT) Spot training Jobs in parallel |
+| `scripts/run_sagemaker_eval.py` | Submit evaluation Job (uses `containers/evaluation/eval_entry.py` as entry point) |
 
 ```bash
-# 1. source 패키징 (한 번만 실행)
+# 1. Package source (run once)
 python scripts/package_source.py --config configs/pipeline.yaml
 
-# 2. teacher 학습 Job 제출 (3-시나리오 병렬)
-#    --dataset 로 dataset config를 지정한다 (split-config 패턴)
+# 2. Submit teacher training Jobs (3 scenarios in parallel)
+#    Use --dataset to specify dataset config (split-config pattern)
 python scripts/run_sagemaker_teacher.py \
   --config configs/pipeline.yaml \
   --dataset configs/datasets/santander.yaml
 
-# 3. 평가 Job 제출
+# 3. Submit evaluation Job
 python scripts/run_sagemaker_eval.py \
   --config configs/pipeline.yaml \
   --dataset configs/datasets/santander.yaml \
   --model-s3 s3://my-ple-bucket/models/ple/v2/
 ```
 
-### 평가 컨테이너
+### Evaluation Container
 
-**파일:** `containers/evaluation/eval_entry.py`
+**File:** `containers/evaluation/eval_entry.py`
 
-SageMaker Processing Job 진입점으로, S3에서 모델 아티팩트와 피처 데이터를 내려받아 평가 메트릭(`eval_metrics.json`)을 산출하고 다시 S3에 저장한다.
+SageMaker Processing Job entry point. Downloads model artifacts and feature data from S3, computes evaluation metrics (`eval_metrics.json`), and uploads results back to S3.
 
 ```
 s3://my-ple-bucket/
   models/
     ple/
       v{n}/
-        eval_metrics.json   ← 평가 결과 (run_sagemaker_eval.py가 존재 여부 확인 후 스킵)
+        eval_metrics.json   <- evaluation output (run_sagemaker_eval.py checks for existence and skips if present)
 ```
 
 ---
@@ -593,16 +593,38 @@ general:
 
 ## Ops / Audit Agent Deployment
 
+The platform deploys a **5-agent architecture**: 3 serving agents and 2 ops/audit agents.
+
+### Agent Roles
+
+| Agent | Type | Responsibility |
+|---|---|---|
+| Feature Selector | Serving | Selects relevant features per request using IG-based ranking |
+| Reason Generator | Serving | Produces human-readable recommendation rationales |
+| Safety Gate | Serving | Filters outputs against regulatory and fairness constraints |
+| OpsAgent | Ops/Audit | Monitors pipeline health, drift, and SLA adherence |
+| AuditAgent | Ops/Audit | Performs compliance checks across the 13-task output space |
+
 ### Prerequisites
 
-- Bedrock model access: Claude Sonnet, Claude Haiku, Titan Embeddings V2
-- Bedrock Marketplace: Upstage Solar Pro (optional, for L2a reason generation)
+- Bedrock model access: Claude Sonnet, Claude Haiku, Claude Opus, Titan Embeddings V2
+- Bedrock Marketplace: Upstage Solar Pro (for reason generation)
 - IAM role: `bedrock:InvokeModel`, `s3:GetObject/PutObject`, `dynamodb:*`, `sns:Publish`
 
 ### Agent Configuration
 
 - `configs/financial/agent.yaml`: Agent settings (models, schedules, consensus)
 - `configs/financial/checklist.yaml`: 48 checklist items
+
+### Context Richness Classification
+
+Requests are classified by context richness rather than customer tier:
+
+| Class | Criteria | Agent Behaviour |
+|---|---|---|
+| `rich` | Full feature vector, recent activity | All 3 serving agents active |
+| `moderate` | Partial features, some gaps | Feature Selector applies imputation |
+| `sparse` | Minimal context, cold-start | Safety Gate applies conservative defaults |
 
 ### Execution Modes
 
@@ -615,14 +637,43 @@ general:
 
 ### Bedrock Consensus Mechanism
 
-- 3 Sonnet sessions called in parallel (independent voting)
+- 3-agent consensus: Feature Selector, Reason Generator, Safety Gate vote on borderline outputs
 - Applied only to WARN/FAIL items (cost-efficient)
-- Minority report preserved
+- Minority report preserved in `eval_metrics.json` for audit traceability
+
+### Model Assignments
+
+**Cloud (AWS Bedrock):**
+
+| Agent | Model |
+|---|---|
+| Reason Generator | Solar Pro (primary), Claude Sonnet (fallback) |
+| Safety Gate | Claude Sonnet |
+| OpsAgent | Claude Haiku (high-frequency checks) |
+| AuditAgent | Claude Opus (weekly compliance reports) |
+| Embeddings | Titan Embeddings V2 |
+
+**On-Premises:**
+
+| Agent | Model |
+|---|---|
+| Reason Generator | Exaone 3.5 (primary) |
+| Agents (OpsAgent, AuditAgent) | Qwen 2.5 14B Q4 |
+
+### Task Coverage
+
+The 13 production tasks covered by the audit pipeline:
+
+- **Binary (AUC)**: churn, default, fraud, cross_sell, upsell, reactivation, nba_primary
+- **Multiclass (F1-macro)**: segment, product_affinity, channel_preference
+- **Regression (MAE)**: clv, revenue_30d, nba_score
+
+Metrics are aggregated by task type (avg_auc / avg_f1_macro / avg_mae). Cross-type averaging is not used.
 
 ### Case Store
 
 - LanceDB on S3 (`DiagnosticCaseStore`)
-- Permanent diagnostic history -- similar case retrieval, statistics, response effectiveness tracking
+- Permanent diagnostic history — similar case retrieval, statistics, response effectiveness tracking
 
 ### Alerts
 
@@ -659,10 +710,12 @@ Optional features borrowed from PaperClip and memory framework research:
 ### On-Premises Deployment
 
 On-premises deployments use local infrastructure instead of Bedrock/SageMaker:
-- **Training**: Local GPU (RTX 4070) + PyTorch
+
+- **Training**: Local GPU (RTX 4070, 64 GB RAM) + PyTorch; batch size 5632, lr 0.0005, AMP FP16 enabled
+- **Data backend**: DuckDB (columnar SQL on Parquet files, no pandas for large-scale loads)
 - **Serving**: Docker containers + vLLM
-- **Models**: Exaone 3.5 7.8B (reason generation) + Qwen 2.5 14B Q4 (agents)
-- **Agents**: Same rule engine + 2-round consensus (Qwen instead of Sonnet)
+- **LLM models**: Exaone 3.5 (reason generation) + Qwen 2.5 14B Q4 (OpsAgent, AuditAgent)
+- **Agents**: Same 5-agent architecture + 3-agent consensus (Qwen instead of Claude Sonnet)
 - **Alerts**: Email/Slack instead of SNS
 
 Details: `docs/design/11_ops_audit_agent_onprem_handoff.md`

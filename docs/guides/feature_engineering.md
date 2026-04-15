@@ -16,7 +16,7 @@ group requires editing only the YAML configuration; all downstream systems
 
 1. [Architecture Overview](#architecture-overview)
 2. [Built-in Transformers (7 types)](#built-in-transformers)
-3. [Built-in Generators (5 types)](#built-in-generators)
+3. [Built-in Generators (10 types)](#built-in-generators)
 4. [Creating a Custom Generator](#creating-a-custom-generator)
 5. [Creating a Custom Transformer](#creating-a-custom-transformer)
 6. [FeatureGroup Config Reference](#featuregroup-config-reference)
@@ -47,12 +47,14 @@ group requires editing only the YAML configuration; all downstream systems
                                |
                     FeatureGroupPipeline
                      .fit_transform(df)
+                     (~349D input -> 403D after Phase 0)
                                |
                     +----------+----------+-----------+
                     |          |          |           |
                expert_routing  |    interpretation   distillation_config
-               (PLE model)     |    (ReasonGenerator)  (Distill pipeline)
-                          total_dim
+               (PLE model,     |    (ReasonGenerator)  (Distill pipeline)
+               7 experts,      |
+               13 tasks)  total_dim
                           group_ranges
                           (IG attribution)
 ```
@@ -246,8 +248,8 @@ feature_groups:
 
 ## Built-in Generators
 
-Five generator families ship with the platform. All are registered in
-`core/feature/generators/` via `@FeatureGeneratorRegistry.register()`.
+Ten generator families ship with the platform, spanning 11 academic disciplines.
+All are registered in `core/feature/generators/` via `@FeatureGeneratorRegistry.register()`.
 
 Generators **create entirely new feature columns** from raw data. They produce
 a DataFrame containing only the newly generated columns; the
@@ -375,7 +377,127 @@ dynamic.
 | `interference` | Multi-channel interactions as wave interference (constructive/destructive) | 6 features |
 | `crime_pattern` | Anomalous behaviour detection using crime pattern analysis | 6 features |
 
-### 5. Temporal Pattern (`temporal_pattern`)
+### 5. Mamba Temporal (`mamba`)
+
+**File:** `core/feature/generators/mamba.py`
+
+Selective state-space model (Mamba SSM) on transaction sequences. Learns
+compressed temporal state representations in a self-supervised manner.
+
+```yaml
+- name: mamba_temporal
+  type: generate
+  generator: mamba
+  generator_params:
+    input_filter:
+      include_prefix: ["synth_"]
+    output_dim: 50
+    d_model: 128
+    num_epochs: 3
+    prefer_gpu: true
+  output_dim: 50
+  target_experts: [temporal_ensemble]
+```
+
+**Output:** 50 features representing learned sequential state.
+
+### 6. GMM Clustering (`gmm`)
+
+**File:** `core/feature/generators/gmm.py`
+
+Gaussian Mixture Model soft-assignment clustering on continuous features.
+Probabilistic segmentation capturing multi-modal customer distributions.
+
+```yaml
+- name: gmm_clustering
+  type: generate
+  generator: gmm
+  generator_params:
+    input_filter:
+      dtype: continuous
+      exclude_binary: true
+      min_nunique: 10
+    n_clusters: 20
+    covariance_type: full
+  output_dim: 22
+  target_experts: [deepfm, mlp, causal, optimal_transport]
+```
+
+**Output:** 22 features (20 soft-assignment probabilities + entropy + dominant cluster).
+
+### 7. Model-Derived Features (`model_features`)
+
+**File:** `core/feature/generators/model_features.py`
+
+Combines KMeans cluster assignments, multi-armed bandit reward estimates, and
+Liquid Neural Network latent states into a compact derived feature vector.
+
+```yaml
+- name: model_derived
+  type: generate
+  generator: model_features
+  generator_params:
+    input_filter:
+      dtype: continuous
+      exclude_binary: true
+    kmeans_dim: 5
+    bandit_dim: 4
+    lnn_dim: 18
+  output_dim: 27
+  target_experts: [temporal_ensemble, deepfm]
+```
+
+**Output:** 27 features (KMeans(5) + Bandit/MAB(4) + LNN(18)).
+
+### 8. Merchant Hierarchy (`merchant_hierarchy`)
+
+**File:** `core/feature/generators/merchant_hierarchy.py`
+
+MCC tree Poincare embeddings for the HGCN expert. Encodes
+L1 (10 categories) → L2 (30 subcategories) → MCC code hierarchy
+in hyperbolic space, capturing semantic distance between spending categories.
+
+```yaml
+- name: merchant_hierarchy
+  type: generate
+  generator: merchant_hierarchy
+  generator_params:
+    mcc_hierarchy_path: configs/mcc_hierarchy.yaml
+    mcc_seq_column: txn_mcc_seq
+    truncate_seq_last: 1      # drop last MCC to prevent label leakage
+    l1_radius: 0.8
+    l2_radius: 0.5
+  output_dim: 27
+  target_experts: [hgcn]
+```
+
+**Output:** 27 features (Poincare coordinates for MCC hierarchy nodes).
+
+### 9. Graph Collaborative Filtering (`graph` / LightGCN mode)
+
+**File:** `core/feature/generators/graph.py`
+
+Customer-product bipartite graph embeddings via LightGCN. Captures
+collaborative signals from co-holding patterns across all 24 binary
+product columns.
+
+```yaml
+- name: graph_collaborative
+  type: generate
+  generator: graph
+  generator_params:
+    input_filter:
+      dtype: all_numeric
+    embedding_dim: 64
+    use_poincare: false
+    prefix: graph_collab
+  output_dim: 64
+  target_experts: [lightgcn]
+```
+
+**Output:** 64 LightGCN embedding dimensions.
+
+### 10. Temporal Pattern (`temporal_pattern`)
 
 **File:** `core/feature/generators/temporal.py`
 
@@ -509,7 +631,8 @@ Make sure the module is imported at startup. Add it to
 `core/feature/generators/__init__.py`:
 
 ```python
-from . import tda, hmm, graph, multidisciplinary, temporal
+from . import tda_global, tda_local, hmm, graph, merchant_hierarchy
+from . import mamba, gmm, model_features, multidisciplinary, temporal
 from . import my_generator  # <-- add this line
 ```
 
@@ -680,6 +803,18 @@ Every field of `FeatureGroupConfig` (defined in `core/feature/group.py`):
 |---|---|---|---|
 | `generator` | `str` | `None` | Registry name of the generator |
 | `generator_params` | `dict` | `{}` | Keyword arguments to the generator constructor |
+| `generator_params.input_filter` | `dict` | `{}` | Declarative input column selection (see below) |
+
+**`input_filter` sub-fields** (declared in YAML, never hardcoded in adapter/generator):
+
+| Key | Type | Description |
+|---|---|---|
+| `dtype` | `str` | `"continuous"` (exclude binary) or `"all_numeric"` |
+| `exclude_binary` | `bool` | Exclude 0/1 columns (required for GMM, TDA) |
+| `min_nunique` | `int` | Minimum unique values threshold |
+| `include_prefix` | `list[str]` | Only include columns matching these prefixes |
+| `exclude_prefix` | `list[str]` | Exclude columns matching these prefixes |
+| `exclude_columns` | `list[str]` | Explicit exclusion list (e.g., id/label cols) |
 
 ### Transformer Fields (type="transform")
 
@@ -771,19 +906,39 @@ architecture.
 ### How it works
 
 ```
-Feature Groups:                Expert Networks:
+Feature Groups:                Expert Networks (7):
 +-----------------+
-| base_profile    |--+-------> [deepfm]
-| (dim=4)         |  +-------> [mlp]
+| demographics    |--+-------> [deepfm]
+| (dim=38)        |  +-------> [causal]
++-----------------+  +-------> [optimal_transport]
+| product_holdings|----------> [deepfm, causal, OT]
+| (dim=24)        |
 +-----------------+
-| tda_topology    |----------> [temporal]
-| (dim=70)        |
+| tda_global      |----------> [perslay]
+| (dim=36)        |
 +-----------------+
-| graph_embeddings|----------> [broadcast to ALL]
-| (dim=20)        |
+| tda_local       |----------> [perslay]
+| (dim=24)        |
 +-----------------+
-| temporal_patterns|-+-------> [temporal]
-| (dim=30)        |  +-------> [mamba]
+| hmm_states      |----------> [temporal_ensemble]
+| (dim=48)        |
++-----------------+
+| mamba_temporal  |----------> [temporal_ensemble]
+| (dim=50)        |
++-----------------+
+| merchant_hier.  |----------> [hgcn]
+| (dim=27)        |
++-----------------+
+| product_hier.   |----------> [lightgcn, causal]
+| (dim=32)        |
++-----------------+
+| graph_collab.   |----------> [lightgcn]
+| (dim=64)        |
++-----------------+
+| gmm_clustering  |--+-------> [deepfm]
+| (dim=22)        |  +-------> [causal, OT]
++-----------------+
+| (empty list)    |----------> [broadcast to ALL 7]
 +-----------------+
 ```
 
@@ -796,19 +951,19 @@ Feature Groups:                Expert Networks:
 
    | Expert | Routed input dim |
    |---|---|
-   | `deepfm` | 109D |
-   | `temporal_ensemble` | 129D |
-   | `hgcn` | 34D |
+   | `deepfm` | 168D |
+   | `temporal_ensemble` | 139D |
+   | `hgcn` | 27D |
    | `perslay` | 32D |
-   | `causal` | 103D |
-   | `lightgcn` | 66D |
-   | `optimal_transport` | 69D |
-   | `mlp` (task expert) | 51D |
+   | `causal` | 161D |
+   | `lightgcn` | 100D |
+   | `optimal_transport` | 127D |
 
-   Total model parameters: **~2.8M** (down from 4.77M pre-routing, input dims decreased).
+   Total model parameters: **~2.8M**. Total feature space: ~349D input, 403D after Phase 0
+   feature engineering (54 synthetic features added by generators).
 
 4. If `target_experts` is empty, the group is broadcast to all experts
-   (equivalent to the old uniform ~350D behaviour).
+   (equivalent to the pre-routing uniform ~349D behaviour).
 
 ### Accessing the routing map
 
@@ -968,12 +1123,12 @@ time. All feature engineering code uses the global `df_backend` singleton.
 ### Backend selection priority
 
 ```
-1. DuckDB  (default)    -- pip install duckdb
-2. cuDF    (GPU)         -- pip install cudf-cu12
-3. pandas  (fallback)    -- always available
+1. cuDF    (GPU)         -- pip install cudf-cu12  (>1M rows with GPU)
+2. DuckDB  (primary CPU) -- pip install duckdb     (default for most workloads)
+3. pandas  (fallback)    -- always available       (small data / dev only, <10K rows)
 ```
 
-### DuckDB (default)
+### DuckDB (primary CPU backend)
 
 - SQL-native operations
 - Zero-copy Parquet I/O
@@ -982,24 +1137,35 @@ time. All feature engineering code uses the global `df_backend` singleton.
 - Best for: most workloads, especially Parquet-heavy pipelines
 
 ```python
-from core.data.dataframe import df_backend
+import duckdb
 
-df = df_backend.read_parquet("s3://bucket/data.parquet")
-df = df_backend.query("SELECT * FROM df WHERE amount > 100", df=df)
+# Load Parquet (preferred over pd.read_parquet)
+rel = duckdb.execute("SELECT * FROM 'data.parquet' WHERE amount > 100")
+
+# Aggregation in SQL (preferred over pandas groupby)
+rel = duckdb.execute("""
+    SELECT customer_id, SUM(amount) AS total_spend
+    FROM 'data.parquet'
+    GROUP BY customer_id
+""")
+
+# Convert to numpy/pandas ONLY immediately before tensor operations
+arr = rel.fetchnumpy()   # or rel.df() for pandas
 ```
 
 ### cuDF (GPU)
 
 - RAPIDS GPU-accelerated DataFrames
-- Automatic switch when GPU is available and data exceeds a configurable row
-  threshold
-- Best for: large-scale feature engineering (>1M rows)
+- Preferred when GPU is available and data exceeds a configurable row threshold
+- Best for: large-scale feature engineering (>1M rows) with GPU
 
 ### pandas (fallback)
 
-- Used only when neither DuckDB nor cuDF is installed
+- Used only as last resort (neither DuckDB nor cuDF available, or data <10K rows)
 - Full API compatibility
-- Best for: development and testing
+- **Avoid** `pd.read_parquet()`, `pd.concat()`, `df.apply()` directly for production
+  data -- use DuckDB SQL instead. Convert to pandas/numpy only immediately before
+  tensor operations.
 
 ### Overriding the backend
 
@@ -1013,4 +1179,6 @@ export PLE_DATAFRAME_BACKEND=cudf      # Force cuDF
 
 Note: All transformers operate on pandas DataFrames internally. The backend
 handles conversion to/from pandas automatically, so transformer code does not
-need to be backend-aware.
+need to be backend-aware. However, large-scale data loading and aggregation
+should always go through DuckDB or cuDF -- avoid raw pandas for production
+data paths (see CLAUDE.md Section 3.3).
