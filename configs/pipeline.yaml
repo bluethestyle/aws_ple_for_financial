@@ -298,8 +298,12 @@ reason:
 serving_prep:
   enabled: false    # Disabled for ablation; enabled for production
   context_store:
-    backend: auto   # lancedb or numpy
+    backend: auto   # lancedb (preferred) or numpy (fallback)
     embedding_source: feature_pipeline
+    # Local: store_path is a directory
+    # AWS: S3 URI — LanceDB natively supports s3:// paths
+    store_path: s3://aiops-ple-financial/context_store/
+    # store_path: context_store/   # local fallback
   reason_generation:
     l1_batch: true              # L1 template reasons in batch (always)
     l2a_rewrite: true           # L2a LLM rewrite via Bedrock (async, SQS)
