@@ -26,6 +26,14 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Union
 
 import numpy as np
 
+try:
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    _PYARROW_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _PYARROW_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────
@@ -192,22 +200,26 @@ class DataValidator:
     def validate(
         self,
         source: str,
-        df: "pandas.DataFrame",  # noqa: F821
+        df: Any,
         *,
-        reference_df: Optional["pandas.DataFrame"] = None,  # noqa: F821
+        reference_df: Optional[Any] = None,
         checks: Optional[Sequence[str]] = None,
     ) -> ValidationResult:
         """Run all (or selected) validation checks on *df*.
+
+        Accepts both :class:`pandas.DataFrame` and :class:`pyarrow.Table`.
+        PyArrow Tables are validated using PyArrow compute functions without
+        any ``to_pandas()`` conversion (CLAUDE.md 3.3).
 
         Parameters
         ----------
         source : str
             Name of the data source (must be registered in the schema
             registry if schema validation is desired).
-        df : pandas.DataFrame
-            The DataFrame to validate.
-        reference_df : pandas.DataFrame, optional
-            A reference DataFrame for distribution drift checks.  When
+        df : pandas.DataFrame or pyarrow.Table
+            The data to validate.
+        reference_df : pandas.DataFrame or pyarrow.Table, optional
+            A reference dataset for distribution drift checks.  When
             omitted, the drift check is skipped.
         checks : sequence of str, optional
             Subset of check names to execute.  ``None`` runs all.
@@ -218,6 +230,67 @@ class DataValidator:
         -------
         ValidationResult
         """
+        # Dispatch: PyArrow Table vs pandas DataFrame
+        if _PYARROW_AVAILABLE and isinstance(df, pa.Table):
+            return self._validate_arrow(source, df, reference_df, checks=checks)
+        return self._validate_pandas(source, df, reference_df, checks=checks)
+
+    # ── PyArrow-native validation path ─────────────────────────────────
+
+    def _validate_arrow(
+        self,
+        source: str,
+        table: "pa.Table",
+        reference_table: Optional["pa.Table"],
+        *,
+        checks: Optional[Sequence[str]] = None,
+    ) -> ValidationResult:
+        """Validate a PyArrow Table without converting to pandas."""
+        all_checks = {"schema", "null_ratio", "value_range", "drift", "pii"}
+        run_checks: Set[str] = set(checks) if checks else all_checks
+
+        result = ValidationResult(source=source)
+
+        if "schema" in run_checks:
+            result.checks.extend(self._check_schema_arrow(source, table))
+
+        if "null_ratio" in run_checks:
+            result.checks.extend(self._check_null_ratios_arrow(source, table))
+
+        if "value_range" in run_checks:
+            result.checks.extend(self._check_value_ranges_arrow(source, table))
+
+        if "drift" in run_checks:
+            if reference_table is not None:
+                result.checks.extend(
+                    self._check_drift_arrow(source, table, reference_table)
+                )
+            else:
+                result.checks.append(
+                    CheckResult(
+                        name="drift",
+                        status=CheckStatus.SKIP,
+                        message="No reference dataset provided; drift check skipped.",
+                    )
+                )
+
+        if "pii" in run_checks:
+            result.checks.extend(self._check_pii_arrow(source, table))
+
+        logger.info(result.summary())
+        return result
+
+    # ── pandas validation path (original implementation) ───────────────
+
+    def _validate_pandas(
+        self,
+        source: str,
+        df: "pandas.DataFrame",  # noqa: F821
+        reference_df: Optional["pandas.DataFrame"],  # noqa: F821
+        *,
+        checks: Optional[Sequence[str]] = None,
+    ) -> ValidationResult:
+        """Validate a pandas DataFrame (original implementation)."""
         all_checks = {"schema", "null_ratio", "value_range", "drift", "pii"}
         run_checks: Set[str] = set(checks) if checks else all_checks
 
@@ -252,7 +325,388 @@ class DataValidator:
         logger.info(result.summary())
         return result
 
-    # ── Individual checks ──────────────────────────────────────────────
+    # ── PyArrow check implementations ──────────────────────────────────
+
+    def _check_schema_arrow(
+        self, source: str, table: "pa.Table"
+    ) -> List[CheckResult]:
+        """Validate column existence and types for a PyArrow Table."""
+        results: List[CheckResult] = []
+
+        if self._registry is None or not self._registry.has(source):
+            results.append(
+                CheckResult(
+                    name="schema_columns",
+                    status=CheckStatus.SKIP,
+                    message=f"No schema registered for '{source}'; skipping.",
+                )
+            )
+            return results
+
+        schema = self._registry.get(source)
+        table_cols = set(table.column_names)
+
+        missing: List[str] = []
+        for col_name, col_spec in schema.columns.items():
+            if col_name not in table_cols and not col_spec.nullable:
+                missing.append(col_name)
+
+        if missing:
+            results.append(
+                CheckResult(
+                    name="schema_columns",
+                    status=CheckStatus.FAIL,
+                    message=f"Missing non-nullable columns: {missing}",
+                    details={"missing": missing},
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    name="schema_columns",
+                    status=CheckStatus.PASS,
+                    message="All required columns present.",
+                )
+            )
+
+        expected = set(schema.columns.keys())
+        extra = table_cols - expected
+        if extra:
+            results.append(
+                CheckResult(
+                    name="schema_extra_columns",
+                    status=CheckStatus.WARN,
+                    message=f"Extra columns not in schema: {sorted(extra)}",
+                    details={"extra": sorted(extra)},
+                )
+            )
+
+        _NUMERIC_DTYPES = {"int64", "int32", "float64", "float32", "double", "int"}
+        for col_name, col_spec in schema.columns.items():
+            if col_name not in table_cols:
+                continue
+            arrow_type = table.schema.field(col_name).type
+            expected_numeric = col_spec.dtype in _NUMERIC_DTYPES
+            actual_numeric = (
+                pa.types.is_integer(arrow_type)
+                or pa.types.is_floating(arrow_type)
+            )
+            if expected_numeric and not actual_numeric:
+                results.append(
+                    CheckResult(
+                        name=f"schema_type_{col_name}",
+                        status=CheckStatus.WARN,
+                        message=(
+                            f"Column '{col_name}' expected numeric "
+                            f"({col_spec.dtype}), got Arrow type {arrow_type}"
+                        ),
+                    )
+                )
+
+        return results
+
+    def _check_null_ratios_arrow(
+        self, source: str, table: "pa.Table"
+    ) -> List[CheckResult]:
+        """Check null ratios using PyArrow compute (no pandas)."""
+        results: List[CheckResult] = []
+        n = table.num_rows
+        if n == 0:
+            results.append(
+                CheckResult(
+                    name="null_ratio",
+                    status=CheckStatus.WARN,
+                    message="Table is empty; null check skipped.",
+                )
+            )
+            return results
+
+        col_thresholds: Dict[str, float] = {}
+        if self._registry is not None and self._registry.has(source):
+            schema = self._registry.get(source)
+            for col_name, col_spec in schema.columns.items():
+                if not col_spec.nullable:
+                    col_thresholds[col_name] = 0.0
+
+        for col in table.column_names:
+            null_count = pc.sum(pc.is_null(table.column(col))).as_py()
+            null_ratio = null_count / n
+            threshold = col_thresholds.get(col, self._null_threshold)
+
+            if null_ratio > threshold:
+                status = CheckStatus.FAIL if threshold == 0.0 else CheckStatus.WARN
+                results.append(
+                    CheckResult(
+                        name=f"null_ratio_{col}",
+                        status=status,
+                        message=(
+                            f"Column '{col}' null ratio {null_ratio:.2%} "
+                            f"exceeds threshold {threshold:.2%}"
+                        ),
+                        details={"column": col, "null_ratio": null_ratio, "threshold": threshold},
+                    )
+                )
+
+        if not any(c.status == CheckStatus.FAIL for c in results):
+            results.append(
+                CheckResult(
+                    name="null_ratio",
+                    status=CheckStatus.PASS,
+                    message="All columns within null-ratio thresholds.",
+                )
+            )
+
+        return results
+
+    def _check_value_ranges_arrow(
+        self, source: str, table: "pa.Table"
+    ) -> List[CheckResult]:
+        """Check numeric min/max and categorical allowed values via PyArrow."""
+        results: List[CheckResult] = []
+
+        if self._registry is None or not self._registry.has(source):
+            results.append(
+                CheckResult(
+                    name="value_range",
+                    status=CheckStatus.SKIP,
+                    message="No schema registered; value range check skipped.",
+                )
+            )
+            return results
+
+        schema = self._registry.get(source)
+        table_cols_set = set(table.column_names)
+
+        for col_name, col_spec in schema.columns.items():
+            if col_name not in table_cols_set:
+                continue
+
+            arrow_col = table.column(col_name)
+            # Drop nulls for range checks (work on non-null values only)
+            non_null = arrow_col.drop_null()
+            if len(non_null) == 0:
+                continue
+
+            if col_spec.min is not None or col_spec.max is not None:
+                arrow_type = table.schema.field(col_name).type
+                if not (pa.types.is_integer(arrow_type) or pa.types.is_floating(arrow_type)):
+                    continue  # skip non-numeric columns for range checks
+
+                if col_spec.min is not None:
+                    actual_min = pc.min(non_null).as_py()
+                    if actual_min is not None and actual_min < col_spec.min:
+                        results.append(
+                            CheckResult(
+                                name=f"value_range_{col_name}_min",
+                                status=CheckStatus.FAIL,
+                                message=(
+                                    f"Column '{col_name}' min={actual_min:.4f} "
+                                    f"< expected min={col_spec.min}"
+                                ),
+                                details={
+                                    "column": col_name,
+                                    "actual_min": actual_min,
+                                    "expected_min": col_spec.min,
+                                },
+                            )
+                        )
+
+                if col_spec.max is not None:
+                    actual_max = pc.max(non_null).as_py()
+                    if actual_max is not None and actual_max > col_spec.max:
+                        results.append(
+                            CheckResult(
+                                name=f"value_range_{col_name}_max",
+                                status=CheckStatus.FAIL,
+                                message=(
+                                    f"Column '{col_name}' max={actual_max:.4f} "
+                                    f"> expected max={col_spec.max}"
+                                ),
+                                details={
+                                    "column": col_name,
+                                    "actual_max": actual_max,
+                                    "expected_max": col_spec.max,
+                                },
+                            )
+                        )
+
+            if col_spec.allowed_values is not None:
+                # count_distinct gives unique non-null values; for allowed_value
+                # checking we need the actual values — convert only this column
+                unique_vals = set(pc.unique(non_null).to_pylist())
+                allowed = set(col_spec.allowed_values)
+                unexpected = unique_vals - allowed
+                if unexpected:
+                    results.append(
+                        CheckResult(
+                            name=f"value_range_{col_name}_allowed",
+                            status=CheckStatus.FAIL,
+                            message=(
+                                f"Column '{col_name}' has unexpected values: "
+                                f"{sorted(str(v) for v in unexpected)[:10]}"
+                            ),
+                            details={
+                                "column": col_name,
+                                "unexpected": sorted(str(v) for v in unexpected)[:10],
+                            },
+                        )
+                    )
+
+        if not any(c.status == CheckStatus.FAIL for c in results):
+            results.append(
+                CheckResult(
+                    name="value_range",
+                    status=CheckStatus.PASS,
+                    message="All columns within value-range constraints.",
+                )
+            )
+
+        return results
+
+    def _check_drift_arrow(
+        self,
+        source: str,
+        table: "pa.Table",
+        reference_table: "pa.Table",
+    ) -> List[CheckResult]:
+        """Compute PSI on numeric columns using PyArrow → numpy (column-level only)."""
+        results: List[CheckResult] = []
+
+        def _is_numeric_arrow(t: "pa.DataType") -> bool:
+            return pa.types.is_integer(t) or pa.types.is_floating(t)
+
+        numeric_cols = [
+            c for c in table.column_names
+            if _is_numeric_arrow(table.schema.field(c).type)
+        ]
+        ref_cols_set = set(reference_table.column_names)
+        shared_cols = [
+            c for c in numeric_cols
+            if c in ref_cols_set
+            and _is_numeric_arrow(reference_table.schema.field(c).type)
+        ]
+
+        if not shared_cols:
+            results.append(
+                CheckResult(
+                    name="drift",
+                    status=CheckStatus.SKIP,
+                    message="No shared numeric columns for drift check.",
+                )
+            )
+            return results
+
+        drifted: List[str] = []
+        psi_scores: Dict[str, float] = {}
+
+        for col in shared_cols:
+            # Convert individual column to numpy — minimal memory footprint
+            ref_vals = reference_table.column(col).drop_null().to_numpy(zero_copy_only=False)
+            cur_vals = table.column(col).drop_null().to_numpy(zero_copy_only=False)
+
+            if len(ref_vals) < 10 or len(cur_vals) < 10:
+                continue
+
+            psi = self._compute_psi(ref_vals, cur_vals)
+            psi_scores[col] = psi
+            if psi > self._psi_threshold:
+                drifted.append(col)
+
+        if drifted:
+            results.append(
+                CheckResult(
+                    name="drift",
+                    status=CheckStatus.WARN,
+                    message=(
+                        f"{len(drifted)}/{len(shared_cols)} columns show "
+                        f"distribution drift (PSI > {self._psi_threshold}): "
+                        f"{drifted[:10]}"
+                    ),
+                    details={"drifted_columns": drifted, "psi_scores": psi_scores},
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    name="drift",
+                    status=CheckStatus.PASS,
+                    message="No significant distribution drift detected.",
+                    details={"psi_scores": psi_scores},
+                )
+            )
+
+        return results
+
+    def _check_pii_arrow(
+        self, source: str, table: "pa.Table"
+    ) -> List[CheckResult]:
+        """Scan string columns for PII patterns using PyArrow (no pandas)."""
+        results: List[CheckResult] = []
+        detected: List[Dict[str, Any]] = []
+
+        # Column-name heuristic (no data access needed)
+        for col in table.column_names:
+            if _PII_NAME_PATTERNS.search(col):
+                detected.append(
+                    {"column": col, "method": "column_name_heuristic", "pattern": col}
+                )
+
+        # Content scanning: find string/large_string columns
+        string_cols = [
+            c for c in table.column_names
+            if pa.types.is_string(table.schema.field(c).type)
+            or pa.types.is_large_string(table.schema.field(c).type)
+        ]
+
+        for col in string_cols:
+            # Sample up to self._sample_size rows (slice, no copy of full table)
+            sample_col = table.column(col).slice(0, self._sample_size)
+            non_null = sample_col.drop_null()
+            if len(non_null) == 0:
+                continue
+            # Convert only this sampled column to Python list for regex scanning
+            col_values: List[str] = non_null.to_pylist()
+            n_vals = len(col_values)
+            for pii_def in _PII_PATTERNS:
+                match_count = sum(
+                    1 for v in col_values if pii_def["pattern"].search(str(v))
+                )
+                match_ratio = match_count / n_vals
+                if match_ratio >= pii_def["min_match_ratio"]:
+                    detected.append(
+                        {
+                            "column": col,
+                            "method": "content_scan",
+                            "pattern": pii_def["name"],
+                            "match_ratio": round(match_ratio, 4),
+                        }
+                    )
+
+        if detected:
+            cols = sorted(set(d["column"] for d in detected))
+            results.append(
+                CheckResult(
+                    name="pii",
+                    status=CheckStatus.WARN,
+                    message=(
+                        f"Potential PII detected in {len(cols)} column(s): "
+                        f"{cols}"
+                    ),
+                    details={"detections": detected},
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    name="pii",
+                    status=CheckStatus.PASS,
+                    message="No PII patterns detected.",
+                )
+            )
+
+        return results
+
+    # ── Individual checks (pandas) ──────────────────────────────────────
 
     def _check_schema(
         self, source: str, df: "pandas.DataFrame"

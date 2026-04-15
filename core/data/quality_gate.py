@@ -168,21 +168,22 @@ class QualityGate:
 
     def evaluate(
         self,
-        df: "pandas.DataFrame",  # noqa: F821
+        df: Any,
         source_name: str,
         *,
-        reference_df: Optional["pandas.DataFrame"] = None,  # noqa: F821
+        reference_df: Optional[Any] = None,
     ) -> QualityGateResult:
         """Run all quality checks and return a gate result.
 
         Parameters
         ----------
-        df : pandas.DataFrame
-            DataFrame to validate.
+        df : pandas.DataFrame or pyarrow.Table
+            Data to validate.  PyArrow Tables are validated natively
+            without ``to_pandas()`` conversion (CLAUDE.md 3.3).
         source_name : str
             Name of the data source (must match schema registry key).
-        reference_df : pandas.DataFrame, optional
-            Reference DataFrame for drift detection.
+        reference_df : pandas.DataFrame or pyarrow.Table, optional
+            Reference dataset for drift detection.
 
         Returns
         -------
@@ -232,15 +233,17 @@ class QualityGate:
 
     def evaluate_and_block(
         self,
-        df: "pandas.DataFrame",  # noqa: F821
+        df: Any,
         source_name: str,
         *,
-        reference_df: Optional["pandas.DataFrame"] = None,  # noqa: F821
+        reference_df: Optional[Any] = None,
     ) -> QualityGateResult:
         """Evaluate and raise :class:`QualityGateError` on FAIL.
 
         Identical to :meth:`evaluate` except that a ``FAIL`` verdict
         raises an exception, blocking the calling pipeline.
+
+        Accepts both :class:`pandas.DataFrame` and :class:`pyarrow.Table`.
 
         Raises
         ------

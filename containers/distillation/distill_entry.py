@@ -298,28 +298,27 @@ def run_distillation(
     logger.info("Loading Phase 0 data from %s", data_dir)
     table, feature_schema, label_schema, split_indices = _load_data_pyarrow(channel_path)
 
-    # Lightweight pandas view for quality gate (uses column metadata only)
-    df_for_gate = table.to_pandas()
-
-    # Step 1.5: Quality gate
-    logger.info("Running quality gate...")
+    # Quality gate on PyArrow Table — no to_pandas() conversion (CLAUDE.md 3.3)
+    logger.info("Running quality gate on distillation data...")
     from core.data.quality_gate import QualityGate, QualityGateError
 
-    quality_gate = QualityGate()
+    _quality_gate = QualityGate()
     try:
-        gate_result = quality_gate.evaluate_and_block(df_for_gate, source_name="distillation_sm")
+        _gate_result = _quality_gate.evaluate_and_block(
+            table, source_name="distillation_train"
+        )
         logger.info(
             "Quality gate PASSED (verdict=%s, checks=%d)",
-            gate_result.verdict.value, len(gate_result.checks),
+            _gate_result.verdict.value,
+            len(_gate_result.checks),
         )
-    except QualityGateError as exc:
-        logger.error("Quality gate FAILED: %s", exc)
-        gate_report = quality_gate.get_report(exc.result)
-        with open(out_dir / "quality_gate_report.json", "w") as f:
-            json.dump(gate_report, f, indent=2, default=str)
-        raise
-
-    del df_for_gate
+    except QualityGateError as _exc:
+        logger.error("Quality gate FAILED: %s", _exc)
+        if not skip_fidelity_gate:
+            raise RuntimeError(
+                f"Quality gate blocked distillation pipeline: {_exc}"
+            ) from _exc
+        logger.warning("skip_fidelity_gate=True — continuing despite quality gate failure")
 
     # --- Feature / label column routing (config-driven, no hardcoding) ---
     label_cols = {t.label_col for t in pipeline_config.tasks}

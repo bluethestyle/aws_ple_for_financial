@@ -193,16 +193,14 @@ def main() -> None:
         table = pq.read_table(str(data_path))
         logger.info("Loaded %d rows", table.num_rows)
 
-    # Lightweight pandas view for quality gate (uses column metadata only)
-    df = table.to_pandas()
-
     # Step 1.5: Quality gate — block pipeline on critical data issues
+    # Passes PyArrow Table directly; no to_pandas() needed (CLAUDE.md 3.3)
     logger.info("Running quality gate on loaded data...")
     from core.data.quality_gate import QualityGate, QualityGateError
 
     quality_gate = QualityGate()
     try:
-        gate_result = quality_gate.evaluate_and_block(df, source_name="distillation_train")
+        gate_result = quality_gate.evaluate_and_block(table, source_name="distillation_train")
         logger.info(
             "Quality gate PASSED (verdict=%s, checks=%d)",
             gate_result.verdict.value, len(gate_result.checks),
@@ -216,9 +214,6 @@ def main() -> None:
         with open(output_path / "quality_gate_report.json", "w") as f:
             json.dump(gate_report, f, indent=2, default=str)
         sys.exit(1)
-
-    # Release pandas view after quality gate
-    del df
 
     # Separate features and labels using PyArrow (no pandas)
     label_cols = {t.label_col for t in pipeline_config.tasks}
