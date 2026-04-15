@@ -264,6 +264,29 @@ analysis:
     enabled: true
 
 # ---------------------------------------------------------------------------
+# LLM Provider — for L2a reason rewrite + L2b quality validation
+# ---------------------------------------------------------------------------
+llm_provider:
+  backend: bedrock              # bedrock | openai | gemini | solar | dummy
+  bedrock:
+    model_id: anthropic.claude-3-haiku-20240307-v1:0
+    region: ap-northeast-2      # Seoul region (same as SageMaker)
+    max_tokens: 500             # reason text is short
+    temperature: 0.2            # low creativity for financial compliance
+
+# ---------------------------------------------------------------------------
+# Reason Generation — 3-agent pipeline (FactExtractor → TemplateEngine → SelfChecker)
+# ---------------------------------------------------------------------------
+reason:
+  fact_extractor:
+    config_path: configs/financial/fact_extraction.yaml
+  self_checker:
+    enable_llm_check: true      # use Bedrock for L2b compliance check
+    pii_check: true
+    hallucination_check: true
+    regulatory_check: true      # 금소법 §17/§19 compliance
+
+# ---------------------------------------------------------------------------
 # Serving Preparation (Stage 9.5: context vector store + reason generation)
 # ---------------------------------------------------------------------------
 serving_prep:
@@ -272,9 +295,10 @@ serving_prep:
     backend: auto   # lancedb or numpy
     embedding_source: feature_pipeline
   reason_generation:
-    l1_batch: true
-    l2a_rewrite: false    # requires LLM
-    l2b_validation: true
+    l1_batch: true              # L1 template reasons in batch (always)
+    l2a_rewrite: true           # L2a LLM rewrite via Bedrock (async, SQS)
+    l2b_validation: true        # L2b quality check (PII, hallucination, compliance)
+    human_review_sample_rate: 0.05  # 5% sampled for human review
 
 # ---------------------------------------------------------------------------
 # Data — backend preferences and split strategy structure
