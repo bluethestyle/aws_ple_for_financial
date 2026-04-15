@@ -51,6 +51,16 @@ try:
 except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "duckdb>=1.0.0"])
 
+try:
+    import lightgbm  # noqa: F401
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "lightgbm>=4.0.0"])
+
+try:
+    import joblib  # noqa: F401
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "joblib>=1.3.0"])
+
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 # When running inside SageMaker the working directory is /opt/ml/code
