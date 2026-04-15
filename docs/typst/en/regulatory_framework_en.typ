@@ -681,6 +681,24 @@ Under current law, financial product recommendation systems are *not subject to 
 
 The regulatory compliance infrastructure is organized in 3 layers.
 
+#figure(
+  diagram(
+    node-stroke: 0.6pt + luma(80),
+    edge-stroke: 0.7pt + luma(80),
+    node-corner-radius: 3pt,
+    spacing: (12pt, 14pt),
+    // Layer 3 (top)
+    node((0,0), [*Layer 3: Business/Regulatory* \ RegulatoryChecker · FairnessMonitor \ HerdingDetector · KillSwitch \ GovernanceReportGenerator], fill: rgb("#e8f5e9"), width: 90mm),
+    edge((0,0), (0,1), "->", label: [triggers / reads], label-side: right),
+    // Layer 2 (middle)
+    node((0,1), [*Layer 2: Platform* \ ComplianceAuditStore (7 tables) \ AuditLogger · DataLineageTracker \ DriftDetector · ExperimentTracker], fill: rgb("#d6e6f0"), width: 90mm),
+    edge((0,1), (0,2), "->", label: [stores / queries], label-side: right),
+    // Layer 1 (bottom)
+    node((0,2), [*Layer 1: AWS Native* \ CloudTrail · S3 Object Lock (WORM) \ S3 Versioning · KMS · IAM Access Log], fill: luma(240), width: 90mm),
+  ),
+  caption: [3-layer compliance architecture. Layer 3 enforces business rules; Layer 2 manages platform-level audit state; Layer 1 provides immutable AWS-native guarantees.],
+)
+
 #card(title: "Layer 1: AWS Native (Automatic, No Additional Cost)", accent: navy)[
   - *CloudTrail* -> All AWS API calls automatically recorded
   - *S3 Versioning* -> Data/model change history preserved
@@ -843,6 +861,23 @@ Prevents *systemic risk* from excessive recommendation concentration on the same
 
 3-tier emergency model deactivation system.
 
+#figure(
+  diagram(
+    node-stroke: 0.6pt + luma(80),
+    edge-stroke: 0.7pt + luma(80),
+    node-corner-radius: 3pt,
+    spacing: (14pt, 14pt),
+    node((0,0), [*Anomaly Detected* \ (drift / fairness / error)], fill: rgb("#fff3e0"), width: 40mm),
+    edge((0,0), (1,0), "->"),
+    node((1,0), [*Level 1* \ Problem model OFF \ Rollback to previous], fill: rgb("#e8f5e9"), width: 42mm),
+    edge((1,0), (2,0), "->", label: [rollback also fails], label-side: center),
+    node((2,0), [*Level 2* \ Serve rolled-back model \ Monitor closely], fill: rgb("#d6e6f0"), width: 42mm),
+    edge((2,0), (3,0), "->", label: [both models fail], label-side: center),
+    node((3,0), [*Level 3* \ All AI models OFF \ Rule-based fallback only], fill: rgb("#ffcdd2"), width: 42mm),
+  ),
+  caption: [Kill switch escalation: 3-level cascade with automatic fallback. Service never fully stops.],
+)
+
 #card(title: "Kill Switch Structure", accent: red-acc)[
   #grid(
     columns: (1fr, 1fr, 1fr),
@@ -905,6 +940,23 @@ Automatically applied via S3 Lifecycle Rules.
 == Incident Management
 
 Automated classification and response system by severity.
+
+#figure(
+  diagram(
+    node-stroke: 0.6pt + luma(80),
+    edge-stroke: 0.7pt + luma(80),
+    node-corner-radius: 3pt,
+    spacing: (10pt, 14pt),
+    node((1,0), [*Incident Triggered*], fill: luma(240), width: 36mm),
+    edge((1,0), (0,1), "->", label: [kill switch / DI$<$0.6], label-side: left),
+    edge((1,0), (1,1), "->", label: [DI$<$0.8 / herding], label-side: center),
+    edge((1,0), (2,1), "->", label: [drift / quality], label-side: right),
+    node((0,1), [*CRITICAL* \ 1h response \ → MSIT/FSS/CISO], fill: rgb("#ffcdd2"), width: 36mm),
+    node((1,1), [*MAJOR* \ 4h response \ → FSS/AI Committee], fill: rgb("#fff3e0"), width: 36mm),
+    node((2,1), [*MINOR* \ 24h response \ → ML Team], fill: rgb("#e8f5e9"), width: 36mm),
+  ),
+  caption: [Incident severity classification with differentiated response SLAs and escalation targets.],
+)
 
 #table(
   columns: (auto, auto, 1fr, 1fr),
@@ -982,6 +1034,34 @@ Data flow during recommendation reason generation and agent diagnostics:
 
 Air-gapped on-premises environments are *structurally stronger* than cloud deployments from a data protection perspective, as external network access is architecturally impossible.
 
+#figure(
+  diagram(
+    node-stroke: 0.6pt + luma(80),
+    edge-stroke: 0.7pt + luma(80),
+    node-corner-radius: 3pt,
+    spacing: (8pt, 12pt),
+    // On-prem side
+    node((0,0), [*On-Premises (Air-gapped)*], fill: luma(220), width: 52mm),
+    node((0,1), [Hive Data Lake], fill: luma(240), width: 44mm),
+    edge((0,1), (0,2), "->", label: [DuckDB], label-side: right),
+    node((0,2), [Workstation \ RTX 4070 · 128GB \ Exaone + Qwen], fill: rgb("#d6e6f0"), width: 44mm),
+    node((0,3), [Local Audit Logs \ HMAC hash-chain], fill: rgb("#e8f5e9"), width: 44mm),
+    edge((0,2), (0,3), "->"),
+    // AWS side
+    node((2,0), [*AWS Cloud*], fill: luma(220), width: 52mm),
+    node((2,1), [S3 Data Lake], fill: luma(240), width: 44mm),
+    edge((2,1), (2,2), "->", label: [DuckDB], label-side: right),
+    node((2,2), [SageMaker + Lambda \ Bedrock (Solar/Claude) \ VPC PrivateLink], fill: rgb("#d6e6f0"), width: 44mm),
+    node((2,3), [CloudTrail + S3 WORM \ DynamoDB Audit], fill: rgb("#e8f5e9"), width: 44mm),
+    edge((2,2), (2,3), "->"),
+    // Shared
+    node((1,2), [*Identical* \ DuckDB pipeline \ Checklist (48 items) \ Kill switch \ Fairness monitor], fill: rgb("#fff3e0"), width: 40mm),
+    edge((0,2), (1,2), "<->", stroke: 0.4pt + luma(150)),
+    edge((2,2), (1,2), "<->", stroke: 0.4pt + luma(150)),
+  ),
+  caption: [On-premises vs AWS: identical DuckDB pipeline and compliance framework, different infrastructure layers.],
+)
+
 == Data Protection
 
 #table(
@@ -1051,6 +1131,26 @@ On-premises lacks conversational agent capabilities but offers structurally perf
 Full-lifecycle model governance aligned with *SR 11-7* (Federal Reserve/OCC), *EBA ML Guidelines*, and *NIST AI RMF 1.0*.
 
 === MRM Lifecycle
+
+#figure(
+  diagram(
+    node-stroke: 0.6pt + luma(80),
+    edge-stroke: 0.7pt + luma(80),
+    node-corner-radius: 3pt,
+    spacing: (14pt, 16pt),
+    node((0,0), [*1. Develop* \ PipelineRunner \ + train.py], fill: rgb("#d6e6f0"), width: 30mm),
+    edge((0,0), (1,0), "->"),
+    node((1,0), [*2. Validate* \ Champion vs \ Challenger], fill: rgb("#d6e6f0"), width: 30mm),
+    edge((1,0), (2,0), "->"),
+    node((2,0), text(fill: white)[*3. Approve* \ AI Committee \ (manual gate)], fill: rgb("#141413"), width: 30mm),
+    edge((2,0), (3,0), "->"),
+    node((3,0), [*4. Monitor* \ Drift + Fairness \ + Herding], fill: rgb("#d6e6f0"), width: 30mm),
+    edge((3,0), (4,0), "->"),
+    node((4,0), [*5. Retrain* \ or Retire], fill: rgb("#d6e6f0"), width: 30mm),
+    edge((4,0), (0,0), "->", bend: -40deg, label: [cycle], label-side: center),
+  ),
+  caption: [MRM lifecycle: 5-stage cycle aligned with SR 11-7, NIST AI RMF, and FSS AI RMF. Stage 3 (Approve) is always manual.],
+)
 
 #card(title: "Development → Validation → Approval → Monitoring → Retrain / Retire", accent: navy)[
   #table(
