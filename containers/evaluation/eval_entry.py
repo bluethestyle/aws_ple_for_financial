@@ -16,8 +16,10 @@ SageMaker channel layout
 
 Hyperparameters (SM_HPS)
 ------------------------
-  config        — container-internal path to pipeline.yaml
-                  (default: configs/santander/pipeline.yaml)
+  config        — container-internal path to common pipeline.yaml
+                  (default: configs/pipeline.yaml)
+  dataset_config — optional dataset-specific YAML deep-merged on top of config
+                  (e.g. configs/datasets/santander.yaml)
   batch_size    — inference batch size (default: 5632)
   num_workers   — DataLoader workers (default: 2 on Linux, 0 on Windows)
   device        — "auto", "cuda", or "cpu" (default: "auto")
@@ -319,22 +321,27 @@ def run_eval(
     num_workers: int = 2,
     device: str = "auto",
     hp_overrides: Optional[Dict[str, Any]] = None,
+    dataset_config_path: Optional[str] = None,
 ) -> str:
     """Core evaluation routine shared by SageMaker and local paths.
 
     Args:
-        data_dir:     Directory with parquet + feature_schema.json + split_indices.json.
-        model_dir:    Directory containing the .pt checkpoint.
-        config_path:  Path to pipeline.yaml (configs/santander/pipeline.yaml).
-        output_dir:   Destination directory for eval_metrics.json.
-        batch_size:   Inference batch size.
-        num_workers:  DataLoader workers.
-        device:       "auto", "cuda", or "cpu".
-        hp_overrides: Optional dict of HP overrides passed to PLEPredictor.
+        data_dir:            Directory with parquet + feature_schema.json + split_indices.json.
+        model_dir:           Directory containing the .pt checkpoint.
+        config_path:         Path to pipeline.yaml (common or legacy single-file).
+        output_dir:          Destination directory for eval_metrics.json.
+        batch_size:          Inference batch size.
+        num_workers:         DataLoader workers.
+        device:              "auto", "cuda", or "cpu".
+        hp_overrides:        Optional dict of HP overrides passed to PLEPredictor.
+        dataset_config_path: Optional path to dataset-specific YAML to deep-merge
+                             on top of *config_path* (split-config pattern).
 
     Returns:
         Path to the written eval_metrics.json.
     """
+    from core.pipeline.config import load_merged_config
+
     channel_path = Path(data_dir)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -343,8 +350,13 @@ def run_eval(
     # --- Config ---
     if not Path(config_path).exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
-    with open(config_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    if dataset_config_path and Path(dataset_config_path).exists():
+        config = load_merged_config(config_path, dataset_config_path)
+        logger.info("Config loaded (merged): %s + %s", config_path, dataset_config_path)
+    else:
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        logger.info("Config loaded: %s", config_path)
 
     # --- Feature schema ---
     feature_schema_path = channel_path / "feature_schema.json"
@@ -443,14 +455,25 @@ def _sagemaker_main() -> None:
     model_dir = os.environ["SM_CHANNEL_MODEL"]
     output_dir = os.environ["SM_OUTPUT_DATA_DIR"]
 
-    # Config path: relative to /opt/ml/code (source_dir extraction root)
-    default_config = "configs/santander/pipeline.yaml"
+    # Config path: relative to /opt/ml/code (source_dir extraction root).
+    # Supports two patterns:
+    #   (a) Split-config (new):  config="configs/pipeline.yaml"
+    #                            dataset_config="configs/datasets/santander.yaml"
+    #   (b) Legacy single-file:  config="configs/santander/pipeline.yaml"
+    default_config = "configs/pipeline.yaml"
     config_path_raw: str = hp.get("config", default_config)
-    # Resolve against /opt/ml/code if not absolute
     config_path = Path(config_path_raw)
     if not config_path.is_absolute():
         config_path = Path("/opt/ml/code") / config_path_raw
     config_path_str = str(config_path)
+
+    dataset_config_path_str: Optional[str] = None
+    dataset_config_raw: str = hp.get("dataset_config", "")
+    if dataset_config_raw:
+        dataset_config_path = Path(dataset_config_raw)
+        if not dataset_config_path.is_absolute():
+            dataset_config_path = Path("/opt/ml/code") / dataset_config_raw
+        dataset_config_path_str = str(dataset_config_path)
 
     batch_size: int = int(hp.get("batch_size", 5632))
     num_workers: int = int(hp.get("num_workers", _default_num_workers()))
@@ -473,6 +496,7 @@ def _sagemaker_main() -> None:
         num_workers=num_workers,
         device=device,
         hp_overrides=hp_overrides,
+        dataset_config_path=dataset_config_path_str,
     )
 
 
@@ -485,7 +509,11 @@ def _local_main() -> None:
     )
     parser.add_argument("--checkpoint", required=True, help="Path to .pt checkpoint")
     parser.add_argument("--data-dir", required=True, help="Phase 0 data directory")
-    parser.add_argument("--config", default="configs/santander/pipeline.yaml")
+    parser.add_argument("--config", default="configs/pipeline.yaml",
+                        help="Common pipeline YAML (or legacy single-file path)")
+    parser.add_argument("--dataset", default="",
+                        help="Dataset-specific YAML to deep-merge on top of --config "
+                             "(e.g. configs/datasets/santander.yaml)")
     parser.add_argument("--output-dir", default=None,
                         help="Directory for eval_metrics.json (default: beside checkpoint)")
     parser.add_argument("--batch-size", type=int, default=5632)
@@ -507,6 +535,7 @@ def _local_main() -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         device=args.device,
+        dataset_config_path=args.dataset or None,
     )
 
 

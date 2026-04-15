@@ -1,5 +1,5 @@
 from .adapter import AdapterMetadata, AdapterRegistry, DataAdapter
-from .config import PipelineConfig, load_config
+from .config import PipelineConfig, load_config, load_merged_config, deep_merge
 from .label_deriver import LabelConfig, LabelDeriver
 from .leakage_validator import LeakageValidator, ValidationResult
 from .normalizer import FeatureNormalizer
@@ -15,7 +15,9 @@ __all__ = [
     "FeatureNormalizer",
     "LeakageValidator",
     "PipelineConfig",
+    "deep_merge",
     "load_config",
+    "load_merged_config",
     "PipelineRunner",
     "SchemaClassifier",
     "LabelConfig",

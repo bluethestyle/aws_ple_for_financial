@@ -75,7 +75,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 PHASE0 = "outputs/phase0_v12"
 RESULTS = "outputs/ablation_v12"
-CONFIG = "configs/santander/pipeline.yaml"
+CONFIG = "configs/pipeline.yaml"
+DATASET_CONFIG = "configs/datasets/santander.yaml"
 EPOCHS = 10             # reduced from 20 — plateau observed at epoch 5-6 across scenarios
 WARMUP = 3              # 30% of epochs
 BATCH = 5632          # orchestrator CUDA-blocked, no VRAM spillover
@@ -91,6 +92,7 @@ INTER_SCENARIO_DELAY_SEC = 5  # give GPU/system time to cleanup between scenario
 
 BASE_HPS: Dict[str, Any] = {
     "config": CONFIG,
+    "dataset_config": DATASET_CONFIG,
     "epochs": EPOCHS,
     "batch_size": BATCH,
     "learning_rate": LR,

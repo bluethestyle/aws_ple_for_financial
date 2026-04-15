@@ -241,10 +241,65 @@ class PipelineConfig:
         return None
 
 
-def load_config(path: Union[str, Path]) -> PipelineConfig:
-    """Parse a YAML file into a :class:`PipelineConfig` instance."""
-    with open(path, encoding="utf-8") as f:
-        raw: Dict[str, Any] = yaml.safe_load(f)
+def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge *override* into *base*. Override wins on conflicts.
+
+    Lists and scalar values are replaced (not appended).  Only dict-valued
+    keys are merged recursively.
+
+    Args:
+        base: Base configuration dict (e.g. from common ``pipeline.yaml``).
+        override: Dataset-specific overrides that take precedence.
+
+    Returns:
+        A new dict with overrides applied.
+    """
+    result: Dict[str, Any] = dict(base)
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+def load_merged_config(
+    pipeline_path: Union[str, Path],
+    dataset_path: Union[str, Path],
+) -> Dict[str, Any]:
+    """Load and deep-merge a common pipeline config with a dataset-specific config.
+
+    Dataset config values override pipeline config where they overlap.
+
+    Args:
+        pipeline_path: Path to the common ``configs/pipeline.yaml``.
+        dataset_path:  Path to the dataset-specific ``configs/datasets/{name}.yaml``.
+
+    Returns:
+        Merged raw config dict (not yet parsed into :class:`PipelineConfig`).
+    """
+    with open(pipeline_path, encoding="utf-8") as f:
+        base: Dict[str, Any] = yaml.safe_load(f) or {}
+    with open(dataset_path, encoding="utf-8") as f:
+        dataset: Dict[str, Any] = yaml.safe_load(f) or {}
+    return deep_merge(base, dataset)
+
+
+def load_config(path: Union[str, Path], dataset_path: Optional[Union[str, Path]] = None) -> PipelineConfig:
+    """Parse a YAML file into a :class:`PipelineConfig` instance.
+
+    When *dataset_path* is provided the two files are deep-merged before
+    parsing (dataset values override common pipeline values).
+
+    Args:
+        path: Path to the pipeline config YAML (common or legacy single-file).
+        dataset_path: Optional dataset-specific YAML to merge on top.
+    """
+    if dataset_path is not None:
+        raw: Dict[str, Any] = load_merged_config(path, dataset_path)
+    else:
+        with open(path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
 
     tasks = [TaskSpec(**{k: v for k, v in t.items() if k in TaskSpec.__dataclass_fields__}) for t in raw.get("tasks", [])]
     data = DataSpec(**{
@@ -330,7 +385,7 @@ def load_config(path: Union[str, Path]) -> PipelineConfig:
 
     # If no inline feature_groups, look for feature_groups_path or
     # auto-discover configs/<adapter>/feature_groups.yaml next to the
-    # pipeline YAML.
+    # pipeline YAML (or next to the dataset YAML when using split configs).
     if not feature_groups_raw:
         fg_path_str = raw.get("feature_groups_path", "")
         if fg_path_str:
@@ -338,8 +393,14 @@ def load_config(path: Union[str, Path]) -> PipelineConfig:
             if not fg_path.is_absolute():
                 fg_path = Path(path).parent / fg_path
         else:
-            # Auto-discover sibling feature_groups.yaml
+            # Auto-discover sibling feature_groups.yaml.
+            # When using split configs, prefer the dataset YAML's directory
+            # (configs/datasets/) before falling back to the pipeline YAML's dir.
             fg_path = Path(path).parent / "feature_groups.yaml"
+            if dataset_path is not None:
+                dataset_sibling = Path(dataset_path).parent / "feature_groups.yaml"
+                if dataset_sibling.exists():
+                    fg_path = dataset_sibling
 
         if fg_path.exists():
             import logging as _logging

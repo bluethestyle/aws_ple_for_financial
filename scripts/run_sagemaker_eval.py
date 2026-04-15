@@ -44,11 +44,13 @@ logger = logging.getLogger("sagemaker_eval")
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = PROJECT_ROOT / "configs" / "santander" / "pipeline.yaml"
+CONFIG_PATH = PROJECT_ROOT / "configs" / "pipeline.yaml"
+DATASET_CONFIG_PATH = PROJECT_ROOT / "configs" / "datasets" / "santander.yaml"
 PHASE0_DIR = PROJECT_ROOT / "outputs" / "phase0_v12"
 
-# Container-internal config path (inside the source_dir extraction)
-CONTAINER_CONFIG = "configs/santander/pipeline.yaml"
+# Container-internal config paths (inside the source_dir extraction)
+CONTAINER_CONFIG = "configs/pipeline.yaml"
+CONTAINER_DATASET_CONFIG = "configs/datasets/santander.yaml"
 
 # S3 path segments (bucket comes from pipeline.yaml)
 S3_DATA_PREFIX = "data/phase0_v12"
@@ -67,8 +69,11 @@ EVAL_MAX_WAIT = 3600                      # 1 hr max wait (CLAUDE.md: max_run + 
 # ---------------------------------------------------------------------------
 
 def load_pipeline_config() -> Dict[str, Any]:
+    from core.pipeline.config import load_merged_config
+    if DATASET_CONFIG_PATH.exists():
+        return load_merged_config(CONFIG_PATH, DATASET_CONFIG_PATH)
     with open(CONFIG_PATH, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
 
 
 def get_aws_config(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -455,6 +460,7 @@ def main() -> None:
     # --- HP dict ---
     hp: Dict[str, str] = {
         "config": CONTAINER_CONFIG,
+        "dataset_config": CONTAINER_DATASET_CONFIG,
         "batch_size": str(args.batch_size),
         "num_workers": "2",    # Linux (SageMaker) — 2 is safe
         "device": "auto",

@@ -10,7 +10,8 @@ Usage:
         --teacher-checkpoint s3://bucket/model.pt \
         --data-path s3://bucket/data/train/ \
         --output-dir /opt/ml/model \
-        --config configs/financial/pipeline.yaml \
+        --config configs/pipeline.yaml \
+        --dataset configs/datasets/santander.yaml \
         --soft-label-path s3://bucket/soft_labels/
 
     # Or skip soft label generation (use pre-computed):
@@ -60,8 +61,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=str,
-        default="configs/financial/pipeline.yaml",
-        help="Pipeline YAML config path",
+        default="configs/pipeline.yaml",
+        help="Common pipeline YAML path (or legacy single-file path)",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="",
+        help="Dataset-specific YAML to deep-merge on top of --config "
+             "(e.g. configs/datasets/santander.yaml)",
     )
     parser.add_argument(
         "--output-dir",
@@ -151,13 +159,21 @@ def main() -> None:
     # Import here to avoid import errors if torch is not available
     # in LGBM-only mode
     import yaml as _yaml
-    from core.pipeline.config import load_config
+    from core.pipeline.config import load_config, load_merged_config
     from core.training.student_trainer import StudentConfig, StudentTrainer
 
-    # Load pipeline config (structured) and raw YAML (for distillation section)
-    pipeline_config = load_config(args.config)
-    with open(args.config, encoding="utf-8") as _f:
-        _raw_yaml: dict = _yaml.safe_load(_f)
+    # Load pipeline config (supports split-config pattern).
+    # Both load_config() and the raw dict use the same merged result so that
+    # dataset-specific overrides are visible in the distillation section.
+    _dataset_path = args.dataset if getattr(args, "dataset", "") else ""
+    if _dataset_path and Path(_dataset_path).exists():
+        pipeline_config = load_config(args.config, dataset_path=_dataset_path)
+        _raw_yaml: dict = load_merged_config(args.config, _dataset_path)
+        logger.info("Distillation config merged: %s + %s", args.config, _dataset_path)
+    else:
+        pipeline_config = load_config(args.config)
+        with open(args.config, encoding="utf-8") as _f:
+            _raw_yaml = _yaml.safe_load(_f) or {}
     _distillation_cfg: dict = _raw_yaml.get("distillation", {})
 
     # Load data via PyArrow (zero-copy, no pandas intermediate)

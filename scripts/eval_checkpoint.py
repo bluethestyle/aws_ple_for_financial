@@ -37,7 +37,11 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate a checkpoint (inference only)")
     parser.add_argument("--checkpoint", required=True, help="Path to .pt checkpoint file")
     parser.add_argument("--data-dir", default="outputs/phase0_v12", help="Phase 0 output dir")
-    parser.add_argument("--config", default="configs/santander/pipeline.yaml")
+    parser.add_argument("--config", default="configs/pipeline.yaml",
+                        help="Common pipeline YAML (or legacy single-file path)")
+    parser.add_argument("--dataset", default="",
+                        help="Dataset-specific YAML to deep-merge on top of --config "
+                             "(e.g. configs/datasets/santander.yaml)")
     parser.add_argument("--output", default=None, help="Output eval_metrics.json path (default: beside checkpoint)")
     parser.add_argument("--batch-size", type=int, default=5632)
     parser.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
@@ -50,9 +54,14 @@ def main():
 
     channel_path = Path(args.data_dir)
 
-    # --- Load config ---
-    with open(args.config, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    # --- Load config (supports split-config pattern) ---
+    from core.pipeline.config import load_merged_config
+    if args.dataset and Path(args.dataset).exists():
+        config = load_merged_config(args.config, args.dataset)
+        logger.info("Config loaded (merged): %s + %s", args.config, args.dataset)
+    else:
+        with open(args.config, encoding="utf-8") as f:
+            config = yaml.safe_load(f)
 
     # --- Load feature schema ---
     feature_schema_path = channel_path / "feature_schema.json"
@@ -73,6 +82,7 @@ def main():
         feature_schema_path=str(feature_schema_path),
         device=args.device,
         hp_overrides=hp_overrides,
+        dataset_config_path=args.dataset or None,
     )
 
     # --- Load data and build val dataloader ---

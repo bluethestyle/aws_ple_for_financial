@@ -45,11 +45,13 @@ logger = logging.getLogger("sagemaker_teacher")
 # Paths
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = PROJECT_ROOT / "configs" / "santander" / "pipeline.yaml"
+CONFIG_PATH = PROJECT_ROOT / "configs" / "pipeline.yaml"
+DATASET_CONFIG_PATH = PROJECT_ROOT / "configs" / "datasets" / "santander.yaml"
 PHASE0_DIR = PROJECT_ROOT / "outputs" / "phase0_v12"
 
 # Container-internal paths (after source_dir extraction)
-CONTAINER_CONFIG = "configs/santander/pipeline.yaml"
+CONTAINER_CONFIG = "configs/pipeline.yaml"
+CONTAINER_DATASET_CONFIG = "configs/datasets/santander.yaml"
 
 # S3 paths
 S3_BUCKET = "aiops-ple-financial"
@@ -64,8 +66,11 @@ S3_SOURCE_PREFIX = "source/teacher_30ep"
 # ---------------------------------------------------------------------------
 
 def load_pipeline_config() -> Dict[str, Any]:
+    from core.pipeline.config import load_merged_config
+    if DATASET_CONFIG_PATH.exists():
+        return load_merged_config(CONFIG_PATH, DATASET_CONFIG_PATH)
     with open(CONFIG_PATH, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
 
 
 def get_aws_config(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -86,6 +91,7 @@ def get_aws_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 BASE_HPS: Dict[str, Any] = {
     "config": CONTAINER_CONFIG,
+    "dataset_config": CONTAINER_DATASET_CONFIG,
     "epochs": 30,
     "batch_size": 5632,
     "learning_rate": 0.0005,
@@ -166,6 +172,9 @@ def upload_phase0_data(s3_bucket: str) -> None:
 
     # Config files (needed inside container)
     config_files = [
+        ("configs/pipeline.yaml", "configs/pipeline.yaml"),
+        ("configs/datasets/santander.yaml", "configs/datasets/santander.yaml"),
+        # Legacy path kept for backward compat in case container resolves old path
         ("configs/santander/pipeline.yaml", "configs/santander/pipeline.yaml"),
         ("configs/santander/feature_groups.yaml", "configs/santander/feature_groups.yaml"),
     ]

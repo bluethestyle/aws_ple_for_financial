@@ -42,6 +42,7 @@ class PLEPredictor:
         feature_schema_path: str,
         device: str = "auto",
         hp_overrides: Optional[Dict] = None,
+        dataset_config_path: Optional[str] = None,
     ):
         self._hp = hp_overrides or {}
 
@@ -51,9 +52,14 @@ class PLEPredictor:
         else:
             self._device = torch.device(device)
 
-        # -- Load pipeline config --
-        with open(config_path, encoding="utf-8") as f:
-            self._pipeline_config: dict = yaml.safe_load(f)
+        # -- Load pipeline config (supports split-config pattern) --
+        if dataset_config_path and Path(dataset_config_path).exists():
+            from core.pipeline.config import load_merged_config
+            self._pipeline_config: dict = load_merged_config(config_path, dataset_config_path)
+            logger.info("PLEPredictor: config merged from %s + %s", config_path, dataset_config_path)
+        else:
+            with open(config_path, encoding="utf-8") as f:
+                self._pipeline_config: dict = yaml.safe_load(f)
 
         # -- Load feature schema --
         schema_path = Path(feature_schema_path)

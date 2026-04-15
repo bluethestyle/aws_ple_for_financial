@@ -1,0 +1,308 @@
+# =============================================================================
+# Common Pipeline Configuration — AIOps PLE Platform
+# =============================================================================
+# PURPOSE: Dataset-agnostic defaults for model architecture, training,
+#          distillation, and AWS infrastructure.
+#
+# USAGE:
+#   - This file is loaded first by PipelineRunner / train.py.
+#   - A dataset-specific file (configs/datasets/<name>.yaml) is loaded
+#     second and its keys are merged (dataset keys win on collision).
+#   - Do NOT put dataset-specific task lists, label derivations, or
+#     adapter settings here.  Those belong in configs/datasets/<name>.yaml.
+#
+# ADDING A NEW DATASET:
+#   1. Copy configs/datasets/example.yaml → configs/datasets/your_dataset.yaml
+#   2. Fill in tasks, labels, adapter, data.source, features, etc.
+#   3. Pass --dataset your_dataset to train.py / orchestrator.
+#   No changes to this file are needed.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Model -- PLE architecture defaults (7 shared experts)
+# ---------------------------------------------------------------------------
+model:
+  architecture: ple
+
+  expert_basket:
+    shared:
+      - deepfm
+      - temporal_ensemble
+      - hgcn
+      - perslay
+      - causal
+      - lightgcn
+      - optimal_transport
+    task: [mlp]
+
+  # expert_input_dims: derived dynamically from feature_schema.json group_ranges
+  # (no hardcoding per CLAUDE.md §1.1)
+
+  expert_config:
+    deepfm:
+      embedding_dim: 16
+      hidden_dims: [256, 128, 64]
+      dropout: 0.2
+      field_dims: auto        # derive from feature_group_ranges
+    temporal_ensemble:
+      mamba_d_model: 64
+      mamba_n_layers: 2
+      transformer_n_heads: 4
+      transformer_n_layers: 2
+      lnn_hidden_dim: 64
+    hgcn:
+      hyperbolic_dim: 20
+      product_dim: 24
+      refine_hidden: 128
+    perslay:
+      phi_hidden_dim: 64
+      rho_hidden_dim: 64
+    causal:
+      dag_hidden_dims: [128, 64]
+      lambda_dag: 0.01
+    lightgcn:
+      embedding_dim: 64
+      n_layers: 3
+    optimal_transport:
+      hidden_dims: [128, 64]
+      sinkhorn_iterations: 10
+    mlp:
+      hidden_dims: [128, 64]
+      dropout: 0.2
+
+  cgc:
+    dim_normalize: true
+
+  ple:
+    num_layers: 3
+    extraction_dim: 64
+    num_shared_experts: 7
+    num_task_experts: 1
+
+  evidential:
+    enabled: true
+    kl_lambda: 0.01
+    annealing_epochs: 10
+
+  sae:
+    enabled: true
+    weight: 0.01
+    expansion_factor: 4
+    l1_lambda: 0.001
+
+  loss_weighting:
+    strategy: uncertainty   # uncertainty | fixed | none
+
+  # GroupEncoder + ClusterEmbedding architecture (v3.2 on-prem design)
+  # Shared group encoders → ~88% param reduction vs per-task heads
+  group_task_expert:
+    enabled: true
+    group_hidden: 128
+    group_output: 64
+    cluster_embed_dim: 32
+
+  task_tower:
+    default_dims: [64, 32]
+    dropout: 0.1
+
+# ---------------------------------------------------------------------------
+# adaTT — task affinity transfer (inter/intra group)
+# ---------------------------------------------------------------------------
+adatt:
+  transfer_lambda: 0.1
+  temperature: 1.0
+  warmup_epochs: 3          # measure affinity before enabling transfer
+  freeze_epoch: 8           # freeze transfer weights for stable fine-tuning
+  grad_interval: 10         # extract gradients every N steps
+  inter_group_strength: 0.3
+
+# ---------------------------------------------------------------------------
+# Gradient Surgery — PCGrad task-type projection (alternative to adaTT)
+# ---------------------------------------------------------------------------
+grad_surgery:
+  enabled: false            # toggle via HP override in ablation scenarios
+  conflict_threshold: 0.0   # project when cos(g_i, g_j) < this value
+  warmup_epochs: 3          # match adaTT warmup for fair comparison
+  grad_interval: 10         # match adaTT grad_interval for fair comparison
+  ema_decay: 0.9
+  log_interval: 1
+  # task_type_groups: defined in dataset yaml (task names are dataset-specific)
+
+# ---------------------------------------------------------------------------
+# Training defaults
+# ---------------------------------------------------------------------------
+training:
+  experiment_name: ple_experiment
+  batch_size: 2048
+  epochs: 50
+  learning_rate: 0.0005
+  weight_decay: 0.01
+  gradient_clip_norm: 5.0
+  seed: 42
+  phase1:
+    epochs: 15
+    description: "shared expert learning"
+  phase2:
+    epochs: 8
+    freeze_shared: true
+    description: "task head fine-tuning"
+  early_stopping:
+    patience: 7
+    metric: val_loss
+  scheduler:
+    type: cosine
+    warmup_epochs: 3
+  amp:
+    enabled: true
+    grad_scaler_init_scale: 1024.0
+    grad_scaler_growth_factor: 2.0
+    grad_scaler_backoff_factor: 0.5
+    grad_scaler_growth_interval: 2000
+    grad_scaler_max_scale: 4096.0   # cap to prevent FP16 overflow in multi-task
+
+# ---------------------------------------------------------------------------
+# Distillation — PLE teacher → LGBM student knowledge distillation
+# ---------------------------------------------------------------------------
+distillation:
+  temperature: 1.0    # T=1: use teacher probabilities as-is (no scaling for LGBM student)
+  alpha: 0.3          # hard label weight; (1 - alpha) = soft label weight
+
+  # LGBM student hyperparameters (shared default across all tasks)
+  lgbm:
+    num_leaves: 127
+    learning_rate: 0.05
+    n_estimators: 500
+    min_child_samples: 50
+    subsample: 0.8
+    colsample_bytree: 0.8
+
+  # Per-task LGBM overrides — merged with lgbm defaults above.
+  # Dataset yamls may define their own task_lgbm_overrides.
+  task_lgbm_overrides: {}
+
+  # Teacher threshold gating — tasks below 2x random baseline
+  # are routed to direct hard-label LGBM training (MRM safeguard)
+  teacher_threshold:
+    binary_min_auc: 0.60           # AUC > 0.60 (random baseline = 0.50)
+    multiclass_min_f1_ratio: 2.0   # F1 > 2/K  (K = num_classes)
+    regression_min_r2: 0.05        # R2 > 0.05
+
+  # Calibration — Platt scaling for tasks requiring accurate probabilities
+  calibration:
+    enabled: true
+    method: platt       # platt | isotonic
+    tasks: []           # populated in dataset yaml
+
+  # Fidelity validation thresholds (per task type)
+  fidelity:
+    binary:
+      max_auc_gap: 0.05
+      min_agreement: 0.85
+      max_jsd: 0.10
+      min_ranking_corr: 0.90
+      max_calibration_gap: 0.05   # checked only for calibration.tasks
+    multiclass:
+      min_agreement: 0.70
+      max_jsd: 0.10
+      max_f1_macro_gap: 0.10
+    regression:
+      min_ranking_corr: 0.90
+      min_quartile_agreement: 0.70
+      max_mae_gap: 0.05
+      max_rmse_gap: 0.10
+
+  # IG-based dual-objective feature selection (Paper 2 core contribution)
+  feature_selection:
+    method: ig_dual               # ig_dual | lgbm_gain | both
+    ig_alpha: 0.7                 # predictive vs explanation weight
+    top_k: null                   # null = use cumulative_threshold instead
+    cumulative_threshold: 0.95    # keep features covering 95% cumulative importance
+    ig_sample_size: 10000         # samples for IG computation (subset for speed)
+
+  # Temporal drift monitoring — SR 11-7 MRM safeguard for daily re-distillation
+  drift_monitoring:
+    enabled: true
+    max_psi: 0.20                 # Population Stability Index threshold
+    max_jsd: 0.10                 # Jensen-Shannon Divergence threshold
+    max_auc_shift: 0.05           # |current_AUC - previous_AUC| (binary tasks only)
+    max_prediction_shift: 0.10    # |mean(current) - mean(previous)| absolute shift
+    min_rank_correlation: 0.95    # Spearman rho between version rankings
+    baseline_path: outputs/distillation_baseline/
+
+# ---------------------------------------------------------------------------
+# Evaluation metrics per task type (shared across all datasets)
+# ---------------------------------------------------------------------------
+evaluation:
+  binary:
+    metrics: [auc_roc, auc_pr, f1, precision, recall, accuracy, log_loss]
+    primary: auc_roc
+  multiclass:
+    metrics: [accuracy, f1_macro, f1_weighted, top_k_accuracy]
+    primary: f1_macro
+  regression:
+    metrics: [rmse, mae, r2, mape]
+    primary: rmse
+
+# ---------------------------------------------------------------------------
+# Analysis — IG attribution + Expert Redundancy CCA (Stage 8.5)
+# ---------------------------------------------------------------------------
+analysis:
+  enabled: true
+  ig_steps: 20
+  integrated_gradients:
+    n_steps: 50
+    baseline: zeros
+    max_batches: 50
+  expert_redundancy:
+    enabled: true
+    max_batches: 20
+    n_components: 10
+    min_samples: 256
+  xai_quality:
+    enabled: true
+  model_card:
+    enabled: true
+
+# ---------------------------------------------------------------------------
+# Serving Preparation (Stage 9.5: context vector store + reason generation)
+# ---------------------------------------------------------------------------
+serving_prep:
+  enabled: false    # Disabled for ablation; enabled for production
+  context_store:
+    backend: auto   # lancedb or numpy
+    embedding_source: feature_pipeline
+  reason_generation:
+    l1_batch: true
+    l2a_rewrite: false    # requires LLM
+    l2b_validation: true
+
+# ---------------------------------------------------------------------------
+# Data — backend preferences and split strategy structure
+# ---------------------------------------------------------------------------
+data:
+  # source / s3_path / id_col / total_rows / temporal_split overrides
+  # should be set in the dataset yaml.
+  backend: [cudf, duckdb, pandas]   # priority order; cuDF tried first
+  format: parquet
+  train_split: 0.7
+  val_split: 0.15
+  preprocessing:
+    fit_subsample_limit: 10000      # rows used to fit encoders/scalers
+
+# ---------------------------------------------------------------------------
+# Features — common structure (dataset yaml adds id_cols, meta_cols, etc.)
+# ---------------------------------------------------------------------------
+features:
+  input_dim: 512    # overridden by dataset yaml if different
+
+# ---------------------------------------------------------------------------
+# AWS / SageMaker configuration
+# ---------------------------------------------------------------------------
+aws:
+  region: ap-northeast-2
+  s3_bucket: aiops-ple-financial
+  instance_type: ml.g4dn.xlarge
+  cpu_instance_type: ml.m5.2xlarge    # Phase 0 processing jobs (CPU only)
+  use_spot: true
+  max_run_seconds: 43200              # 12 hours
+  role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole

@@ -17,10 +17,12 @@ if sys.platform == "win32":
 
 PHASE0 = "outputs/phase0_v12"
 OUTDIR = "outputs/ablation_v12_30ep"
-CONFIG = "configs/santander/pipeline.yaml"
+CONFIG = "configs/pipeline.yaml"
+DATASET_CONFIG = "configs/datasets/santander.yaml"
 
 BASE_HPS = {
     "config": CONFIG,
+    "dataset_config": DATASET_CONFIG,
     "epochs": 30,
     "batch_size": 5632,
     "learning_rate": 0.0005,

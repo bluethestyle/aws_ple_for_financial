@@ -38,12 +38,23 @@ logger = logging.getLogger("package_source")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Directories and files to include in the source package
+# Directories and files to include in the source package.
+# Both new split-config paths and legacy paths are included for backward
+# compatibility — containers that still reference configs/santander/ will
+# continue to work while the new split-config pattern is adopted.
 _INCLUDE_DIRS = [
     "core",
-    "configs/santander",
     "containers/training",
     "containers/evaluation",
+    # New split-config layout
+    "configs/datasets",          # dataset-specific YAMLs (e.g. santander.yaml)
+    # Legacy layout — kept for backward compatibility
+    "configs/santander",
+]
+
+# Individual top-level config files (not inside a sub-directory)
+_INCLUDE_CONFIG_FILES = [
+    "configs/pipeline.yaml",     # common pipeline config
 ]
 
 # Additional top-level files to include (relative to project root)
@@ -104,7 +115,9 @@ def build_staging(
       - containers/training/train.py  (training entry point)
       - containers/evaluation/        (eval entry point)
       - core/                         (model, training, data, pipeline)
-      - configs/santander/            (pipeline.yaml, feature_groups.yaml)
+      - configs/pipeline.yaml         (common pipeline config)
+      - configs/datasets/             (dataset-specific YAMLs)
+      - configs/santander/            (legacy layout, kept for backward compat)
 
     Excludes __pycache__ and .pyc files.
 
@@ -131,8 +144,11 @@ def build_staging(
         total_files += n
         if n:
             logger.info("  Copied %d files from %s/", n, rel_dir)
+        elif src.is_dir():
+            logger.info("  (empty) %s/", rel_dir)
 
-    for rel_file in _INCLUDE_FILES:
+    # Copy individual top-level config files
+    for rel_file in _INCLUDE_CONFIG_FILES + _INCLUDE_FILES:
         src = root / rel_file
         if not src.is_file():
             logger.warning("  SKIP (not found): %s", src)

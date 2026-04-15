@@ -48,17 +48,21 @@ logger = logging.getLogger("sagemaker_pipeline_ablation")
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = os.environ.get(
-    "ABLATION_CONFIG_PATH", "configs/santander/pipeline.yaml"
+    "ABLATION_CONFIG_PATH", "configs/pipeline.yaml"
+)
+DATASET_CONFIG_PATH = os.environ.get(
+    "ABLATION_DATASET_CONFIG_PATH", "configs/datasets/santander.yaml"
 )
 FEATURE_GROUPS_PATH = os.environ.get(
-    "ABLATION_FEATURE_GROUPS_PATH", "configs/santander/feature_groups.yaml"
+    "ABLATION_FEATURE_GROUPS_PATH", "configs/datasets/feature_groups.yaml"
 )
 PHASE0_DIR = PROJECT_ROOT / "outputs" / "phase0"
 RESULTS_DIR = PROJECT_ROOT / "outputs" / "ablation_results"
 DOCKER_IMAGE = os.environ.get("ABLATION_IMAGE", "model_training:v3.3")
 
-# Container-internal config path (source_dir is project root)
-CONTAINER_CONFIG_PATH = "configs/santander/pipeline.yaml"
+# Container-internal config paths (source_dir is project root)
+CONTAINER_CONFIG_PATH = "configs/pipeline.yaml"
+CONTAINER_DATASET_CONFIG_PATH = "configs/datasets/santander.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -66,9 +70,14 @@ CONTAINER_CONFIG_PATH = "configs/santander/pipeline.yaml"
 # ---------------------------------------------------------------------------
 
 def _load_pipeline_config() -> Dict[str, Any]:
+    """Load and merge common + dataset-specific pipeline config."""
+    from core.pipeline.config import load_merged_config
     cfg_path = PROJECT_ROOT / CONFIG_PATH
+    dataset_cfg_path = PROJECT_ROOT / DATASET_CONFIG_PATH
+    if dataset_cfg_path.exists():
+        return load_merged_config(cfg_path, dataset_cfg_path)
     with open(cfg_path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
 
 
 def _load_feature_groups_config() -> Dict[str, Any]:
@@ -289,6 +298,7 @@ def _create_training_step(
     # Build hyperparameters: training defaults + scenario overrides
     hyperparameters: Dict[str, str] = {
         "config": CONTAINER_CONFIG_PATH,
+        "dataset_config": CONTAINER_DATASET_CONFIG_PATH,
         "epochs": str(training_defaults["epochs"]),
         "batch_size": str(training_defaults["batch_size"]),
         "learning_rate": str(training_defaults["learning_rate"]),

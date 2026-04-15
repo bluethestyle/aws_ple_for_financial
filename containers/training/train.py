@@ -1303,19 +1303,42 @@ def main() -> None:
     label_schema = data["label_schema"]
     split_indices = data["split_indices"]
 
-    # Merge YAML config into label_schema if present (backward compat)
+    # Merge YAML config into label_schema if present (backward compat).
+    # Supports two patterns:
+    #   (a) Single file:  config="configs/santander/pipeline.yaml"  (legacy)
+    #   (b) Split files:  config="configs/pipeline.yaml"
+    #                     dataset_config="configs/datasets/santander.yaml"
+    import yaml as _yaml
+    from core.pipeline.config import load_merged_config as _load_merged_config
+
     config_str = hp.get("config", "{}")
+    dataset_config_str = hp.get("dataset_config", "")
+
     if isinstance(config_str, dict):
         config = config_str
     elif isinstance(config_str, str) and (config_str.endswith(".yaml") or config_str.endswith(".yml")):
-        import yaml
         config_path = Path(config_str)
         if not config_path.exists():
             config_path = Path("/opt/ml/code") / config_str
         if config_path.exists():
-            with open(config_path, encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-            logger.info("Config loaded from YAML: %s", config_path)
+            if dataset_config_str:
+                # Split-config pattern: deep-merge common + dataset-specific
+                dataset_config_path = Path(dataset_config_str)
+                if not dataset_config_path.exists():
+                    dataset_config_path = Path("/opt/ml/code") / dataset_config_str
+                if dataset_config_path.exists():
+                    config = _load_merged_config(config_path, dataset_config_path)
+                    logger.info("Config loaded (merged): %s + %s", config_path, dataset_config_path)
+                else:
+                    logger.warning("dataset_config not found: %s — loading base config only", dataset_config_path)
+                    with open(config_path, encoding="utf-8") as f:
+                        config = _yaml.safe_load(f) or {}
+                    logger.info("Config loaded from YAML: %s", config_path)
+            else:
+                # Legacy single-file pattern
+                with open(config_path, encoding="utf-8") as f:
+                    config = _yaml.safe_load(f) or {}
+                logger.info("Config loaded from YAML: %s", config_path)
         else:
             config = {}
     else:
