@@ -63,7 +63,7 @@ S3_OUTPUT_PREFIX = "output/distillation"
 S3_SOURCE_PREFIX = "source/distillation"
 
 # Distillation job defaults (CLAUDE.md 1.5: CPU instance, no GPU needed)
-DISTILL_INSTANCE_TYPE = "ml.m5.2xlarge"     # 8 vCPU, 32GB RAM — sufficient for LGBM
+DISTILL_INSTANCE_TYPE = "ml.m5.4xlarge"     # 16 vCPU, 64GB RAM — faster multiclass LGBM
 DISTILL_MAX_RUN = 10800                       # 3 hr max (LGBM x 13 tasks + IG)
 DISTILL_MAX_WAIT = 14400                      # max_run + 1hr (CLAUDE.md 1.5)
 

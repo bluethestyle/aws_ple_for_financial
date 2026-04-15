@@ -394,9 +394,16 @@ def main() -> None:
     soft_labels = trainer.get_soft_labels()
     distill_tasks: list[str] = []
     hardlabel_tasks: list[str] = []
+    skip_tasks: list[str] = []  # floor threshold — no LGBM at all, Layer 3 only
+
+    # Floor thresholds from config (below this → SKIP entirely)
+    _thresh_cfg = _distillation_cfg.get("teacher_threshold", {})
+    _floor_binary_auc = _thresh_cfg.get("floor_binary_auc", 0.52)
+    _floor_mc_f1_ratio = _thresh_cfg.get("floor_multiclass_f1_ratio", 1.0)
+    _floor_r2 = _thresh_cfg.get("floor_regression_r2", 0.01)
 
     logger.info("=" * 60)
-    logger.info("Teacher threshold check (2x random baseline)")
+    logger.info("Teacher threshold check (2x random baseline + floor)")
     logger.info("=" * 60)
 
     for t in pipeline_config.tasks:
@@ -451,16 +458,36 @@ def main() -> None:
         except Exception as e:
             logger.debug("  %s: threshold check error: %s", task_name, e)
 
+        # 3-way routing: DISTILL / DIRECT / SKIP
+        below_floor = False
+        try:
+            if task_type == "binary":
+                _auc_val = float(metric_str.split("=")[1].split(" ")[0]) if "AUC=" in metric_str else 0.0
+                below_floor = _auc_val <= _floor_binary_auc
+            elif task_type == "multiclass":
+                _f1_val = float(metric_str.split("=")[1].split(" ")[0]) if "F1=" in metric_str else 0.0
+                n_classes = getattr(t, 'num_classes', None) or int(hard_np.max()) + 1
+                below_floor = _f1_val <= (1.0 / n_classes) * _floor_mc_f1_ratio
+            elif task_type == "regression":
+                _r2_val = float(metric_str.split("=")[1].split(" ")[0]) if "R2=" in metric_str else 0.0
+                below_floor = _r2_val <= _floor_r2
+        except Exception:
+            pass
+
         if viable:
             distill_tasks.append(task_name)
             logger.info("  [DISTILL] %s: %s", task_name, metric_str)
+        elif below_floor:
+            skip_tasks.append(task_name)
+            logger.info("  [SKIP]    %s: %s — below floor, Layer 3 rule-only (no LGBM)",
+                        task_name, metric_str)
         else:
             hardlabel_tasks.append(task_name)
             logger.info("  [DIRECT]  %s: %s — below threshold, using hard labels",
                         task_name, metric_str)
 
-    logger.info("Distillation: %d tasks, Direct LGBM: %d tasks",
-                len(distill_tasks), len(hardlabel_tasks))
+    logger.info("Distillation: %d tasks, Direct LGBM: %d tasks, SKIP: %d tasks",
+                len(distill_tasks), len(hardlabel_tasks), len(skip_tasks))
     logger.info("=" * 60)
 
     # Step 3: Train LGBM students — adaptive per task
@@ -1103,11 +1130,14 @@ def main() -> None:
     summary = {
         "tasks_distilled": distill_tasks,
         "tasks_direct_hardlabel": hardlabel_tasks,
+        "tasks_skipped_rule_only": skip_tasks,
         "num_students": len(saved),
         "adaptive_strategy": {
             "distill_count": len(distill_tasks),
             "direct_count": len(hardlabel_tasks),
+            "skip_count": len(skip_tasks),
             "threshold_rule": "binary: AUC>0.60, multiclass: F1>2/K, regression: R2>0.05",
+            "floor_rule": f"binary: AUC>{_floor_binary_auc}, multiclass: F1>{_floor_mc_f1_ratio}/K, regression: R2>{_floor_r2}",
         },
         "temperature": student_config.temperature,
         "alpha": student_config.alpha,

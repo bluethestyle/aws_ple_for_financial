@@ -183,9 +183,15 @@ distillation:
   # Teacher threshold gating — tasks below 2x random baseline
   # are routed to direct hard-label LGBM training (MRM safeguard)
   teacher_threshold:
-    binary_min_auc: 0.60           # AUC > 0.60 (random baseline = 0.50)
-    multiclass_min_f1_ratio: 2.0   # F1 > 2/K  (K = num_classes)
-    regression_min_r2: 0.05        # R2 > 0.05
+    # Distill vs Direct boundary (2x random baseline)
+    binary_min_auc: 0.60           # AUC > 0.60 → distill, else direct
+    multiclass_min_f1_ratio: 2.0   # F1 > 2/K → distill, else direct
+    regression_min_r2: 0.05        # R2 > 0.05 → distill, else direct
+    # Floor: below this → SKIP LGBM entirely (Layer 3 rule-only)
+    # Saves compute when teacher is at/below random — no point training LGBM
+    floor_binary_auc: 0.52
+    floor_multiclass_f1_ratio: 1.0   # F1 <= 1/K means random or worse
+    floor_regression_r2: 0.01
 
   # Calibration — Platt scaling for tasks requiring accurate probabilities
   calibration:
