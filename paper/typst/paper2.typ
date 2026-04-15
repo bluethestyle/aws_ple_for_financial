@@ -86,7 +86,7 @@
 
 The final deliverable of a financial recommendation system is not a probability
 but a _reason the customer can accept_.
-A model outputting $P("invest" | x) = 0.73$ provides no value to:
+A model outputting $P("acquire" | x) = 0.73$ provides no value to:
 - The *customer* who asks "Why was this card recommended to me?"
 - The *relationship manager* who needs a talking point for the sales call.
 - The *regulator* who demands "Why was this decision made?" under Article 13 of the EU AI Act.
@@ -1350,7 +1350,7 @@ suitable for regulatory inspection.
 *Fairness metrics.*
 We compute Disparate Impact (DI), Statistical Parity Difference (SPD),
 and Equal Opportunity Difference (EOD) across protected attributes
-(age group, gender, income tier) for each task.
+(age group, gender, income quintile, region type, lifecycle stage) for each task.
 The fairness monitor runs as a scheduled batch job
 and generates alerts when any metric exceeds configurable thresholds.
 
@@ -1433,7 +1433,7 @@ that practitioners already understand.
 By learning a directed acyclic graph over the feature space,
 it can identify relationships that practitioners have not anticipated ---
 for instance, that a specific channel usage pattern causes increased overseas transactions,
-which in turn predicts interest in investment products.
+which in turn predicts interest in travel-oriented check card products.
 
 This dual structure has a concrete regulatory advantage:
 when a regulator asks "why did the model recommend this product to this customer?",
