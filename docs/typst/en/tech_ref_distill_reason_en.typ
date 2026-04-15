@@ -160,7 +160,7 @@
   feature reverse mapping via 734D grounding, the 2-Layer recommendation reason
   generation architecture, the Safety Gate, and the serving infrastructure.
   Topics covered include dark knowledge transfer via Temperature Scaling ($T = 5$),
-  IG-based feature selection (734D $arrow$ 200D $arrow$ ~140D), LGBM custom objectives,
+  LGBM gain importance-based feature selection (~403D $arrow$ ~140D), LGBM custom objectives,
   the multiplicative combination structure of the FD-TVS master formula,
   2-tier reason generation with L1 Template + L2 LLM, 3-Agent Self-Critique,
   the Safety Gate for compliance with the Financial Consumer Protection Act and AI Basic Act,
@@ -336,48 +336,42 @@ Reverse KL has mode-seeking characteristics and risks ignoring certain modes, ma
 it unsuitable for distillation.
 
 
-== IG-Based Feature Selection
+== LGBM Feature Importance-Based Feature Selection
 
-=== Dual-Objective Selection
+Feature selection is performed using the *gain importance* of the trained LGBM Student model.
+Teacher model IG (Integrated Gradients) attribution is not used — the teacher has already been
+distilled, and selecting features from the serving model's (LGBM Student's) perspective aligns
+with the design intent.
 
-IG feature selection balances two objectives via a weighted combination ($alpha = 0.7$ predictive + $0.3$ explanation):
+=== Design Rationale
 
-$ "score"_i = alpha dot "IG"_i^"predictive" + (1 - alpha) dot "IG"_i^"explanation" $
+*Serving model alignment*: The deployed model is the LGBM Student. Gain importance reflects
+what features LGBM actually computes. Teacher (PLE) IG attributions can differ substantially
+from Student importance due to the architectural gap between deep networks and gradient-boosted trees.
 
-- *Predictive objective* ($alpha = 0.7$): features that maximize task AUC/F1 for the distilled LGBM
-- *Explanation objective* ($0.3$): features whose IG attributions map cleanly to human-readable financial language via the reverse mapping dictionary
+*Operational stability*: LGBM gain computation is a fast post-hoc step on the trained Student.
+Teacher IG requires backpropagation through the full PLE graph at production scale
+(941K customers, 403 features), causing out-of-memory failures.
 
-This dual objective ensures the selected feature set supports both accurate prediction and regulatory-grade explanation (AI Basic Act Art. 34).
+*Interpretability alignment*: SHAP/gain explanations derived from the LGBM Student are directly
+grounded in the model that generated the recommendation, satisfying EU AI Act Art. 13
+(explanations must reflect the actual decision mechanism).
 
-=== 3-Stage Pipeline
+=== 2-Stage Pipeline
 
 _The dimensionality figures below are based on the full-bank design (734D). Intermediate dimensions may differ in the Santander implementation (~349D raw / 403D post-Phase-0)._
 
-*Full-bank design basis:* 734D (design) / ~349D raw / 403D post-Phase-0 (impl.) $arrow$ 200D (Stage 1) $arrow$ ~140D (Stage 2) $arrow$ final LGBM input
+*Full-bank design basis:* 734D (design) / ~349D raw / 403D post-Phase-0 (impl.) $arrow$ ~140D (Stage 1) $arrow$ final LGBM input
 
-*Stage 1 -- Integrated Gradients (734D $arrow$ 200D):*
+*Stage 1 -- LGBM Gain Importance Filter:*
+Top-$k$ features capturing approximately 95% of cumulative gain importance are retained per task.
+The resulting feature set is typically 40--80 features per task (down from 403D).
 
-$ "IG"(bold(x))_i = (x_i - x'_i) times integral_0^1 frac(partial F(bold(x)' + alpha (bold(x) - bold(x)')), partial x_i) d alpha $ <ig-formula>
-
-- Baseline: zero vector (represents "average customer" or "absence of information" in normalized feature space)
-- Steps: 50 (trapezoidal integral approximation)
-- Completeness axiom: $sum_i "IG"(bold(x))_i = F(bold(x)) - F(bold(x)')$ (no attribution leakage)
-
-*Stage 2 -- LGBM Importance Filter (200D $arrow$ $tilde$140D):*
-The bottom 30% by gain importance are removed.
-
-*Stage 3 -- Mandatory Feature Preservation:*
-Seven features always included regardless of IG/LGBM importance:
+*Stage 2 -- Mandatory Feature Preservation:*
+Seven features always included regardless of LGBM importance:
 - TDA: `persistence_entropy`, `landscape_peak`
 - Economics: `mpc`, `income_elasticity`, `permanent_income_ratio`
 - FinEng: `sharpe_ratio`, `volatility`
-
-=== Why IG Is More Suitable Than SHAP
-
-SHAP requires evaluating $2^(734)$ subsets, which is computationally infeasible.
-IG is computed as a discrete approximation of a path integral in linear time
-($O(n dot s)$, $s$ = steps) and satisfies the completeness axiom, ensuring no
-attribution leakage.
 
 
 == LightGBM Custom Objective

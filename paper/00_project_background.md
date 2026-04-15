@@ -203,7 +203,7 @@ adaTT(Adaptive Task Transfer)를 결합하여:
 - 3단계 정규화 (log transform → scaler → raw copy)
 - 로짓 전이 3방식 (output_concat / hidden_concat / residual)
 - Uncertainty weighting (Kendall et al.)
-- 증류 시 IG 기반 피처 선택
+- 증류 시 LGBM gain importance 기반 피처 선택
 
 ### 온프렘의 한계
 - 단일 GPU 서버로 대규모 실험 불가

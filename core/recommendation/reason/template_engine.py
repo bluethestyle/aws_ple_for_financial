@@ -77,6 +77,11 @@ class TemplateEngine:
 
         self.top_k_features: int = te_cfg.get("top_k_features", 3)
 
+        # Task name -> customer-facing product name
+        self.item_name_map: Dict[str, str] = te_cfg.get(
+            "item_name_map", {},
+        )
+
         # Feature prefix -> template category mapping
         self.feature_category_map: Dict[str, str] = te_cfg.get(
             "feature_category_map", {},
@@ -237,6 +242,7 @@ class TemplateEngine:
         ig_top_features: List[Tuple[str, float]],
         segment: str = "WARMSTART",
         task_type: Optional[str] = None,
+        task_name: Optional[str] = None,
         item_info: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Generate recommendation reasons for a customer-item pair.
@@ -248,7 +254,9 @@ class TemplateEngine:
                              descending importance.
             segment: Customer segment (``WARMSTART`` / ``COLDSTART`` /
                      ``ANONYMOUS``).
-            task_type: Optional task type for narrative framing.
+            task_type: Optional task type (binary/multiclass/regression).
+            task_name: Optional task name for task_frame lookup
+                       (e.g. ``churn_signal``). Falls back to item_id.
             item_info: Optional item metadata dict; falls back to
                        ``self.item_metadata[item_id]``.
 
@@ -256,7 +264,13 @@ class TemplateEngine:
             Dict with ``reasons``, ``generation_method``, ``segment``, etc.
         """
         info = item_info or self.item_metadata.get(item_id, {})
-        item_name = info.get("name", item_id)
+        # Resolve customer-facing name: item_name_map > item_info > item_id
+        _task_key = task_name or item_id
+        item_name = (
+            self.item_name_map.get(_task_key)
+            or info.get("name")
+            or item_id
+        )
 
         # Segment dispatch
         cid = str(customer_id)
@@ -271,6 +285,22 @@ class TemplateEngine:
             if not reasons:
                 reasons = self._popularity_fallback(cid, item_name)
 
+        # Deduplicate identical reason texts
+        seen_texts: set = set()
+        unique_reasons: list = []
+        for r in reasons:
+            if r["text"] not in seen_texts:
+                seen_texts.add(r["text"])
+                unique_reasons.append(r)
+        reasons = unique_reasons
+
+        # Apply task_frame wrapping to each reason text
+        frame = self.task_frames.get(_task_key, {})
+        if frame:
+            frame_tpl = frame.get("positive", "{reason}")
+            for r in reasons:
+                r["text"] = frame_tpl.replace("{reason}", r["text"])
+
         result: Dict[str, Any] = {
             "customer_id": customer_id,
             "item_id": item_id,
@@ -279,10 +309,6 @@ class TemplateEngine:
             "generation_method": "template_l1",
             "generated_at": datetime.utcnow().isoformat() + "Z",
         }
-
-        # Task-specific narrative frame
-        if task_type and task_type in self.task_frames:
-            result["task_frame"] = self.task_frames[task_type]
 
         return result
 

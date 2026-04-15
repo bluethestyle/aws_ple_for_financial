@@ -584,7 +584,7 @@ L1 사유에도 한국어 IG 해석이 반영된다.
 3. **L1 생성**: `generate_l1()`이 `context_store.get_context(cid)`로 팩트 조회
 4. **L2a 전달**: `get_best_reason()`이 팩트를 SQS context에 직접 주입
 5. **프롬프트 주입**: `_build_llm_prompt()`이 "## 고객 특성 팩트" 섹션 추가
-6. **LLM 호출**: Solar Pro가 *고객을 이해한 상태*로 사유 작성
+6. **LLM 호출**: Claude Sonnet이 *고객을 이해한 상태*로 사유 작성
 
 **룰 정의**: `configs/financial/fact_extraction.yaml`에 15개 기본 룰 (포트폴리오 구성, 관심사, 리스크 성향, 생애주기, 참여도, 소비 패턴, 이탈 리스크). YAML 수정만으로 확장 가능.
 

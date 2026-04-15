@@ -608,7 +608,6 @@ The platform deploys a **5-agent architecture**: 3 serving agents and 2 ops/audi
 ### Prerequisites
 
 - Bedrock model access: Claude Sonnet, Claude Haiku, Claude Opus, Titan Embeddings V2
-- Bedrock Marketplace: Upstage Solar Pro (for reason generation)
 - IAM role: `bedrock:InvokeModel`, `s3:GetObject/PutObject`, `dynamodb:*`, `sns:Publish`
 
 ### Agent Configuration
@@ -647,7 +646,7 @@ Requests are classified by context richness rather than customer tier:
 
 | Agent | Model |
 |---|---|
-| Reason Generator | Solar Pro (primary), Claude Sonnet (fallback) |
+| Reason Generator | Claude Sonnet |
 | Safety Gate | Claude Sonnet |
 | OpsAgent | Claude Haiku (high-frequency checks) |
 | AuditAgent | Claude Opus (weekly compliance reports) |

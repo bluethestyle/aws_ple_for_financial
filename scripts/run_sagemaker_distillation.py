@@ -62,8 +62,8 @@ S3_CHECKPOINT_PREFIX = "checkpoints/distillation"
 S3_OUTPUT_PREFIX = "output/distillation"
 S3_SOURCE_PREFIX = "source/distillation"
 
-# Distillation job defaults (CLAUDE.md 1.5: CPU instance, no GPU needed)
-DISTILL_INSTANCE_TYPE = "ml.m5.4xlarge"     # 16 vCPU, 64GB RAM — faster multiclass LGBM
+# Distillation job defaults — GPU for soft-label inference, CPU cores for LGBM
+DISTILL_INSTANCE_TYPE = "ml.g4dn.xlarge"    # T4 GPU (soft labels) + 4 vCPU (LGBM)
 DISTILL_MAX_RUN = 10800                       # 3 hr max (LGBM x 13 tasks + IG)
 DISTILL_MAX_WAIT = 14400                      # max_run + 1hr (CLAUDE.md 1.5)
 
@@ -88,7 +88,7 @@ def get_aws_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "s3_bucket": aws.get("s3_bucket", "aiops-ple-financial"),
         "role_arn": aws.get("role_arn"),
         "use_spot": aws.get("use_spot", True),
-        "cpu_instance_type": aws.get("cpu_instance_type", DISTILL_INSTANCE_TYPE),
+        "distill_instance_type": aws.get("instance_type", DISTILL_INSTANCE_TYPE),
     }
 
 
@@ -215,8 +215,8 @@ def submit_distillation_job(
     session = sagemaker.Session()
     role = aws_config["role_arn"]
 
-    # CPU instance — LGBM does not need GPU (CLAUDE.md 1.6: Phase 0/distill on CPU)
-    instance_type = aws_config.get("cpu_instance_type", DISTILL_INSTANCE_TYPE)
+    # GPU instance — soft label inference on GPU, LGBM on CPU cores
+    instance_type = aws_config.get("distill_instance_type", DISTILL_INSTANCE_TYPE)
     timestamp = time.strftime("%m%d-%H%M")
     # SageMaker job names: [a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}
     safe_scenario = scenario.replace("_", "-")[:18]
@@ -227,12 +227,12 @@ def submit_distillation_job(
     logger.info("SageMaker Distillation Job")
     logger.info("  Scenario:  %s", scenario)
     logger.info("  Job name:  %s", job_name)
-    logger.info("  Instance:  %s (CPU, Spot=%s)", instance_type, aws_config["use_spot"])
+    logger.info("  Instance:  %s (GPU, Spot=%s)", instance_type, aws_config["use_spot"])
     logger.info("  Data URI:  %s", s3_data_uri)
     logger.info("  Model URI: %s", s3_model_uri)
     logger.info("  Output:    %s", s3_output_uri)
     logger.info("  Max run:   %ds (%d min)", DISTILL_MAX_RUN, DISTILL_MAX_RUN // 60)
-    logger.info("  Cost est.: ~$0.11/hr x ~2hr = ~$0.22 (Spot)")
+    logger.info("  Cost est.: ~$0.16/hr x ~1hr = ~$0.16 (Spot, g4dn.xlarge)")
     logger.info("  HPs:")
     for k, v in sorted(hp.items()):
         logger.info("    %s = %s", k, v)
@@ -551,7 +551,7 @@ def main() -> None:
         hp["alpha"] = str(args.alpha)
 
     # --- Pre-flight summary ---
-    instance_type = aws_config.get("cpu_instance_type", DISTILL_INSTANCE_TYPE)
+    instance_type = aws_config.get("distill_instance_type", DISTILL_INSTANCE_TYPE)
     logger.info("=" * 60)
     logger.info("SageMaker Distillation -- %s", args.scenario)
     logger.info("=" * 60)
@@ -559,7 +559,7 @@ def main() -> None:
     logger.info("  Scenario:     %s", args.scenario)
     logger.info("  S3 bucket:    %s", s3_bucket)
     logger.info("  Data URI:     %s", s3_data_uri)
-    logger.info("  Instance:     %s (CPU -- no GPU needed for LGBM)", instance_type)
+    logger.info("  Instance:     %s (GPU for soft labels, CPU for LGBM)", instance_type)
     logger.info("  Max run:      %ds (%d min)", DISTILL_MAX_RUN, DISTILL_MAX_RUN // 60)
     logger.info("  Use spot:     %s", aws_config["use_spot"])
     logger.info("  Cost est.:    ~$0.11/hr x ~2hr = ~$0.22 (Spot)")

@@ -303,7 +303,7 @@ checklist:
   - item_id: "4.3"
     pipeline_part: P4
     agent: ops
-    description: "IG 기반 피처 선택 — 선택된 피처 수 스키마 범위 내"
+    description: "LGBM gain importance 피처 선택 — 선택된 피처 수 스키마 범위 내"
     tool_name: read_distillation_fidelity
     tool_params: {metric: "selected_feature_count"}
     threshold: {field: "feature_count_out_of_range", expect: false}

@@ -156,6 +156,11 @@ class DriftDetector:
         PSI value at which a feature is flagged as *critical* (default 0.25).
     n_bins : int
         Histogram bins for PSI (default 10).
+    config : dict, optional
+        Full pipeline config dict (from ``load_merged_config()``).  When
+        provided, ``monitoring.drift.psi_warning``, ``monitoring.drift.psi_critical``,
+        and ``monitoring.drift.n_bins`` are used as defaults before explicit
+        kwargs take effect.
     """
 
     def __init__(
@@ -163,7 +168,15 @@ class DriftDetector:
         psi_threshold_warning: float = 0.1,
         psi_threshold_critical: float = 0.25,
         n_bins: int = 10,
+        config: Optional[Dict[str, Any]] = None,
     ) -> None:
+        # Resolve defaults from pipeline config when provided
+        if config is not None:
+            _cfg_drift = config.get("monitoring", {}).get("drift", {})
+            psi_threshold_warning = float(_cfg_drift.get("psi_warning", psi_threshold_warning))
+            psi_threshold_critical = float(_cfg_drift.get("psi_critical", psi_threshold_critical))
+            n_bins = int(_cfg_drift.get("n_bins", n_bins))
+
         self.psi_threshold_warning = psi_threshold_warning
         self.psi_threshold_critical = psi_threshold_critical
         self.calculator = PSICalculator(n_bins=n_bins)

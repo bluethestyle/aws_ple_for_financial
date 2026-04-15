@@ -37,8 +37,8 @@ agent:
       - case_search          # deterministic search results
 
   models:
-    reason_generation: solar_pro  # Upstage Solar Pro for Korean L2a
-    reason_critique: solar_pro    # same model for self-critique
+    reason_generation: claude_sonnet  # Claude Sonnet for Korean L2a
+    reason_critique: claude_sonnet    # same model for self-critique
     factuality_check: haiku       # Claude Haiku for score judgment
     agent_dialog: sonnet          # Claude Sonnet for interpretation
     agent_consensus: sonnet       # Claude Sonnet x 3 for voting

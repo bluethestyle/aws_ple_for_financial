@@ -687,7 +687,7 @@ The design evolved progressively through continuous dialog in a single session:
 + *"On-prem?"* → "Core features work without Bedrock" → on-prem baseline + AWS Bedrock extension
 + *"Hallucination risk"* → 3-agent independent voting → *"Delphi has convergence bias"* → 2-Round hybrid (independent voting + sequential deliberation) + minority report preservation
 + *"Cases accumulate into knowledge"* → Diagnostic Case Store (LanceDB) → similar search + statistics + resolution tracking
-+ *"Korean models?"* → Solar Pro (AWS) + Exaone 3.5 (on-prem) → per-task optimal model assignment
++ *"Korean models?"* → Claude Sonnet (AWS, L2a rewriting) + Exaone 3.5 (on-prem) → per-task optimal model assignment
 
 Repeatedly asking "What's the weakness in this design?" at each step resulted in a 15-section, 3,800-line design document and 21 files of \~4,800 lines of implementation completed in a single session.
 
@@ -777,7 +777,7 @@ with a 90-day half-life default. Solved with ~30 LOC added to
 
 `InterpretationRegistry` provides feature-level Korean interpretations, but lacked
 *customer narrative profiles*. Without facts like "this customer prefers deposits
-and is risk-averse" in the L2a prompt, Solar Pro generates reasons without context.
+and is risk-averse" in the L2a prompt, Claude Sonnet generates reasons without context.
 We implemented `FactExtractor` rule-based --- 15 rules defined in YAML config,
 safely evaluated via Python `eval()` with a sandboxed `__builtins__`. *Zero LLM calls*.
 

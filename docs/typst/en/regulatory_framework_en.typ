@@ -979,7 +979,7 @@ The most critical regulatory issue when leveraging LLMs in financial AI systems 
   inset: 5pt,
   stroke: 0.5pt,
   [*Safeguard*], [*Details*],
-  [No Data Training], [Input/output data is never transmitted to model providers (Anthropic, Upstage, Meta, etc.) and is never used for model retraining (including fine-tuning). AWS guarantees this contractually in its Terms of Service.],
+  [No Data Training], [Input/output data is never transmitted to model providers (Anthropic, Meta, etc.) and is never used for model retraining (including fine-tuning). AWS guarantees this contractually in its Terms of Service.],
   [Transit Encryption], [TLS 1.2+ encryption protects data in transit.],
   [VPC PrivateLink], [Bedrock API is invoked through VPC-internal endpoints without traversing the public internet. Customer data is never exposed to public networks.],
   [In-Region Processing], [All inference is processed in the ap-northeast-2 (Seoul) Region. Customer data never leaves Korea.],
@@ -1018,7 +1018,7 @@ Data flow during recommendation reason generation and agent diagnostics:
     edge((0,0), (0,1), "->", label: [VPC PrivateLink], label-side: right),
     node((0,1), [Bedrock Endpoint \ (ap-northeast-2)], fill: rgb("#d6e6f0"), width: 44mm),
     edge((0,1), (0,2), "->"),
-    node((0,2), [Solar Pro / Claude Sonnet / Haiku \ (inference only, no training)], fill: rgb("#d6e6f0"), width: 58mm),
+    node((0,2), [Claude Sonnet / Haiku / Opus \ (inference only, no training)], fill: rgb("#d6e6f0"), width: 58mm),
     edge((0,2), (0,3), "->", label: [Response → within VPC], label-side: right),
     node((0,3), [DynamoDB Cache \ (ap-northeast-2)], fill: rgb("#e8f5e9"), width: 44mm),
     node((2,2), [✗ No data transmitted to model providers \ ✗ No internet traversal \ ✗ No cross-region transfer \ ✓ All calls logged in CloudTrail], fill: rgb("#fff3e0"), width: 72mm),
@@ -1053,7 +1053,7 @@ Air-gapped on-premises environments are *structurally stronger* than cloud deplo
     node((2,0), [*AWS Cloud*], fill: luma(220), width: 52mm),
     node((2,1), [S3 Data Lake], fill: luma(240), width: 44mm),
     edge((2,1), (2,2), "->", label: [DuckDB], label-side: right),
-    node((2,2), [SageMaker + Lambda \ Bedrock (Solar/Claude) \ VPC PrivateLink], fill: rgb("#d6e6f0"), width: 44mm),
+    node((2,2), [SageMaker + Lambda \ Bedrock (Claude) \ VPC PrivateLink], fill: rgb("#d6e6f0"), width: 44mm),
     node((2,3), [CloudTrail + S3 WORM \ DynamoDB Audit], fill: rgb("#e8f5e9"), width: 44mm),
     edge((2,2), (2,3), "->"),
     // Shared
@@ -1123,7 +1123,7 @@ On-premises agents use the *same rule engine, checklist, and tool catalog* as AW
   [FSS data governance], [Local HMAC audit logs], [CloudTrail + S3 Object Lock],
   [EU AI Act human oversight], [Agent recommendation + human decision (same)], [Same + dialog interface],
   [AI Basic Act kill switch], [Local kill switch (same)], [DynamoDB kill switch],
-  [Explainability], [IG-based reasons + Exaone rewrite], [IG-based reasons + Solar rewrite],
+  [Explainability], [IG-based reasons + Exaone rewrite], [IG-based reasons + Claude Sonnet rewrite],
 )
 
 On-premises lacks conversational agent capabilities but offers structurally perfect data protection. From a regulatory perspective, "customer data never leaves the premises" is the strongest possible safeguard.

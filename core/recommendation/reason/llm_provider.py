@@ -9,7 +9,7 @@ Implementations:
     OpenAIProvider    -- OpenAI API (GPT-4, etc.)
     GeminiProvider    -- Google Gemini API (gemini-2.0-flash, gemini-2.5-pro)
     SolarProvider     -- Upstage Solar via Bedrock Marketplace
-    LocalLLMProvider  -- Stub for future on-prem LLM (NotImplemented)
+    LocalLLMProvider  -- Local OpenAI-compatible API (vLLM/Ollama/TGI)
     DummyProvider     -- Deterministic stub for unit tests.
 
 Usage::
@@ -386,35 +386,78 @@ class SolarProvider(AbstractLLMProvider):
 # ---------------------------------------------------------------------------
 
 class LocalLLMProvider(AbstractLLMProvider):
-    """Stub for future on-premises LLM integration.
+    """Local OpenAI-compatible LLM provider (vLLM / Ollama / TGI).
 
-    Intended for vLLM / Ollama / TGI deployments running on local GPU servers.
-    Not implemented — raises :class:`NotImplementedError` on all calls.
+    Calls a locally running inference server that exposes the OpenAI
+    ``/v1/completions`` endpoint.  Compatible with vLLM, Ollama (with
+    ``OLLAMA_ORIGINS`` set), and Text Generation Inference.
 
     Config::
 
         local:
-          endpoint: http://localhost:8000/v1
+          endpoint: http://localhost:8000/v1   # base URL without trailing /
           model: llama-3-8b-instruct
           max_tokens: 1024
           temperature: 0.2
+          timeout: 30                          # HTTP timeout in seconds
     """
 
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
-        self.endpoint: str = config.get("endpoint", "http://localhost:8000/v1")
-        self.model: str = config.get("model", "llama-3-8b-instruct")
+        self.base_url: str = config.get("endpoint", "http://localhost:8000/v1").rstrip("/")
+        self.model_name: str = config.get("model", "llama-3-8b-instruct")
         self.max_tokens: int = config.get("max_tokens", 1024)
         self.temperature: float = config.get("temperature", 0.2)
+        self.timeout: int = config.get("timeout", 30)
 
     def generate(self, prompt: str, **kwargs) -> str:
-        raise NotImplementedError(
-            "LocalLLMProvider is not yet implemented. "
-            "Planned for vLLM/Ollama/TGI on-prem deployment."
-        )
+        """Send *prompt* to the local OpenAI-compatible completions endpoint.
+
+        Args:
+            prompt: Text prompt.
+            **kwargs: Optional overrides for ``max_tokens`` and ``temperature``.
+
+        Returns:
+            Generated text string, or empty string on error.
+        """
+        try:
+            import requests  # lightweight; no extra install needed in most envs
+        except ImportError:
+            logger.error("LocalLLMProvider requires the 'requests' package.")
+            return ""
+
+        max_tokens = kwargs.get("max_tokens", self.max_tokens)
+        temperature = kwargs.get("temperature", self.temperature)
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/v1/completions",
+                json={
+                    "model": self.model_name,
+                    "prompt": prompt,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            choices = data.get("choices", [])
+            if choices:
+                return choices[0].get("text", "")
+            return ""
+        except Exception as exc:
+            logger.warning("LocalLLMProvider request failed: %s", exc)
+            return ""
 
     def is_available(self) -> bool:
-        return False
+        """Return ``True`` when the local server responds to a health probe."""
+        try:
+            import requests
+            resp = requests.get(f"{self.base_url}/health", timeout=5)
+            return resp.status_code == 200
+        except Exception:
+            return False
 
 
 # ---------------------------------------------------------------------------

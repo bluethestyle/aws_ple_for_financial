@@ -598,7 +598,7 @@ PLE Teacher (GPU training)
     | Store in S3
 LGBM Student (CPU training)
     | alpha=0.3 (30% hard + 70% soft)
-    | IG-based feature selection (top-k features)
+    | LGBM gain importance feature selection (top-k features)
     | Save lightweight model
 Serving (real-time: LGBM ~5ms, batch: PLE)
 ```
@@ -841,7 +841,7 @@ EncryptionPipeline.process_source()
 
       // Phase 4 header
       node((0, 5), [*Phase 4: Distillation*], width: 60mm, fill: phase-fill, name: <ph4>),
-      node((0, 6), [*Stage 9: StudentTrainer* \ #text(size: 6pt)[PLE teacher → LGBM students · Soft label (T=5.0, α=0.3)] \ #text(size: 6pt)[IG-based feature selection + fidelity validation]], width: 55mm, fill: proc-fill, name: <s9>),
+      node((0, 6), [*Stage 9: StudentTrainer* \ #text(size: 6pt)[PLE teacher → LGBM students · Soft label (T=5.0, α=0.3)] \ #text(size: 6pt)[LGBM gain importance feature selection + fidelity validation]], width: 55mm, fill: proc-fill, name: <s9>),
 
       edge(<s85>, <ph4>, "->"),
       edge(<ph4>, <s9>, "->"),

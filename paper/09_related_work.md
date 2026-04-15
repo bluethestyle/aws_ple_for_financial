@@ -208,7 +208,7 @@ Recent work demonstrates that distilling deep models to LightGBM/XGBoost achieve
 
 **Curriculum-Scheduled Knowledge Distillation (CKD)** from multiple pre-trained teachers for multi-domain sequential recommendation demonstrates effective cross-domain knowledge transfer via curriculum learning.
 
-**Gap filled by our work:** We distill a complex heterogeneous-expert PLE (teacher) to a single LGBM (student) using IG-based feature selection to identify the most informative features. The LGBM student serves in a serverless (Lambda) environment with <50ms latency, while the teacher's expert gate weights generate human-readable recommendation reasons.
+**Gap filled by our work:** We distill a complex heterogeneous-expert PLE (teacher) to a single LGBM (student) using LGBM gain importance-based feature selection to identify the most informative features. The LGBM student serves in a serverless (Lambda) environment with <50ms latency, while the teacher's expert gate weights generate human-readable recommendation reasons.
 
 ---
 

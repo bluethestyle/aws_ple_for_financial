@@ -5,7 +5,7 @@ Notification Service for Agent Reports
 Delivers agent reports and alerts via multiple channels:
     - Slack (webhook)
     - SNS (AWS)
-    - Email (SES — stub for future)
+    - Email (SES — boto3 ses.send_email)
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ class NotificationService:
         self._config = config or {}
         self._slack_config = self._config.get("slack", {})
         self._sns_config = self._config.get("sns", {})
+        self._ses_config = self._config.get("ses", {})
+        self._ses_client = None
 
     def send(
         self,
@@ -58,6 +60,8 @@ class NotificationService:
                 channels.append("slack")
             if self._sns_config.get("topic_arn"):
                 channels.append("sns")
+            if self._ses_config.get("from_address") and self._ses_config.get("recipients"):
+                channels.append("email")
 
         results = {}
         for channel in channels:
@@ -66,6 +70,8 @@ class NotificationService:
                     results["slack"] = self._send_slack(subject, body, severity)
                 elif channel == "sns":
                     results["sns"] = self._send_sns(subject, body, severity)
+                elif channel == "email":
+                    results["email"] = self._send_ses(subject, body, severity)
                 else:
                     logger.warning("Unknown notification channel: %s", channel)
                     results[channel] = False
@@ -106,6 +112,66 @@ class NotificationService:
                 return resp.status == 200
         except Exception as e:
             logger.error("Slack webhook failed: %s", e)
+            return False
+
+    def _get_ses_client(self):
+        """Lazy-initialise the boto3 SES client."""
+        if self._ses_client is None:
+            import boto3
+            self._ses_client = boto3.client(
+                "ses",
+                region_name=self._ses_config.get("region", "ap-northeast-2"),
+            )
+        return self._ses_client
+
+    def _send_ses(self, subject: str, body: Dict, severity: str) -> bool:
+        """Send email via AWS SES.
+
+        Reads ``ses`` config keys:
+            from_address: verified sender address
+            recipients:   list of destination addresses
+            region:       AWS region (default ap-northeast-2)
+        """
+        from_address = self._ses_config.get("from_address")
+        recipients: List[str] = self._ses_config.get("recipients", [])
+        if not from_address or not recipients:
+            logger.warning("SES send skipped: from_address or recipients not configured")
+            return False
+
+        try:
+            client = self._get_ses_client()
+
+            # Plain-text fallback from structured body
+            text_body = json.dumps(body, ensure_ascii=False, indent=2, default=str)
+
+            # HTML body: wrap key items in a simple table
+            attention = body.get("attention_required", body.get("focus_areas", []))
+            rows = ""
+            for item in attention[:10]:
+                finding = item.get("finding", item.get("detail", str(item)))
+                rows += f"<tr><td>{finding}</td></tr>\n"
+            html_body = (
+                f"<html><body>"
+                f"<h3>[{severity}] {subject}</h3>"
+                f"<table border='1'>{rows}</table>"
+                f"<pre>{text_body[:8000]}</pre>"
+                f"</body></html>"
+            )
+
+            client.send_email(
+                Source=from_address,
+                Destination={"ToAddresses": recipients},
+                Message={
+                    "Subject": {"Data": f"[{severity}] {subject}", "Charset": "UTF-8"},
+                    "Body": {
+                        "Text": {"Data": text_body[:262144], "Charset": "UTF-8"},
+                        "Html": {"Data": html_body, "Charset": "UTF-8"},
+                    },
+                },
+            )
+            return True
+        except Exception as e:
+            logger.warning("SES send_email failed: %s", e)
             return False
 
     def _send_sns(self, subject: str, body: Dict, severity: str) -> bool:

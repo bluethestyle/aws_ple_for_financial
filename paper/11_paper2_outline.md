@@ -36,7 +36,7 @@
 - Q3: 생성된 추천사유가 규제 요건을 자동으로 준수하도록 어떻게 보장하는가?
 
 ### 1.3 Contributions
-1. **IG-guided Knowledge Distillation**: teacher의 피처 중요도를 기준으로 student 입력 선택 → 설명력 보존
+1. **LGBM gain importance Knowledge Distillation**: LGBM Student의 gain importance 기반 피처 선택 → 서빙 모델 정렬 + 설명력 보존
 2. **Feature Business Reverse-Mapping**: 모든 피처에 비즈니스 맥락 역매핑 (interpretation_registry)
 3. **3-Agent Reason Generation Pipeline**: 피처 선별 → 사유 생성 → 안전성 검증 역할 분리
 4. **Regulatory Compliance by Design**: 금감원 가이드라인 + EU AI Act 요건을 파이프라인에 내장

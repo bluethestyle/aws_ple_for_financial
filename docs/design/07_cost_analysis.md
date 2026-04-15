@@ -252,7 +252,7 @@ serving:
 |---|---|---|
 | 3-에이전트 합의 (WARN/FAIL 10건) | Sonnet × 3 | ~$0.30 |
 | 에이전트 대화 (담당자 질의) | Sonnet | ~$0.20 |
-| L2a 사유 생성 (47K건 배치) | Solar Pro | ~$0.10 |
+| L2a 사유 생성 (47K건 배치) | Claude Sonnet | ~$0.21 |
 | SelfChecker factuality | Haiku | ~$0.05 |
 | 임베딩 (케이스 스토어) | Titan V2 | ~$0.01 |
 | **에이전트 총 비용** | | **~$0.66/일** |

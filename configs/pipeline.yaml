@@ -217,13 +217,12 @@ distillation:
       max_mae_gap: 0.05
       max_rmse_gap: 0.10
 
-  # IG-based dual-objective feature selection (Paper 2 core contribution)
+  # Feature selection — LGBM gain importance from student model
+  # Teacher IG is reserved for offline analysis / reason pipeline (not distillation)
   feature_selection:
-    method: ig_dual               # ig_dual | lgbm_gain | both
-    ig_alpha: 0.7                 # predictive vs explanation weight
+    method: lgbm_gain             # lgbm_gain (distillation), ig_dual (offline only)
     top_k: null                   # null = use cumulative_threshold instead
     cumulative_threshold: 0.95    # keep features covering 95% cumulative importance
-    ig_sample_size: 10000         # samples for IG computation (subset for speed)
 
   # Temporal drift monitoring — SR 11-7 MRM safeguard for daily re-distillation
   drift_monitoring:
@@ -234,6 +233,53 @@ distillation:
     max_prediction_shift: 0.10    # |mean(current) - mean(previous)| absolute shift
     min_rank_correlation: 0.95    # Spearman rho between version rankings
     baseline_path: outputs/distillation_baseline/
+
+  # Feature-level PSI drift (Step 4.6 in distillation pipeline)
+  feature_drift:
+    enabled: true
+    baseline_path: outputs/distillation_baseline/feature_baseline.json
+    psi_threshold_warning: 0.1    # PSI >= 0.1 triggers a warning
+    psi_threshold_critical: 0.25  # PSI >= 0.25 triggers a critical alert
+
+# ---------------------------------------------------------------------------
+# Monitoring — fairness, drift, incident, governance thresholds
+# (mirrors configs/monitoring.yaml — this is the authoritative source for
+#  code; monitoring.yaml is kept as a human-readable reference only)
+# ---------------------------------------------------------------------------
+monitoring:
+  fairness:
+    thresholds:
+      di_lower: 0.8
+      di_upper: 1.25
+      spd_max: 0.1
+      eod_max: 0.1
+    auto_incident: true
+
+  drift:
+    psi_warning: 0.1
+    psi_critical: 0.25
+    n_bins: 10
+
+  incidents:
+    severity_thresholds:
+      critical:
+        - kill_switch_activation
+        - di_below_0.6
+        - security_breach
+      major:
+        - di_below_0.8
+        - herding_critical
+        - model_rollback
+        - consecutive_drift_retrain
+      minor:
+        - drift_warning
+        - quality_drop
+        - herding_high
+        - single_feature_critical
+
+  governance_report:
+    enabled: true
+    frequency: weekly
 
 # ---------------------------------------------------------------------------
 # Evaluation metrics per task type (shared across all datasets)
@@ -275,10 +321,34 @@ analysis:
 llm_provider:
   backend: bedrock              # bedrock | openai | gemini | solar | dummy
   bedrock:
-    model_id: anthropic.claude-3-haiku-20240307-v1:0
     region: ap-northeast-2      # Seoul region (same as SageMaker)
-    max_tokens: 500             # reason text is short
-    temperature: 0.2            # low creativity for financial compliance
+    # Per-agent model assignment (Bedrock only)
+    models:
+      reason_generation:        # L2a — customer-facing reason rewrite
+        model_id: global.anthropic.claude-sonnet-4-6
+        max_tokens: 500
+        temperature: 0.3
+      reason_critique:          # L2a self-critique
+        model_id: global.anthropic.claude-sonnet-4-6
+        max_tokens: 500
+        temperature: 0.2
+      factuality_check:         # Agent 3 SelfChecker — fast factuality
+        model_id: global.anthropic.claude-haiku-4-5-20251001-v1:0
+        max_tokens: 300
+        temperature: 0.0
+      agent_dialog:             # Ops/Audit inter-agent dialog
+        model_id: global.anthropic.claude-sonnet-4-6
+        max_tokens: 2000
+        temperature: 0.1
+      agent_consensus:          # Multi-agent consensus (3x parallel)
+        model_id: global.anthropic.claude-sonnet-4-6
+        max_tokens: 2000
+        temperature: 0.1
+    # Default fallback
+    default:
+      model_id: global.anthropic.claude-haiku-4-5-20251001-v1:0
+      max_tokens: 500
+      temperature: 0.2
 
 # ---------------------------------------------------------------------------
 # Reason Generation — 3-agent pipeline (FactExtractor → TemplateEngine → SelfChecker)
@@ -286,6 +356,85 @@ llm_provider:
 reason:
   fact_extractor:
     config_path: configs/financial/fact_extraction.yaml
+  template_engine:
+    # task_name -> customer-facing product name
+    item_name_map:
+      churn_signal: "고객 유지 프로그램"
+      will_acquire_deposits: "예적금 상품"
+      will_acquire_investments: "투자 상품"
+      will_acquire_accounts: "입출금 계좌"
+      will_acquire_lending: "대출 상품"
+      will_acquire_payments: "결제 서비스"
+      top_mcc_shift: "맞춤 소비 혜택"
+      product_stability: "자산 안정화 서비스"
+      nba_primary: "추천 금융 상품"
+      cross_sell_count: "교차판매 상품"
+      segment_prediction: "고객 맞춤 서비스"
+      next_mcc: "소비 카테고리 추천"
+      mcc_diversity_trend: "소비 다양성 혜택"
+    feature_category_map:
+      synth_monthly_spend: spending
+      synth_monthly_txns: transaction
+      synth_frequency: transaction
+      synth_recency_days: engagement
+      synth_stability: stability
+      synth_monetary: spending
+      synth_avg_amount: spending
+      synth_unique_mcc: consumption
+      synth_unique_merchants: consumption
+      hmm_states_journey: lifecycle
+      hmm_states_lifecycle: lifecycle
+      hmm_states_behavior: behavior
+      gmm_clustering: segment
+      model_derived_bandit: recommendation
+      income: demographics
+      is_active: engagement
+      total_churns: engagement
+    template_pool:
+      spending:
+        - "고객님의 소비 패턴을 분석한 결과, {item_name}이(가) 적합합니다."
+        - "최근 지출 활동을 기반으로 {item_name}을(를) 추천드립니다."
+      transaction:
+        - "고객님의 거래 빈도를 고려하면 {item_name}이(가) 유용할 수 있습니다."
+        - "활발한 거래 패턴에 맞는 {item_name}을(를) 안내드립니다."
+      engagement:
+        - "고객님의 이용 패턴을 분석하여 {item_name}을(를) 추천드립니다."
+      stability:
+        - "안정적인 금융 활동 이력에 적합한 {item_name}입니다."
+      consumption:
+        - "다양한 소비 카테고리를 활용하시는 고객님께 {item_name}을(를) 추천드립니다."
+      lifecycle:
+        - "현재 금융 라이프사이클 단계에 적합한 {item_name}입니다."
+      behavior:
+        - "고객님의 금융 행동 패턴에 맞는 {item_name}을(를) 추천드립니다."
+      segment:
+        - "유사한 고객군에서 높은 만족도를 보인 {item_name}입니다."
+      recommendation:
+        - "종합 분석 결과, {item_name}을(를) 최우선으로 추천드립니다."
+      demographics:
+        - "고객님의 재무 프로필에 적합한 {item_name}을(를) 안내드립니다."
+    task_frames:
+      churn_signal:
+        positive: "고객님의 소중한 거래 관계를 유지하고자 합니다. {reason}"
+        negative: "항상 함께해 주셔서 감사합니다. {reason}"
+      will_acquire_deposits:
+        positive: "자산 증식에 도움이 될 수 있습니다. {reason}"
+      will_acquire_investments:
+        positive: "고객님의 재무 목표에 부합할 수 있습니다. {reason}"
+      will_acquire_accounts:
+        positive: "효율적인 자금 관리에 도움이 됩니다. {reason}"
+      will_acquire_lending:
+        positive: "현재 자금 수요에 적합한 상품입니다. {reason}"
+      will_acquire_payments:
+        positive: "간편한 결제 환경을 제공합니다. {reason}"
+      top_mcc_shift:
+        positive: "소비 패턴의 변화에 맞춘 혜택입니다. {reason}"
+  async_orchestrator:
+    # SQS queue URL for L2a async rewrite jobs.
+    # Leave empty ("") during local development; set to the CloudFormation
+    # output "ple-reason-l2a-queue-url-{env}" in production.
+    sqs_queue_url: ""
+    dynamo_table: reason_cache
   self_checker:
     enable_llm_check: true      # use Bedrock for L2b compliance check
     pii_check: true

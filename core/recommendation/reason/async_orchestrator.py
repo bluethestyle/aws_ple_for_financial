@@ -153,7 +153,8 @@ class AsyncReasonOrchestrator:
                        ``customer_facts`` metadata for L1/L2a enrichment.
     """
 
-    # Human-review sampling rate (5%)
+    # Human-review sampling rate — class-level default; overridden in __init__
+    # from config["serving_prep"]["reason_generation"]["human_review_sample_rate"].
     HUMAN_REVIEW_SAMPLE_RATE: float = 0.05
 
     def __init__(
@@ -210,6 +211,15 @@ class AsyncReasonOrchestrator:
 
         # Context assembler for grounding (optional, injected or auto-created)
         self._context_assembler: Optional[Any] = None
+
+        # Human-review sample rate — read from config, fall back to class default.
+        # Config path: serving_prep.reason_generation.human_review_sample_rate
+        self.HUMAN_REVIEW_SAMPLE_RATE: float = (
+            self._config
+            .get("serving_prep", {})
+            .get("reason_generation", {})
+            .get("human_review_sample_rate", self.__class__.HUMAN_REVIEW_SAMPLE_RATE)
+        )
 
         # AI disclosure requirement (금소법 -- Financial Consumer Protection Act)
         self._ai_disclosure: str = ao_cfg.get(

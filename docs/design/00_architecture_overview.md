@@ -128,7 +128,7 @@ Great Expectations (로컬)              CloudWatch + SageMaker Monitor
 | **데이터 검증** | Great Expectations (로컬) | SageMaker Processing + GX | 동일 로직, 실행 환경만 변경 |
 | **감사/리니지** | 커스텀 audit_logger + DVC | CloudTrail + S3 버전관리 + SageMaker Lineage | AWS 네이티브 통합 |
 | **모니터링** | 커스텀 drift_monitor | SageMaker Model Monitor + CloudWatch | 관리형 서비스, 알림 자동화 |
-| **감시 에이전트** | 룰 엔진 전용 (결정론적), LLM 없음 | 룰 엔진 + Bedrock Sonnet 다이얼로그 + 3-에이전트 합의 + Solar 추천사유 | LLM 기반 자동 진단·규제 감사 |
+| **감시 에이전트** | 룰 엔진 전용 (결정론적), LLM 없음 | 룰 엔진 + Bedrock Sonnet 다이얼로그 + 3-에이전트 합의 + Claude Sonnet 추천사유 | LLM 기반 자동 진단·규제 감사 |
 | **암호화** | encryption_config.yaml 별도 | `core/security/` 통합 파이프라인 (SHA256 + INT32) | Stage 3에서 자동 처리 |
 
 ---

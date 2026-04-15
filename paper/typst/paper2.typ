@@ -53,8 +53,9 @@
   Regulators (Korean FSS, EU AI Act) are one important audience for such explanations,
   but the primary driver is the human act of persuasion itself.
   We present a multi-stage pipeline that bridges the gap between model prediction and human persuasion:
-  (1) IG-guided knowledge distillation from a heterogeneous-expert PLE teacher to per-task LGBM students,
-  preserving explanation-relevant features while enabling GPU-free CPU inference;
+  (1) adaptive knowledge distillation from a heterogeneous-expert PLE teacher to per-task LGBM students,
+  with three-layer fallback (distill / direct hard-label / rule-based) and teacher threshold gating
+  that ensures service continuity when teacher quality varies across tasks, enabling GPU-free CPU inference;
   (2) a multi-agent recommendation reason generation pipeline where three specialized serving agents
   (Feature Selector, Reason Generator, Safety Gate) collaboratively produce natural-language explanations
   grounded in business-mapped feature attributions;
@@ -100,7 +101,7 @@ Existing explanation approaches are insufficient:
 
 We propose a full-chain solution from prediction to persuasion:
 
-+ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 349 features; organized by the companion paper's reductionist two-axis framework of Financial DNA $times$ Data Modality) is distilled into per-task LGBM students using IG-guided feature selection. The teacher employs softmax CGC gates, which the companion paper's ablation finds superior to sigmoid gating in heterogeneous task settings --- softmax's competitive expert selection protects minority-type tasks (multiclass, regression) from gradient corruption by majority-type tasks (binary). This enables GPU-free serving while preserving the features that matter for explanation.
++ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 349 features; organized by the companion paper's reductionist two-axis framework of Financial DNA $times$ Data Modality) is distilled into per-task LGBM students via adaptive threshold gating that routes each task to DISTILL (soft labels), DIRECT (hard labels), or SKIP (rule engine) based on teacher quality assessment. The teacher employs softmax CGC gates, which the companion paper's ablation finds superior to sigmoid gating in heterogeneous task settings --- softmax's competitive expert selection protects minority-type tasks (multiclass, regression) from gradient corruption by majority-type tasks (binary). This enables GPU-free serving while a three-layer fallback guarantees service continuity under any model failure scenario.
 
 + *Multi-Agent Reason Generation*: Three specialized LLM agents collaborate in a pipeline --- Feature Selector chooses explanation-worthy features, Reason Generator produces natural-language narratives, and Safety Gate validates regulatory compliance.
 
@@ -108,7 +109,7 @@ We propose a full-chain solution from prediction to persuasion:
 
 == Contributions
 
-+ *IG-guided Distillation with Explanation Preservation*: Feature selection optimizes not only for prediction accuracy but also for explanation material availability.
++ *Adaptive Distillation with Three-Layer Fallback*: Teacher threshold gating automatically routes each of the 13 tasks to DISTILL (soft labels, 7 tasks), DIRECT (hard labels, 3 tasks), or SKIP (rule engine, 3 tasks) based on teacher quality relative to a 2x random baseline, ensuring service continuity per SR 11-7 model risk management requirements. Feature selection uses LGBM gain importance, consistent with the serving model perspective.
 
 + *Feature Business Reverse-Mapping*: A systematic interpretation registry that maps every feature to a business-interpretable description, enabling grounded explanation generation.
 
@@ -131,7 +132,7 @@ Hinton et al. @hinton2015 established the teacher-student paradigm via temperatu
 In recommendation, distillation has been applied to compress deep models into lightweight servers.
 CKD (Collaborative Knowledge Distillation) and ranking distillation preserve recommendation-specific structure.
 
-*Gap*: No prior work selects distillation features based on _explanation value_ alongside predictive value.
+*Gap*: No prior work applies adaptive threshold gating to route distillation tasks based on teacher quality assessment, nor provides a structured three-layer fallback that guarantees service continuity under heterogeneous teacher performance across tasks.
 
 == Recommendation Explanation Generation
 
@@ -209,7 +210,8 @@ enabling independent improvement of each component.
     let gray-fill = luma(245)
     let teacher-fill = rgb("#d6e6f0")
     let student-fill = rgb("#e8f5e9")
-    let ig-fill = rgb("#fff3e0")
+    let gate-fill = rgb("#fff3e0")
+    let rule-fill = rgb("#fce4ec")
 
     fletcher.diagram(
       spacing: (16pt, 14pt),
@@ -217,24 +219,28 @@ enabling independent improvement of each component.
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((0, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 13 Task, 349D] \ #text(size: 8pt)[GPU, weekly training]], width: 50mm, fill: teacher-fill, name: <teacher>),
+      node((1, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 13 Task, 349D] \ #text(size: 8pt)[GPU, weekly training]], width: 50mm, fill: teacher-fill, name: <teacher>),
 
-      node((2, 0), [*Soft Labels* \ #text(size: 8pt)[Per-task probability dist.]], width: 45mm, fill: gray-fill, name: <soft>),
+      node((1, 1.2), [*Threshold Gate* \ #text(size: 8pt)[AUC $>$ 0.60 / F1 $>$ 2/K / R² $>$ 0.05] \ #text(size: 8pt)[routes: DISTILL / DIRECT / SKIP]], width: 65mm, fill: gate-fill, name: <gate>),
 
-      node((0, 1.2), [*IG Feature Selection* \ #text(size: 8pt)[Dual prediction + explanation] \ #text(size: 8pt)[$"IG"_"dual" = alpha dot "IG"_"pred" + (1-alpha) dot "IG"_"explain"$]], width: 65mm, fill: ig-fill, name: <ig>),
+      node((0, 2.4), [*LGBM Student* \ #text(size: 8pt)[soft labels (7 tasks)] \ #text(size: 8pt)[CPU, daily inference]], width: 45mm, fill: student-fill, name: <distill>),
 
-      node((2.5, 1.2), [*LGBM Student ×13* \ #text(size: 8pt)[Per-task independent] \ #text(size: 8pt)[CPU, daily inference]], width: 50mm, fill: student-fill, name: <student>),
+      node((1.5, 2.4), [*LGBM Direct* \ #text(size: 8pt)[hard labels (3 tasks)] \ #text(size: 8pt)[teacher bypass]], width: 45mm, fill: student-fill, name: <direct>),
 
-      node((2.5, 2.4), [*Lambda Serving* \ #text(size: 8pt)[GPU-free real-time inference] \ #text(size: 8pt)[ explainable features preserved]], width: 50mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
+      node((3, 2.4), [*Rule Engine* \ #text(size: 8pt)[Financial DNA heuristics] \ #text(size: 8pt)[(3 tasks)]], width: 45mm, fill: rule-fill, name: <rule>),
 
-      edge(<teacher>, <soft>, "->", label: [soft probs]),
-      edge(<teacher>, <ig>, "->", label: [IG attribution]),
-      edge(<soft>, <student>, "->"),
-      edge(<ig>, <student>, "->", label: [feature subset]),
-      edge(<student>, <serve>, "->"),
+      node((1.5, 3.6), [*Lambda Serving* \ #text(size: 8pt)[GPU-free real-time inference] \ #text(size: 8pt)[3-layer fallback, LGBM gain features]], width: 55mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
+
+      edge(<teacher>, <gate>, "->", label: [per-task perf.]),
+      edge(<gate>, <distill>, "->", label: [DISTILL]),
+      edge(<gate>, <direct>, "->", label: [DIRECT]),
+      edge(<gate>, <rule>, "->", label: [SKIP]),
+      edge(<distill>, <serve>, "->"),
+      edge(<direct>, <serve>, "->"),
+      edge(<rule>, <serve>, "->"),
     )
   },
-  caption: [Teacher-student distillation architecture.\ PLE teacher's soft labels and IG-based feature selection distill into per-task LGBM student models.],
+  caption: [Teacher-student distillation architecture.\ Threshold gate routes each of 13 tasks to DISTILL (soft labels, 7 tasks), DIRECT (hard labels, 3 tasks), or SKIP (rule engine, 3 tasks) based on teacher quality. LGBM gain importance drives feature selection in the serving model.],
 ) <fig:distillation>
 
 The teacher model (PLE with 7 heterogeneous experts, 13 tasks, 349 features;
@@ -247,10 +253,15 @@ against _expert collapse_: because the seven experts are architecturally distinc
 ensuring the soft labels encode genuinely multi-faceted customer understanding.
 Note on HGCN: the graph expert receives 27-dimensional `merchant_hierarchy` features
 (MCC L1 $arrow.r$ L2 $arrow.r$ code Poincaré embeddings), not product co-holding features.
-This distinction matters for distillation: IG scores from the HGCN expert rank highly
-for MCC-dependent tasks (e.g., top_mcc_shift), and the preserved HGCN features
+This distinction matters for distillation: LGBM gain importance from the HGCN-trained student
+ranks highly for MCC-dependent tasks (e.g., top_mcc_shift), and the top-gain features
 produce explanation-grounded statements such as "customer shows sustained preference
 for merchant category X" rather than generic co-holding signals.
+Crucially, not every task benefits equally from the teacher's soft labels.
+The adaptive threshold gate (Section 3.2) assesses teacher quality per task and
+routes accordingly: tasks where the teacher exceeds 2x random baseline are distilled,
+while others fall back to direct hard-label training or the rule engine,
+ensuring the soft-label signal is only applied where it genuinely adds value.
 
 The key design decision is _per-task distillation_:
 rather than a single student model for all 13 tasks,
@@ -388,43 +399,37 @@ Customer request → Lambda Handler
 Key integration properties:
 - `FallbackRouter` auto-routes each task to its appropriate layer based on availability and metric thresholds; the caller is unaware of which layer served the prediction.
 - Calibrated probabilities (Platt scaling) are applied on Layer 1/2 outputs for probability-critical tasks (`churn_signal`, `product_stability`, `cross_sell_count`) where raw LGBM probabilities are systematically biased.
-- For Layer 3, `contributing_features` from rule firings are injected directly into the reason pipeline, bypassing IG computation. This enables interpretable reasons even when no model is available.
+- For Layer 3, `contributing_features` from rule firings are injected directly into the reason pipeline. This enables interpretable reasons even when no model is available, using the same 3-agent interface as Layer 1/2.
 - All three layers produce an identical response schema --- prediction, probability, contributing features, reason text, audit token --- ensuring the API contract is transparent to callers regardless of which layer served the request.
 
-== IG-based Feature Selection
+== Feature Selection
 
-Integrated Gradients @sundararajan2017 computes per-feature attribution from the teacher model.
-We select top-$k$ features ranked by IG importance, with a dual objective:
+Feature selection for per-task LGBM students is performed using LGBM's native gain importance,
+computed on the trained student model.
+This design aligns feature selection with the serving model itself:
+since LGBM is the production model (not the PLE teacher),
+gain importance from the LGBM student is the correct signal for identifying
+which features actually drive student predictions.
 
-$ "score"(f) = alpha dot "IG"_"pred"(f) + (1 - alpha) dot "IG"_"explain"(f) $
+Features are ranked by cumulative gain importance and the top-$k$ features
+capturing approximately 95% of cumulative gain are retained per task.
+The resulting feature set is typically 40--80 features per task (down from 349).
 
-where $"IG"_"pred"$ measures predictive contribution and $"IG"_"explain"$ measures
-the feature's value as explanation material.
+This approach has three advantages over teacher IG attribution:
+(1) *Serving model alignment*: LGBM gain reflects what the deployed model computes,
+not what the teacher model computed during training --- these may differ substantially
+given the architectural gap between deep PLE and gradient-boosted trees.
+(2) *Operational stability*: LGBM gain computation is a fast post-hoc step on the trained student;
+teacher IG requires backpropagation through the full PLE graph at inference time,
+causing out-of-memory failures at production scale (941K customers, 349 features).
+(3) *Interpretability alignment*: SHAP/gain explanations produced from the LGBM student
+are directly grounded in the model that generated the recommendation,
+satisfying the EU AI Act Art. 13 requirement that explanations reflect
+the actual decision mechanism.
 
-The explanation score $"IG"_"explain"(f)$ is derived from the feature's
-reverse-mapping richness in the interpretation registry:
-features with detailed business descriptions, clear directionality,
-and natural-language templates receive higher scores.
-For example, `hmm_lifecycle_prob_growing` (explanation-rich: "customer is in growth stage")
-scores higher than `mamba_temporal_d17` (explanation-poor: generic embedding dimension).
-
-This dual-objective selection ensures that the student model retains
-not only the most predictive features but also the features
-that generate the most compelling recommendation reasons.
-The hyperparameter $alpha$ controls the trade-off:
-$alpha = 1$ optimizes purely for prediction,
-$alpha = 0$ purely for explanation quality.
-We empirically find $alpha = 0.7$ balances both objectives.
-
-The resulting feature set is typically 40--80 features per task
-(down from 350), achieving >95% of teacher AUC
-while providing sufficient explanation vocabulary.
-Critically, the dual-objective selection preserves features across all four
-Financial DNA dimensions (engagement, lifecycle, value, consumption)
-and multiple Data Modalities (temporal, graph, topological, etc.)
-from the companion paper's two-axis decomposition,
-ensuring the student retains multi-faceted understanding
-rather than collapsing to a single dominant feature group.
+For explanation generation (Section 4), LGBM SHAP values at serving time
+identify the top contributing features for each customer's recommendation.
+These are then reverse-mapped to business-interpretable language via the interpretation registry.
 
 == Distillation Results
 
@@ -480,9 +485,9 @@ This avoids conflating metrics with incompatible semantics across task types.
 // Bridge: Distillation → Reason Generation
 The interpretation registry serves as the *data contract* between distillation and reason generation.
 Distillation (Section 3) decides _which_ features to preserve in the student model ---
-optimizing for both predictive accuracy and explanation material via the dual-objective IG score.
+selecting the top-gain features that capture 95% of cumulative LGBM importance per task.
 Reason generation (Section 4) decides _how_ to explain those features to humans ---
-mapping each preserved feature to business-interpretable language.
+mapping each preserved feature to business-interpretable language via LGBM SHAP attributions.
 This separation means the two stages can evolve independently:
 improving feature selection does not require rewriting explanation templates, and vice versa.
 
@@ -517,7 +522,7 @@ This registry serves dual purposes:
 The interpretation registry interprets features into Korean via a 5-level cascade:
 
 #list(tight: true,
-  [*Level IG* --- IG sign direction + task context],
+  [*Level SHAP* --- SHAP sign direction + task context],
   [*Level 3* --- feature×task manual overrides],
   [*Level 2* --- group×task],
   [*Level 1* --- group×task_group auto-generated],
@@ -546,7 +551,7 @@ The reverse-mapping layer is integrated as Level RM, so glossary value-substitut
 
       node((1, 0), [*Model Predictions* \ #text(size: 8pt)[13 tasks × top-K products]], width: 55mm, fill: gray-fill, name: <pred>),
 
-      node((1, 1.0), [*Feature Selector* \ #text(size: 8pt)[IG contribution + business mapping richness] \ #text(size: 8pt)[Customer context-based selection]], width: 70mm, fill: agent-fill, name: <a1>),
+      node((1, 1.0), [*Feature Selector* \ #text(size: 8pt)[SHAP contribution + business mapping richness] \ #text(size: 8pt)[Customer context-based selection]], width: 70mm, fill: agent-fill, name: <a1>),
 
       node((1, 2.2), [*Reason Generator* \ #text(size: 8pt)[Reverse-mapped features → NL reason] \ #text(size: 8pt)[Financial DNA narrative structure]], width: 70mm, fill: agent-fill, name: <a2>),
 
@@ -578,19 +583,19 @@ In the remainder of this section, marketing names are used in prose and implemen
 === Agent 1: Feature Selector
 
 Implemented as `FactExtractor`, this agent selects features for explanation based on:
-- IG attribution scores (model-driven relevance)
+- LGBM SHAP values at serving time (model-driven relevance, aligned with the serving model)
 - Business reverse-mapping richness (explanation-driven relevance)
 - Customer context (personalization: different features matter for different customer profiles)
 The Feature Selector uses the Financial DNA axis from the companion paper's two-axis framework
 to select features from the relevant customer dimension
 (e.g., lifecycle features for a retention recommendation, spending-pattern features for a benefit recommendation),
 ensuring explanations address the dimension most pertinent to the recommended action.
-For Layer 3 (rule-based) predictions, `contributing_features` from rule firings are passed directly to this agent, bypassing IG computation. This enables the same agent interface regardless of which serving layer produced the prediction.
+For Layer 3 (rule-based) predictions, `contributing_features` from rule firings are passed directly to this agent. This enables the same agent interface regardless of which serving layer produced the prediction.
 
 === Agent 2: Reason Generator
 
 Implemented as `InterpretationRegistry` + `TemplateEngine`, this agent receives selected features with their business reverse-mappings and generates a natural-language recommendation reason.
-The `InterpretationRegistry` reverse-maps each feature name to Korean business descriptions via the 5-level cascade (IG direction → L3 → L2 → L1 → reverse-mapping layer); the `TemplateEngine` then assembles these into a coherent recommendation reason.
+The `InterpretationRegistry` reverse-maps each feature name to Korean business descriptions via the 5-level cascade (SHAP direction → L3 → L2 → L1 → reverse-mapping layer); the `TemplateEngine` then assembles these into a coherent recommendation reason.
 The Reason Generator structures its narrative around Financial DNA groups ---
 opening with the customer's current state (lifecycle), grounding the recommendation
 in observed behavior (engagement/consumption), and framing the value proposition
@@ -650,9 +655,9 @@ Customer-facing recommendation reasons require natural, professional Korean text
 
 #list(tight: true,
   [*On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.],
-  [*Cloud (AWS)*: L2a rewriting uses Bedrock Claude Haiku --- low-latency, cost-efficient, and available natively on AWS without Bedrock Marketplace onboarding. L2b self-critique uses Claude Haiku as well (generator $<=$ critic model principle). The self-check layer's factuality scoring also uses Claude Haiku. On-premises deployments may substitute Solar Pro 22B (Upstage) for superior Korean benchmark performance (KMMLU) where Bedrock is unavailable.],
+  [*Cloud (AWS)*: L2a rewriting uses Bedrock Claude Sonnet --- natural Korean generation with Bedrock-native availability (no Marketplace onboarding required). L2b self-critique also uses Claude Sonnet (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku.],
 )
-Bedrock ensures that input/output data is never transmitted to model providers (Anthropic, Upstage) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet, ensuring that financial customer data never leaves the AWS Region (ap-northeast-2) --- structurally satisfying the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
+Bedrock ensures that input/output data is never transmitted to model providers (Anthropic) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet, ensuring that financial customer data never leaves the AWS Region (ap-northeast-2) --- structurally satisfying the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
 
 The backend is config-driven, allowing the deployment environment to be switched without code changes:
 
@@ -682,7 +687,7 @@ A rule-based engine extracts Korean facts from feature values --- deterministica
 
 These facts are extracted at Phase 0 batch time, stored in the context vector store,
 and injected into the L2a prompt as a "Customer Facts" section at serving time.
-The L2a model (Claude Haiku on AWS; Solar Pro on-premises) then generates reasons *with customer understanding*, not just raw feature values.
+The L2a model (Claude Sonnet on AWS; Exaone 3.5 on-premises) then generates reasons *with customer understanding*, not just raw feature values.
 
 Rules are defined in a YAML configuration file
 (15 categories covering portfolio composition, interests, risk tolerance, lifecycle, etc.)
@@ -692,9 +697,9 @@ and new facts can be added with config-only changes.
 
 Recommendation reasons are served via a 3-layer asynchronous architecture:
 
-+ *L1 (Template)*: returned immediately on customer request. No LLM call. The template engine generates deterministic Korean reasons based on IG top-K feature business reverse-mappings. Features pass through the interpretation registry's 5-level cascade (IG direction → L3 → L2 → L1 → reverse-mapping layer) to produce enriched 3-tuples `(feature_name, IG_value, Korean_interpretation)`.
++ *L1 (Template)*: returned immediately on customer request. No LLM call. The template engine generates deterministic Korean reasons based on LGBM SHAP top-K feature business reverse-mappings. Features pass through the interpretation registry's 5-level cascade (SHAP direction → L3 → L2 → L1 → reverse-mapping layer) to produce enriched 3-tuples `(feature_name, shap_value, Korean_interpretation)`.
 
-+ *L2a (LLM Rewrite)*: submitted asynchronously via SQS. Bedrock Claude Haiku (AWS) or Solar Pro (on-premises) refines L1 reasons into natural Korean. Results are cached in DynamoDB for subsequent requests.
++ *L2a (LLM Rewrite)*: submitted asynchronously via SQS. Bedrock Claude Sonnet (AWS) or Exaone 3.5 (on-premises) refines L1 reasons into natural Korean. Results are cached in DynamoDB for subsequent requests.
   *All customers receive the L1 template equally*, and L2a processing order is determined by *context richness* (feature availability, consultation history) rather than customer tier --- complying with Korean Financial Consumer Protection Act Art.19 (equal explanation obligation) and Personal Information Protection Act Art.37-2(2) (right to explanation).
   Context richness classification: rich (abundant features + history) → moderate (partial features) → sparse (cold-start; excluded from L2a, L1 template only). This reflects that *data availability* determines LLM output quality, not a service-quality differential by customer segment.#footnote[
   An earlier prototype set L2a priority based on customer segment (VIP), but
@@ -706,7 +711,7 @@ Recommendation reasons are served via a 3-layer asynchronous architecture:
 
 + *L2b (Quality Validation)*: applies a 5-stage safety gate to L2a output --- (1) prompt sanitizer, (2) PII detection (Korean resident registration number, card numbers, etc.), (3) self-check layer (compliance + injection + factuality), (4) grounding verification (number cross-check), (5) 5% human review sampling. Pass promotes to L2b; failure falls back to L1.
 
-Caching uses a dual backend (in-memory + DynamoDB) with composite key `customer_id + product_id + task_name` and TTL-based auto-expiry. Of 941K customers, L2a targets (~5% sample, ~47K items) are processed by 5 parallel Solar workers in ~8 minutes at ~\$0.10 cost.
+Caching uses a dual backend (in-memory + DynamoDB) with composite key `customer_id + product_id + task_name` and TTL-based auto-expiry. Of 941K customers, L2a targets (~5% sample, ~47K items) are processed by 5 parallel Sonnet workers in ~8 minutes at ~\$0.21 cost (47K × 500 input + 200 output tokens at Sonnet pricing).
 
 // TODO: Cache hit rate analysis
 
@@ -833,7 +838,7 @@ ensuring that the AuditAgent's input is a tamper-evident, time-ordered record of
     [*Principle*], [*Rationale*],
     [Batch-only, never real-time], [No serving path dependency; agents run asynchronously after DAG completion],
     [Per-task optimal model assignment], [#list(tight: true,
-      [Reason generation: Claude Haiku (AWS) / Solar Pro (on-premises)],
+      [Reason generation: Claude Sonnet (AWS) / Exaone 3.5 (on-premises)],
       [Agent dialog/consensus: Claude Sonnet (contextual reasoning)],
       [Judgment: Claude Haiku (low cost)],
       [Embeddings: Titan V2],
@@ -862,7 +867,7 @@ Unlike serving agents, which require Korean-language fluency for customer-facing
   [*On-premises (air-gapped)*: Exaone 3.5 7.8B (Korean reason generation) + Qwen 2.5 14B Q4 (agent consensus). Sequential loading on RTX 4070 12GB VRAM.],
   [*Cloud (AWS)*: per-task optimal models are assigned.
     #list(tight: true,
-      [Claude Haiku --- Korean L2a reason generation/critique (Solar Pro for on-premises)],
+      [Claude Sonnet --- Korean L2a reason generation/critique (Exaone 3.5 for on-premises)],
       [Claude Sonnet --- agent dialog, 3-agent consensus],
       [Claude Haiku --- self-check layer factuality judgment],
       [Claude Opus --- quarterly deep audit],
@@ -1201,7 +1206,7 @@ Beyond the Human-in-the-Loop mechanisms described above,
 the system provides two additional transparency layers for human reviewers:
 
 #list(tight: true,
-  [*Post-distillation LGBM students* expose IG-based feature importance rankings per task --- a human-readable audit that compliance officers can review without deep learning expertise.],
+  [*Post-distillation LGBM students* expose gain-based and SHAP feature importance rankings per task --- a human-readable audit that compliance officers can review without deep learning expertise.],
   [*CGC gate weights in the PLE teacher* quantify each expert's contribution to every prediction, making the expert routing mechanism transparent rather than a black-box ensemble.],
 )
 The 3-agent LLM pipeline (Section 4) further translates
@@ -1311,7 +1316,7 @@ Human evaluation is planned for production deployment; automated compliance vali
     stroke: 0.5pt,
     [*Component*], [*Latency*], [*Cost/1K req*], [*Notes*],
     [LGBM inference], [< 10ms], [< \$0.02], [Lambda 128MB],
-    [IG attribution], [< 50ms], [< \$0.04], [Lambda 256MB],
+    [SHAP attribution], [< 50ms], [< \$0.04], [Lambda 256MB],
     [Reason generation], [< 200ms], [< \$0.08], [Cache hit: < 5ms; Lambda 512MB],
     [Safety Gate], [< 50ms], [< \$0.04], [Rule-based + LLM; Lambda 256MB],
     [*Total*], [< 300ms], [< \$0.10], [Cache hit: < 100ms],
@@ -1340,7 +1345,7 @@ and opt-out functionality.
 
 *Audit trail integrity.*
 Every recommendation reason is logged with:
-(1) the IG feature attribution vector that produced it,
+(1) the LGBM SHAP feature attribution vector that produced it,
 (2) the Safety Gate pass/fail decision and failure reasons if any,
 (3) the LLM prompt and response pair,
 (4) a SHA-256 hash chain linking the recommendation to its source model version.
@@ -1371,12 +1376,13 @@ not from gradient flow through tail probabilities.
 The temperature hyperparameter, designed for neural student backpropagation,
 is unnecessary --- and harmful --- for split-based learners.
 
-*Finding 2: Dual-objective feature selection preserves explanation quality.*
-The $alpha$-weighted IG scoring ($"IG"_"pred" + "IG"_"explain"$)
-retains features that would be dropped by pure predictive selection
-but are essential for generating business-language recommendation reasons.
+*Finding 2: LGBM gain-based feature selection preserves explanation quality.*
+Selecting features by cumulative LGBM gain (95% threshold, 40--80 features per task)
+retains the features that the serving model actually uses,
+ensuring SHAP attributions at serving time remain meaningful.
 Features like `hmm_lifecycle_prob_growing` and `synth_monthly_spend`
-may contribute modestly to AUC but provide the narrative anchors
+carry high gain for lifecycle and engagement tasks respectively,
+and also provide the narrative anchors
 ("growth stage," "spending pattern") that ground LLM-generated explanations.
 
 *Finding 3: The Safety Gate is essential, not optional.*
@@ -1384,7 +1390,7 @@ Template-based fallback without LLM validation
 produces grammatically correct but occasionally misleading reasons
 (e.g., citing features not actually influential for the customer).
 The Safety Gate catches these by cross-referencing generated text
-against the actual IG attribution vector, reducing hallucination-like errors.
+against the actual LGBM SHAP attribution vector, reducing hallucination-like errors.
 
 *Finding 4: Adaptive distillation routing as MRM safeguard.*
 The teacher threshold gate prevented 6 tasks from receiving low-quality distillation,
@@ -1483,7 +1489,7 @@ between model prediction and human persuasion in financial product recommendatio
 Four key contributions define this work:
 
 #list(tight: true,
-  [*IG-guided knowledge distillation* with a dual-objective feature selection preserves both predictive accuracy and explanation material when compressing a complex PLE teacher into lightweight LGBM students.],
+  [*Adaptive knowledge distillation with three-layer fallback*: teacher threshold gating routes each of 13 tasks to DISTILL (7), DIRECT (3), or SKIP (3) based on teacher quality, ensuring service continuity per SR 11-7 model risk management. LGBM gain-based feature selection aligns with the serving model perspective, replacing OOM-prone teacher IG attribution.],
   [*3-agent recommendation reason generation pipeline* (Feature Selector → Reason Generator → Safety Gate) produces natural-language explanations grounded in business-mapped feature attributions, with role separation enabling independent improvement and audit logging.],
   [*Two operational agents* (OpsAgent and AuditAgent) interpret monitoring and compliance outputs in natural language, eliminating dashboard fatigue and enabling regulation-compliant MLOps for small teams without dedicated MLOps staff --- extending the architecture to a 5-agent system (3 serving + 2 ops).],
   [*Regulatory compliance embedded by design* --- Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act are explicitly mapped to system architecture components, with automated monitoring (drift, fairness, herding) and human-in-the-loop oversight at critical decision points.],

@@ -71,7 +71,7 @@ Phase 1-3: Ablation Study (48 scenarios)
 
 Phase 4: Knowledge Distillation
   ├── PLE 14-task teacher → LGBM student
-  ├── IG 기반 피처 선택 (top-k features)
+  ├── LGBM gain importance 피처 선택 (top-k features)
   └── Soft label distillation
 
 Phase 5: Deployment

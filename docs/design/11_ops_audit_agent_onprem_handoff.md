@@ -26,7 +26,7 @@ AWS 프로젝트에서 운영/감사 에이전트를 구현 완료했습니다. 
   │          │          │            │
   │ Bedrock  │          │ 로컬 GPU   │
   │ Sonnet×3 │          │ Qwen 14B   │
-  │ Solar    │          │ Exaone 7.8B│
+  │ Sonnet   │          │ Exaone 7.8B│
   │ 독립투표  │          │ 2-Round    │
   └──────────┘          └────────────┘
 ```
@@ -342,7 +342,7 @@ agent:
 
 ## 5. 구현 우선순위 (온프렘)
 
-온프렘은 AWS보다 범위가 좁습니다 (Bedrock dialog, Solar 없음).
+온프렘은 AWS보다 범위가 좁습니다 (Bedrock dialog, Sonnet 없음).
 
 ```
 1. LocalLLMProvider 구현 (vLLM/llama.cpp) + ModelManager

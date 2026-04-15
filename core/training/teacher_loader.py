@@ -84,8 +84,24 @@ def load_teacher_model(
     # input_dim from feature schema
     input_dim = len(feature_schema.get("columns", []))
     if input_dim == 0:
-        input_dim = checkpoint.get("ple_config", {}).get("input_dim", 128)
-        logger.warning("Could not determine input_dim from schema — using %d", input_dim)
+        # Try to infer from checkpoint ple_config first
+        input_dim = checkpoint.get("ple_config", {}).get("input_dim", 0)
+        if input_dim == 0:
+            # Try to infer from first layer weight in state_dict
+            state_dict = checkpoint.get("model_state_dict", {})
+            for _key, _val in state_dict.items():
+                if hasattr(_val, "shape") and len(_val.shape) == 2:
+                    input_dim = int(_val.shape[1])
+                    logger.warning(
+                        "Inferred input_dim=%d from state_dict key '%s'", input_dim, _key
+                    )
+                    break
+        if input_dim == 0:
+            raise RuntimeError(
+                "Cannot determine input_dim: feature_schema.columns is empty, "
+                "ple_config.input_dim is missing, and no 2D weight found in state_dict. "
+                "Ensure config.json is present next to the checkpoint."
+            )
 
     # Hyperparameter overrides from checkpoint (ablation scenario etc.)
     hp = checkpoint.get("ablation", {})

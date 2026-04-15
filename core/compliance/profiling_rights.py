@@ -654,7 +654,20 @@ class RecommendationReviewHandler:
 
         실제 운영 환경에서는 추천 결과 저장소(DynamoDB/S3)에서
         조회한다.  현재는 ID 참조를 포함한 placeholder 를 반환.
+
+        TODO: Implement full retrieval from DynamoDB/S3.
+              Expected table: ple-recommendation-log (same table used by
+              predict.py _log_prediction).  Query by recommendation_id
+              (partition key) and return items + scores from the stored
+              prediction payload.  Until this is implemented, reconsideration
+              comparisons will show empty original items/scores.
         """
+        logger.warning(
+            "_get_original_recommendation called for id=%s but DynamoDB/S3 "
+            "retrieval is not yet implemented — returning empty placeholder. "
+            "Reconsideration comparison will be incomplete.",
+            recommendation_id,
+        )
         return {
             "recommendation_id": recommendation_id,
             "items": [],

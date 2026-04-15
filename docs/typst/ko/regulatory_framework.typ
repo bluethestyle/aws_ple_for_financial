@@ -421,7 +421,7 @@
   (AI RMF R-3, C-2\~C-3)],
   [Champion-Challenger 자동 모델 경쟁\
   PSI 기반 드리프트 감지 + 3일 연속 재학습 트리거\
-  IG 기반 피처별 기여도 + 자연어 추천 사유 생성],
+  LGBM SHAP 기반 피처별 기여도 + 자연어 추천 사유 생성],
   [●],
 
   [5. 금융안정성\
@@ -976,7 +976,7 @@ S3 Lifecycle Rule으로 자동 적용합니다.
   inset: 5pt,
   stroke: 0.5pt,
   [*보호 장치*], [*상세*],
-  [데이터 미학습], [입출력 데이터가 모델 제공사(Anthropic, Upstage, Meta 등)에 전달되지 않으며, 모델 재학습(fine-tuning 포함)에 사용되지 않는다. AWS가 이를 서비스 약관으로 보장한다.],
+  [데이터 미학습], [입출력 데이터가 모델 제공사(Anthropic, Meta 등)에 전달되지 않으며, 모델 재학습(fine-tuning 포함)에 사용되지 않는다. AWS가 이를 서비스 약관으로 보장한다.],
   [전송 암호화], [TLS 1.2+ 암호화로 전송 중 데이터를 보호한다.],
   [VPC PrivateLink], [인터넷을 경유하지 않고 VPC 내부 엔드포인트를 통해 Bedrock API를 호출한다. 고객 데이터가 공개 네트워크에 노출되지 않는다.],
   [리전 내 처리], [모든 추론이 ap-northeast-2(서울) 리전에서 처리된다. 고객 데이터가 한국 밖으로 전송되지 않는다.],
@@ -1015,7 +1015,7 @@ S3 Lifecycle Rule으로 자동 적용합니다.
     edge((0,0), (0,1), "->", label: [VPC PrivateLink], label-side: right),
     node((0,1), [Bedrock Endpoint \ (ap-northeast-2)], fill: rgb("#d6e6f0"), width: 44mm),
     edge((0,1), (0,2), "->"),
-    node((0,2), [Solar Pro / Claude Sonnet / Haiku \ (추론만, 학습 없음)], fill: rgb("#d6e6f0"), width: 58mm),
+    node((0,2), [Claude Sonnet / Haiku / Opus \ (추론만, 학습 없음)], fill: rgb("#d6e6f0"), width: 58mm),
     edge((0,2), (0,3), "->", label: [응답 → VPC 내부], label-side: right),
     node((0,3), [DynamoDB 캐시 \ (ap-northeast-2)], fill: rgb("#e8f5e9"), width: 44mm),
     node((2,2), [✗ 모델 제공사로 데이터 전달 없음 \ ✗ 인터넷 경유 없음 \ ✗ 리전 외부 전송 없음 \ ✓ CloudTrail에 모든 호출 기록], fill: rgb("#fff3e0"), width: 72mm),
@@ -1048,7 +1048,7 @@ S3 Lifecycle Rule으로 자동 적용합니다.
     node((2,0), [*AWS 클라우드*], fill: luma(220), width: 52mm),
     node((2,1), [S3 데이터 레이크], fill: luma(240), width: 44mm),
     edge((2,1), (2,2), "->", label: [DuckDB], label-side: right),
-    node((2,2), [SageMaker + Lambda \ Bedrock (Solar/Claude) \ VPC PrivateLink], fill: rgb("#d6e6f0"), width: 44mm),
+    node((2,2), [SageMaker + Lambda \ Bedrock (Claude) \ VPC PrivateLink], fill: rgb("#d6e6f0"), width: 44mm),
     node((2,3), [CloudTrail + S3 WORM \ DynamoDB 감사], fill: rgb("#e8f5e9"), width: 44mm),
     edge((2,2), (2,3), "->"),
     node((1,2), [*동일 구성* \ DuckDB 파이프라인 \ 체크리스트 (48항목) \ 킬스위치 \ 공정성 모니터], fill: rgb("#fff3e0"), width: 40mm),
@@ -1117,7 +1117,7 @@ RTX 4070 (12GB VRAM)에서 순차 로딩으로 운용한다. 벤더 종속성이
   [금감원 데이터 거버넌스], [로컬 HMAC 감사 로그], [CloudTrail + S3 Object Lock],
   [EU AI Act 인간 감독], [에이전트 권고 + 담당자 판단 (동일)], [동일 + 대화 인터페이스],
   [AI 기본법 킬스위치], [로컬 킬스위치 (동일)], [DynamoDB 킬스위치],
-  [설명 가능성], [IG 기반 사유 + Exaone 리라이트], [IG 기반 사유 + Solar 리라이트],
+  [설명 가능성], [LGBM SHAP 기반 사유 + Exaone 리라이트], [LGBM SHAP 기반 사유 + Claude Sonnet 리라이트],
 )
 
 온프레미스는 대화형 에이전트가 없는 대신, 데이터 보호가 구조적으로 완벽하다. 규제기관 관점에서 "고객 데이터가 절대 외부로 나가지 않는다"는 가장 강력한 보호 근거이다.

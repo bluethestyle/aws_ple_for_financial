@@ -156,7 +156,7 @@ A sophisticated per-task data leakage prevention mechanism (`LeakageGuard` class
 Complete implementation:
 - `soft_label_generator.py` — Temperature-scaled soft labels
 - `lgbm_student.py` — Per-task LGBM models (binary/multiclass/regression)
-- `feature_selector.py` — 3-stage IG-based feature selection (644D → 200D → 140-160D + mandatory features)
+- `feature_selector.py` — LGBM gain importance-based feature selection (403D → ~140D + mandatory features)
 - `distillation_loss.py` — L_distill = alpha * L_hard + (1-alpha) * T^2 * L_soft
 - `distillation_validator.py` — Quality validation
 

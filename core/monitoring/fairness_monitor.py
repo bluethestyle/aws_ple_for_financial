@@ -81,6 +81,11 @@ class FairnessMonitor:
     auto_incident : bool
         When ``True`` (default), automatically create an incident report
         when a fairness violation is detected.
+    config : dict, optional
+        Full pipeline config dict (from ``load_merged_config()``).  When
+        provided, ``monitoring.fairness.thresholds`` and
+        ``monitoring.fairness.auto_incident`` are used as defaults before
+        ``thresholds`` / ``auto_incident`` kwargs take effect.
     """
 
     def __init__(
@@ -88,11 +93,23 @@ class FairnessMonitor:
         thresholds: Optional[Dict[str, float]] = None,
         protected_attributes: Optional[List[str]] = None,
         auto_incident: bool = True,
+        config: Optional[Dict[str, Any]] = None,
     ) -> None:
-        self.thresholds: Dict[str, float] = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
+        # Resolve defaults from pipeline config when provided
+        _cfg_fairness: Dict[str, Any] = {}
+        if config is not None:
+            _cfg_fairness = config.get("monitoring", {}).get("fairness", {})
+
+        _cfg_thresholds: Dict[str, float] = _cfg_fairness.get("thresholds", {})
+        _base_thresholds: Dict[str, float] = {**DEFAULT_THRESHOLDS, **_cfg_thresholds}
+        self.thresholds: Dict[str, float] = {**_base_thresholds, **(thresholds or {})}
+
         self.protected_attributes: List[str] = (
             list(protected_attributes) if protected_attributes else list(DEFAULT_PROTECTED_ATTRIBUTES)
         )
+        # auto_incident: kwarg wins; else check config; else True
+        if config is not None and "auto_incident" in _cfg_fairness:
+            auto_incident = bool(_cfg_fairness["auto_incident"])
         self.auto_incident = auto_incident
 
     # ------------------------------------------------------------------

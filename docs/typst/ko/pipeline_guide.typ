@@ -596,15 +596,16 @@ distillation:
 - 실패 시 → 알림, 수동 검토
 - Ablation 시 `--skip-fidelity-gate` 플래그로 비활성화 가능
 
-== IG 기반 피처 선택 (증류용)
+== LGBM 피처 중요도 기반 피처 선택 (증류용)
 
-Teacher 모델의 Integrated Gradients attribution으로 중요 피처를 선택하여 Student 입력 차원을 축소한다.
+학습된 LGBM Student 모델의 gain importance로 중요 피처를 선택하여 입력 차원을 축소한다.
+교사 모델 IG(Integrated Gradients)는 사용하지 않는다 — 서빙 모델(LGBM) 관점에서의 중요도가 더 적합하고,
+교사 IG는 941K 스케일에서 OOM 장애를 유발한다.
 
 ```bash
-python scripts/run_ig_selection.py \
+python scripts/run_lgbm_feature_selection.py \
   --config configs/santander/pipeline.yaml \
-  --checkpoint output/best_model/checkpoint.pt \
-  --top-k 100  # 상위 100개 피처
+  --cumulative-gain-threshold 0.95  # 누적 gain 95% 포착
 ```
 
 // =============================================================================

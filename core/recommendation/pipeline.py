@@ -151,7 +151,26 @@ class RecommendationPipeline:
         pipe_cfg = config.get("pipeline", {})
 
         # ---- Scorer ----
-        scorer_name: str = pipe_cfg.get("scorer_name", "weighted_sum")
+        # Support both pipeline.scorer_name and scoring.method (dataset config)
+        scoring_cfg = config.get("scoring", {})
+        scorer_name: str = (
+            pipe_cfg.get("scorer_name")
+            or scoring_cfg.get("method")
+            or "weighted_sum"
+        )
+        # Bridge scoring.* keys to scorer.{name}.* for ScorerRegistry
+        if scorer_name and scorer_name not in config.get("scorer", {}):
+            scorer_sub: Dict[str, Any] = {}
+            if scoring_cfg.get("weights"):
+                scorer_sub["task_weights"] = scoring_cfg["weights"]
+            if scoring_cfg.get("dna_modifier", {}).get("segment_weights"):
+                scorer_sub["modifier_map"] = scoring_cfg["dna_modifier"]["segment_weights"]
+            if scoring_cfg.get("fatigue", {}).get("decay_rate"):
+                scorer_sub["fatigue_base_decay"] = scoring_cfg["fatigue"]["decay_rate"]
+            if scoring_cfg.get("risk_penalty"):
+                rp = scoring_cfg["risk_penalty"]
+                scorer_sub["risk_threshold_churn"] = rp.get("max_churn_prob", 0.3)
+            config.setdefault("scorer", {})[scorer_name] = scorer_sub
         self.scorer: AbstractScorer = ScorerRegistry.create(scorer_name, config)
 
         # ---- Constraint engine ----

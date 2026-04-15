@@ -364,6 +364,23 @@ class StudentTrainer:
                 features.shape[1],
             )
 
+            # Incremental checkpoint: save each model immediately after training
+            # so partial results survive OOM or crash in later steps.
+            _out_dir = self.config.student_output_dir
+            if _out_dir:
+                save_task_artifacts(
+                    task_dir=Path(_out_dir) / task_name,
+                    task_name=task_name,
+                    model=model,
+                    task_type=task_spec.type,
+                    temperature=self.config.temperature,
+                    alpha=self.config.alpha,
+                    feature_columns=self.feature_columns,
+                    feature_selection=None,
+                    fidelity=None,
+                )
+                logger.info("  checkpoint saved: %s/model.lgbm", task_name)
+
         logger.info(
             "All students trained: %d/%d tasks", len(self._students), len(enabled)
         )

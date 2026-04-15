@@ -31,10 +31,10 @@
 - 학생은 최신 soft label로 일 1회 갱신 → 항상 최신 상태 유지
 - 선생 모델 장애 시에도 학생은 독립 운영 가능 (resilience)
 
-### IG 기반 피처 선택
-- Integrated Gradients로 teacher 모델의 피처 중요도 계산
-- 상위 k개 피처만 student에 전달 → 입력 차원 축소
-- ablation 결과와 연계: 기여도 높은 feature group의 피처 우선 보존
+### LGBM 피처 중요도 기반 피처 선택
+- 학습된 LGBM Student 모델의 gain importance로 피처 선택
+- 누적 gain 95%를 포착하는 상위 k개 피처만 사용 → 태스크당 40~80개
+- 교사 모델 IG는 사용하지 않음 (OOM 위험, 서빙 모델 정렬 불일치)
 
 ### 증류 품질 메트릭
 - teacher 대비 AUC drop 최소화 (목표: 2-5%p 이내)
@@ -51,7 +51,7 @@
       ↓
 ┌─────────────────────────────────────────┐
 │ Agent 1: Feature Selector (피처 선별)     │
-│  - IG attribution 상위 피처 선택           │
+│  - LGBM SHAP 상위 피처 선택                │
 │  - 추론에 사용된 피처 + 설명력 관점에서     │
 │    추가로 중요한 피처를 보충 선별           │
 │  - 고객 설득에 효과적인 피처 조합 구성      │

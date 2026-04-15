@@ -816,6 +816,284 @@ Resources:
           Value: compliance
 
   # =========================================================================
+  # DynamoDB Tables — ComplianceAuditStore (7 audit tables + reason_cache)
+  # =========================================================================
+  # Table names match TABLE_SUFFIXES in core/compliance/audit_store.py
+  # prefix pattern: ple-audit-{suffix}
+  # reason_cache table name from AsyncReasonOrchestrator default ("reason_cache")
+
+  # --- Kill switch audit events ---
+  AuditKillSwitchTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ple-audit-killswitch
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: compliance
+
+  # --- Consent audit events ---
+  AuditConsentTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ple-audit-consent
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: pii-sensitive
+
+  # --- Profiling rights audit events ---
+  AuditProfilingTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ple-audit-profiling
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: compliance
+
+  # --- AI opt-out audit events ---
+  AuditOptOutTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ple-audit-optout
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: pii-sensitive
+
+  # --- Regulatory violation incidents ---
+  AuditIncidentTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ple-audit-incident
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: compliance
+
+  # --- Model distillation validation records ---
+  AuditDistillationTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ple-audit-distillation
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: compliance
+
+  # --- Embedding quality audit records ---
+  AuditEmbeddingTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ple-audit-embedding
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: compliance
+
+  # --- Reason cache (AsyncReasonOrchestrator L2a deduplication) ---
+  ReasonCacheTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: reason_cache
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: false  # cache; no need for PITR
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref MonitoringKmsKey
+      AttributeDefinitions:
+        - AttributeName: cache_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: cache_key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: DataClass
+          Value: internal
+
+  # =========================================================================
   # IAM Roles
   # =========================================================================
 
@@ -1004,6 +1282,52 @@ Resources:
                   - kms:Decrypt
                 Resource: !GetAtt MonitoringKmsKey.Arn
 
+              # SQS: send L2a reason rewrite jobs to async queue
+              - Sid: SQSSendReasonL2a
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
+                Resource: !GetAtt ReasonL2aQueue.Arn
+
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  # =========================================================================
+  # SQS Queue — L2a Reason Rewrite (AsyncReasonOrchestrator)
+  # =========================================================================
+
+  ReasonL2aQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "ple-reason-l2a-queue-${Environment}"
+      VisibilityTimeout: 300          # 5 min — matches max L2a LLM latency
+      MessageRetentionPeriod: 86400   # 1 day
+      ReceiveMessageWaitTimeSeconds: 20  # long polling
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ReasonL2aDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      KmsMasterKeyId: !Ref MonitoringKmsKey
+      Tags:
+        - Key: Project
+          Value: aiops-ple
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: cloudformation
+
+  ReasonL2aDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "ple-reason-l2a-dlq-${Environment}"
+      MessageRetentionPeriod: 345600  # 4 days
+      KmsMasterKeyId: !Ref MonitoringKmsKey
       Tags:
         - Key: Project
           Value: aiops-ple
@@ -1330,3 +1654,22 @@ Outputs:
     Value: !Ref MonitoringDashboard
     Export:
       Name: !Sub "ple-monitoring-dashboard-${Environment}"
+
+  # SQS Queue — L2a Reason Rewrite
+  ReasonL2aQueueUrl:
+    Description: "SQS queue URL for L2a async reason rewrite jobs (AsyncReasonOrchestrator)"
+    Value: !Ref ReasonL2aQueue
+    Export:
+      Name: !Sub "ple-reason-l2a-queue-url-${Environment}"
+
+  ReasonL2aQueueArn:
+    Description: "SQS queue ARN for L2a async reason rewrite jobs"
+    Value: !GetAtt ReasonL2aQueue.Arn
+    Export:
+      Name: !Sub "ple-reason-l2a-queue-arn-${Environment}"
+
+  ReasonL2aDeadLetterQueueUrl:
+    Description: "SQS dead-letter queue URL for failed L2a reason rewrite jobs"
+    Value: !Ref ReasonL2aDeadLetterQueue
+    Export:
+      Name: !Sub "ple-reason-l2a-dlq-url-${Environment}"

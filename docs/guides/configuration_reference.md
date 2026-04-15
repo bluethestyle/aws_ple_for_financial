@@ -994,8 +994,8 @@ Declares model assignments per pipeline stage. Each key is a role; the value is 
 
 ```yaml
 models:
-  reason_generation: solar-pro      # Korean-specialized reason generation (L2a)
-  reason_critique:   solar-pro      # Self-critique of generated reasons
+  reason_generation: claude-sonnet  # L2a reason rewrite (Bedrock native)
+  reason_critique:   claude-sonnet  # Self-critique of generated reasons
   factuality_check:  claude-haiku   # Factuality check (fast and low-cost)
   agent_dialog:      claude-sonnet  # Inter-agent dialog/negotiation
   agent_consensus:   claude-sonnet  # Multi-agent consensus (x agents count)
@@ -1005,8 +1005,8 @@ models:
 
 | Role | Model | Notes |
 |---|---|---|
-| `reason_generation` | Solar Pro | Specialized for Korean financial explanation generation |
-| `reason_critique` | Solar Pro | Self-critique using the same model |
+| `reason_generation` | Claude Sonnet | L2a reason rewrite — Bedrock native, Korean-capable |
+| `reason_critique` | Claude Sonnet | Self-critique using the same model |
 | `factuality_check` | Claude Haiku | Low-latency/low-cost factuality check |
 | `agent_dialog` | Claude Sonnet | Inter-agent negotiation dialog |
 | `agent_consensus` | Claude Sonnet | Consensus voting (parallel x 3 by default) |

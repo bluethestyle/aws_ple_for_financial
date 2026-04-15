@@ -1,10 +1,14 @@
 """
 Adaptive Feature Selector -- per-task feature filtering by importance.
 
-3-stage pipeline:
-  Stage 1: Integrated Gradients (IG) importance per task
-  Stage 2: LGBM gain-based pruning (remove zero-gain features)
-  Stage 3: Mandatory feature guarantee
+2-stage pipeline:
+  Stage 1: LGBM gain importance-based selection (top-k features capturing 95% cumulative gain)
+  Stage 2: Mandatory feature guarantee
+
+Teacher model IG (Integrated Gradients) attribution is NOT used for feature selection.
+The teacher has already been distilled; feature selection from the serving model (LGBM Student)
+perspective ensures serving model alignment and avoids OOM at production scale
+(941K customers, 403 features).
 
 Key design: cumulative importance threshold (default 95%) determines
 how many features to keep per task.  Tasks with concentrated importance
@@ -20,14 +24,11 @@ Usage::
 
     selector = FeatureSelector(config)
 
-    # Stage 1: IG-based selection
-    selected = selector.select_by_ig(model, features, task_name)
+    # Stage 1: LGBM gain importance selection
+    selected = selector.select_by_lgbm_gain(lgbm_model, feature_names, task_name)
     # Returns: FeatureSelectionResult with selected indices/names
 
-    # Stage 2: LGBM pruning
-    refined = selector.prune_by_lgbm(lgbm_model, selected_features)
-
-    # Combined (IG -> LGBM -> mandatory features)
+    # Combined (LGBM gain -> mandatory features)
     final = selector.select(model, features, task_name, lgbm_model)
 """
 
@@ -295,10 +296,11 @@ class FeatureSelector:
         lgbm_model: Any = None,
         feature_names: Optional[List[str]] = None,
     ) -> FeatureSelectionResult:
-        """Combined: IG selection -> LGBM pruning -> mandatory features.
+        """Combined: LGBM gain selection -> mandatory features.
 
-        Runs the full 3-stage pipeline.  If ``lgbm_model`` is ``None``,
-        only Stage 1 (IG) and Stage 3 (mandatory) are applied.
+        Runs the 2-stage pipeline.  If ``lgbm_model`` is ``None``,
+        only Stage 2 (mandatory features) is applied.
+        Teacher IG attribution is not used.
 
         Args:
             model: PLE teacher model.
@@ -431,17 +433,17 @@ class FeatureSelector:
         ig_alpha: float = 0.7,
         explain_scores: Optional[Dict[str, float]] = None,
     ) -> FeatureSelectionResult:
-        """Dual-objective IG selection (Paper 2 core contribution).
+        """Deprecated: Dual-objective IG selection (no longer used).
 
-        Computes a per-feature score combining predictive value (IG from teacher)
-        and explanation value (proxy from feature group category richness):
+        Teacher model IG attribution is removed. Feature selection is now performed
+        using LGBM gain importance (see ``select_by_lgbm_gain`` and ``prune_by_lgbm``).
+        This method is retained for backward compatibility only.
 
+        Previously combined:
             score(f) = alpha * IG_pred(f) + (1 - alpha) * IG_explain(f)
 
-        where ``IG_pred`` is the normalized absolute IG attribution from the
-        teacher model and ``IG_explain`` is a normalized per-feature explanation
-        score supplied by the caller (typically derived from feature group
-        metadata in feature_groups.yaml).
+        where ``IG_pred`` was normalized absolute IG from the teacher model.
+        Removed because: OOM at 941K scale, serving model misalignment.
 
         Args:
             model: PLE teacher model (``torch.nn.Module``).

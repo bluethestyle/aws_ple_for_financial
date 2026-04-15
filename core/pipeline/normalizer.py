@@ -90,8 +90,20 @@ class FeatureNormalizer:
         self.power_law_cols: List[str] = []
         self.continuous_cols: List[str] = []
         self.binary_cols: List[str] = []
+        self.categorical_int_cols: List[str] = []  # integer IDs excluded from scaler
+        self.probability_cols: List[str] = []       # already 0~1, excluded from scaler
         self.power_law_details: Dict[str, Dict] = {}
         self._fitted: bool = False
+
+        # Patterns for columns that should NOT be StandardScaled
+        self._categorical_id_suffixes: List[str] = cfg.get(
+            "categorical_id_suffixes",
+            ["_cluster_id", "_state_id", "_segment_id", "_group_id"],
+        )
+        self._probability_prefixes: List[str] = cfg.get(
+            "probability_prefixes",
+            ["gmm_clustering_cluster_prob_", "model_derived_gmm_prob_"],
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -119,9 +131,38 @@ class FeatureNormalizer:
             c for c in feature_cols
             if set(df[c].dropna().unique()).issubset({0, 0.0, 1, 1.0})
         ]
-        self.continuous_cols = [
-            c for c in feature_cols if c not in self.binary_cols
+
+        # Categorical integer columns (cluster_id, state_id, etc.)
+        # These are nominal — scaler would impose ordinal distance semantics.
+        self.categorical_int_cols = [
+            c for c in feature_cols
+            if c not in self.binary_cols
+            and any(c.endswith(sfx) for sfx in self._categorical_id_suffixes)
         ]
+
+        # Probability columns already in [0, 1] — scaler destroys interpretability.
+        self.probability_cols = [
+            c for c in feature_cols
+            if c not in self.binary_cols
+            and c not in self.categorical_int_cols
+            and any(c.startswith(pfx) for pfx in self._probability_prefixes)
+        ]
+
+        _exclude = set(self.binary_cols) | set(self.categorical_int_cols) | set(self.probability_cols)
+        self.continuous_cols = [
+            c for c in feature_cols if c not in _exclude
+        ]
+
+        if self.categorical_int_cols:
+            logger.info(
+                "Scaler-excluded categorical IDs: %d cols %s",
+                len(self.categorical_int_cols), self.categorical_int_cols,
+            )
+        if self.probability_cols:
+            logger.info(
+                "Scaler-excluded probabilities: %d cols",
+                len(self.probability_cols),
+            )
 
         # --- Stage 1: Detect power-law columns ---
         self.power_law_cols, self.power_law_details = self._detect_power_law(df)
@@ -191,6 +232,18 @@ class FeatureNormalizer:
         # --- Binary columns (pass-through) ---
         if self.binary_cols:
             parts.append(df[self.binary_cols].copy())
+
+        # --- Categorical integer columns (pass-through, no scaling) ---
+        if self.categorical_int_cols:
+            cat_present = [c for c in self.categorical_int_cols if c in df.columns]
+            if cat_present:
+                parts.append(df[cat_present].copy())
+
+        # --- Probability columns (pass-through, already 0~1) ---
+        if self.probability_cols:
+            prob_present = [c for c in self.probability_cols if c in df.columns]
+            if prob_present:
+                parts.append(df[prob_present].copy())
 
         # --- Power-law log copies (log1p, NOT scaled) ---
         if self.power_law_cols:
@@ -360,6 +413,8 @@ class FeatureNormalizer:
         meta = {
             "continuous_cols": self.continuous_cols,
             "binary_cols": self.binary_cols,
+            "categorical_int_cols": self.categorical_int_cols,
+            "probability_cols": self.probability_cols,
             "power_law_cols": self.power_law_cols,
             "power_law_details": self.power_law_details,
         }
@@ -385,6 +440,8 @@ class FeatureNormalizer:
 
         obj.continuous_cols = meta["continuous_cols"]
         obj.binary_cols = meta["binary_cols"]
+        obj.categorical_int_cols = meta.get("categorical_int_cols", [])
+        obj.probability_cols = meta.get("probability_cols", [])
         obj.power_law_cols = meta["power_law_cols"]
         obj.power_law_details = meta.get("power_law_details", {})
         obj._fitted = True

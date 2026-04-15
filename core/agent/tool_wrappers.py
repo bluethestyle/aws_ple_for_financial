@@ -524,14 +524,47 @@ def _get_case_store(**kwargs):
     return DiagnosticCaseStore(store_path=store_path)
 
 
+def _embed_finding(finding: str, dim: int = 384) -> "np.ndarray":
+    """Return a unit-normalised embedding vector for *finding*.
+
+    Strategy (in order of preference):
+    1. TF-IDF bag-of-words via sklearn (produces meaningful cosine distances).
+    2. Hash-based fallback when sklearn is unavailable (warns once).
+
+    The store uses cosine / L2 similarity so the exact dimensionality does not
+    need to match a pre-trained model — relative distances are what matters for
+    case retrieval.
+    """
+    import numpy as np
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        # Single-document vectoriser: project to *dim* via hashing trick on
+        # TF-IDF term indices so the output is always length *dim*.
+        from sklearn.feature_extraction.text import HashingVectorizer
+        vec_model = HashingVectorizer(
+            n_features=dim, norm="l2", alternate_sign=False, token_pattern=r"(?u)\b\w+\b"
+        )
+        mat = vec_model.transform([finding])
+        vec = mat.toarray()[0].astype(np.float32)
+    except ImportError:
+        logger.warning(
+            "sklearn not available — falling back to hash-based embedding for "
+            "search_similar_cases. Install scikit-learn for meaningful similarity."
+        )
+        vec = np.array(
+            [hash(finding + str(i)) % 1000 / 1000.0 for i in range(dim)],
+            dtype=np.float32,
+        )
+    norm = np.linalg.norm(vec)
+    return vec / norm if norm > 0 else vec
+
+
 def search_similar_cases(finding: str = "", pipeline_part: Optional[str] = None, k: int = 5, **kwargs) -> Dict[str, Any]:
     """Search similar diagnostic cases by text similarity."""
     try:
         store = _get_case_store(**kwargs)
-        # Embedding would normally come from a model — simplified here
-        import numpy as np
-        # Create a simple hash-based vector as placeholder
-        vec = np.array([hash(finding + str(i)) % 1000 / 1000.0 for i in range(384)], dtype=np.float32)
+        import numpy as np  # noqa: F401 — keep import local; _embed_finding also imports it
+        vec = _embed_finding(finding)
         results = store.search_similar(vec, k=k, pipeline_part=pipeline_part)
         return {
             "similar_cases": [{"case": case, "score": score} for case, score in results],

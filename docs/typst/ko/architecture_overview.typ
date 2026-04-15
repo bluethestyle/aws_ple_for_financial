@@ -710,7 +710,7 @@ PLE Teacher (GPU 학습)
     ↓ S3에 저장
 LGBM Student (CPU 학습)
     ↓ alpha=0.3 (30% hard + 70% soft)
-    ↓ IG 기반 피처 선택 (top-k features)
+    ↓ LGBM gain importance 피처 선택 (top-k features)
     ↓ 경량 모델 저장
 서빙 (실시간: LGBM ~5ms, 배치: PLE)
 ```
@@ -953,7 +953,7 @@ EncryptionPipeline.process_source()
 
       // Phase 4 header
       node((0, 5), [*Phase 4: Distillation*], width: 60mm, fill: phase-fill, name: <ph4>),
-      node((0, 6), [*Stage 9: StudentTrainer* \ #text(size: 6pt)[PLE teacher → LGBM students · Soft label (T=5.0, α=0.3)] \ #text(size: 6pt)[IG 기반 피처 선택 + fidelity validation]], width: 55mm, fill: proc-fill, name: <s9>),
+      node((0, 6), [*Stage 9: StudentTrainer* \ #text(size: 6pt)[PLE teacher → LGBM students · Soft label (T=5.0, α=0.3)] \ #text(size: 6pt)[LGBM gain importance 피처 선택 + fidelity validation]], width: 55mm, fill: proc-fill, name: <s9>),
 
       edge(<s85>, <ph4>, "->"),
       edge(<ph4>, <s9>, "->"),

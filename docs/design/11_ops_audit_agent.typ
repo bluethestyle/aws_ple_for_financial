@@ -3286,7 +3286,7 @@ Sonnet: [도구 호출: search_similar_cases(
   [3-2], [`OpsDiagnoser` — 연쇄 영향 룰 테이블], [~200], [3-1], [LOW],
   [3-3], [`OpsReporter` — 템플릿 기반 리포트 생성], [~150], [3-2], [LOW],
   [3-4], [`ConsensusArbiter` — AWS 독립투표 + 온프렘 2-Round], [~350], [3-5], [*HIGH*],
-  [3-5], [LLM Provider 확장 — Solar, LocalLLM(Qwen/Exaone) 추가], [~150], [없음], [MED],
+  [3-5], [LLM Provider 확장 — LocalLLM(Qwen/Exaone) 추가], [~150], [없음], [MED],
 
   table.cell(colspan: 5, fill: luma(235))[
     #text(weight: "bold")[Phase 4: 진단 케이스 스토어]
@@ -3750,7 +3750,7 @@ def search_similar(
 
 현재 L2a 사유 생성 시 IG top-K 피처만 프롬프트에 전달된다.
 고객의 *서술적 프로파일*("적금 선호", "최근 펀드 관심 증가")이 없어
-Solar Pro나 Qwen 14B가 맥락 부족 상태로 사유를 생성한다.
+Claude Sonnet이나 Qwen 14B가 맥락 부족 상태로 사유를 생성한다.
 
 === 룰 기반 FactExtractor (LLM 없음)
 
@@ -4163,9 +4163,8 @@ class BedrockDialogSession:
           #v(0.3em)
           #align(left, text(size: 7pt)[
             *L1 템플릿*: LLM 불필요 (즉시 반환) \
-            *L2a 리라이트*: #text(weight: "bold")[Solar (Upstage)] \
-            #h(1em) 한국어 특화, 금융 톤 자연스러움 \
-            #h(1em) fallback: Claude Haiku \
+            *L2a 리라이트*: #text(weight: "bold")[Claude Sonnet] \
+            #h(1em) Bedrock 네이티브, 자연스러운 한국어 \
             *SelfChecker factuality*: Claude Haiku \
             #h(1em) 판정 작업 — 논리력 중시 \
             *Embeddings*: Titan Embeddings V2 \
@@ -4193,7 +4192,7 @@ class BedrockDialogSession:
       )
     ]
   ],
-  caption: [태스크별 Bedrock 모델 배정. 추천사유는 한국어 특화(Solar), 에이전트는 추론력(Sonnet).],
+  caption: [태스크별 Bedrock 모델 배정. 추천사유는 Claude Sonnet(L2a), 에이전트는 추론력(Sonnet).],
 ) <fig:model-selection>
 
 #v(0.3em)
@@ -4206,16 +4205,16 @@ class BedrockDialogSession:
   inset: 5pt,
   table.header([*태스크*], [*모델*], [*선택 이유*], [*입출력*], [*건당 비용*]),
   [L2a 사유 생성],
-  [Solar (Upstage)],
-  [한국어 특화. 금융 존댓말 톤("~권해드립니다") 자연스러움. \
-   Upstage가 한국 회사로 한국어 학습 데이터 풍부.],
+  [Claude Sonnet],
+  [Bedrock 네이티브. 한국어 자연스러움. \
+   Marketplace 온보딩 없이 즉시 사용 가능.],
   [입 ~600 / 출 ~80],
   [~\$0.002],
 
   [L2b self-critique],
-  [Solar (Upstage)],
-  [*생성 모델 ≤ 크리틱 모델* 원칙. Solar가 쓴 한국어의 자연스러움, \
-   금소법 위반, 피처 정합성을 한국어에 강한 모델이 판단해야 함. \
+  [Claude Sonnet],
+  [*생성 모델 ≤ 크리틱 모델* 원칙. 한국어 뉘앙스, \
+   금소법 위반, 피처 정합성 판단. \
    같은 모델이지만 프롬프트가 다르므로 관점이 다름.],
   [입 ~800 / 출 ~100],
   [~\$0.003],
@@ -4253,7 +4252,7 @@ class BedrockDialogSession:
   [~\$0.0001],
 )
 
-=== 한국어 추천사유에 Solar를 선택하는 이유
+=== 한국어 추천사유에 Claude Sonnet을 선택하는 이유
 
 추천사유 L2a의 핵심 요구사항은 *"고객이 납득할 만한 자연스러운 한국어 1~2문장"*이다.
 
@@ -4261,40 +4260,38 @@ class BedrockDialogSession:
   columns: (auto, 1fr, 1fr, 1fr),
   stroke: 0.4pt + luma(180),
   inset: 5pt,
-  table.header([*기준*], [*Solar (Upstage)*], [*Claude Haiku*], [*Llama 3.1*]),
+  table.header([*기준*], [*Claude Sonnet*], [*Claude Haiku*], [*Llama 3.1*]),
   [한국어 자연스러움],
-  [*최상* — 한국어 특화 학습],
+  [상 — 범용 다국어],
   [상 — 범용 다국어],
   [중하 — 영어 중심],
 
   [금융 존댓말 톤],
-  [*최상* — 한국 금융 문서 학습],
+  [상 — 범용],
   [상 — 범용],
   [하 — 부자연],
 
   ["~드립니다" 어미],
-  [자연스러움],
+  [대체로 자연],
   [대체로 자연],
   [어색한 경우 잦음],
 
   [비용],
-  [저],
+  [중],
   [저],
   [최저],
 
   [Bedrock 가용성],
-  [Marketplace (확인 필요)],
+  [*네이티브*],
   [네이티브],
   [네이티브],
 )
 
 #v(0.3em)
 
-#infobox("Solar 가용성 확인 필요")[
-  Solar는 AWS Marketplace를 통해 Bedrock에서 호출 가능하나, \
-  `ap-northeast-2` (서울) 리전 가용성을 사전 확인해야 한다. \
-  불가 시 Claude Haiku로 fallback — 한국어 품질은 충분하지만 \
-  금융 특화 톤에서 Solar보다 약간 뒤진다. \
+#infobox("Claude Sonnet 선택 이유")[
+  Claude Sonnet(claude-sonnet-4-20250514)은 Bedrock 네이티브로 \
+  `ap-northeast-2` (서울) 리전에서 즉시 사용 가능. \
   `llm_provider.py`의 팩토리 패턴이 이미 프로바이더 교체를 지원하므로 \
   config 변경만으로 전환 가능.
 ]
@@ -4331,7 +4328,7 @@ class BedrockDialogSession:
           *비동기 L2a* \
           #line(length: 100%, stroke: 0.3pt) \
           SQS에 잡 제출 \
-          워커가 Solar/Haiku 호출 \
+          워커가 Claude Sonnet 호출 \
           DynamoDB 캐시 저장
         ],
         text(size: 10pt)[ → ],
@@ -4361,14 +4358,14 @@ class BedrockDialogSession:
   align: center,
   table.header([*구성*], [*대상*], [*소요시간*], [*비용*]),
   [전체 941K 중 L2a 대상 (5%)], [~47K건], [--], [--],
-  [Solar 워커 1대 (순차)], [47K × 50ms], [~40분], [~\$0.10],
-  [Solar 워커 5대 (병렬)], [47K × 50ms / 5], [*~8분*], [~\$0.10],
-  [Bedrock Batch Inference], [일괄 제출], [*~수분*], [~\$0.10],
+  [Sonnet 워커 1대 (순차)], [47K × 50ms], [~40분], [~\$0.21],
+  [Sonnet 워커 5대 (병렬)], [47K × 50ms / 5], [*~8분*], [~\$0.21],
+  [Bedrock Batch Inference], [일괄 제출], [*~수분*], [~\$0.21],
 )
 
-입력 ~600 토큰, 출력 ~80 토큰 (1~2문장 한국어).
+입력 ~500 토큰, 출력 ~200 토큰 (1~2문장 한국어).
 워커 5대 병렬이면 8분, Batch Inference면 수분 내 완료.
-비용은 47K건 전체가 *\$0.10 미만*.
+비용은 47K건 전체가 *약 \$0.21* (입력 \$0.07 + 출력 \$0.14).
 
 == Bedrock 인프라 공유 시 고려사항
 
@@ -4396,7 +4393,7 @@ class BedrockDialogSession:
    → 양쪽 모두 LLM 없이 기본 기능 유지],
 
   [모델 관리],
-  [Solar + Haiku + Sonnet + Opus + Titan = 5개 모델],
+  [Sonnet + Haiku + Opus + Titan = 4개 모델],
   [`llm_provider.py` 팩토리 패턴으로 용도별 프로바이더 주입. \
    config에서 `reason.llm_model`, `agent.llm_model` 분리 관리.],
 )

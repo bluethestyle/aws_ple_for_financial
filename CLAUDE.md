@@ -98,7 +98,7 @@ generator_params:
 - 3단계 정규화 (log transform → scaler → raw copy)
 - 로짓 전이 3가지 방식 (output_concat / hidden_concat / residual)
 - Uncertainty weighting (Kendall et al.)
-- 증류 시 IG 기반 피처 선택
+- 증류 시 LGBM gain importance 기반 피처 선택
 
 ### 3.2 AWS에서 달라도 되는 요소
 - Airflow DAG → SageMaker 순차 실행 (오케스트레이션 방식)

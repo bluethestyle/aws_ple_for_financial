@@ -159,7 +159,7 @@
   그라운딩, 2-Layer 추천 사유 생성 아키텍처, Safety Gate 및 서빙 인프라의
   이론적 배경과 수학적 구조, 구현 상세를 기술한다.
   Temperature Scaling ($T = 5$)을 통한 dark knowledge 전달,
-  IG 기반 피쳐 선택 (734D $arrow$ 200D $arrow$ ~140D), LGBM custom objective,
+  LGBM gain importance 기반 피쳐 선택 (~403D $arrow$ ~140D), LGBM custom objective,
   FD-TVS master formula의 곱셈적 결합 구조,
   L1 Template + L2 LLM 2계층 사유 생성, 3-Agent Self-Critique,
   금소법/AI 기본법 준수를 위한 Safety Gate,
@@ -329,47 +329,38 @@ Student가 Teacher의 모든 중요 모드를 커버하도록 강제한다.
 Reverse KL은 mode-seeking 특성으로 일부 모드를 무시할 위험이 있어 증류에 부적합하다.
 
 
-== IG 기반 피쳐 선택
+== LGBM 피쳐 중요도 기반 피쳐 선택
 
-=== 이중 목적 선택
+피쳐 선택은 학습된 LGBM Student 모델의 *gain importance*를 기반으로 수행된다.
+교사 모델 IG(Integrated Gradients) 귀인은 사용하지 않는다 — 교사는 이미 증류 완료된 상태이며,
+서빙 모델(LGBM Student)의 관점에서 중요한 피쳐를 선택하는 것이 설계 목적과 일치한다.
 
-IG 피쳐 선택은 가중 결합($alpha = 0.7$ 예측 + $0.3$ 설명)을 통해 두 가지 목적을 균형 있게 달성합니다.
+=== 설계 근거
 
-$ "score"_i = alpha dot "IG"_i^"predictive" + (1 - alpha) dot "IG"_i^"explanation" $
+*서빙 모델 정렬*: 배포된 모델은 LGBM Student이다. Gain importance는 LGBM이 실제로 사용하는 피쳐를 반영한다.
+교사(PLE) IG 귀인은 심층 신경망과 그래디언트 부스팅 간 아키텍처 차이로 인해 Student 중요도와 크게 다를 수 있다.
 
-- *예측 목적* ($alpha = 0.7$): 증류 LGBM의 태스크 AUC/F1을 극대화하는 피쳐
-- *설명 목적* ($0.3$): IG 귀인이 역매핑 딕셔너리를 통해 인간이 읽을 수 있는 금융 언어로 명확히 변환되는 피쳐
+*운영 안정성*: LGBM gain 계산은 학습된 Student에 대한 빠른 사후 처리 단계이다.
+교사 IG는 941K 고객 × 403D 피쳐 스케일에서 전체 PLE 그래프에 대한 역전파를 요구하여 OOM 장애를 유발한다.
 
-이 이중 목적은 선택된 피쳐 집합이 정확한 예측과 규제 등급 설명(AI 기본법 제34조)을 모두 지원하도록 보장합니다.
+*해석 가능성 정렬*: LGBM Student에서 도출된 SHAP/gain 설명은 추천을 생성한 모델에 직접 근거하여,
+EU AI Act 제13조(실제 결정 메커니즘 반영 설명) 요건을 충족한다.
 
-=== 3단계 파이프라인
+=== 2단계 파이프라인
 
 _아래 차원 수치는 풀뱅크 설계(734D) 기준입니다. Santander 구현(~349D 입력 / 403D Phase 0 후)에서는 중간 차원이 달라질 수 있습니다._
 
-*풀뱅크 설계 기준:* 734D(설계) / ~349D 입력·403D 후처리(구현) $arrow$ 200D(Stage 1) $arrow$ ~140D(Stage 2) $arrow$ 최종 LGBM 입력
+*풀뱅크 설계 기준:* 734D(설계) / ~349D 입력·403D 후처리(구현) $arrow$ ~140D(Stage 1) $arrow$ 최종 LGBM 입력
 
-*Stage 1 -- Integrated Gradients (734D $arrow$ 200D):*
+*Stage 1 -- LGBM Gain Importance 필터:*
+누적 gain importance 기준 상위 95%를 포착하는 상위-$k$ 피쳐를 태스크별로 유지한다.
+결과 피쳐 집합은 일반적으로 태스크당 40~80개 피쳐이다(403D에서 축소).
 
-$ "IG"(bold(x))_i = (x_i - x'_i) times integral_0^1 frac(partial F(bold(x)' + alpha (bold(x) - bold(x)')), partial x_i) d alpha $ <ig-formula>
-
-- Baseline: 영벡터 (정규화된 피쳐에서 "평균 고객" 또는 "정보 부재"를 의미)
-- Steps: 50 (사다리꼴 적분 근사)
-- 완전성 공리: $sum_i "IG"(bold(x))_i = F(bold(x)) - F(bold(x)')$ (귀인 누출 없음)
-
-*Stage 2 -- LGBM Importance Filter (200D $arrow$ $tilde$140D):*
-Gain importance 하위 30%를 제거한다.
-
-*Stage 3 -- 필수 피쳐 보존:*
-IG/LGBM importance와 무관하게 항상 포함하는 7개 피쳐:
+*Stage 2 -- 필수 피쳐 보존:*
+LGBM importance와 무관하게 항상 포함하는 7개 피쳐:
 - TDA: `persistence_entropy`, `landscape_peak`
 - Economics: `mpc`, `income_elasticity`, `permanent_income_ratio`
 - FinEng: `sharpe_ratio`, `volatility`
-
-=== IG가 SHAP보다 적합한 이유
-
-SHAP는 $2^(734)$개 부분집합 평가가 필요하여 물리적으로 불가능하다.
-IG는 경로 적분의 이산 근사로 선형 시간($O(n dot s)$, $s$ = steps)에 계산되며,
-완전성 공리를 만족하여 귀인 누출이 발생하지 않는다.
 
 
 == LightGBM Custom Objective
@@ -410,7 +401,7 @@ Hard Label은 `get_label()`, Soft Label은 `get_weight()`를 통해 전달한다
   [*단계*], [*내용*],
   [1], [Teacher 추론 (전체 데이터에 대한 로짓 생성)],
   [2], [Soft Label 생성 (Temperature Scaling 적용)],
-  [3], [IG 피쳐 선택 (734D $arrow$ 200D)],
+  [3], [LGBM gain importance 피쳐 선택 (~403D $arrow$ ~140D)],
   [4], [Student 학습 (태스크별 독립 LGBM)],
   [5], [검증 (5개 기준: AUC, RMSE, Accuracy 등; 메트릭 집계는 태스크 타입별 — 이진 태스크: AUC, 회귀 태스크: RMSE, 다중 클래스: top-k Accuracy)],
   [6], [MLflow 모델 레지스트리 등록],
@@ -736,7 +727,7 @@ $cal(M)_k$는 도메인 전문가가 설계한 매핑 딕셔너리 (수치 $arro
 
 == Trust Loop
 
-모델 예측 $arrow$ IG 귀인 $arrow$ 역매핑 $arrow$ 컨텍스트 조립 $arrow$ LLM 사유 생성
+모델 예측 $arrow$ LGBM gain 귀인 $arrow$ 역매핑 $arrow$ 컨텍스트 조립 $arrow$ LLM 사유 생성
 $arrow$ 상담원 전달 $arrow$ 고객 설득 $arrow$ 전환/피드백 $arrow$ 모델 개선.
 
 역매핑과 컨텍스트 조립 없이는 모델 예측과 상담원 전달 사이에 해석가능성 간극이

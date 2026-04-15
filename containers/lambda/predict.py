@@ -79,7 +79,7 @@ def _get_pii_encryptor():
 
 # Env-var flags (set in Lambda config / CDK)
 _SECURITY_PII_SCRUB = os.environ.get("SECURITY_PII_SCRUB", "true").lower() == "true"
-_SECURITY_FEATURE_SCAN = os.environ.get("SECURITY_FEATURE_SCAN", "false").lower() == "true"
+_SECURITY_FEATURE_SCAN = os.environ.get("SECURITY_FEATURE_SCAN", "true").lower() == "true"
 
 # ---------------------------------------------------------------------------
 # Module-level cache (persists across warm invocations)
@@ -107,6 +107,13 @@ _VARIANT_CACHE: Dict[str, Dict[str, Any]] = {}
 # Activated when AGENT_ENABLED=true is set in the Lambda environment.
 # ChangeDetector emits model-version events; HeartbeatScheduler tracks
 # agent health across warm invocations.
+#
+# DESIGN NOTE — ChangeDetector is NOT called in the predict hot path.
+# It fires exclusively on pipeline stage completions (cold-start model load
+# and version promotions) via _ensure_loaded().  Calling it on every
+# predict invocation would add latency and produce meaningless "change"
+# events — model versions change infrequently, not per request.
+# Do not add ChangeDetector calls inside handler() warm-path code.
 # ---------------------------------------------------------------------------
 
 AGENT_ENABLED = os.environ.get("AGENT_ENABLED", "false").lower() == "true"
