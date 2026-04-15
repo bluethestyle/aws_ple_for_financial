@@ -59,7 +59,10 @@ _INCLUDE_CONFIG_FILES = [
 ]
 
 # Additional top-level files to include (relative to project root)
-_INCLUDE_FILES: list[str] = []
+_INCLUDE_FILES: list[str] = [
+    "containers/__init__.py",        # makes `from containers.path_resolver import ...` work
+    "containers/path_resolver.py",   # centralized SageMaker / local path resolution
+]
 
 _DEFAULT_STAGING_DIR = PROJECT_ROOT / "outputs" / "_sagemaker_staging"
 _DEFAULT_TARBALL_PATH = PROJECT_ROOT / "outputs" / "source.tar.gz"

@@ -1310,6 +1310,7 @@ def main() -> None:
     #                     dataset_config="configs/datasets/santander.yaml"
     import yaml as _yaml
     from core.pipeline.config import load_merged_config as _load_merged_config
+    from containers.path_resolver import resolve_config_path as _resolve_config_path
 
     config_str = hp.get("config", "{}")
     dataset_config_str = hp.get("dataset_config", "")
@@ -1317,15 +1318,11 @@ def main() -> None:
     if isinstance(config_str, dict):
         config = config_str
     elif isinstance(config_str, str) and (config_str.endswith(".yaml") or config_str.endswith(".yml")):
-        config_path = Path(config_str)
-        if not config_path.exists():
-            config_path = Path("/opt/ml/code") / config_str
+        config_path = Path(_resolve_config_path(config_str))
         if config_path.exists():
             if dataset_config_str:
                 # Split-config pattern: deep-merge common + dataset-specific
-                dataset_config_path = Path(dataset_config_str)
-                if not dataset_config_path.exists():
-                    dataset_config_path = Path("/opt/ml/code") / dataset_config_str
+                dataset_config_path = Path(_resolve_config_path(dataset_config_str))
                 if dataset_config_path.exists():
                     config = _load_merged_config(config_path, dataset_config_path)
                     logger.info("Config loaded (merged): %s + %s", config_path, dataset_config_path)

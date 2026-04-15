@@ -478,25 +478,21 @@ def _sagemaker_main() -> None:
     model_dir = os.environ["SM_CHANNEL_MODEL"]
     output_dir = os.environ["SM_OUTPUT_DATA_DIR"]
 
-    # Config path: relative to /opt/ml/code (source_dir extraction root).
-    # Supports two patterns:
+    # Config path: resolved via centralized path_resolver (CWD-first, then
+    # /opt/ml/code fallback). Supports two patterns:
     #   (a) Split-config (new):  config="configs/pipeline.yaml"
     #                            dataset_config="configs/datasets/santander.yaml"
     #   (b) Legacy single-file:  config="configs/santander/pipeline.yaml"
+    from containers.path_resolver import resolve_config_path as _resolve_config_path
+
     default_config = "configs/pipeline.yaml"
     config_path_raw: str = hp.get("config", default_config)
-    config_path = Path(config_path_raw)
-    if not config_path.is_absolute():
-        config_path = Path("/opt/ml/code") / config_path_raw
-    config_path_str = str(config_path)
+    config_path_str = _resolve_config_path(config_path_raw)
 
     dataset_config_path_str: Optional[str] = None
     dataset_config_raw: str = hp.get("dataset_config", "")
     if dataset_config_raw:
-        dataset_config_path = Path(dataset_config_raw)
-        if not dataset_config_path.is_absolute():
-            dataset_config_path = Path("/opt/ml/code") / dataset_config_raw
-        dataset_config_path_str = str(dataset_config_path)
+        dataset_config_path_str = _resolve_config_path(dataset_config_raw)
 
     batch_size: int = int(hp.get("batch_size", 5632))
     num_workers: int = int(hp.get("num_workers", _default_num_workers()))
