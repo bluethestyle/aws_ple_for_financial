@@ -4,13 +4,17 @@
 
 ### 1.1 Config-Driven 원칙
 - **모든 파라미터는 YAML config에서 읽는다.** Python 코드에 컬럼명, 경계값, 시나리오 목록, AWS 상수를 하드코딩하지 않는다.
-- 새 데이터셋 지원 시 YAML config 파일(pipeline.yaml, feature_groups.yaml, item_universe.yaml)만 추가한다. train.py, adapter, ablation script에 dataset-specific 코드를 넣지 않는다.
+- **Split-config 패턴**: `configs/pipeline.yaml`(공통: model, training, distillation, aws) + `configs/datasets/{name}.yaml`(데이터셋별: tasks, labels, ablation). `load_merged_config()`로 deep-merge하여 사용.
+- 새 데이터셋 지원 시 `configs/datasets/example.yaml`을 복사하여 task/label만 정의한다. train.py, adapter, ablation script에 dataset-specific 코드를 넣지 않는다.
 - `feature_groups.yaml`의 `input_filter`로 generator 입력을 선언한다. adapter에서 `product_cols`, `synth_cols` 같은 하드코딩 라우팅을 하지 않는다.
 
 ### 1.2 관심사 분리 (Separation of Concerns)
 - **Adapter**: raw data → standardized DataFrame. 전처리/피처생성/레이블파생을 하지 않는다.
 - **PipelineRunner**: 전처리 → 피처생성 → 레이블파생 → 정규화 → 텐서 저장 (Phase 0).
-- **train.py**: training-ready 데이터 로드 → 모델 빌드 → 학습. 전처리 코드를 넣지 않는다.
+- **config_builder**: PLEConfig 빌드의 단일 진실 공급원 (`core/model/config_builder.py`). train.py와 PLEPredictor 모두 여기서 모델 구성을 읽는다.
+- **train.py**: training-ready 데이터 로드 → config_builder로 모델 빌드 → 학습. 전처리 코드, 모델 빌드 인라인 코드를 넣지 않는다.
+- **PLEPredictor** (`core/inference/predictor.py`): 체크포인트 로드 + 추론. 학습 코드 없음.
+- **PLEEvaluator** (`core/evaluation/evaluator.py`): per-task 메트릭 계산. 학습/추론 코드 없음.
 - 코드가 500줄을 넘으면 관심사 분리가 되지 않은 것이다.
 
 ### 1.3 데이터 리키지 방지
@@ -24,6 +28,13 @@
 - **Feature-group level routing**: expert_routing은 개별 컬럼이 아닌 feature group 이름을 기준으로 해야 한다. 컬럼 이름 기반 routing은 Phase 0에서 정규화/log 복사본 추가로 컬럼이 재배열될 때 오작동한다.
 - **Group range contiguity**: feature_group_ranges는 연속된 블록이어야 한다. min~max index 방식은 3-stage 정규화가 생성한 _log 접미사 컬럼이 끝에 추가되면 range를 터트린다. 비연속 매칭 시 가장 긴 연속 블록을 사용해야 한다.
 - **Metric aggregation by task type**: avg_auc는 binary, avg_f1_macro는 multiclass, avg_mae는 regression task 전용이어야 한다. 전 task 평균은 metric semantics가 호환되지 않아 의미가 없다.
+
+### 1.8 증류 파이프라인 규칙 (2026-04-15)
+- **Teacher threshold gating**: teacher 성능이 2x random baseline 미달인 task는 증류 대신 hard label로 직접 LGBM 학습 (MRM 안전장치). 임계값은 `distillation.teacher_threshold`에서 config-driven으로 관리.
+- **Calibration은 필요한 task만 적용**: 확률값이 필요한 task(churn_signal 등)만 Platt scaling 적용. 순위 기반 추천 task는 calibration 불필요. `distillation.calibration.tasks`에서 관리.
+- **eval_metrics는 best epoch마다 저장**: 학습 종료 시점만이 아닌, best val_loss 갱신 시마다 checkpoint 디렉토리에 eval_metrics.json 저장. Job 중단 시에도 결과 보존.
+- **Checkpoint resume 시 epoch counting**: `remaining = target_epoch - current_epoch`. 총 시행횟수가 아닌 목표까지 남은 횟수만 진행.
+- **3계층 서빙 폴백**: Layer 1 (PLE→LGBM 증류) → Layer 2 (LGBM 직접 학습) → Layer 3 (금융 DNA 기반 룰). 서비스 중단 없는 구조.
 
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:
