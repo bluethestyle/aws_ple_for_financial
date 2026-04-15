@@ -29,6 +29,7 @@ import logging
 import sys
 from pathlib import Path
 
+import joblib
 import numpy as np
 
 logging.basicConfig(
@@ -122,6 +123,25 @@ def parse_args() -> argparse.Namespace:
         help="LGBM number of boosting rounds. Overrides YAML distillation.lgbm_params.n_estimators.",
     )
     return parser.parse_args()
+
+
+def load_calibrated_model(task_dir: str):
+    """Load a saved calibration model from a task directory.
+
+    Args:
+        task_dir: Path to the per-task output directory (e.g. ``output/churn/``).
+
+    Returns:
+        The deserialized calibrator object (``CalibratedClassifierCV`` for binary
+        tasks, or a ``dict`` with ``"lgbm"`` and ``"bias_corrector"`` keys for
+        regression tasks), or ``None`` if no calibrator was saved for this task.
+    """
+    calib_path = Path(task_dir) / "calibrator.joblib"
+    if calib_path.exists():
+        obj = joblib.load(calib_path)
+        logger.info("Calibrator loaded from %s", calib_path)
+        return obj
+    return None
 
 
 def main() -> None:
@@ -688,12 +708,205 @@ def main() -> None:
         else:
             logger.warning("--skip-fidelity-gate set, continuing despite failures.")
 
-    # Step 4.5: Feature selection — per-task LGBM importance-based pruning
-    logger.info("Running adaptive feature selection per task...")
-    from core.training.feature_selector import FeatureSelector, FeatureSelectionConfig
+    # ================================================================
+    # Step 4.5b: Drift monitoring — compare vs previous distillation
+    #
+    # SR 11-7 MRM safeguard: detect whether the newly distilled student
+    # has shifted significantly from the previous version.  Alerts are
+    # WARNING-only (non-blocking) so the pipeline never stops here.
+    # ================================================================
+    _drift_cfg = _distillation_cfg.get("drift_monitoring", {})
+    if _drift_cfg.get("enabled", False):
+        from core.training.distillation_drift import DistillationDriftMonitor
 
-    feature_selector = FeatureSelector(config=FeatureSelectionConfig())
+        logger.info("=" * 60)
+        logger.info("Step 4.5b: Temporal drift monitoring (SR 11-7)")
+        logger.info("=" * 60)
+
+        _drift_monitor = DistillationDriftMonitor(config=_drift_cfg)
+        _baseline_path = _drift_cfg.get("baseline_path", "outputs/distillation_baseline/")
+
+        # Build current student prediction dict (reuse post-sigmoid/softmax predictions
+        # consistent with fidelity validation for apples-to-apples comparison).
+        _current_student_preds: dict = {}
+        for _task_spec in pipeline_config.tasks:
+            _tname = _task_spec.name
+            if _tname not in students:
+                continue
+            _sm = students[_tname]
+            if _tname in calibrated_models:
+                _cal = calibrated_models[_tname]
+                if _task_spec.type == "binary" and hasattr(_cal, "predict_proba"):
+                    _current_student_preds[_tname] = _cal.predict_proba(features)[:, 1]
+                elif _task_spec.type == "regression" and isinstance(_cal, dict):
+                    _raw = _cal["lgbm"].predict(features)
+                    _current_student_preds[_tname] = _cal["bias_corrector"].predict(
+                        _raw.reshape(-1, 1)
+                    )
+                else:
+                    _current_student_preds[_tname] = _sm.predict(features)
+            else:
+                _raw_preds = _sm.predict(features)
+                if _task_spec.type == "binary" and student_config.use_custom_objective:
+                    _current_student_preds[_tname] = 1.0 / (1.0 + np.exp(-_raw_preds))
+                elif (
+                    _task_spec.type == "multiclass"
+                    and student_config.use_custom_objective
+                ):
+                    _nc = _task_spec.num_classes
+                    _r2d = _raw_preds.reshape(-1, _nc)
+                    _ex = np.exp(_r2d - _r2d.max(axis=1, keepdims=True))
+                    # Scalar per sample: confidence of the argmax class
+                    _current_student_preds[_tname] = (
+                        _ex / _ex.sum(axis=1, keepdims=True)
+                    ).max(axis=1)
+                else:
+                    _current_student_preds[_tname] = _raw_preds
+
+        # Load previous baseline and run comparison
+        _prev_preds = _drift_monitor.load_baseline(_baseline_path)
+
+        if _prev_preds is not None:
+            _drift_report = _drift_monitor.compare_versions(
+                current_preds=_current_student_preds,
+                previous_preds=_prev_preds,
+                labels=hard_labels,
+            )
+
+            _n_alerts = len(_drift_report["alert_tasks"])
+            if _drift_report["any_alert"]:
+                logger.warning(
+                    "Drift alerts on %d task(s): %s — MRM review recommended.",
+                    _n_alerts,
+                    _drift_report["alert_tasks"],
+                )
+            else:
+                logger.info(
+                    "Drift check PASSED: all %d tasks within thresholds.",
+                    len(_drift_report["per_task"]),
+                )
+
+            # Persist drift report alongside other pipeline outputs
+            _drift_output_path = Path(args.output_dir)
+            _drift_output_path.mkdir(parents=True, exist_ok=True)
+            with open(_drift_output_path / "drift_report.json", "w") as _drf:
+                json.dump(
+                    {
+                        "any_alert": _drift_report["any_alert"],
+                        "alert_tasks": _drift_report["alert_tasks"],
+                        "thresholds": _drift_report["thresholds"],
+                        "per_task": {
+                            t: {
+                                k: round(v, 6) if isinstance(v, float) else v
+                                for k, v in m.items()
+                            }
+                            for t, m in _drift_report["per_task"].items()
+                        },
+                    },
+                    _drf,
+                    indent=2,
+                    default=str,
+                )
+            logger.info("Drift report saved to %s/drift_report.json", args.output_dir)
+        else:
+            logger.info(
+                "No previous baseline found — current predictions will become the first baseline."
+            )
+
+        # Always update the baseline with the current version's predictions
+        _drift_monitor.save_baseline(_current_student_preds, _baseline_path)
+        logger.info("Drift baseline updated at %s", _baseline_path)
+    else:
+        logger.info("Drift monitoring disabled (distillation.drift_monitoring.enabled=false).")
+
+    # Step 4.5: Feature selection (IG dual-objective + LGBM gain pruning)
+    # -----------------------------------------------------------------------
+    # method is read from pipeline.yaml distillation.feature_selection.method:
+    #   "ig_dual"   -- IG pred + explain scores, cumulative threshold selection
+    #   "lgbm_gain" -- LGBM gain pruning only (original behaviour, default)
+    #   "both"      -- ig_dual first, then LGBM zero-gain prune within selection
+    # -----------------------------------------------------------------------
+    logger.info("Running adaptive feature selection per task...")
+    from core.training.feature_selector import (
+        FeatureSelector,
+        FeatureSelectionConfig,
+        FeatureSelectionResult,
+    )
+
+    _fs_cfg_raw: dict = _distillation_cfg.get("feature_selection", {})
+    _fs_method: str = _fs_cfg_raw.get("method", "lgbm_gain")
+    _ig_alpha: float = float(_fs_cfg_raw.get("ig_alpha", 0.7))
+    _cumulative_threshold: float = float(_fs_cfg_raw.get("cumulative_threshold", 0.95))
+    _ig_sample_size: int = int(_fs_cfg_raw.get("ig_sample_size", 10000))
+
+    logger.info(
+        "Feature selection method=%s ig_alpha=%.2f cumulative_threshold=%.2f ig_sample_size=%d",
+        _fs_method, _ig_alpha, _cumulative_threshold, _ig_sample_size,
+    )
+
+    fs_config = FeatureSelectionConfig(
+        cumulative_threshold=_cumulative_threshold,
+    )
+    feature_selector = FeatureSelector(config=fs_config)
+
+    # ------------------------------------------------------------------
+    # Build explain-value map from feature_groups.yaml (config-driven).
+    # Category scores can be overridden via
+    # pipeline.yaml distillation.feature_selection.category_explain_scores.
+    # ------------------------------------------------------------------
+    _explain_scores: dict = {}
+    if _fs_method in ("ig_dual", "both"):
+        import yaml as _yaml_inner
+
+        _fg_cfg_path = Path(args.config).parent / "feature_groups.yaml"
+        _category_scores_from_cfg: dict = _fs_cfg_raw.get("category_explain_scores", {})
+
+        _default_category_scores: dict = {
+            "demographics":           1.0,
+            "spending_pattern":       1.0,
+            "transaction_behavior":   1.0,
+            "temporal":               1.0,
+            "economic_behavior":      1.0,
+            "cross_domain":           0.9,
+            "extended_services":      0.9,
+            "domain_topology":        0.8,
+            "customer_segment":       0.8,
+            "temporal_state":         0.8,
+            "merchant_structure":     0.9,
+            "behavioral_state":       0.8,
+            "graph_structure":        0.7,
+            "model_insight":          0.3,
+        }
+        # YAML overrides take precedence over built-in defaults
+        _category_scores: dict = {**_default_category_scores, **_category_scores_from_cfg}
+
+        if _fg_cfg_path.exists():
+            with open(_fg_cfg_path, encoding="utf-8") as _fgf:
+                _fg_data: dict = _yaml_inner.safe_load(_fgf)
+            for _grp in _fg_data.get("feature_groups", []):
+                _interp = _grp.get("interpretation", {})
+                _cat = _interp.get("category", "")
+                _cat_score = _category_scores.get(_cat, 0.5)
+                for _col in _grp.get("columns", []):
+                    _explain_scores[_col] = _cat_score
+            logger.info(
+                "Explain-value map built: %d features from %s",
+                len(_explain_scores), _fg_cfg_path,
+            )
+        else:
+            logger.warning(
+                "feature_groups.yaml not found at %s -- explain scores will be uniform",
+                _fg_cfg_path,
+            )
+
+    # ------------------------------------------------------------------
+    # Retrieve teacher model for IG (loaded by load_teacher above).
+    # Falls back to None if teacher was not loaded in this run.
+    # ------------------------------------------------------------------
+    _teacher_model = getattr(trainer, "_teacher", None)
+
     feature_selections = {}
+    _ig_raw_scores: dict = {}  # task_name -> top-50 dual scores, saved to summary
 
     for task_spec in pipeline_config.tasks:
         task_name = task_spec.name
@@ -702,38 +915,140 @@ def main() -> None:
 
         student_model = students[task_name]
 
-        # Use LGBM gain-based pruning (Stage 2 only — no teacher needed)
-        pruned_indices = feature_selector.prune_by_lgbm(
-            lgbm_model=student_model,
-            feature_names=feature_cols,
-        )
-        pruned_names = [feature_cols[i] for i in pruned_indices]
-
-        # Build a FeatureSelectionResult-compatible dict for save_students
-        from core.training.feature_selector import FeatureSelectionResult
-
-        selection_result = FeatureSelectionResult(
-            task_name=task_name,
-            original_count=len(feature_cols),
-            selected_count=len(pruned_indices),
-            reduction_pct=round((1 - len(pruned_indices) / len(feature_cols)) * 100, 1),
-            cumulative_threshold_used=0.0,
-            selection_method="lgbm",
-            selected_indices=sorted(pruned_indices),
-            selected_names=pruned_names,
-            feature_importances={
-                pruned_names[i]: float(
-                    student_model.feature_importance(importance_type="gain")[pruned_indices[i]]
+        if _fs_method in ("ig_dual", "both") and _teacher_model is not None:
+            # Stage 1: IG dual-objective selection
+            try:
+                ig_result = feature_selector.select_by_ig_dual(
+                    model=_teacher_model,
+                    features=features,
+                    task_name=task_name,
+                    feature_names=feature_cols,
+                    n_samples=_ig_sample_size,
+                    ig_alpha=_ig_alpha,
+                    explain_scores=_explain_scores if _explain_scores else None,
                 )
-                for i in range(min(50, len(pruned_indices)))
-            },
-            mandatory_included=[],
-        )
+                _ig_raw_scores[task_name] = ig_result.feature_importances
+
+                if _fs_method == "both":
+                    # Stage 2: LGBM zero-gain pruning within IG selection
+                    pruned_indices = feature_selector.prune_by_lgbm(
+                        lgbm_model=student_model,
+                        feature_names=feature_cols,
+                        selected_indices=ig_result.selected_indices,
+                    )
+                    pruned_names = [feature_cols[i] for i in pruned_indices]
+                    lgbm_gains = student_model.feature_importance(importance_type="gain")
+                    selection_result = FeatureSelectionResult(
+                        task_name=task_name,
+                        original_count=len(feature_cols),
+                        selected_count=len(pruned_indices),
+                        reduction_pct=round(
+                            (1 - len(pruned_indices) / len(feature_cols)) * 100, 1,
+                        ),
+                        cumulative_threshold_used=_cumulative_threshold,
+                        selection_method="ig_dual+lgbm",
+                        selected_indices=sorted(pruned_indices),
+                        selected_names=pruned_names,
+                        feature_importances={
+                            pruned_names[i]: float(lgbm_gains[pruned_indices[i]])
+                            for i in range(min(50, len(pruned_indices)))
+                        },
+                        mandatory_included=ig_result.mandatory_included,
+                    )
+                else:
+                    selection_result = ig_result
+
+            except Exception as _ig_exc:
+                logger.warning(
+                    "IG dual selection failed for task %s (%s) -- falling back to lgbm_gain",
+                    task_name, _ig_exc,
+                    exc_info=True,
+                )
+                pruned_indices = feature_selector.prune_by_lgbm(
+                    lgbm_model=student_model,
+                    feature_names=feature_cols,
+                )
+                pruned_names = [feature_cols[i] for i in pruned_indices]
+                lgbm_gains = student_model.feature_importance(importance_type="gain")
+                selection_result = FeatureSelectionResult(
+                    task_name=task_name,
+                    original_count=len(feature_cols),
+                    selected_count=len(pruned_indices),
+                    reduction_pct=round(
+                        (1 - len(pruned_indices) / len(feature_cols)) * 100, 1,
+                    ),
+                    cumulative_threshold_used=0.0,
+                    selection_method="lgbm_fallback",
+                    selected_indices=sorted(pruned_indices),
+                    selected_names=pruned_names,
+                    feature_importances={
+                        pruned_names[i]: float(lgbm_gains[pruned_indices[i]])
+                        for i in range(min(50, len(pruned_indices)))
+                    },
+                    mandatory_included=[],
+                )
+
+        elif _fs_method in ("ig_dual", "both") and _teacher_model is None:
+            logger.warning(
+                "method=%s but no teacher model loaded -- falling back to lgbm_gain for task %s",
+                _fs_method, task_name,
+            )
+            pruned_indices = feature_selector.prune_by_lgbm(
+                lgbm_model=student_model,
+                feature_names=feature_cols,
+            )
+            pruned_names = [feature_cols[i] for i in pruned_indices]
+            lgbm_gains = student_model.feature_importance(importance_type="gain")
+            selection_result = FeatureSelectionResult(
+                task_name=task_name,
+                original_count=len(feature_cols),
+                selected_count=len(pruned_indices),
+                reduction_pct=round(
+                    (1 - len(pruned_indices) / len(feature_cols)) * 100, 1,
+                ),
+                cumulative_threshold_used=0.0,
+                selection_method="lgbm_fallback",
+                selected_indices=sorted(pruned_indices),
+                selected_names=pruned_names,
+                feature_importances={
+                    pruned_names[i]: float(lgbm_gains[pruned_indices[i]])
+                    for i in range(min(50, len(pruned_indices)))
+                },
+                mandatory_included=[],
+            )
+
+        else:
+            # lgbm_gain only (default / original behaviour)
+            pruned_indices = feature_selector.prune_by_lgbm(
+                lgbm_model=student_model,
+                feature_names=feature_cols,
+            )
+            pruned_names = [feature_cols[i] for i in pruned_indices]
+            lgbm_gains = student_model.feature_importance(importance_type="gain")
+            selection_result = FeatureSelectionResult(
+                task_name=task_name,
+                original_count=len(feature_cols),
+                selected_count=len(pruned_indices),
+                reduction_pct=round(
+                    (1 - len(pruned_indices) / len(feature_cols)) * 100, 1,
+                ),
+                cumulative_threshold_used=0.0,
+                selection_method="lgbm",
+                selected_indices=sorted(pruned_indices),
+                selected_names=pruned_names,
+                feature_importances={
+                    pruned_names[i]: float(lgbm_gains[pruned_indices[i]])
+                    for i in range(min(50, len(pruned_indices)))
+                },
+                mandatory_included=[],
+            )
+
         feature_selections[task_name] = selection_result
 
         logger.info(
-            "  %s: %d/%d features selected (%.1f%% reduction)",
-            task_name, selection_result.selected_count,
+            "  %s [%s]: %d/%d features selected (%.1f%% reduction)",
+            task_name, selection_result.selection_method,
+            selection_result.selected_count,
             selection_result.original_count, selection_result.reduction_pct,
         )
 
@@ -743,6 +1058,19 @@ def main() -> None:
         feature_selections=feature_selections,
         fidelity_results=fidelity_results,
     )
+
+    # Step 5.5: Save calibration models alongside LGBM models
+    saved_calibrators: dict[str, str] = {}
+    if calibrated_models:
+        logger.info("Saving calibration models for %d task(s)...", len(calibrated_models))
+        for task_name, calib in calibrated_models.items():
+            task_dir = Path(args.output_dir) / task_name
+            task_dir.mkdir(parents=True, exist_ok=True)
+            calib_path = task_dir / "calibrator.joblib"
+            joblib.dump(calib, calib_path)
+            saved_calibrators[task_name] = str(calib_path)
+            logger.info("  [CALIBRATOR SAVED] %s -> %s", task_name, calib_path)
+        logger.info("Calibration models saved: %d task(s)", len(saved_calibrators))
 
     # Summary
     logger.info("=" * 60)
@@ -789,8 +1117,22 @@ def main() -> None:
                 "selected": sel.selected_count,
                 "original": sel.original_count,
                 "reduction_pct": sel.reduction_pct,
+                "method": sel.selection_method,
             }
             for task_name, sel in feature_selections.items()
+        },
+        "ig_dual_scores": _ig_raw_scores,
+        "feature_selection_config": {
+            "method": _fs_method,
+            "ig_alpha": _ig_alpha,
+            "cumulative_threshold": _cumulative_threshold,
+            "ig_sample_size": _ig_sample_size,
+        },
+        "calibration": {
+            "enabled": bool(calibrated_models),
+            "method": _calib_method if calibrated_models else None,
+            "calibrated_tasks": list(saved_calibrators.keys()),
+            "calibrator_paths": saved_calibrators,
         },
     }
     summary_path = output_path / "distillation_summary.json"

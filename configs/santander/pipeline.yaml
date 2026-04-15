@@ -919,6 +919,26 @@ distillation:
       max_mae_gap: 0.05
       max_rmse_gap: 0.10
 
+  # IG-based dual-objective feature selection (Paper 2 core contribution)
+  feature_selection:
+    method: ig_dual                 # ig_dual | lgbm_gain | both
+    ig_alpha: 0.7                   # predictive vs explanation weight (Paper 2 default)
+    top_k: null                     # null = use cumulative_threshold instead
+    cumulative_threshold: 0.95      # keep features covering 95% cumulative importance
+    ig_sample_size: 10000           # samples for IG computation (subset for speed)
+
+  # Temporal drift monitoring — SR 11-7 MRM safeguard for daily re-distillation.
+  # Compares current student predictions against the previous baseline.
+  # Alerts are logged as WARNING (non-blocking); MRM team reviews flagged runs.
+  drift_monitoring:
+    enabled: true
+    max_psi: 0.20                # Population Stability Index threshold (>0.20 = significant shift)
+    max_jsd: 0.10                # Jensen-Shannon Divergence threshold
+    max_auc_shift: 0.05          # |current_AUC - previous_AUC| (binary tasks only)
+    max_prediction_shift: 0.10   # |mean(current) - mean(previous)| absolute shift
+    min_rank_correlation: 0.95   # Spearman rho between version rankings
+    baseline_path: outputs/distillation_baseline/  # directory for saved .npz baselines
+
 # ---------------------------------------------------------------------------
 # Ablation Scenarios
 # ---------------------------------------------------------------------------

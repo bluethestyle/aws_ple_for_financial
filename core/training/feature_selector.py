@@ -421,6 +421,142 @@ class FeatureSelector:
         # No gradients computed — return uniform importance
         return np.ones(features.shape[1]) / features.shape[1]
 
+    def select_by_ig_dual(
+        self,
+        model: Any,
+        features: Any,
+        task_name: str,
+        feature_names: Optional[List[str]] = None,
+        n_samples: int = 10000,
+        ig_alpha: float = 0.7,
+        explain_scores: Optional[Dict[str, float]] = None,
+    ) -> FeatureSelectionResult:
+        """Dual-objective IG selection (Paper 2 core contribution).
+
+        Computes a per-feature score combining predictive value (IG from teacher)
+        and explanation value (proxy from feature group category richness):
+
+            score(f) = alpha * IG_pred(f) + (1 - alpha) * IG_explain(f)
+
+        where ``IG_pred`` is the normalized absolute IG attribution from the
+        teacher model and ``IG_explain`` is a normalized per-feature explanation
+        score supplied by the caller (typically derived from feature group
+        metadata in feature_groups.yaml).
+
+        Args:
+            model: PLE teacher model (``torch.nn.Module``).
+            features: Feature matrix as ``np.ndarray (n_rows, n_features)``
+                or ``torch.Tensor``.
+            task_name: Task to compute IG for.
+            feature_names: Optional list of feature names.
+            n_samples: Maximum samples used for IG computation.
+            ig_alpha: Weight for predictive (IG) component vs. explanation
+                component.  Default 0.7 (Paper 2 default).
+            explain_scores: Dict mapping feature name -> explain score in
+                [0, 1].  Features not listed get score 0.0.  If None or
+                empty, falls back to pure IG (``ig_alpha=1.0``).
+
+        Returns:
+            A :class:`FeatureSelectionResult` using dual-objective scores,
+            with ``selection_method="ig_dual"``.
+        """
+        import torch
+
+        # Subsample for IG computation
+        if isinstance(features, np.ndarray):
+            if features.shape[0] > n_samples:
+                idx = np.random.choice(features.shape[0], n_samples, replace=False)
+                features_sub = features[idx]
+            else:
+                features_sub = features
+            features_tensor = torch.tensor(features_sub, dtype=torch.float32)
+        else:
+            features_tensor = features[:n_samples]
+
+        n_features = features_tensor.shape[1]
+        feature_names = feature_names or [f"f_{i}" for i in range(n_features)]
+
+        # --- Predictive component: IG attribution from teacher ---
+        ig_abs = self._compute_ig(model, features_tensor, task_name)
+
+        # Normalize IG to [0, 1]
+        ig_max = ig_abs.max()
+        if ig_max > 1e-10:
+            ig_pred_norm = ig_abs / ig_max
+        else:
+            ig_pred_norm = np.ones(n_features) / n_features
+
+        # --- Explanation component: per-feature explain score ---
+        if explain_scores:
+            ig_explain_arr = np.array(
+                [explain_scores.get(name, 0.0) for name in feature_names],
+                dtype=np.float64,
+            )
+            expl_max = ig_explain_arr.max()
+            if expl_max > 1e-10:
+                ig_explain_norm = ig_explain_arr / expl_max
+            else:
+                ig_explain_norm = np.zeros(n_features)
+            effective_alpha = ig_alpha
+        else:
+            # No explain scores provided — pure IG
+            ig_explain_norm = np.zeros(n_features)
+            effective_alpha = 1.0
+            logger.warning(
+                "No explain_scores provided for task '%s'; using pure IG (alpha=1.0).",
+                task_name,
+            )
+
+        # --- Dual-objective score ---
+        dual_scores = (
+            effective_alpha * ig_pred_norm
+            + (1.0 - effective_alpha) * ig_explain_norm
+        )
+
+        # Cumulative selection on dual scores
+        selected_indices = self._cumulative_select(dual_scores)
+
+        # Ensure mandatory features
+        selected_indices = self._ensure_mandatory(selected_indices, feature_names)
+
+        selected_names = [feature_names[i] for i in selected_indices]
+        # Store top-50 by dual score for reporting
+        top_50 = {
+            feature_names[i]: float(dual_scores[i])
+            for i in np.argsort(dual_scores)[::-1][:50]
+        }
+
+        result = FeatureSelectionResult(
+            task_name=task_name,
+            original_count=n_features,
+            selected_count=len(selected_indices),
+            reduction_pct=round((1 - len(selected_indices) / n_features) * 100, 1),
+            cumulative_threshold_used=self._config.cumulative_threshold,
+            selection_method="ig_dual",
+            selected_indices=sorted(selected_indices),
+            selected_names=selected_names,
+            feature_importances=top_50,
+            mandatory_included=[
+                f for f in self._config.mandatory_features if f in selected_names
+            ],
+        )
+
+        if self._audit_store:
+            self._audit_store.log_event(
+                "feature_selection",
+                {
+                    "pk": task_name,
+                    "task": task_name,
+                    "method": "ig_dual",
+                    "ig_alpha": effective_alpha,
+                    "original": n_features,
+                    "selected": len(selected_indices),
+                    "reduction_pct": result.reduction_pct,
+                },
+            )
+
+        return result
+
     def get_signed_ig(self, task_name: str) -> Optional[np.ndarray]:
         """Return signed IG values from the last compute_ig call.
 
