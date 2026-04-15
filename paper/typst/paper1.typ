@@ -135,7 +135,7 @@ Most recommendation systems operate at level 1 (association);
 our architecture aims for levels 1--2 by incorporating structural causal reasoning.
 Regulatory frameworks --- the EU AI Act, Korea's FSS guidelines and AI Basic Act ---
 increasingly demand this shift toward structurally transparent explanations
-(detailed regulatory analysis in Section 2.3).
+(detailed regulatory analysis in Section 2.4).
 
 == Contributions
 
@@ -449,7 +449,7 @@ Four principles guide the architecture:
 Financial customer data exhibits inherently multi-modal structure.
 We classify data along multiple axes, each mapped to an optimal feature generator and expert:
 
-The complete data axis to expert to feature generator mapping is shown in @tab:modality-axis. <tab:data-axis>
+The complete data axis to expert to feature generator mapping is shown in @tab:modality-axis.
 
 #text(size: 8.5pt, fill: gray)[
   _Note_: Short-term, Long-term, and Disrupted series map to the three sub-components
@@ -567,10 +567,10 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
       edge(<towers>, <kd>, "->"),
       edge(<kd>, <serve>, "->"),
 
-      // === adaTT: solid intra arrows between adjacent task groups ===
-      edge(<tg1>, <tg2>, "<->", stroke: 0.8pt + accent, label: text(size: 8pt, weight: "bold", fill: accent)[adaTT]),
-      edge(<tg2>, <tg3>, "<->", stroke: 0.8pt + accent, label: text(size: 8pt, weight: "bold", fill: accent)[adaTT]),
-      edge(<tg3>, <tg4>, "<->", stroke: 0.8pt + accent, label: text(size: 8pt, weight: "bold", fill: accent)[adaTT]),
+      // === adaTT: dashed arrows (optional, disabled by default) ===
+      edge(<tg1>, <tg2>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)]),
+      edge(<tg2>, <tg3>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)]),
+      edge(<tg3>, <tg4>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)]),
 
 
     )
@@ -730,7 +730,7 @@ before normalization, allowing multiple experts to receive high weight simultane
 This is particularly important for tasks that require multiple analytical perspectives ---
 for example, churn prediction benefits from both temporal trends _and_ causal pathways,
 and neither should be suppressed to boost the other.
-The structure ablation (Section 5.5) compares these gate types
+The structure ablation compares these gate types
 with 20-epoch training to assess convergence behavior.
 
 === Temporal Ensemble: Expert-within-Expert
@@ -750,7 +750,7 @@ No single temporal model handles all three well:
 
 The three models' outputs are concatenated and projected,
 mirroring the heterogeneous expert philosophy at a finer granularity.
-This design is validated in the ablation study (Section 5.4),
+This design is validated in the temporal component ablation,
 where removing any single temporal component degrades
 performance on different task groups.
 
@@ -839,7 +839,7 @@ Each task group corresponds to one DNA axis (@tab:dna-axis);
 within each group, different modality experts (@tab:modality-axis) contribute differently,
 and the CGC gate learns the optimal mixture per task:
 
-The four task groups --- Engagement, Lifecycle, Value, Consumption --- and their constituent tasks are defined in @tab:dna-axis. <tab:task-groups>
+The four task groups --- Engagement, Lifecycle, Value, Consumption --- and their constituent tasks are defined in @tab:dna-axis.
 
 adaTT enforces differentiated transfer: strong intra-group transfer (same DNA perspective)
 and weaker inter-group transfer (different perspectives, minimizing negative transfer).
@@ -1029,7 +1029,7 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
     align: (left, left, right, right, right),
     stroke: 0.5pt,
     [*Tier*], [*Labels*], [$f_"obs"$], [$f_"noise"$], [*XGB AUC*],
-    [Easy], [segment], [determ.], [--], [0.95--1.0],
+    [Easy], [segment], [determ.], [n/a], [0.95--1.0],
     [Core], [churn_signal], [0.04], [0.68], [0.58--0.65],
     [Hard], [will_acquire\_\*], [0.03], [0.72], [0.50--0.56],
     [V.Hard], [next_mcc, top_mcc_shift], [0.02], [0.78], [0.50--0.51],
@@ -1094,7 +1094,7 @@ but a structural requirement for multi-faceted persuasion.
     align: (left, right, right, right, right),
     stroke: 0.5pt,
     table.header(
-      [*Scenario*], [*Avg AUC*], [*Avg F1m†*], [*Avg MAE*], [*Val Loss*],
+      [*Scenario*], [*Avg AUC*], [*Avg F1m*], [*Avg MAE*], [*Val Loss*],
     ),
     table.cell(colspan: 5, align: left, [_Baselines_]),
     [Full (7 experts, PLE softmax)], [0.6724], [0.2010], [0.9596], [25.72],
@@ -1114,7 +1114,7 @@ but a structural requirement for multi-faceted persuasion.
     [Full − Causal], [0.6724], [0.2010], [0.9617], [25.73],
     [Full − OT], [0.6721], [0.2020], [0.9591], [23.60],
   ),
-  caption: [Joint feature + expert ablation. Bottom-up adds one generator to DeepFM baseline; top-down removes one expert from the full 7-expert model. Bold = best in group. †Avg F1m covers segment\_prediction (F1-macro); nba\_primary and next\_mcc use NDCG\@3/Acc\@3 in per-task reporting.],
+  caption: [Joint feature + expert ablation. Bottom-up adds one generator to DeepFM baseline; top-down removes one expert from the full 7-expert model. Avg F1m covers segment\_prediction (F1-macro); nba\_primary and next\_mcc use NDCG\@3/Acc\@3 in per-task reporting. Bold = best in group. †Marks anomalous F1-macro drop caused by segment\_prediction negative transfer.],
 ) <tab:joint-ablation>
 
 Expert contribution analysis (@tab:joint-ablation) reveals three patterns.
@@ -1136,7 +1136,7 @@ indicates a _softmax gate redistribution effect_: adding any expert that receive
 forces the gate to redistribute weight away from DeepFM, regardless of the new expert's architecture.
 
 *HGCN removal degrades nba\_primary ranking.*
-While aggregate AUC is unaffected, per-task analysis (see Appendix) shows that
+While aggregate AUC is unaffected, per-task analysis shows that
 removing HGCN causes nba\_primary NDCG\@3 to drop by $-$0.015 ---
 the largest per-task degradation in the top-down ablation,
 confirming that product hierarchy encoding is essential for recommendation ranking.

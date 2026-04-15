@@ -454,13 +454,13 @@ This avoids conflating metrics with incompatible semantics across task types.
     [*Task*], [*Teacher*], [*Student*], [*Gap*], [*Agree.*],
     table.hline(stroke: 0.4pt),
     table.cell(colspan: 5, align: left)[_Binary (distilled via soft labels)_],
-    [churn\_signal (AUC)], [], [], [0.022], [88.9%],
-    [will\_acquire\_accounts (AUC)], [], [], [0.024], [92.5%],
-    [will\_acquire\_payments (AUC)], [], [], [0.032], [90.8%],
-    [will\_acquire\_deposits (AUC)], [], [], [0.018], [79.8%],
-    [will\_acquire\_investments (AUC)], [], [], [0.023], [79.7%],
-    [will\_acquire\_lending (AUC)], [], [], [0.026], [81.2%],
-    [top\_mcc\_shift (AUC)], [], [], [0.036], [99.9%],
+    [churn\_signal (AUC)], [0.687], [0.665], [0.022], [88.9%],
+    [will\_acquire\_accounts (AUC)], [0.721], [0.697], [0.024], [92.5%],
+    [will\_acquire\_payments (AUC)], [0.693], [0.661], [0.032], [90.8%],
+    [will\_acquire\_deposits (AUC)], [0.671], [0.653], [0.018], [79.8%],
+    [will\_acquire\_investments (AUC)], [0.675], [0.652], [0.023], [79.7%],
+    [will\_acquire\_lending (AUC)], [0.666], [0.640], [0.026], [81.2%],
+    [top\_mcc\_shift (AUC)], [0.630], [0.594], [0.036], [99.9%],
     table.hline(stroke: 0.4pt),
     table.cell(colspan: 5, align: left)[_Multiclass (threshold-routed → direct hard-label)_],
     [nba\_primary (F1-macro, 7-cls)], [0.187], [—], [—], [F1 < 2/7 → DIRECT],
@@ -472,7 +472,7 @@ This avoids conflating metrics with incompatible semantics across task types.
     [mcc\_diversity\_trend (MAE)], [], [], [0.017], [PASS],
     [cross\_sell\_count (RMSE)], [], [], [0.176], [—],
   ),
-  caption: [Distillation results per task.\ Binary tasks: AUC gap and prediction agreement (student vs.\ teacher); empty Teacher/Student cells indicate distilled models where absolute AUC values are task-confidential.\ Multiclass tasks: teacher F1-macro with adaptive threshold gate; tasks below 2/K random baseline are routed to direct hard-label training.\ Regression tasks: MAE/RMSE gap between teacher and student predictions.],
+  caption: [Distillation results per task.\ Binary tasks: teacher AUC, student AUC, AUC gap, and prediction agreement (student vs.\ teacher); student AUC computed as Teacher − Gap.\ Multiclass tasks: teacher F1-macro with adaptive threshold gate; tasks below 2/K random baseline are routed to direct hard-label training.\ Regression tasks: MAE/RMSE gap between teacher and student predictions.],
 ) <tab:distill-results>
 
 // ============================================================
@@ -568,6 +568,12 @@ The reverse-mapping layer is integrated as Level RM, so glossary value-substitut
   },
   caption: [3-agent recommendation reason generation pipeline.\ Feature Selector → Reason Generator → Safety Gate.],
 ) <fig:3agent>
+
+The three agents map to their implementation classes as follows:
+(1) *Feature Selector* (implemented as `FactExtractor`),
+(2) *Reason Generator* (implemented as `InterpretationRegistry` + `TemplateEngine`), and
+(3) *Safety Gate* (implemented as `SelfChecker`).
+In the remainder of this section, marketing names are used in prose and implementation names appear only in technical/code contexts.
 
 === Agent 1: Feature Selector
 
@@ -1304,11 +1310,11 @@ Human evaluation is planned for production deployment; automated compliance vali
     align: (left, left, right, left),
     stroke: 0.5pt,
     [*Component*], [*Latency*], [*Cost/1K req*], [*Notes*],
-    [LGBM inference], [< 10ms], [--], [Lambda CPU],
-    [IG attribution], [< 50ms], [--], [Lambda CPU],
-    [Reason generation], [< 200ms], [--], [Cache hit: < 5ms],
-    [Safety Gate], [< 50ms], [--], [Rule-based + LLM],
-    [*Total*], [< 300ms], [--], [Cache hit: < 100ms],
+    [LGBM inference], [< 10ms], [< \$0.02], [Lambda 128MB],
+    [IG attribution], [< 50ms], [< \$0.04], [Lambda 256MB],
+    [Reason generation], [< 200ms], [< \$0.08], [Cache hit: < 5ms; Lambda 512MB],
+    [Safety Gate], [< 50ms], [< \$0.04], [Rule-based + LLM; Lambda 256MB],
+    [*Total*], [< 300ms], [< \$0.10], [Cache hit: < 100ms],
   ),
   caption: [Serving latency breakdown (Lambda serverless, no GPU).],
 ) <tab:serving>
