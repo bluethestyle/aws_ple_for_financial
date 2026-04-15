@@ -5,7 +5,7 @@
 > A recommendation system that doesn't just predict what customers will buy —
 > it explains *why*, in language that customers, bankers, and regulators understand.
 
-**[Project Site](https://bluethestyle.github.io/aws_ple_for_financial/)** | [Paper 1 (Architecture)](paper/typst/paper1.pdf) | [Paper 2 (Serving)](paper/typst/paper2.pdf)
+[Paper 1 (Architecture)](paper/typst/paper1.pdf) | [Paper 2 (Serving & Ops)](paper/typst/paper2.pdf) | [Paper 3 (Loss Dynamics)](paper/typst/paper3.pdf)
 
 ---
 
@@ -18,7 +18,7 @@
 | **Why it matters** | Expert gate weights *are* the explanation -- "35% spending trend + 28% product fit" |
 | **Regulation** | Korean FSS AI RMF, EU AI Act, Korean AI Basic Act compliance built-in |
 | **Serving** | Distilled to LGBM, runs on Lambda -- no GPU server needed |
-| **Scale** | 1M customers, ~349 features, 5-agent architecture (3 serving + 2 ops/audit) |
+| **Scale** | 1M customers, 349 features, 5-agent architecture (3 serving + 2 ops/audit) |
 | **Team** | Built by 3 people with AI-augmented development (Claude Code) |
 
 ## Quick Overview
@@ -27,7 +27,7 @@
 Customer Data (bank/card transactions)
     |
     v
-[Phase 0] 10 Feature Generators (11 scientific disciplines, ~349D)
+[Phase 0] 10 Feature Generators (11 scientific disciplines, 349D)
     |       TDA, Hyperbolic GCN, Mamba, HMM, Chemical Kinetics, SIR, ...
     v
 [Phase 1-3] PLE + 7 Heterogeneous Experts + 13 Tasks
@@ -50,7 +50,7 @@ Customer Data (bank/card transactions)
 |--------|-------------|----------------|
 | **DeepFM** | Feature crosses | Income x product x channel interactions |
 | **Temporal** (Mamba+LNN+Transformer) | Time patterns | Monthly trends + daily bursts + dormancy gaps |
-| **Hyperbolic GCN** | Product hierarchy | "Savings" is closer to "deposits" than "loans" |
+| **Hyperbolic GCN** | Merchant hierarchy | MCC category tree in Poincaré space (27D) |
 | **PersLay/TDA** | Behavioral shape | Spending cycles, consumption topology |
 | **LightGCN** | Social graph | "Similar customers also hold this product" |
 | **Causal** | Cause-effect | "Spending increase *causes* card upgrade interest" |
@@ -79,8 +79,8 @@ PYTHONPATH=. python scripts/generate_benchmark_data.py --n-customers 1000000
 # Feature engineering
 PYTHONPATH=. python adapters/santander_adapter.py --input-dir data/benchmark --output-dir outputs/phase0
 
-# Run ablation
-ABLATION_USE_DOCKER=1 PYTHONPATH=. python scripts/run_local_ablation.py
+# Run ablation (local, no Docker)
+PYTHONPATH=. python scripts/run_local_ablation.py
 ```
 
 ## Project Structure
@@ -104,7 +104,7 @@ paper/                   Research papers (Typst)
 
 | Category | Documents |
 |----------|-----------|
-| **Papers** | [Paper 1: Architecture (EN)](paper/typst/paper1.pdf) · [KO](paper/typst/paper1_ko.pdf) · [Paper 2: Serving & Ops (EN)](paper/typst/paper2.pdf) · [KO](paper/typst/paper2_ko.pdf) |
+| **Papers** | [Paper 1: Architecture (EN)](paper/typst/paper1.pdf) · [KO](paper/typst/paper1_ko.pdf) · [Paper 2: Serving & Ops (EN)](paper/typst/paper2.pdf) · [KO](paper/typst/paper2_ko.pdf) · [Paper 3: Loss Dynamics](paper/typst/paper3.pdf) |
 | **Architecture** | [Overview](docs/typst/en/architecture_overview_en.pdf) · [Expert Details](docs/typst/en/expert_details_en.pdf) · [Pipeline Guide](docs/typst/en/pipeline_guide_en.pdf) |
 | **Technical Refs** | [PLE/adaTT](docs/typst/en/tech_ref_ple_adatt_en.pdf) · [Features](docs/typst/en/tech_ref_features_en.pdf) · [Causal/OT](docs/typst/en/tech_ref_causal_ot_en.pdf) · [Temporal](docs/typst/en/tech_ref_temporal_en.pdf) · [Distillation/Reason](docs/typst/en/tech_ref_distill_reason_en.pdf) |
 | **Regulatory** | [Compliance Summary](docs/typst/en/regulatory_summary_en.pdf) · [Full Framework](docs/typst/en/regulatory_framework_en.pdf) |
