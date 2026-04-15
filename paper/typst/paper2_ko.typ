@@ -1512,28 +1512,30 @@ S3 스토리지, 운영 경비 등 모든 비용은
 
 #figure(
   table(
-    columns: (auto, auto, auto, auto, auto),
-    align: (left, left, left, left, left),
+    columns: (auto, auto, auto, auto, auto, auto),
+    align: (left, left, left, left, left, left),
     stroke: 0.5pt,
-    [*DNA 그룹*], [*태스크*], [*룰*], [*이론적 근거*], [*트리거*],
-    [Engagement], [churn_signal], [RFM 30/60/90일 감소 추세], [관계 마케팅 (Berry '83)], [R/F/M 동반 하락],
-    [Engagement], [top_mcc_shift], [MCC 엔트로피 변동 > 임계값], [McKinsey CDJ 트리거], [라이프스타일 변화 감지],
-    [Lifecycle], [nba_primary], [상품 인접 행렬 +1단계], [Kotler 5A 여정], [상품 래더 갭],
-    [Lifecycle], [segment_prediction], [잔액 x 빈도 x 상품수 3축], [CLV 등급 모델 (파레토)], [세그먼트 재분류],
-    [Lifecycle], [will_acquire_deposits], [여유자금 비율 > 30% + 정기예금 미보유], [생애주기 저축 단계], [유휴자금 감지],
-    [Lifecycle], [will_acquire_investments], [적합성 등급 >= 상품 위험등급], [적합성 원칙 (금소법 §17)], [위험 매칭 기회],
-    [Lifecycle], [will_acquire_accounts], [급여 입금 + 비주거래], [SOW 확장 (PwC)], [주거래 전환 가능],
-    [Lifecycle], [will_acquire_lending], [신용 1-4등급 + DTI < 40%], [신용 스코어링 + 적합성], [대환 기회],
-    [Lifecycle], [will_acquire_payments], [주거래 MCC + 카드 1장], [습관적 구매 (Kotler)], [소비-카드 불일치],
-    [Value], [product_stability], [30/60/90일 휴면 조기경고], [고객 인게이지먼트 (Gallup)], [활동 감소],
-    [Value], [cross_sell_count], [CLV 등급 목표 - 현재 보유수], [지갑 점유율 (PwC)], [상품 갭 > 0],
-    [Consumption], [next_mcc], [MCC 빈도 Top-K + 계절성], [습관적 구매 행동], [패턴 연속],
-    [Consumption], [mcc_diversity_trend], [PIH 일시소득 시그널], [Friedman 항상소득가설 (1957)], [소득 충격 감지],
+    [*DNA 그룹*], [*태스크*], [*룰*], [*이론적 근거*], [*트리거*], [*활용 피처*],
+    [Engagement], [churn_signal], [RFM 30/60/90일 감소 추세], [관계 마케팅 (Berry '83)], [R/F/M 동반 하락], [HMM lifecycle, TDA persistence, Mamba temporal],
+    [Engagement], [top_mcc_shift], [MCC 엔트로피 변동 > 임계값], [McKinsey CDJ 트리거], [라이프스타일 변화 감지], [TDA local, merchant_hierarchy, Mamba temporal],
+    [Lifecycle], [nba_primary], [상품 인접 행렬 +1단계], [Kotler 5A 여정], [상품 래더 갭], [GMM cluster, LightGCN, economics PIH],
+    [Lifecycle], [segment_prediction], [잔액 x 빈도 x 상품수 3축], [CLV 등급 모델 (파레토)], [세그먼트 재분류], [GMM cluster ID, HMM behavior, TDA global],
+    [Lifecycle], [will_acquire_deposits], [여유자금 비율 > 30% + 정기예금 미보유], [생애주기 저축 단계], [유휴자금 감지], [economics PIH, HMM journey, GMM cluster],
+    [Lifecycle], [will_acquire_investments], [적합성 등급 >= 상품 위험등급], [적합성 원칙 (금소법 §17)], [위험 매칭 기회], [causal NOTEARS, HGCN hyperbolic, economics],
+    [Lifecycle], [will_acquire_accounts], [급여 입금 + 비주거래], [SOW 확장 (PwC)], [주거래 전환 가능], [LightGCN, Mamba temporal, txn_behavior],
+    [Lifecycle], [will_acquire_lending], [신용 1-4등급 + DTI < 40%], [신용 스코어링 + 적합성], [대환 기회], [causal NOTEARS, economics PIH, HMM lifecycle],
+    [Lifecycle], [will_acquire_payments], [주거래 MCC + 카드 1장], [습관적 구매 (Kotler)], [소비-카드 불일치], [merchant_hierarchy, TDA local, Mamba temporal],
+    [Value], [product_stability], [30/60/90일 휴면 조기경고], [고객 인게이지먼트 (Gallup)], [활동 감소], [Mamba temporal, HMM behavior, TDA persistence],
+    [Value], [cross_sell_count], [CLV 등급 목표 - 현재 보유수], [지갑 점유율 (PwC)], [상품 갭 > 0], [LightGCN, GMM cluster, HGCN],
+    [Consumption], [next_mcc], [MCC 빈도 Top-K + 계절성], [습관적 구매 행동], [패턴 연속], [Mamba temporal, merchant_hierarchy, TDA local],
+    [Consumption], [mcc_diversity_trend], [PIH 일시소득 시그널], [Friedman 항상소득가설 (1957)], [소득 충격 감지], [economics PIH, TDA global, GMM],
   ),
   caption: [태스크별 3계층 룰 기반 폴백 규칙 (금융 DNA 그룹별). 모든 룰은 적합성 원칙(금소법 제17조) 하한선 적용.],
 ) <tab:fallback-rules>
 
 13개 룰 모두 공통 규제 하한선을 준수한다: 고객의 위험 감수 등급이 추천 상품의 위험 등급 이상이어야 한다(금융소비자보호법 제17조).
 상세 룰 명세, 임계값, 추천 사유 템플릿은 설계 문서(`docs/design/12_rule_based_fallback.md`)에서 관리한다.
+
+3계층 룰은 Phase 0에서 사전 계산된 피처(TDA, HGCN, Mamba, GMM 클러스터링, 인과 탐색, 경제학 등 11개 학문 분야)를 활용한다. 이러한 엔지니어링 피처를 통해 단순 RFM 휴리스틱보다 훨씬 정교한 룰 기반 추천이 가능하며, 추가 추론 비용은 없다.
 
 #bibliography("references.bib", style: "association-for-computing-machinery")

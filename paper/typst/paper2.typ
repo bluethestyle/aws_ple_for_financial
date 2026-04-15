@@ -1520,23 +1520,23 @@ or financial domain practice, organized by Financial DNA task group.
 
 #figure(
   table(
-    columns: (auto, auto, auto, auto, auto),
-    align: (left, left, left, left, left),
+    columns: (auto, auto, auto, auto, auto, auto),
+    align: (left, left, left, left, left, left),
     stroke: 0.5pt,
-    [*DNA Group*], [*Task*], [*Rule*], [*Theory*], [*Trigger*],
-    [Engagement], [churn_signal], [RFM 30/60/90-day decline], [Relationship Marketing (Berry '83)], [R/F/M all declining],
-    [Engagement], [top_mcc_shift], [MCC entropy change > threshold], [McKinsey CDJ triggers], [Lifestyle shift detected],
-    [Lifecycle], [nba_primary], [Product adjacency +1 step], [Kotler 5A journey], [Gap in product ladder],
-    [Lifecycle], [segment_prediction], [Balance x Frequency x Products], [CLV tiered model (Pareto)], [Segment re-classification],
-    [Lifecycle], [will_acquire_deposits], [Surplus ratio > 30% + no term deposit], [Lifecycle savings stage], [Idle cash detected],
-    [Lifecycle], [will_acquire_investments], [Suitability grade >= product risk], [Suitability (FCPA Art.17)], [Risk-matched opportunity],
-    [Lifecycle], [will_acquire_accounts], [Salary pattern + non-primary], [SOW expansion (PwC)], [Primary bank conversion],
-    [Lifecycle], [will_acquire_lending], [Credit grade 1--4 + DTI < 40%], [Credit scoring + suitability], [Refinance opportunity],
-    [Lifecycle], [will_acquire_payments], [Top MCC + single card holder], [Habitual buying (Kotler)], [Spending-card mismatch],
-    [Value], [product_stability], [30/60/90-day dormancy EWS], [Customer engagement (Gallup)], [Activity decline],
-    [Value], [cross_sell_count], [CLV tier target - current holdings], [Share of wallet (PwC)], [Product gap > 0],
-    [Consumption], [next_mcc], [MCC frequency Top-K + seasonality], [Habitual buying behavior], [Pattern continuation],
-    [Consumption], [mcc_diversity_trend], [PIH transitory income signal], [Friedman PIH (1957)], [Income shock detected],
+    [*DNA Group*], [*Task*], [*Rule*], [*Theory*], [*Trigger*], [*Key Features*],
+    [Engagement], [churn_signal], [RFM 30/60/90-day decline], [Relationship Marketing (Berry '83)], [R/F/M all declining], [HMM lifecycle, TDA persistence, Mamba temporal],
+    [Engagement], [top_mcc_shift], [MCC entropy change > threshold], [McKinsey CDJ triggers], [Lifestyle shift detected], [TDA local, merchant_hierarchy, Mamba temporal],
+    [Lifecycle], [nba_primary], [Product adjacency +1 step], [Kotler 5A journey], [Gap in product ladder], [GMM cluster, LightGCN, economics PIH],
+    [Lifecycle], [segment_prediction], [Balance x Frequency x Products], [CLV tiered model (Pareto)], [Segment re-classification], [GMM cluster ID, HMM behavior, TDA global],
+    [Lifecycle], [will_acquire_deposits], [Surplus ratio > 30% + no term deposit], [Lifecycle savings stage], [Idle cash detected], [economics PIH, HMM journey, GMM cluster],
+    [Lifecycle], [will_acquire_investments], [Suitability grade >= product risk], [Suitability (FCPA Art.17)], [Risk-matched opportunity], [causal NOTEARS, HGCN hyperbolic, economics],
+    [Lifecycle], [will_acquire_accounts], [Salary pattern + non-primary], [SOW expansion (PwC)], [Primary bank conversion], [LightGCN, Mamba temporal, txn_behavior],
+    [Lifecycle], [will_acquire_lending], [Credit grade 1--4 + DTI < 40%], [Credit scoring + suitability], [Refinance opportunity], [causal NOTEARS, economics PIH, HMM lifecycle],
+    [Lifecycle], [will_acquire_payments], [Top MCC + single card holder], [Habitual buying (Kotler)], [Spending-card mismatch], [merchant_hierarchy, TDA local, Mamba temporal],
+    [Value], [product_stability], [30/60/90-day dormancy EWS], [Customer engagement (Gallup)], [Activity decline], [Mamba temporal, HMM behavior, TDA persistence],
+    [Value], [cross_sell_count], [CLV tier target - current holdings], [Share of wallet (PwC)], [Product gap > 0], [LightGCN, GMM cluster, HGCN],
+    [Consumption], [next_mcc], [MCC frequency Top-K + seasonality], [Habitual buying behavior], [Pattern continuation], [Mamba temporal, merchant_hierarchy, TDA local],
+    [Consumption], [mcc_diversity_trend], [PIH transitory income signal], [Friedman PIH (1957)], [Income shock detected], [economics PIH, TDA global, GMM],
   ),
   caption: [Layer 3 rule-based fallback rules per task, organized by Financial DNA group. All rules are subject to the suitability constraint (FCPA Article 17).],
 ) <tab:fallback-rules>
@@ -1545,5 +1545,7 @@ All 13 rules share a common regulatory floor: the customer's risk tolerance grad
 must equal or exceed the recommended product's risk grade (Financial Consumer Protection Act, Article 17).
 Detailed rule specifications, thresholds, and recommendation reason templates
 are maintained in the design document (`docs/design/12_rule_based_fallback.md`).
+
+Layer 3 rules leverage pre-computed features from Phase 0 (11 academic disciplines including TDA, HGCN, Mamba, GMM clustering, causal discovery, and economics). These engineered features enable rule-based recommendations that are substantially more sophisticated than raw RFM heuristics, at zero additional inference cost.
 
 #bibliography("references.bib", style: "association-for-computing-machinery")

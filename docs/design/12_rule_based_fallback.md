@@ -21,6 +21,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - Monetary: 월 거래 금액 20% 이상 감소 → 리텐션 오퍼 트리거
 - **이론**: Relationship Marketing (Berry, 1983) — 기존 고객 유지 비용이 신규 획득의 1/6~1/7
 - **실무 근거**: PwC — SOW(Share of Wallet) 이니셔티브 ROI 70%+
+- **활용 피처**: HMM lifecycle (growth→decline 전이 확률), TDA persistence (행동 토폴로지 변화), Mamba temporal (이탈 경로 시계열 패턴)
 - **추천 사유 예시**: "최근 거래 활동이 줄어들고 있어, 우대금리 적금으로 자산을 효율적으로 관리해보세요"
 
 #### top_mcc_shift (주거래 카테고리 변화)
@@ -28,6 +29,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - 최근 3개월 대비 MCC 분포 JSD(Jensen-Shannon Divergence) > 임계값 → 라이프스타일 변화 감지
   - 새로 등장한 MCC 카테고리에 맞는 상품 추천 (예: 여행 MCC 증가 → 여행자보험)
 - **이론**: McKinsey Consumer Decision Journey — 고객 생활 변화 "trigger" 실시간 감지
+- **활용 피처**: TDA local (거래 패턴 위상 변화), merchant_hierarchy (MCC 계층 구조 내 이동), Mamba temporal (MCC 시퀀스 변화)
 - **추천 사유 예시**: "최근 해외결제가 늘어났네요, 해외 수수료 무료 카드를 확인해보세요"
 
 ### Lifecycle 그룹 (생애주기)
@@ -40,6 +42,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - 보유 상품 수 >= 3: 미보유 카테고리 중 인접 순위 1위 추천
 - **이론**: Kotler 5A (Aware→Appeal→Ask→Act→Advocate) — 고객이 자연스럽게 넘어갈 수 있는 다음 단계
 - **실무 근거**: 금융권 교차판매 경로는 수십 년간 관찰된 경험칙
+- **활용 피처**: GMM cluster (동일 클러스터 고객 상품 보유 패턴), LightGCN collaborative (유사 고객 그래프 → 다음 상품), economics PIH (항상소득 기반 여유자금 → 상품 적합성)
 - **추천 사유 예시**: "현재 입출금과 적금을 잘 활용하고 계시네요, 투자 펀드로 자산을 키워보는 건 어떨까요?"
 
 #### segment_prediction (고객 세그먼트)
@@ -49,6 +52,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - 축 3: 보유 상품 수 (1/2-3/4+)
   - 조합 → 4 세그먼트 (Growth / Stable / Premium / At-risk)
 - **이론**: CLV Tiered Model — 상위 20% 고객이 수익의 80% (파레토 법칙)
+- **활용 피처**: GMM cluster ID (이미 계산된 세그먼트), HMM behavior (행동 패턴 상태), TDA global (거래의 위상적 요약)
 - **추천 사유 예시**: "고객님은 자산 성장 단계에 계십니다, 이 단계에 적합한 상품을 추천드립니다"
 
 #### will_acquire_deposits (예금 상품 구매)
@@ -57,6 +61,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - 기존 예금 만기 30일 이내 → 재예치/갈아타기 추천
   - 여유자금 비율(잔액-고정지출)/잔액 > 30% → 예금 적합
 - **이론**: Lifecycle Marketing — 안정적 현금흐름 단계에서 저축 상품 수요 증가
+- **활용 피처**: economics PIH (항상소득 vs 일시소득 → 저축 가능 금액), HMM journey (자산 축적 여정 단계), GMM cluster (저축 성향 클러스터)
 - **추천 사유 예시**: "여유자금이 충분하시네요, 우대금리 정기예금으로 안정적인 이자 수익을 만들어보세요"
 
 #### will_acquire_investments (투자 상품 구매)
@@ -65,6 +70,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - 기존 예금만 보유 & 투자 경험 없음 → 저위험 펀드부터 단계적 추천
   - 금소법 적합성: 고객 위험등급 < 상품 위험등급이면 추천 차단
 - **이론**: Financial Suitability (금소법 제17조) + Product Adjacency (예금→펀드 자연 전환)
+- **활용 피처**: causal NOTEARS (투자 성향 인과 경로), HGCN hyperbolic (고객 임베딩 → 투자 상품 공간 거리), economics (소비 안정성)
 - **추천 사유 예시**: "고객님의 투자 성향과 자산 규모를 고려하여 안정형 펀드를 추천드립니다"
 
 #### will_acquire_accounts (계좌 개설)
@@ -73,6 +79,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - 타행 이체 빈도 높음 → 수수료 우대 계좌 추천
   - 신규 고객 (가입 < 90일) → 기본 입출금 + 체크카드 번들
 - **이론**: SOW (Share of Wallet) — 주거래 전환 시 고객당 수익 40%+ 증가 (PwC)
+- **활용 피처**: LightGCN (주거래 전환 고객 그래프 특성), Mamba temporal (주거래 이동 시그널), txn_behavior (타행 이체 비중)
 - **추천 사유 예시**: "급여 입금을 주거래 계좌로 전환하시면 이체 수수료가 면제됩니다"
 
 #### will_acquire_lending (대출 상품 구매)
@@ -81,6 +88,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - 기존 고금리 대출 보유 → 대환 대출 추천
   - 주거래 고객 우대금리 조건 충족 여부 체크
 - **이론**: Credit Scoring (Altman Z-score 개념 확장) + 적합성 원칙
+- **활용 피처**: causal NOTEARS (대출 수요 인과 DAG), economics PIH (항상소득 대비 부채 부담률), HMM lifecycle (대출 필요 단계 진입)
 - **추천 사유 예시**: "현재 신용등급과 소득 수준으로 우대금리 대출이 가능합니다"
 
 #### will_acquire_payments (결제/카드 상품 구매)
@@ -89,6 +97,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - 주거래 MCC 카테고리 분석 → 해당 카테고리 혜택 카드 매칭
   - 해외 결제 비중 > 10% → 해외 수수료 무료 카드
 - **이론**: Habitual Buying + MCC-based Targeting — 소비 습관에 맞는 결제 수단 매칭
+- **활용 피처**: merchant_hierarchy (MCC 계층별 카드 매핑), TDA local (소비 패턴 토폴로지 → 카드 혜택 매칭), Mamba temporal (결제 수단 전환 시그널)
 - **추천 사유 예시**: "온라인쇼핑 결제가 많으시네요, 온라인 캐시백 특화 카드를 확인해보세요"
 
 ### Value 그룹 (가치)
@@ -101,6 +110,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - 잔액 감소 기울기 + 거래 감소율 조합 스코어
 - **이론**: Customer Engagement Theory (Gallup) — "fully engaged" 고객이 연 $402 추가 수익
 - **실무 근거**: 은행 휴면 계좌 관리는 규제 의무, EWS는 업계 표준
+- **활용 피처**: Mamba temporal (계좌 활동 시계열 예측), HMM behavior (활성→비활성 전이 확률), TDA persistence (활동 패턴 위상 안정성)
 - **추천 사유 예시**: "계좌 활동이 줄어들고 있어요, 자동이체 설정으로 편리하게 관리해보세요"
 
 #### cross_sell_count (교차판매 수)
@@ -111,6 +121,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - Gap = 목표 - 현재 보유 수 → 양수면 추천, 0 이하면 유지
 - **이론**: Share of Wallet (SOW) — 금융기관 평균 SOW 10-20%, 최고 60%
 - **실무 근거**: PwC — 교차판매 1건당 고객 이탈률 15% 감소
+- **활용 피처**: LightGCN (유사 고객 대비 상품 보유 Gap), GMM cluster (클러스터 평균 상품 수 대비 Gap), HGCN (상품 공간 거리)
 - **추천 사유 예시**: "현재 2개 상품을 이용 중이시네요, 카드 추가로 포인트 혜택을 받아보세요"
 
 ### Consumption 그룹 (소비)
@@ -121,6 +132,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - 계절성 보정: 11-12월 쇼핑, 1-2월 여행, 3-4월 교육
   - 신규 MCC 출현 시 관련 상품 매칭
 - **이론**: Habitual Buying Behavior (Kotler) — 저관여 반복 구매에서 과거 패턴이 가장 강력한 예측자
+- **활용 피처**: Mamba temporal (MCC 시퀀스 다음 토큰 예측), merchant_hierarchy (계층 구조 내 이동 패턴), TDA local (소비 궤적의 위상적 다음 단계)
 - **추천 사유 예시**: "주로 식료품과 온라인쇼핑을 많이 이용하시네요, 해당 카테고리 캐시백 카드를 확인해보세요"
 
 #### mcc_diversity_trend (소비 다양성 추세)
@@ -129,6 +141,7 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
   - 항상소득 대비 일시소득 비율 추정 (보너스, 성과급 시즌)
   - 일시소득 증가 시점 → 소비 다양성 일시 확대 → 신규 카테고리 상품 추천 적기
 - **이론**: Friedman Permanent Income Hypothesis (1957) — 항상소득 vs 일시소득 구분이 소비 변화의 핵심
+- **활용 피처**: economics PIH (이미 계산된 항상/일시소득 분리), TDA global (소비 다양성 위상적 복잡도 = Betti number), GMM (소비 패턴 클러스터 전이)
 - **추천 사유 예시**: "최근 소비 패턴이 다양해지고 있어요, 새로운 카테고리 혜택이 있는 상품을 추천드립니다"
 
 ## 공통 제약 조건
@@ -137,6 +150,10 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
 2. **금소법 제19조 설명 의무**: 추천 사유가 자연어로 설명 가능해야 함
 3. **추천 빈도 제한**: 동일 상품 30일 내 재추천 금지
 4. **Opt-out 존중**: 고객이 추천 거부한 카테고리는 제외
+
+## 피처 활용 원칙
+
+Layer 3 룰은 Phase 0에서 이미 계산된 엔지니어링 피처를 직접 활용한다. ML 모델 없이 피처 값에 대한 임계값/조건 기반 판정으로 추천을 생성하므로 추가 연산 비용이 없다. 이를 통해 "단순 룰"이 아닌 "엔지니어링된 피처 기반 룰"로서 ML 대비 상당한 추천 품질을 확보할 수 있다.
 
 ## 참고 문헌
 
