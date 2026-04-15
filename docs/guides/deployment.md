@@ -128,13 +128,42 @@ aws:
 | LGBM distillation | `ml.m5.xlarge` | 4 | None | 16 GB | ~$0.06 |
 | Feature generation (container) | `ml.m5.xlarge` | 4 | None | 16 GB | ~$0.06 |
 
+### Config pattern for SageMaker
+
+SageMaker Training Jobs receive config paths as hyperparameters. The platform
+supports two patterns:
+
+**Split-config (recommended):** `pipeline.yaml` holds common defaults;
+`datasets/<name>.yaml` holds dataset-specific tasks, labels, and adapter.
+The two files are deep-merged at job startup.
+
+```python
+hyperparameters = {
+    "config":         "configs/pipeline.yaml",
+    "dataset_config": "configs/datasets/santander.yaml",
+    # All other HP overrides (batch_size, epochs, etc.)
+    "batch_size": 5632,
+    "epochs": 10,
+}
+```
+
+**Single-file (backward compatible):** omit `dataset_config` and pass a
+self-contained YAML as `config`.
+
+```python
+hyperparameters = {
+    "config": "configs/santander/pipeline.yaml",  # legacy single file
+}
+```
+
 ### Training pipeline
 
 ```python
 from core.pipeline.config import PipelineConfig
 from core.pipeline.runner import PipelineRunner
 
-config = PipelineConfig.from_yaml("configs/examples/multitask_binary.yaml")
+config = PipelineConfig.from_yaml("configs/pipeline.yaml",
+                                   dataset_config="configs/datasets/santander.yaml")
 runner = PipelineRunner(config)
 
 # Run on SageMaker
@@ -178,10 +207,15 @@ docker push 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/ple-training:latest
 python scripts/package_source.py --config configs/pipeline.yaml
 
 # 2. teacher 학습 Job 제출 (3-시나리오 병렬)
-python scripts/run_sagemaker_teacher.py --config configs/pipeline.yaml
+#    --dataset 로 dataset config를 지정한다 (split-config 패턴)
+python scripts/run_sagemaker_teacher.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml
 
 # 3. 평가 Job 제출
-python scripts/run_sagemaker_eval.py --config configs/pipeline.yaml \
+python scripts/run_sagemaker_eval.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
   --model-s3 s3://my-ple-bucket/models/ple/v2/
 ```
 

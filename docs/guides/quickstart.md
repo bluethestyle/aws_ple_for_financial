@@ -156,16 +156,91 @@ the same configuration in file form -- useful for production workflows.
 
 ---
 
+## Configuration
+
+### Split-config pattern
+
+The platform separates configuration into two layers:
+
+| File | Purpose |
+|---|---|
+| `configs/pipeline.yaml` | Common defaults: model architecture, training HP, distillation, AWS |
+| `configs/datasets/<name>.yaml` | Dataset-specific: tasks, labels, adapter, sequences, ablation |
+
+Both files are deep-merged at runtime — dataset keys win on collision. This means you only describe _what is different_ in your dataset file; all model and training defaults come from `pipeline.yaml` automatically.
+
+```
+configs/
+├── pipeline.yaml                 ← common (model, training, distillation, aws)
+├── datasets/
+│   ├── santander.yaml            ← benchmark dataset
+│   └── example.yaml              ← template for new users
+├── santander/
+│   ├── feature_groups.yaml       ← feature group definitions
+│   └── ...
+└── financial/                    ← on-prem operation configs
+```
+
+### Creating a dataset config for your data
+
+1. Copy the template:
+
+```bash
+cp configs/datasets/example.yaml configs/datasets/my_bank.yaml
+```
+
+2. Fill in the required sections (replace every `<PLACEHOLDER>`):
+   - `dataset.name` and `adapter`
+   - `tasks`: list of prediction targets with `label_col`, `type`, `loss`
+   - `data.source`: path to your Parquet file or S3 URI
+   - `features.numeric` / `features.categorical`: column names
+   - `feature_groups_file`: path to your feature group YAML
+
+3. Add a feature groups file at `configs/my_bank/feature_groups.yaml`
+   (copy `configs/santander/feature_groups.yaml` as a starting point).
+
+4. Implement a data adapter in `src/adapters/my_bank.py`
+   (copy `src/adapters/santander.py` and adjust raw → standardized DataFrame).
+
+### CLI usage
+
+Pass both files to `train.py` or the orchestrator:
+
+```bash
+# Split-config pattern (recommended)
+python containers/training/train.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/my_bank.yaml
+
+# Single-file pattern (backward compatible)
+python containers/training/train.py \
+  --config configs/santander/pipeline.yaml
+```
+
+For SageMaker, pass both as hyperparameters:
+
+```python
+hyperparameters = {
+    "config": "configs/pipeline.yaml",
+    "dataset_config": "configs/datasets/my_bank.yaml",
+}
+```
+
+### Backward compatibility
+
+Single-file configs (legacy pattern) still work. If `dataset_config` is not
+provided, `train.py` loads the single config file as before. No migration is
+required for existing setups.
+
+---
+
 ## Next Steps
 
 ### Use your own data
 
 1. Prepare your data as a Parquet file.
-2. Copy `configs/examples/multitask_binary.yaml` and edit:
-   - `tasks`: define your prediction targets
-   - `features.numeric` / `features.categorical`: list your columns
-   - `data.source`: point to your file or S3 path
-3. Run with `PipelineRunner`.
+2. Copy `configs/datasets/example.yaml` → `configs/datasets/my_bank.yaml` and fill in tasks, features, and data source.
+3. Run with `--config configs/pipeline.yaml --dataset configs/datasets/my_bank.yaml`.
 
 ### Add feature engineering
 
@@ -206,10 +281,15 @@ Detailed design: `docs/design/11_ops_audit_agent.md`
 ```
 aws_ple_for_financial/
   configs/                        # YAML configuration files
-    feature_groups.yaml           # Feature group definitions
+    pipeline.yaml                 # Common: model, training, distillation, aws
+    datasets/                     # Dataset-specific configs
+      santander.yaml              # Santander benchmark
+      example.yaml                # Template for new datasets
+    santander/                    # Santander feature definitions
+      feature_groups.yaml         # Feature group definitions
+    financial/                    # On-prem operation configs
     recommendation.yaml           # Scoring, filtering, reasons
     monitoring.yaml               # Fairness, drift, incidents
-    examples/                     # Example pipeline configs
   core/                           # Core platform code
     feature/                      # Feature engineering layer
       generators/                 # Built-in generators (TDA, HMM, ...)

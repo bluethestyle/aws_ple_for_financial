@@ -6,15 +6,139 @@ Complete reference for all YAML configuration files in the platform.
 
 ## Table of Contents
 
-1. [feature_groups.yaml](#feature_groupsyaml)
-2. [Pipeline Config (examples/*.yaml)](#pipeline-config)
-3. [recommendation.yaml](#recommendationyaml)
-4. [monitoring.yaml](#monitoringyaml)
-5. [Serving Config](#serving-config)
-6. [Training Config](#training-config)
-7. [PLE Model Config](#ple-model-config)
-8. [Agent Configuration (agent.yaml)](#agent-configuration-configsfinancialagent-yaml)
-9. [Checklist Configuration (checklist.yaml)](#checklist-configuration-configsfinancialchecklist-yaml)
+1. [Config Architecture](#config-architecture)
+2. [feature_groups.yaml](#feature_groupsyaml)
+3. [pipeline.yaml (common)](#pipelineyaml-common)
+4. [Dataset Config (datasets/*.yaml)](#dataset-config-datasetsyaml)
+5. [recommendation.yaml](#recommendationyaml)
+6. [monitoring.yaml](#monitoringyaml)
+7. [Serving Config](#serving-config)
+8. [Training Config](#training-config)
+9. [PLE Model Config](#ple-model-config)
+10. [Agent Configuration (agent.yaml)](#agent-configuration-configsfinancialagent-yaml)
+11. [Checklist Configuration (checklist.yaml)](#checklist-configuration-configsfinancialchecklist-yaml)
+
+---
+
+## Config Architecture
+
+### Directory layout
+
+```
+configs/
+├── pipeline.yaml              ← common: model, training, distillation, aws
+├── datasets/
+│   ├── santander.yaml         ← Santander benchmark (tasks, labels, ablation)
+│   └── example.yaml           ← template for new users
+├── santander/
+│   ├── feature_groups.yaml    ← feature group definitions
+│   └── item_universe.yaml     ← NBA item catalog
+└── financial/                 ← on-prem operation configs
+    ├── agent.yaml
+    ├── checklist.yaml
+    └── fact_extraction.yaml
+```
+
+### What goes where
+
+| Belongs in `pipeline.yaml` | Belongs in `datasets/*.yaml` |
+|---|---|
+| PLE model architecture (expert basket, CGC, adaTT) | Task definitions (`tasks:`) |
+| Training hyperparameters (LR, scheduler, AMP) | Label derivation rules |
+| Distillation config | Adapter name |
+| AWS infrastructure (instance type, S3 bucket, Spot) | Data source path (`data.source`) |
+| Serving and monitoring defaults | Feature column lists |
+| | Ablation scenario matrix |
+| | Scoring / constraint overrides |
+| | Sequence config |
+
+### Merge behaviour (`deep_merge`)
+
+At runtime the two files are merged with `load_merged_config(common, dataset)`:
+
+1. `pipeline.yaml` is loaded as the base.
+2. `datasets/<name>.yaml` is recursively merged on top.
+3. For dict values, keys are merged recursively (neither file wins wholesale).
+4. For list values and scalar values, the dataset file wins.
+
+```python
+# core/pipeline/config.py
+config = load_merged_config(
+    "configs/pipeline.yaml",
+    "configs/datasets/santander.yaml"
+)
+```
+
+### CLI / SageMaker usage
+
+```bash
+# Local training — split-config pattern
+python containers/training/train.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/my_bank.yaml
+
+# SageMaker hyperparameters
+hyperparameters = {
+    "config":         "configs/pipeline.yaml",
+    "dataset_config": "configs/datasets/my_bank.yaml",
+}
+```
+
+**Backward compatibility:** If `dataset_config` / `--dataset` is omitted,
+the single file passed to `--config` is used as-is (legacy pattern). Existing
+single-file setups require no changes.
+
+### Creating a new dataset config
+
+```bash
+# Step 1 — copy the template
+cp configs/datasets/example.yaml configs/datasets/my_bank.yaml
+
+# Step 2 — edit my_bank.yaml: fill tasks, labels, adapter, data.source
+# Step 3 — add feature groups
+cp -r configs/santander configs/my_bank
+# edit configs/my_bank/feature_groups.yaml
+
+# Step 4 — implement adapter
+cp src/adapters/santander.py src/adapters/my_bank.py
+# edit my_bank.py: raw → standardized DataFrame
+
+# Step 5 — run
+python containers/training/train.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/my_bank.yaml
+```
+
+Minimum viable dataset YAML:
+
+```yaml
+dataset:
+  name: my_bank
+  feature_groups_file: configs/my_bank/feature_groups.yaml
+
+adapter: my_bank
+
+data:
+  source: s3://my-bucket/data/train/
+  format: parquet
+  id_col: customer_id          # read from config, never hardcoded in code
+  date_col: snapshot_date
+
+tasks:
+  - name: churn
+    type: binary
+    loss: focal
+    loss_weight: 1.0
+    label_col: is_churned
+
+features:
+  numeric:
+    - age
+    - tenure_months
+  categorical:
+    - region_code
+    - segment
+```
 
 ---
 
@@ -151,10 +275,21 @@ feature_groups:
 
 ---
 
-## Pipeline Config
+## pipeline.yaml (common)
 
-**Files:** `configs/examples/*.yaml`
-**Loaded by:** `core.pipeline.config.load_config()`
+**File:** `configs/pipeline.yaml`
+**Loaded by:** `core.pipeline.config.load_merged_config()`
+
+Dataset-agnostic defaults. Do **not** put task lists, label derivations, or
+adapter settings here — those belong in `configs/datasets/<name>.yaml`.
+
+## Dataset Config (datasets/*.yaml)
+
+**Files:** `configs/datasets/*.yaml`
+**Loaded by:** `core.pipeline.config.load_merged_config()` (merged on top of pipeline.yaml)
+
+Dataset-specific settings. At minimum, define `tasks`, `adapter`, `data.source`,
+and `feature_groups_file`. All other keys fall back to `pipeline.yaml` defaults.
 
 Top-level configuration for a training pipeline run.
 

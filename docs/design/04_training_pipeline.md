@@ -18,6 +18,32 @@ Stage 10:  CPE + Agentic Reason Orchestrator
 
 `containers/training/train.py`의 `main()`이 SageMaker Training Job의 단일 진입점이다.
 
+### Config 로딩: split-config 패턴 (2026-04-15)
+
+`train.py`는 두 가지 config 로딩 패턴을 지원한다:
+
+| 패턴 | HP `config` | HP `dataset_config` | 설명 |
+|------|------------|---------------------|------|
+| **Split (권장)** | `configs/pipeline.yaml` | `configs/datasets/santander.yaml` | 공통 + 데이터셋 별도 파일 deep-merge |
+| **Single (하위 호환)** | `configs/santander/pipeline.yaml` | (없음) | 단일 파일 그대로 로드 |
+
+```python
+# containers/training/train.py 내부 로직
+config_str = hp.get("config", "{}")
+dataset_config_str = hp.get("dataset_config", "")
+
+if dataset_config_str:
+    # Split-config pattern: deep-merge common + dataset-specific
+    config = _load_merged_config(config_path, dataset_config_path)
+else:
+    # Legacy single-file pattern
+    config = yaml.safe_load(open(config_path))
+```
+
+`deep_merge` 규칙: dict는 재귀 병합, list·scalar는 dataset 파일 값이 우선한다.
+dataset 파일에 없는 키(model architecture, training HP, aws 설정 등)는
+`pipeline.yaml` 기본값이 자동 적용된다.
+
 ### train.py 리팩토링 (2026-04-14)
 
 Model build 로직(435줄)이 `core/model/config_builder.py`로 추출되었다. train.py는 2317줄 → 1882줄로 감소하였으며, PLEConfig 생성은 `build_ple_config()`를 호출하는 방식으로 위임된다.
@@ -83,7 +109,9 @@ if labels is None:
 ## 학습 파이프라인 흐름
 
 ```
-configs/santander/pipeline.yaml
+configs/pipeline.yaml  +  configs/datasets/santander.yaml
+         ↓  (deep_merge: load_merged_config)
+합산된 config (dataset 키가 우선)
          ↓
 Step Functions (오케스트레이션)
          ↓
@@ -319,7 +347,7 @@ LGBM Students (CPU, per-task)
 
 ### 개요 — Santander 4-Dimension Ablation
 
-`scripts/run_santander_ablation.py`가 6-Phase, 48 시나리오 ablation을 오케스트레이션한다. 모든 시나리오는 `pipeline.yaml` + `feature_groups.yaml`에서 동적 생성된다 (하드코딩 없음).
+`scripts/run_santander_ablation.py`가 6-Phase, 48 시나리오 ablation을 오케스트레이션한다. 모든 시나리오는 `configs/pipeline.yaml` (공통) + `configs/datasets/santander.yaml` (Santander 특화) + `configs/santander/feature_groups.yaml`에서 동적 생성된다 (하드코딩 없음).
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
