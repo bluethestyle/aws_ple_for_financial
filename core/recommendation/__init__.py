@@ -29,6 +29,8 @@ from .constraint_engine import (
 from .selector import TopKSelector, DiversityMethod
 from .pipeline import RecommendationPipeline, RecommendationResult, RecommendationItem
 from .audit_archiver import RecommendationAuditArchiver, RecommendationAuditRecord
+from .rule_engine import RuleBasedRecommender
+from .fallback_router import FallbackRouter
 
 __all__ = [
     # scorer
@@ -53,4 +55,7 @@ __all__ = [
     # audit archiver
     "RecommendationAuditArchiver",
     "RecommendationAuditRecord",
+    # layer 3 fallback
+    "RuleBasedRecommender",
+    "FallbackRouter",
 ]

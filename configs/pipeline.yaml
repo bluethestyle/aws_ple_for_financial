@@ -306,3 +306,98 @@ aws:
   use_spot: true
   max_run_seconds: 43200              # 12 hours
   role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole
+
+# ---------------------------------------------------------------------------
+# Rule Engine — Layer 3 rule-based fallback (ML-free)
+# ---------------------------------------------------------------------------
+# Activated when PLE distillation (L1) and direct LGBM (L2) both fail or are
+# unavailable.  All thresholds configurable here; no values hardcoded in code.
+# ---------------------------------------------------------------------------
+rule_engine:
+  enabled: true
+  suitability_check: true    # enforce 금소법 제17조 across every rule
+
+  # Product adjacency path for nba_primary rule (Kotler 5A ordering)
+  product_adjacency:
+    path: [deposits, savings, investment, insurance, lending]
+
+  # Dormancy early-warning thresholds for product_stability rule
+  dormancy_thresholds:
+    warning_days: 30       # 주의 (알림 발송)
+    alert_days: 60         # 경고 (프로모션 제안)
+    dormant_days: 90       # 휴면 예비 (전담 상담 배정)
+
+  # CLV tier targets for cross_sell_count rule (SOW optimisation)
+  clv_tiers:
+    premium_percentile: 80
+    target_products:
+      premium:  4          # 상위 20%: 목표 4+ 상품
+      stable:   3          # 중위 40-80%: 목표 3 상품
+      growth:   2          # 중위 20-40%: 목표 2 상품
+      at_risk:  1          # 하위 20%: 기존 상품 활성화 우선
+
+  # RFM decay thresholds for churn_signal rule (Berry 1983)
+  rfm_thresholds:
+    recency_warning_days: 30
+    monetary_drop_pct: 0.20    # 20% monetary decline triggers retention offer
+
+  # MCC distribution shift thresholds for top_mcc_shift rule
+  mcc_thresholds:
+    jsd_threshold: 0.15    # Jensen-Shannon Divergence threshold
+    top_k: 5               # MCC frequency top-K for next_mcc
+
+  # Surplus ratio threshold for will_acquire_deposits rule
+  deposits_thresholds:
+    surplus_ratio: 0.30    # (balance - spending) / balance > 30%
+
+  # Investment rule thresholds (금소법 제17조 적합성)
+  investments_thresholds:
+    min_risk_grade: 3          # 공격투자형 이상 (1=보수, 5=공격)
+    asset_pct_threshold: 70.0  # 상위 30% 자산 보유자 → 투자 추천
+
+  # Account acquisition thresholds
+  accounts_thresholds:
+    new_customer_days: 90          # 가입 90일 이내 → 신규 고객
+    interbank_transfer_pct: 0.30   # 타행 이체 30%+ → 수수료 우대 계좌 추천
+  # Feature prefix for tenure lookup (dataset-specific column name goes here)
+  accounts_tenure_feature_prefix: tenure   # matches any feature starting with "tenure"
+
+  # Lending rule thresholds (Altman Z-score extension)
+  lending_thresholds:
+    max_dti: 0.40              # DTI < 40% required for lending recommendation
+    max_credit_grade: 4        # 신용등급 1-4 (1=최우량, 10=최저)
+    pih_income_threshold_lending: 3000.0   # permanent income threshold (currency units)
+
+  # Payments / card matching thresholds
+  payments_thresholds:
+    spend_top_pct: 70.0        # 카드 결제액 상위 30% 기준
+    foreign_pct: 0.10          # 해외 결제 비중 10%+ → 해외카드 추천
+
+  # Segment classification thresholds (3-axis rule)
+  segment_thresholds:
+    balance_high: 50000.0      # 잔액 상위 구간 (currency units)
+    balance_mid: 10000.0       # 잔액 중위 구간
+    freq_high: 20.0            # 월 거래 건수 고활성
+    freq_mid: 5.0              # 월 거래 건수 저활성
+
+  # HMM / Mamba feature thresholds (used when engineered features are present)
+  hmm_declining_threshold: 0.50    # HMM lifecycle declining-state probability
+  mamba_churn_threshold: 0.50      # Mamba temporal churn probability
+  tda_shift_threshold: 0.50        # TDA local topology shift score
+
+  # Per-task suitability product risk grades (0 = no constraint)
+  # Matches 금소법 제17조: customer_risk_grade >= product_risk_grade
+  product_risk_grades:
+    will_acquire_investments: 3    # 공격투자형 이상 필요
+    will_acquire_lending: 0        # 신용 기반 (별도 DTI/등급 체크)
+    will_acquire_deposits: 0       # 모든 등급 허용
+    will_acquire_accounts: 0
+    will_acquire_payments: 0
+    nba_primary: 0
+    churn_signal: 0
+    product_stability: 0
+    segment_prediction: 0
+    cross_sell_count: 0
+    next_mcc: 0
+    mcc_diversity_trend: 0
+    top_mcc_shift: 0
