@@ -934,6 +934,116 @@ Round 1 전체 의견을 검토하고:
 #v(0.8em)
 
 // ============================================================
+= AWS 서버리스 배포 아키텍처
+// ============================================================
+
+에이전트는 *상시 가동 서버 없이* Lambda로 배포된다.
+EventBridge 스케줄러가 주기적으로 호출하고, 에이전트 간 통신도 EventBridge를 통한다.
+
+== ChangeDetector — 모든 파이프라인 스테이지 이벤트 감지
+
+`ChangeDetector`는 학습(train), 평가(eval), 증류(distill), 서빙(serving), 추천사유(reason) *모든 스테이지* 완료 시
+`_PipelineState.mark_complete()` 콜백을 통해 이벤트를 발행한다.
+이벤트는 EventBridge를 거쳐 OpsAgent Lambda 또는 AuditAgent Lambda를 트리거한다.
+
+== CloudFormation 스택
+
+=== EventBridge 스케줄
+
+#table(
+  columns: (1fr, auto, 1fr),
+  stroke: 0.4pt + luma(180),
+  inset: 5pt,
+  table.header([*스케줄 이름*], [*주기*], [*대상 Lambda*]),
+  [`ple-ops-daily`], [일 1회 (09:00 KST)], [OpsAgent — 전체 체크리스트 실행],
+  [`ple-audit-daily`], [일 1회 (09:30 KST)], [AuditAgent — 전체 체크리스트 실행],
+  [`ple-heartbeat-5min`], [5분], [OpsAgent — 헬스 확인 (CP5만)],
+)
+
+=== Lambda 헬스 엔드포인트 (Heartbeat)
+
+OpsAgent Lambda는 `{"action": "heartbeat"}` 페이로드를 받으면 추론 없이 헬스만 확인하고 반환한다.
+5분 주기 EventBridge가 이 페이로드로 호출하여 Lambda 자체의 가용성을 모니터링한다.
+
+```json
+// 헬스 확인 요청
+{"action": "heartbeat"}
+
+// 헬스 확인 응답
+{"status": "ok", "timestamp": "2026-04-15T09:00:00Z", "agent": "ops"}
+```
+
+=== CloudWatch 알람
+
+#table(
+  columns: (1fr, 1fr, auto, 1fr),
+  stroke: 0.4pt + luma(180),
+  inset: 5pt,
+  table.header([*알람 이름*], [*지표*], [*임계값*], [*알림 대상*]),
+  [`ple-ops-error-rate`], [Lambda 에러율], [> 5% (5분)], [`ple-ops-alerts` SNS],
+  [`ple-audit-error-rate`], [Lambda 에러율], [> 5% (5분)], [`ple-audit-alerts` SNS],
+  [`ple-ops-duration`], [Lambda 실행시간], [> 13분], [`ple-ops-alerts` SNS],
+  [`ple-heartbeat-missing`], [Lambda 호출 횟수], [< 1 (10분)], [`ple-heartbeat-alerts` SNS],
+  [`ple-consecutive-errors`], [연속 에러 횟수], [>= 3], [`ple-ops-alerts` SNS],
+)
+
+=== SNS 토픽
+
+#table(
+  columns: (auto, auto, 1fr),
+  stroke: 0.4pt + luma(180),
+  inset: 5pt,
+  table.header([*토픽*], [*구독*], [*용도*]),
+  [`ple-ops-alerts`], [Email/Slack], [운영 에이전트 에러, 성능 저하 알림],
+  [`ple-audit-alerts`], [Email/Slack], [감사 에이전트 에러, 규제 위반 알림],
+  [`ple-heartbeat-alerts`], [PagerDuty/Email], [Lambda 응답 없음 (긴급)],
+)
+
+=== DynamoDB 규제 준수 테이블
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  stroke: 0.4pt + luma(180),
+  inset: 5pt,
+  table.header([*테이블 이름*], [*키 구성*], [*용도*]),
+  [`ple-audit-log`], [`audit_id` (파티션) + `timestamp` (정렬)], [감사 이벤트 로그 (7년 보존)],
+  [`ple-consent-records`], [`customer_id` + `consent_type`], [AI 추천 동의 여부 기록],
+  [`ple-opt-out`], [`customer_id`], [고객 거부 의사 기록 (즉시 반영)],
+  [`ple-profiling-rights`], [`customer_id` + `request_id`], [프로파일링 열람/정정 요청 추적],
+)
+
+== 체크포인트-에이전트 분담
+
+#table(
+  columns: (auto, auto, 1fr),
+  stroke: 0.4pt + luma(180),
+  inset: 5pt,
+  table.header([*체크포인트*], [*수집 에이전트*], [*근거*]),
+  [CP1 인제스천], [*OpsAgent*], [운영 지표 — row count, 소요시간, PII 처리],
+  [CP2 Phase 0], [*OpsAgent*], [운영 지표 — 피처 통계, 정규화, 리키지],
+  [CP3 학습], [*OpsAgent*], [운영 지표 — loss, grad norm, GPU 메모리],
+  [CP4 증류], [*OpsAgent*], [운영 지표 — fidelity gap, 비용],
+  [CP5 서빙 헬스], [*OpsAgent*], [운영 지표 — latency, kill switch, feature store],
+  [CP6 추천 응답 품질], [*AuditAgent*], [감사 지표 — 공정성 DI/SPD/EOD, 추천사유 품질],
+  [CP7 A/B 테스트], [*OpsAgent*], [운영 지표 — CTR/CVR, significance],
+)
+
+== 핵심 컴포넌트 역할
+
+#table(
+  columns: (auto, 1fr),
+  stroke: 0.4pt + luma(180),
+  inset: 5pt,
+  table.header([*컴포넌트*], [*역할*]),
+  [*Diagnoser*], [체크포인트 측정값을 룰 테이블로 교차 상관 분석. LLM 없이 결정론적 동작. CP2 NaN 증가 + CP3 AUC 하락 → "피처 품질 저하" 등 연쇄 인과 패턴 매핑.],
+  [*Reporter*], [Diagnoser 결과를 `finding + likely_cause + suggested_action` 구조의 JSON 리포트로 생성. SNS/Slack/Email 전달.],
+  [*BedrockDialogSession*], [담당자가 진단 리포트를 두고 Claude Sonnet과 대화. "이 DI 위반이 필터 문제인지 모수 문제인지" 논의. 세션당 ~\$0.01.],
+  [*BudgetTracker*], [BedrockDialogSession 및 ConsensusArbiter의 LLM 호출 비용을 토큰 단위 추적. 월간 소프트 경고(80%) 및 하드 정지(100%). 예산 초과 시 LLM만 차단, 룰 엔진 계속 작동.],
+)
+
+#v(0.8em)
+
+// ============================================================
 = 파이프라인 파트 분류 및 점검 체크리스트
 // ============================================================
 

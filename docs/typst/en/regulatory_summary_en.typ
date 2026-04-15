@@ -187,7 +187,7 @@
 
 = System Overview
 
-This is an AI system for Korea Post Financial check card product recommendations, built on a *heterogeneous-expert PLE (Progressive Layered Extraction)* multi-task learning architecture. It analyzes customer transaction history, demographics, and product holdings to simultaneously perform *14 prediction tasks* (click, purchase, churn, CLV, etc.). The trained deep learning model is *distilled* into LGBM (LightGBM) and served in real-time on AWS Lambda serverless infrastructure. This architecture enables millisecond-level responses without GPU, achieving both model transparency and operational cost efficiency.
+This is an AI system for Korea Post Financial check card product recommendations, built on a *heterogeneous-expert PLE (Progressive Layered Extraction)* multi-task learning architecture. It analyzes customer transaction history, demographics, and product holdings to simultaneously perform *13 prediction tasks* (click, purchase, churn, CLV, etc.). The trained deep learning model is *distilled* into LGBM (LightGBM) and served in real-time on AWS Lambda serverless infrastructure via a *3-layer fallback* (distilled LGBM → direct PLE → rule-based engine), ensuring the service never stops even under kill-switch activation. This architecture enables millisecond-level responses without GPU, achieving both model transparency and operational cost efficiency.
 
 // ═══════════════════════════════════════════════════════════
 //  2. Regulatory Compliance Matrix
@@ -404,6 +404,25 @@ All decisions, changes, and access records are secured with *HMAC-SHA256 signatu
 
 Granular shutdown is available at three scopes: GLOBAL (all) / PER\_TASK (per task) / PER\_CLUSTER (per customer segment).
 
+== Compliance Module
+
+Four dedicated compliance components enforce regulatory obligations at every prediction:
+
+#text(size: 9pt)[
+#set par(justify: false)
+#table(
+  columns: (0.9fr, 1.7fr),
+  align: (center, left),
+  [Component], [Responsibility],
+  [ConsentManager], [Marketing consent lifecycle: grant / revoke / renew / per-channel verification],
+  [AIOptOut], [AI decision refusal: registration, withdrawal, confirmation, immediate path switch],
+  [RegulatoryChecker], [36-item pre-flight compliance check before each prediction is served],
+  [ProfilingRights], [Data subject rights: access / correction / deletion / restriction / portability],
+)
+]
+
+*Security:* PII is masked before entering LLM pipelines. `PromptSanitizer` strips 8 injection patterns from all Bedrock prompts. `ComplianceAuditStore` records every prediction with full compliance context.
+
 == Customer Rights
 
 #text(size: 9pt)[
@@ -412,7 +431,7 @@ Granular shutdown is available at three scopes: GLOBAL (all) / PER\_TASK (per ta
   columns: (0.8fr, 1.8fr),
   align: (center, center),
   [Right], [System Response],
-  [Opt-out (refuse AI decisions)], [Immediate switch to human alternative path; full registration/withdrawal/confirmation lifecycle],
+  [Opt-out (refuse AI decisions)], [Immediate switch to human alternative path; full registration/withdrawal/confirmation lifecycle (AIOptOut)],
   [Request explanation], [Feature reverse-mapping + natural language recommendation reasons; SLA within 10 days],
   [File objection], [Automatic routing to agents by 7 reason types; P1 (1h) / P2 (4h) / P3 (24h) SLA],
   [Right to erasure], [30-day PII retention policy; encrypted deletion; S3 Lifecycle auto-applied],

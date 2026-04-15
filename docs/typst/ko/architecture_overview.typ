@@ -733,6 +733,22 @@ LGBM Student (CPU 학습)
 - *배치*: PLE teacher → SageMaker Batch Transform
 - *규모 전환*: Lambda (기본) ↔ ECS Fargate (대규모) 자동 전환
 
+=== 3계층 폴백 아키텍처 (FallbackRouter)
+
+소수 클래스 태스크의 증류 실패로 인해 계층형 서빙 설계가 도입되었다. `FallbackRouter`는 롤링 윈도우에서 태스크 유형별 충실도를 모니터링하고 임계값 이하로 떨어지면 에스컬레이션한다:
+
+#table(
+  columns: (auto, auto, 1fr, auto),
+  align: (left, left, left, left),
+  table.header[*계층*][*모델*][*활성화 시점*][*지연시간*],
+  [L1], [LGBM student (증류)], [기본값: 전 태스크 유형 충실도 \> 임계값], [\~5ms],
+  [L2a], [PLE teacher (직접 추론)], [이진/다중클래스 태스크에서 LGBM 충실도 하락], [\~80ms],
+  [L2b], [Bedrock LLM (Sonnet)], [규제 설명 필요 또는 신뢰도 \< floor], [\~800ms],
+  [L3], [규칙 기반 폴백], [모든 모델 불가 또는 회로 차단기 개방], [\<1ms],
+)
+
+캘리브레이션은 각 계층별로 독립적으로 유지된다. L2b(Bedrock)는 3-에이전트 추천사유 파이프라인(FactExtractor → TemplateEngine → SelfChecker)을 처리하며, 학생의 IG attribution이 제공할 수 있는 것보다 더 깊은 설명이 필요할 때만 호출된다. 추천사유 생성을 포함한 전체 서빙 파이프라인의 end-to-end 비용은 현재 구성에서 사이클당 약 \$0.69이다.
+
 === FD-TVS Composite Scoring
 
 태스크별 예측을 단일 추천 스코어로 통합한다:
@@ -992,7 +1008,7 @@ EncryptionPipeline.process_source()
            │
            ▼ Logit Transfer (3 edges, strength=0.5)
            │
-           ▼ Task Towers × 14 (TowerRegistry)
+           ▼ Task Towers × 13 (TowerRegistry)
            │
            ├── Evidential Layer (regression tasks)
            ├── SAE Regularization (detached sidecar)
@@ -1061,7 +1077,7 @@ class PLEInput:
 
 = 부록: Config 파일 구조
 
-시스템의 모든 파라미터는 2개 YAML 파일로 관리된다:
+시스템의 모든 파라미터는 분리된 config 체계로 관리된다. `config_builder.py`가 *단일 진실 공급원(single source of truth)*으로, 인프라 무관 설정인 `pipeline.yaml`과 데이터셋별 설정인 `datasets/santander.yaml`을 병합하여 파이프라인 전 단계가 소비하는 resolved config를 생성한다. 어떤 파이프라인 단계도 raw YAML을 직접 읽지 않는다.
 
 *`pipeline.yaml`*: 태스크 정의, 모델 구조, 학습 파라미터, AWS 인프라 설정
 - `tasks`: 13개 태스크 (name, type, loss, loss\_weight, label\_col)
@@ -1070,6 +1086,8 @@ class PLEInput:
 - `model.logit_transfers`: 3개 전이 엣지
 - `training`: batch\_size, epochs, learning\_rate, amp
 - `aws`: instance\_type, spot, budget\_limit
+
+*`datasets/santander.yaml`*: 데이터셋별 오버라이드 (컬럼명, split 파라미터, adapter 설정). 새 데이터셋 추가 시 이 파일만 추가하면 되며 `pipeline.yaml`이나 Python 코드 변경이 불필요하다.
 
 *`feature_groups.yaml`*: 12개 피처 그룹 정의
 - `group_type`: transform (기존 컬럼 변환) | generate (Generator 호출)
@@ -1088,6 +1106,30 @@ class PLEInput:
 48개 체크리스트 항목을 자동 판정하고, WARN/FAIL 항목은 3-에이전트 합의(Sonnet×3)를 거쳐 마이너리티 리포트를 포함한 진단 결과를 산출한다. 진단 이력은 LanceDB 기반 `DiagnosticCaseStore`에 축적된다.
 
 서빙 경로(3개 서빙 에이전트)와 완전히 분리되어, 에이전트 장애가 고객 대면 서비스에 영향을 주지 않는다.
+
+== 서버리스 스케줄링: EventBridge + Lambda
+
+OpsAgent와 AuditAgent 모두 Amazon EventBridge에 의해 스케줄링되는 *서버리스 Lambda 함수*로 배포된다. 진단 워크로드에 상시 가동 컴퓨팅이 필요 없다:
+
+- *OpsAgent Lambda*: 설정 가능한 cron(예: 6시간마다)으로 트리거. S3에서 파이프라인 체크포인트 아티팩트를 읽고 상관 분석을 수행하여 결과를 DynamoDB에 기록한다.
+- *AuditAgent Lambda*: SageMaker 학습 작업 완료 이벤트를 EventBridge 규칙으로 수신하여 트리거. 모델 출력과 피처 통계를 읽고 공정성 및 계보 검증을 수행하여 감사 기록을 DynamoDB에 기록한다.
+
+== CloudFormation 모니터링 스택
+
+모니터링 인프라는 단일 CloudFormation 스택으로 정의되어 재현 가능한 배포와 버전 관리 인프라를 보장한다:
+
+#table(
+  columns: (auto, 1fr),
+  align: (left, left),
+  table.header[*컴포넌트*][*역할*],
+  [EventBridge 규칙], [OpsAgent + AuditAgent Lambda 스케줄링; SageMaker 작업 이벤트 라우팅],
+  [CloudWatch 알람], [드리프트 임계값 초과, Lambda 오류율, 서빙 지연시간 P99],
+  [SNS 토픽], [알림 라우팅: WARN → Slack webhook, FAIL → PagerDuty + 이메일],
+  [DynamoDB 테이블], [DiagnosticCaseStore (감사 이력), PipelineState (작업 재개 상태)],
+  [Lambda 함수], [OpsAgent, AuditAgent, FallbackRouter 상태 확인],
+)
+
+CloudWatch 메트릭 필터가 SageMaker 학습 로그에서 태스크별 검증 지표를 추출하여 커스텀 메트릭으로 노출한다. 이를 통해 별도의 모니터링 서비스 없이 CloudWatch 알람이 태스크 수준 성능 저하를 감지할 수 있다.
 
 상세 설계: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)
 

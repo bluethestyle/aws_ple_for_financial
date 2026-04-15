@@ -699,11 +699,49 @@ The regulatory compliance infrastructure is organized in 3 layers.
 
 #card(title: "Layer 3: Business/Regulatory Level (Explicit)", accent: teal)[
   - *RegulatoryComplianceChecker* -> 36-item auto-check
-  - *FairnessMonitor* -> DI/SPD/EOD protected attribute monitoring
+  - *FairnessMonitor* -> DI/SPD/EOD protected attribute monitoring (batch evaluation per cycle)
   - *HerdingDetector* -> Systemic risk herding detection
   - *IncidentReporter* -> Auto-report by severity
-  - *GovernanceReportGenerator* -> Monthly/quarterly governance reports
+  - *GovernanceReportGenerator* -> Monthly/quarterly governance reports (auto-generated per cycle)
   - *KillSwitch* -> Emergency model deactivation
+  - *ComplianceAuditStore* -> Logs every prediction with full compliance context
+  - *ConsentManager* -> Marketing consent lifecycle (grant/revoke/renew/verify)
+  - *AIOptOut* -> AI decision refusal registration, withdrawal, confirmation
+  - *ProfilingRights* -> Data subject rights exercise (access/correction/deletion/portability)
+]
+
+== Security Controls
+
+#card(title: "PII Protection and LLM Security", accent: red-acc)[
+  *PII Masking in Serving:* Customer PII (name, account number, resident registration number) is masked before entering the recommendation reason generation pipeline. Only anonymized tokens are passed to the LLM layer, structurally preventing PII leakage to external model providers.\
+
+  *PromptSanitizer for LLM Calls:* All prompts passed to Bedrock (Claude Haiku) are pre-processed by `PromptSanitizer`, which strips 8 injection patterns (4 Korean + 4 English) and validates prompt structure before the API call. This satisfies FSC Principle 7 (Security) and AI Basic Act Art. 34 (risk management).\
+
+  *Structural separation:* The compliance module (ConsentManager, AIOptOut, RegulatoryChecker, ProfilingRights) operates independently from the scoring and reason-generation path. Compliance checks are enforced as pre-flight gates --- a prediction is only served if all compliance conditions are satisfied.
+]
+
+== 3-Layer Fallback as Regulatory Assurance
+
+The 3-layer fallback architecture ensures that service never completely stops --- a critical regulatory requirement under FSS AI RMF C-5 (emergency shutdown with fallback).
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  align: (center, left, left),
+  [Layer], [Mechanism], [When Active],
+  [Layer 1 (Primary)], [Distilled LGBM Student via Lambda + FallbackRouter], [Normal operation],
+  [Layer 2 (Failover)], [Direct PLE Teacher inference (SageMaker Endpoint)], [Student degraded or unavailable],
+  [Layer 3 (Safety Net)], [Rule-based engine: 13-task rules + Financial DNA routing], [Both model layers unavailable],
+)
+
+*Regulatory significance:* Even under CRITICAL kill-switch activation, Layer 3 guarantees customers receive rule-based product guidance --- preventing a complete service blackout. All three layers produce `contributing_features` for explanation compliance.
+
+#card(title: "CloudFormation DynamoDB Compliance Tables", accent: navy)[
+  The following DynamoDB tables are provisioned via CloudFormation for compliance state management:\
+  - `consent-store`: Marketing consent records (grant/revoke/renew/channel)\
+  - `opt-out-store`: AI decision refusal history per customer\
+  - `profiling-rights-store`: Data subject rights exercise records\
+  - `audit-store`: Per-prediction compliance audit log (ComplianceAuditStore)\
+  All tables use TTL auto-cleanup aligned with the 7-year retention policy.
 ]
 
 == Audit Trail

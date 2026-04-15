@@ -1228,6 +1228,77 @@ to "how should I weight experts that have already certified their own relevance?
 #section-break()
 
 
+= Overfitting, Gate Entropy, and the Road to Adaptive Distillation
+
+== 30-Epoch Overfitting: Loss-Metric Decoupling
+
+The 30-epoch training run produced a finding that would have been easy to miss without per-task metric tracking. Training loss continued to decline monotonically after epoch 15, which is the expected behavior for a well-regularized model. Simultaneously, validation AUC on the classification tasks plateaued and then reversed, while regression MAE improved. Loss and metric were moving in opposite directions.
+
+The decoupling has a structural cause specific to multi-task learning. The model was optimizing the uncertainty-weighted composite loss — a scalar that aggregates 13 per-task losses with learned $s_k$ weights. As the $s_k$ parameters adapted, the model effectively shifted weight away from classification tasks (where validation performance was degrading) toward regression tasks (where it continued to improve). The composite loss kept declining because the reweighting masked the classification deterioration. A single-task loss curve would have shown the plateau; the multi-task aggregate obscured it.
+
+The prescribed response — cosine learning rate restarts — introduced a secondary problem. Each restart injected momentum into the optimization trajectory, which caused loss oscillation rather than smooth convergence. The restart amplitude was calibrated for single-task training budgets and was too large relative to the 13-task loss landscape. The oscillation was not harmful in isolation, but it made it impossible to identify a clean convergence epoch for checkpoint selection.
+
+#info-box(
+  [Lesson: Per-Task Metrics Are Non-Negotiable],
+  [
+    Composite loss is useful for optimization but deceptive for monitoring.
+    A model can achieve monotonically decreasing composite loss while silently degrading on a subset of tasks.
+    Separate validation curves per task type — avg\_auc for binary, avg\_f1\_macro for multiclass, avg\_mae for regression —
+    are the only reliable signal for multi-task convergence detection.
+  ],
+)
+
+== Gate Entropy: CGC Differentiates, Attention Does Not
+
+A parallel diagnostic examined the distribution of gate weights across training runs. The CGC layer gates showed meaningful differentiation by epoch 10: values ranged from 0.33 (low reliance on a single expert) to 0.88 (near-exclusive reliance). This is the expected behavior — different tasks developing different expert preferences as the model discovers which inductive biases are useful for which prediction targets.
+
+The per-task attention layer showed the opposite pattern. Attention weights converged to near-uniform distributions (entropy ≈ 1.0) and remained there throughout training. The attention mechanism was not learning to focus; it was averaging.
+
+The diagnosis points to a capacity mismatch. The CGC gate operates over 7 heterogeneous expert outputs — semantically distinct vectors with different statistical properties. The gate has a strong training signal because expert outputs genuinely differ. The per-task attention operates over representations that, by the time they reach the attention layer, have been processed through two CGC stages and are more similar to each other. The attention gradient is weaker because the representations are less differentiated.
+
+This finding informed the architecture for subsequent experiments: CGC gate weights are informative and can be used directly as explainability signals; per-task attention weights cannot be trusted as explanations at the current architecture scale.
+
+== 3-Layer Fallback Architecture
+
+Knowledge distillation from PLE teacher to LGBM student proved harder than anticipated. The first distillation attempt used standard soft-label transfer (temperature=5.0, alpha=0.3) and produced a student with adequate regression fidelity but poor classification alignment on the minority-class tasks.
+
+The failure mode was diagnostic: the teacher's soft labels for rare positive classes contained entropy that the student, with its lower capacity, could not absorb. The student learned the majority-class distribution well and treated the rare-class signal as noise.
+
+Three failures of this type — on different task subsets — established that no single distillation configuration could satisfy all 13 tasks simultaneously. The resulting design is a 3-layer fallback architecture:
+
+#table(
+  columns: (auto, auto, 1fr, auto),
+  align: (left, left, left, left),
+  table.header[*Layer*][*Model*][*When Used*][*Latency*],
+  [L1], [LGBM student (distilled)], [Default: fidelity \> threshold on all tasks], [\~5ms],
+  [L2a], [PLE teacher (direct inference)], [LGBM fidelity drops on binary/multiclass tasks], [\~80ms],
+  [L2b], [Bedrock LLM (Sonnet)], [Regulatory explanation required or confidence \< floor], [\~800ms],
+  [L3], [Rule-based fallback], [All models unavailable, circuit breaker open], [\<1ms],
+)
+
+The FallbackRouter monitors fidelity metrics on a rolling window. When LGBM fidelity on any task type falls below a configurable threshold, the router escalates to the next layer. The teacher (L2a) serves as a reliability backstop rather than the primary serving path, preserving the latency advantage of the student under normal conditions.
+
+== Adaptive Distillation: Teacher Threshold Gating and Floor Skip
+
+Standard distillation transfers soft labels unconditionally. In a 13-task setup with significant class imbalance, this means the student receives low-confidence teacher outputs for rare classes and attempts to fit them — a form of teacher noise amplification.
+
+Adaptive distillation adds two mechanisms. First, teacher threshold gating: soft labels from the PLE teacher are only transferred to the student when the teacher's own confidence (measured by evidential uncertainty $u_k = K / sum(alpha)$ for multiclass tasks) exceeds a task-specific threshold. Below threshold, the student falls back to the hard label for that sample-task pair. Second, floor SKIP: if the teacher's confidence is below a minimum floor on a given task, the distillation loss for that task-sample pair is set to zero — the student is not penalized for disagreeing with an uncertain teacher.
+
+The combined effect is that the student learns from teacher outputs that the teacher is confident about, and ignores task-sample pairs where the teacher is uncertain. This concentrates the distillation signal on the high-confidence, high-information-density portion of the teacher's output distribution.
+
+== 3-Agent Reason Pipeline: FactExtractor → TemplateEngine → SelfChecker
+
+The recommendation rationale generation system was restructured from a single LLM call into a 3-agent pipeline, fully connected via Bedrock (Claude Sonnet):
+
++ *FactExtractor*: Receives the raw model outputs — gate weights, evidential uncertainty, IG attribution top features, contrastive pairs — and produces a structured fact bundle. No natural language generation at this stage; only structured extraction and validation.
++ *TemplateEngine*: Receives the fact bundle and produces a draft rationale in the appropriate register (customer-facing, advisor-facing, or regulator-facing). Template selection is driven by the request context, not by the LLM's inference.
++ *SelfChecker*: Receives the draft rationale and the original fact bundle and verifies consistency. Checks that every claim in the rationale can be traced to a fact in the bundle. Returns either an approval or a specific inconsistency report that routes back to TemplateEngine.
+
+The 3-agent structure solves a problem that emerged in single-LLM rationale generation: hallucination of model-internal details. A single LLM prompted with "explain this recommendation" would occasionally generate plausible but fabricated feature attributions. The FactExtractor→SelfChecker loop makes this impossible by grounding every rationale claim in verified model outputs. SageMaker end-to-end cost for the full serving pipeline including rationale generation runs at approximately \$0.69 per cycle under the current configuration.
+
+#section-break()
+
+
 = Future Plans
 
 == Academic and Industry Publications

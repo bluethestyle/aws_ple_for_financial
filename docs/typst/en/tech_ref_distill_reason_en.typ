@@ -338,6 +338,17 @@ it unsuitable for distillation.
 
 == IG-Based Feature Selection
 
+=== Dual-Objective Selection
+
+IG feature selection balances two objectives via a weighted combination ($alpha = 0.7$ predictive + $0.3$ explanation):
+
+$ "score"_i = alpha dot "IG"_i^"predictive" + (1 - alpha) dot "IG"_i^"explanation" $
+
+- *Predictive objective* ($alpha = 0.7$): features that maximize task AUC/F1 for the distilled LGBM
+- *Explanation objective* ($0.3$): features whose IG attributions map cleanly to human-readable financial language via the reverse mapping dictionary
+
+This dual objective ensures the selected feature set supports both accurate prediction and regulatory-grade explanation (AI Basic Act Art. 34).
+
 === 3-Stage Pipeline
 
 _The dimensionality figures below are based on the full-bank design (734D). Intermediate dimensions may differ in the Santander implementation (~349D raw / 403D post-Phase-0)._
@@ -416,6 +427,46 @@ The full distillation pipeline is executed as a 10-stage DAG in `distillation_en
   [9], [Integration validation (ONNX-PyTorch numerical equivalence)],
   [10], [Deployment artifact upload],
 )
+
+== Adaptive Distillation Threshold
+
+The distilled LGBM is not accepted unconditionally. Acceptance requires meeting an *adaptive threshold* of at least 2× the random-baseline AUC per task. Below this floor, the student is classified as SKIP --- no worse than random, but the distillation round is discarded and the teacher's direct inference path is activated instead.
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  inset: 8pt,
+  stroke: 0.4pt + luma(200),
+  [*Task Type*], [*Floor Threshold*], [*Policy on SKIP*],
+  [Binary (CTR/CVR/Churn)], [AUC $>$ 0.5 + $delta_"min"$ (2× random)], [Discard student; activate Layer 2 (teacher direct)],
+  [Multi-class (NBA)], [Top-1 Accuracy $>$ 1/C + $delta_"min"$], [Discard student; fall back to popularity rule],
+  [Regression (LTV)], [RMSE $<$ baseline mean predictor], [Discard student; use global mean],
+)
+
+This prevents deploying a distilled model that is worse than naive baselines, satisfying FSS AI RMF C-1 (pre-launch risk mitigation).
+
+== Calibration: Platt Scaling
+
+FD-TVS Stage 1 requires all task probabilities to be on a common $[0, 1]$ scale. Probability-critical tasks (churn, product_stability, cross_sell_count) apply *Platt scaling* post-distillation.
+
+$ p_"calibrated" = sigma(a dot f(bold(x)) + b) $
+
+where $f(bold(x))$ is the raw LGBM score, and $a, b$ are fitted on a held-out calibration set (never on training data). Calibration reduces Expected Calibration Error (ECE) and ensures that a predicted probability of 0.8 corresponds to an empirical positive rate of approximately 80%.
+
+== Temporal Drift Monitoring
+
+Beyond population-level PSI, three metrics monitor distributional shift over time for the distilled LGBM's input features and prediction outputs:
+
+#table(
+  columns: (auto, 1fr, auto),
+  inset: 8pt,
+  stroke: 0.4pt + luma(200),
+  [*Metric*], [*What It Detects*], [*Threshold*],
+  [PSI (Population Stability Index)], [Overall input distribution shift], [> 0.25 critical],
+  [JSD (Jensen-Shannon Divergence)], [Symmetric distribution distance; more stable for near-zero cells than KL], [> 0.10 alert],
+  [Rank Correlation (Spearman)], [Feature importance rank stability across retraining cycles], [< 0.70 alert],
+)
+
+All three are computed daily per-feature. The `ConsecutiveDriftTracker` triggers automatic retraining when PSI > 0.25 persists for 3 consecutive days. JSD and rank correlation alerts are forwarded to the OpsAgent for narrative analysis.
 
 #pagebreak()
 
@@ -536,10 +587,19 @@ Design philosophy: "Equal explanation for all customers; LLM-enhanced explanatio
   inset: 8pt,
   stroke: 0.4pt + luma(200),
   [*Layer*], [*Target*], [*Method*], [*LLM Calls*], [*Throughput*],
-  [L1], [All 12M customers], [Template (6 categories $times$ 5 variants, hash selection)], [0], [$tilde$20 min],
-  [L2a], [$tilde$500K/week], [LLM rewrite (vLLM Qwen3-8B-AWQ, 3-layer safety gate)], [1], [$tilde$1.0 sec/record],
-  [L2b], [$tilde$67K sampled], [Quality validation (factuality, relevance, naturalness)], [1], [--],
+  [L1], [All 12M customers], [Template via 3-agent pipeline (FactExtractor → InterpretationRegistry → TemplateEngine → SelfChecker)], [0], [$tilde$20 min],
+  [L2a], [$tilde$500K/week], [LLM rewrite (Bedrock Claude Haiku, 3-layer safety gate)], [1], [$tilde$1.0 sec/record],
+  [L2b], [$tilde$67K sampled], [Quality validation (Bedrock Claude Haiku; factuality, relevance, naturalness)], [1], [--],
 )
+
+=== 3-Agent Reason Pipeline (L1)
+
+L1 reason generation runs a deterministic 4-stage agent pipeline --- zero LLM calls:
+
++ *FactExtractor:* extracts customer-level narrative facts from feature values via YAML-configured Python expressions (e.g., "deposit-focused portfolio", "risk-averse tendency"). Sandboxed, fully deterministic.
++ *InterpretationRegistry:* maps IG attribution top-5 features to financial language via pre-registered 3-tuple enrichments (feature → display_name, direction, explanation). Falls back to `ReverseMapper` (Level RM) if no entry found.
++ *TemplateEngine:* selects template variant via $"hash"("customer"_"id" : "category") mod 5$ and injects FactExtractor output + IG interpretations.
++ *SelfChecker:* rule-based compliance gate --- verifies no prohibited patterns (comparative claims, guaranteed return statements, etc.) before the reason is released.
 
 *Regulatory basis:* Article 19 of the Financial Consumer Protection Act requires equal
 duty of explanation for all customers.
@@ -573,7 +633,8 @@ After a rule-based compliance check, an AI-generated disclosure notice is automa
 
 Priority queue: rich first, moderate second, sparse excluded.
 Rewriting is applied after passing through the 3-Layer Safety Gate.
-vLLM Qwen3-8B-AWQ is run on an RTX 4070 (12GB VRAM).
+*AWS deployment:* Bedrock Claude Haiku (\$0.25/1M input tokens; VPC PrivateLink; no data transmitted to Anthropic for training).
+*On-premises:* vLLM Qwen3-8B-AWQ on RTX 4070 (12GB VRAM).
 
 === 4-Layer Prompt Structure
 
@@ -752,14 +813,20 @@ and the AI Basic Act.
 
 ```
 PLE-adaTT Teacher (training)
-  |-> Knowledge Distillation (T=5, alpha=0.3)
-    |-> LGBM Student (per-task, 200D features)
+  |-> Knowledge Distillation (T=5, alpha=0.3) + Adaptive Threshold (2x random floor)
+    |-> LGBM Student (per-task, 200D features) + Platt Calibration (probability-critical tasks)
       |-> ONNX Export (ZipMap removal)
-        |-> Triton Inference Server (15 tasks, Dynamic Batching)
+        |-> Lambda FallbackRouter
+            |-> Layer 1: LGBM ONNX (primary)
+            |-> Layer 2: PLE SageMaker Endpoint (failover)
+            |-> Layer 3: Rule Engine (13 tasks, Financial DNA routing)
           |-> FD-TVS Scoring (4-Stage)
             |-> Feature Grounding (IG -> Reverse Mapping -> Context Assembly)
-              |-> Recommendation Reason (L1 -> L2a -> L2b)
-                |-> Audit Archive (Parquet)
+              |-> Recommendation Reason
+                  L1: FactExtractor -> InterpretationRegistry -> TemplateEngine -> SelfChecker
+                  L2a: Bedrock Claude Haiku (rewrite)
+                  L2b: Bedrock Claude Haiku (validation)
+                |-> Audit Archive (Parquet, ComplianceAuditStore)
 ```
 
 == LGBM $arrow$ ONNX Conversion
@@ -806,9 +873,31 @@ maintaining GPU utilization.
 == Calibration Considerations
 
 FD-TVS Stage 1 requires all task probabilities to lie on a common scale $[0, 1]$.
-If CTR is overconfident and CVR is underconfident, the weighted sum becomes biased.
-Post-hoc calibration via Temperature Scaling (Guo et al., ICML 2017) has been
-identified as a future improvement item.
+Probability-critical tasks (churn, product_stability, cross_sell_count) apply Platt scaling post-distillation (see §1 Calibration). Other tasks use Temperature Scaling (Guo et al., ICML 2017) as a lightweight alternative.
+
+== 3-Layer Fallback Architecture
+
+The Lambda serving layer implements a `FallbackRouter` that selects among three layers based on availability and confidence:
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  inset: 8pt,
+  stroke: 0.4pt + luma(200),
+  [*Layer*], [*Mechanism*], [*Produces*],
+  [Layer 1: Distilled LGBM], [ONNX model via Lambda; Platt-calibrated per task], [`scores`, `contributing_features` (IG top-5)],
+  [Layer 2: Direct PLE], [SageMaker Endpoint; activated if LGBM SKIP or Lambda cold-start failure], [`scores`, `contributing_features` (IG top-5)],
+  [Layer 3: Rule Engine], [Python rule set: 13 task-specific rules + Financial DNA feature routing], [`scores` (heuristic), `contributing_features` (rule-based)],
+)
+
+All three layers produce `contributing_features` to maintain explanation compliance under AI Basic Act Art. 34 and Financial Consumer Protection Act Art. 19, even in degraded-mode serving.
+
+=== Rule Engine Design
+
+The rule engine implements 13 task-specific rules organized around Financial DNA feature routing:
+
+- *DNA routing:* permanent income customers ($"CV" < 0.2$) → long-term product rules; transitory customers ($"CV" >= 0.5$) → short-term, low-commitment rules
+- *Task rules:* each of the 13 tasks has a heuristic score function based on 3--5 interpretable features (e.g., churn rule uses recency + frequency + support call count)
+- *contributing_features:* the rule selects the top-3 features that triggered the rule and returns them as `contributing_features` for the reason generation pipeline
 
 == LLM Distillation: Gemini Teacher $arrow$ Qwen Student (QLoRA)
 
@@ -821,11 +910,13 @@ identified as a future improvement item.
   [*Aspect*], [*Predictive Model Distillation*], [*LLM Distillation*],
   [Purpose], [Prediction accuracy], [Text generation quality],
   [Teacher], [PLE-Cluster-adaTT], [Google Gemini],
-  [Student], [LightGBM], [Qwen3-8B],
+  [Student], [LightGBM], [Qwen3-8B (on-prem)],
   [Transfer Target], [Soft labels (logits/probs)], [Text output (recommendation reasons)],
   [Loss Function], [KL Divergence + CE], [Cross-Entropy (SFT)],
   [Training Method], [Soft label learning], [QLoRA fine-tuning],
 )
+
+*AWS serving note:* In production AWS Lambda, L2a rewrite and L2b validation use *Bedrock Claude Haiku* (not Qwen3-8B). Qwen3-8B QLoRA is the on-premises alternative. Both share the same PromptSanitizer and 3-Layer Safety Gate.
 
 === QLoRA: Mathematical Foundation of LoRA
 

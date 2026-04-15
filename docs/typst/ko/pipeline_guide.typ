@@ -91,7 +91,7 @@
   #line(length: 30%, stroke: 0.5pt + anthropic-rule)
   #v(0.3cm)
 
-  #text(size: 11pt, fill: anthropic-text)[941K Users × 14 Tasks × 7 Shared Experts]
+  #text(size: 11pt, fill: anthropic-text)[941K Users × 13 Tasks × 7 Shared Experts]
   #v(0.5em)
   #text(size: 10pt, fill: anthropic-muted)[대상: ML 엔지니어 (운영자)]
   #v(1cm)
@@ -193,8 +193,10 @@ docker run --rm --gpus all ple-training:latest nvidia-smi
 ```
 aws_ple_for_financial/
 ├── configs/
+│   ├── pipeline.yaml              # 공통 파이프라인 설정 (데이터셋 무관 공유)
+│   └── datasets/
+│       └── santander.yaml         # 데이터셋별 오버라이드 (id_col, label_cols, 경로 등)
 │   └── santander/
-│       ├── pipeline.yaml          # 전체 파이프라인 설정
 │       └── feature_groups.yaml    # 5축 피처 그룹 정의
 ├── containers/training/
 │   ├── train.py                   # SageMaker 학습 진입점
@@ -204,10 +206,15 @@ aws_ple_for_financial/
 ├── core/
 │   ├── pipeline/runner.py         # Phase 0 실행
 │   ├── training/trainer.py        # PLETrainer
+│   ├── config_builder.py          # PLEConfig 단일 진실 소스 (pipeline.yaml + dataset yaml 병합)
 │   └── serving/predict.py         # 추론 서비스
 ├── scripts/
 │   ├── run_local_ablation.py      # 로컬 ablation
-│   └── run_santander_ablation.py  # SageMaker ablation
+│   ├── run_santander_ablation.py  # SageMaker ablation 오케스트레이터
+│   ├── run_sagemaker_teacher.py   # SageMaker: 교사 학습 Job 제출
+│   ├── run_sagemaker_eval.py      # SageMaker: 평가 Job 제출
+│   ├── run_sagemaker_distillation.py  # SageMaker: 증류 Job 제출
+│   └── package_source.py          # 소스 패키지 빌드 및 S3 스테이징 (1회 실행 후 재사용)
 └── data/benchmark/
     └── benchmark_v2.parquet       # 941K 사용자 데이터
 ```
@@ -360,7 +367,7 @@ PLE 2-Phase Training:
   - 7 shared experts: deepfm, temporal_ensemble, hgcn, perslay,
                       causal, lightgcn, optimal_transport
   - 1 task expert: mlp (태스크별)
-  - 13 tasks (4 groups): binary 7 / multiclass 3 / regression 3
+  - 13 tasks (4 groups): binary 7 / multiclass 3 / regression 3  (14→13: deterministic-leakage 태스크 제거)
   - Uncertainty weighting (Kendall et al.)
   - AMP (Mixed Precision) 필수 활성화
 ```
@@ -408,18 +415,30 @@ docker run --rm --gpus all \
 === 모드 3: SageMaker 클라우드 실행
 
 ```bash
-# 단일 학습 Job 제출
-python scripts/submit_training_job.py \
-  --config configs/santander/pipeline.yaml \
+# Step 1: 소스 패키지 빌드 및 S3 스테이징 (1회, 모든 Job에서 재사용)
+python scripts/package_source.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml
+
+# Step 2: 교사 학습 Job 제출
+python scripts/run_sagemaker_teacher.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
   --instance-type ml.g4dn.xlarge \
   --use-spot \
   --dry-run  # 먼저 확인
 
-# 실제 제출
-python scripts/submit_training_job.py \
-  --config configs/santander/pipeline.yaml \
-  --instance-type ml.g4dn.xlarge \
-  --use-spot
+# Step 3: 평가 Job 제출
+python scripts/run_sagemaker_eval.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
+  --checkpoint s3://aiops-ple-financial/checkpoints/best/
+
+# Step 4: 증류 Job 제출
+python scripts/run_sagemaker_distillation.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
+  --teacher-checkpoint s3://aiops-ple-financial/checkpoints/best/
 ```
 
 == Ablation 실행 (4-Dimension, 48 시나리오)
@@ -483,7 +502,7 @@ python scripts/run_santander_ablation.py \
 --removed-experts "hgcn,perslay"
 
 # 태스크 수 조절
---num-active-tasks 4  # 4/8/11/14
+--num-active-tasks 4  # 4/8/11/13
 
 # 구조 변형
 --disable-adatt          # adaTT 비활성화
@@ -675,6 +694,26 @@ ab_test:
 
 모든 파라미터는 YAML config에서 읽는다. Python 코드에 하드코딩 금지.
 
+== Split-Config 구조
+
+Config는 두 계층으로 분리한다:
+- *`configs/pipeline.yaml`* (공통): 아키텍처, 학습 HP, expert 구성, 태스크 구조, AWS 기본값 — 모든 데이터셋 공유.
+- *`configs/datasets/santander.yaml`* (데이터셋별): `id_col`, `date_col`, `label_cols`, `data_path`, 데이터셋 고유 오버라이드.
+
+`config_builder.py`는 두 파일을 병합하여 `PLEConfig`를 구성하는 *단일 진실 소스*이다.
+모든 스크립트(`train.py`, `run_sagemaker_*.py`, `run_local_ablation.py`)는 YAML을 직접 읽지 않고 `config_builder.build()`를 호출한다.
+데이터셋 고유 변경이 `train.py`나 ablation 스크립트 수정을 요구하지 않음을 보장한다.
+
+```python
+# config_builder.py 사용 예시
+from core.config_builder import build_config
+config = build_config(
+    pipeline_yaml="configs/pipeline.yaml",
+    dataset_yaml="configs/datasets/santander.yaml",
+    overrides={}   # CLI 오버라이드 (ablation HP)
+)
+```
+
 == pipeline.yaml 주요 설정
 
 === tasks 섹션
@@ -795,20 +834,20 @@ cold_start:
   distill: true            # 증류 대상 여부
 ```
 
-== task_groups 섹션 (adaTT)
+== task_groups 섹션 (GradSurgery / 태스크 유형 프로젝션)
+
+_참고: adaTT는 13-task 규모에서 성능 저하. GradSurgery(PCGrad 태스크 유형 프로젝션)로 대체._
 
 ```yaml
-task_groups:
-  - name: engagement
-    tasks: [has_nba, next_mcc, top_mcc_shift]
-    adatt_intra_strength: 0.8   # 그룹 내 전이 강도
-    adatt_inter_strength: 0.3   # 그룹 간 전이 강도
-  - name: lifecycle
-    tasks: [churn_signal, product_stability, segment_prediction]
-  - name: value
-    tasks: [mcc_diversity_trend]
-  - name: consumption
-    tasks: [nba_primary, cross_sell_count, will_acquire_*]
+# grad_surgery 섹션 (adaTT task_groups 대체)
+grad_surgery:
+  enabled: true
+  task_type_groups:
+    binary: [churn_signal, will_acquire_deposits, will_acquire_investments,
+             will_acquire_accounts, will_acquire_lending, will_acquire_payments,
+             top_mcc_shift]
+    multiclass: [nba_primary, segment_prediction, next_mcc]
+    regression: [product_stability, cross_sell_count, mcc_diversity_trend]
 ```
 
 == task_relationships (Logit Transfer)
@@ -1111,6 +1150,22 @@ Step Functions (AWS): 5 상태 머신 × 주 2회 → ~$0.002/월 (사실상 무
 + Docker 환경 재현 테스트
 + SageMaker `--dry-run` 확인
 + SageMaker 제출
+
+== 체크포인트 재개 (Checkpoint Resume)
+
+학습 체크포인트는 매 epoch마다 S3에 저장된다.
+trainer는 최신 체크포인트를 찾을 때 `.pt`와 `.pth` 두 패턴을 모두 검사한다 (파일 패턴 불일치 수정 완료).
+
+*Epoch 카운팅*: 재개 후 epoch 번호는 저장된 epoch 인덱스에서 이어진다 (0으로 초기화 안 함).
+`trainer.py`는 `checkpoint["epoch"]`를 읽어 `start_epoch = checkpoint["epoch"] + 1`로 설정한다.
+
+```bash
+# S3의 최신 체크포인트에서 학습 재개
+python scripts/run_sagemaker_teacher.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
+  --resume  # output S3 경로에서 최신 .pt/.pth 자동 탐지
+```
 
 == Pipeline State 자동 복구
 

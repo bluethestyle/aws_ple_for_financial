@@ -621,6 +621,22 @@ Serving (real-time: LGBM ~5ms, batch: PLE)
 - *Batch*: PLE teacher -> SageMaker Batch Transform
 - *Scale switching*: Lambda (default) <-> ECS Fargate (large scale) automatic switching
 
+=== 3-Layer Fallback Architecture (FallbackRouter)
+
+Distillation failures on minority-class tasks motivated a layered serving design. The `FallbackRouter` monitors per-task-type fidelity on a rolling window and escalates when any layer falls below its configured threshold:
+
+#table(
+  columns: (auto, auto, 1fr, auto),
+  align: (left, left, left, left),
+  table.header[*Layer*][*Model*][*When Active*][*Latency*],
+  [L1], [LGBM student (distilled)], [Default: fidelity \> threshold on all task types], [\~5ms],
+  [L2a], [PLE teacher (direct inference)], [LGBM fidelity drops on binary or multiclass tasks], [\~80ms],
+  [L2b], [Bedrock LLM (Sonnet)], [Regulatory explanation required or confidence \< floor], [\~800ms],
+  [L3], [Rule-based fallback], [All models unavailable or circuit breaker open], [\<1ms],
+)
+
+Calibration is maintained separately per layer. L2b (Bedrock) handles the 3-agent reason pipeline (FactExtractor → TemplateEngine → SelfChecker) and is invoked only when explainability depth exceeds what the student's IG attribution can provide. End-to-end serving cost including rationale generation is approximately \$0.69 per cycle.
+
 === FD-TVS Composite Scoring
 
 Task-level predictions are integrated into a single recommendation score:
@@ -885,7 +901,7 @@ FeatureRouter is *active*: each expert receives only its designated feature grou
       edge(<adatt>, <logit>, "->"),
       node((0, 6), [*Logit Transfer* \ #text(size: 6pt)[3 edges · strength=0.5]], width: 68mm, fill: proc-fill, name: <logit>),
       edge(<logit>, <towers>, "->"),
-      node((0, 7), [*Task Towers × 14 (TowerRegistry)* \ #text(size: 6pt)[Evidential Layer (regression) · SAE sidecar] \ #text(size: 6pt)[Per-task Loss + Uncertainty Weighting]], width: 68mm, fill: out-fill, name: <towers>),
+      node((0, 7), [*Task Towers × 13 (TowerRegistry)* \ #text(size: 6pt)[Evidential Layer (regression) · SAE sidecar] \ #text(size: 6pt)[Per-task Loss + Uncertainty Weighting]], width: 68mm, fill: out-fill, name: <towers>),
     )
   },
   caption: [Internal model data flow: FeatureRouter slices per-expert subsets from the 403D feature tensor (~349D input, 403D after Phase 0 log1p expansion). Routing is group-level, auto-built from \`target_experts\` in feature_groups.yaml.],
@@ -953,7 +969,7 @@ class PLEInput:
 
 = Appendix: Config File Structure
 
-All system parameters are managed through 2 YAML files:
+All system parameters are managed through a split-config scheme. `config_builder.py` is the *single source of truth*: it merges `pipeline.yaml` (infrastructure-agnostic) and `datasets/santander.yaml` (dataset-specific) into the resolved config consumed by all pipeline stages. No pipeline stage reads raw YAML directly.
 
 *`pipeline.yaml`*: Task definitions, model structure, training parameters, AWS infrastructure settings
 - `tasks`: 13 tasks (name, type, loss, loss\_weight, label\_col)
@@ -962,6 +978,8 @@ All system parameters are managed through 2 YAML files:
 - `model.logit_transfers`: 3 transfer edges
 - `training`: batch\_size, epochs, learning\_rate, amp
 - `aws`: instance\_type, spot, budget\_limit
+
+*`datasets/santander.yaml`*: Dataset-specific overrides (column names, split parameters, adapter settings). Adding a new dataset requires only this file — no changes to `pipeline.yaml` or any Python code.
 
 *`feature_groups.yaml`*: 12 feature group definitions
 - `group_type`: transform (existing column transformation) | generate (Generator invocation)
@@ -980,6 +998,30 @@ Two autonomous diagnostic agents operate as a separate layer, asynchronously mon
 48 checklist items are automatically evaluated. WARN/FAIL items undergo 3-agent consensus (Sonnet×3) producing diagnostic results with minority report preservation. Diagnostic history accumulates in a LanceDB-based `DiagnosticCaseStore`.
 
 Fully decoupled from the serving path (3 serving agents) --- agent failures never degrade customer-facing service.
+
+== Serverless Scheduling: EventBridge + Lambda
+
+Both OpsAgent and AuditAgent are deployed as *serverless Lambda functions* scheduled by Amazon EventBridge. This eliminates the need for always-on compute for diagnostic workloads:
+
+- *OpsAgent Lambda*: triggered on a configurable cron (e.g., every 6 hours). Reads pipeline checkpoint artifacts from S3, performs correlation analysis, writes findings to DynamoDB.
+- *AuditAgent Lambda*: triggered after each SageMaker training job completion event via EventBridge rule. Reads model outputs and feature stats, performs fairness and lineage checks, writes audit records to DynamoDB.
+
+== CloudFormation Monitoring Stack
+
+The monitoring infrastructure is defined as a single CloudFormation stack, ensuring reproducible deployment and version-controlled infrastructure:
+
+#table(
+  columns: (auto, 1fr),
+  align: (left, left),
+  table.header[*Component*][*Role*],
+  [EventBridge Rules], [Schedule OpsAgent + AuditAgent Lambda; route SageMaker job events],
+  [CloudWatch Alarms], [Drift threshold breach, Lambda error rate, serving latency P99],
+  [SNS Topics], [Alert routing: WARN → Slack webhook, FAIL → PagerDuty + email],
+  [DynamoDB Tables], [DiagnosticCaseStore (audit history), PipelineState (job resume state)],
+  [Lambda Functions], [OpsAgent, AuditAgent, FallbackRouter health check],
+)
+
+CloudWatch metric filters extract per-task validation metrics from SageMaker training logs and expose them as custom metrics. This enables CloudWatch Alarms to fire on task-level degradation without requiring a separate monitoring service.
 
 Detailed design: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)
 

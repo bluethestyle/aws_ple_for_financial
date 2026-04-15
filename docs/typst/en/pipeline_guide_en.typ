@@ -91,7 +91,7 @@
   #line(length: 30%, stroke: 0.5pt + anthropic-rule)
   #v(0.3cm)
 
-  #text(size: 11pt, fill: anthropic-text)[941K Users x 14 Tasks x 7 Shared Experts]
+  #text(size: 11pt, fill: anthropic-text)[941K Users x 13 Tasks x 7 Shared Experts]
   #v(0.5em)
   #text(size: 10pt, fill: anthropic-muted)[Target: ML Engineers (Operators)]
   #v(1cm)
@@ -193,8 +193,10 @@ Code and config are identical; environment detection (`SM_MODEL_DIR` presence) h
 ```
 aws_ple_for_financial/
 +-- configs/
+|   +-- pipeline.yaml              # Common pipeline configuration (shared across datasets)
+|   +-- datasets/
+|       +-- santander.yaml         # Dataset-specific overrides (id_col, label_cols, paths)
 |   +-- santander/
-|       +-- pipeline.yaml          # Full pipeline configuration
 |       +-- feature_groups.yaml    # 5-axis feature group definitions
 +-- containers/training/
 |   +-- train.py                   # SageMaker training entry point
@@ -204,10 +206,15 @@ aws_ple_for_financial/
 +-- core/
 |   +-- pipeline/runner.py         # Phase 0 execution
 |   +-- training/trainer.py        # PLETrainer
+|   +-- config_builder.py          # Single source of truth for PLEConfig (reads pipeline.yaml + dataset yaml)
 |   +-- serving/predict.py         # Inference service
 +-- scripts/
 |   +-- run_local_ablation.py      # Local ablation
-|   +-- run_santander_ablation.py  # SageMaker ablation
+|   +-- run_santander_ablation.py  # SageMaker ablation orchestrator
+|   +-- run_sagemaker_teacher.py   # SageMaker: submit teacher training job
+|   +-- run_sagemaker_eval.py      # SageMaker: submit evaluation job
+|   +-- run_sagemaker_distillation.py  # SageMaker: submit distillation job
+|   +-- package_source.py          # Build and stage source package to S3 (run once, reuse)
 +-- data/benchmark/
     +-- benchmark_v2.parquet       # 941K user data
 ```
@@ -337,7 +344,7 @@ Key components:
   - 7 shared experts: deepfm, temporal_ensemble, hgcn, perslay,
                       causal, lightgcn, optimal_transport
   - 1 task expert: mlp (per task)
-  - 13 tasks (4 tiers): 7 binary / 3 multiclass / 3 regression
+  - 13 tasks (4 tiers): 7 binary / 3 multiclass / 3 regression  (14→13: deterministic-leakage tasks removed)
   - Uncertainty weighting (Kendall et al.)
   - AMP (Mixed Precision) must be enabled
 ```
@@ -385,18 +392,30 @@ docker run --rm --gpus all \
 === Mode 3: SageMaker Cloud Execution
 
 ```bash
-# Submit single training Job
-python scripts/submit_training_job.py \
-  --config configs/santander/pipeline.yaml \
+# Step 1: Build and stage source package to S3 (one-time; reuse across all Jobs)
+python scripts/package_source.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml
+
+# Step 2: Submit teacher training Job
+python scripts/run_sagemaker_teacher.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
   --instance-type ml.g4dn.xlarge \
   --use-spot \
   --dry-run  # Verify first
 
-# Actual submission
-python scripts/submit_training_job.py \
-  --config configs/santander/pipeline.yaml \
-  --instance-type ml.g4dn.xlarge \
-  --use-spot
+# Step 3: Submit evaluation Job
+python scripts/run_sagemaker_eval.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
+  --checkpoint s3://aiops-ple-financial/checkpoints/best/
+
+# Step 4: Submit distillation Job
+python scripts/run_sagemaker_distillation.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
+  --teacher-checkpoint s3://aiops-ple-financial/checkpoints/best/
 ```
 
 == Ablation Execution (4-Dimension, 48 Scenarios)
@@ -460,7 +479,7 @@ The following HPs can be overridden per scenario:
 --removed-experts "hgcn,perslay"
 
 # Adjust task count
---num-active-tasks 4  # 4/8/11/14
+--num-active-tasks 4  # 4/8/11/13
 
 # Structural variants
 --disable-adatt          # Disable adaTT
@@ -651,6 +670,24 @@ Canary deployment: 5% -> 25% -> 50% -> 100% (immediate rollback on anomaly detec
 // =============================================================================
 
 All parameters are read from YAML config. Hard-coding in Python code is prohibited.
+
+== Split-Config Architecture
+
+Config is split into two layers:
+- *`configs/pipeline.yaml`* (common): architecture, training HPs, experts, task structure, AWS defaults — shared across all datasets.
+- *`configs/datasets/santander.yaml`* (dataset-specific): `id_col`, `date_col`, `label_cols`, `data_path`, dataset-specific overrides.
+
+`config_builder.py` merges both files and is the *single source of truth* for constructing `PLEConfig`. All scripts (`train.py`, `run_sagemaker_*.py`, `run_local_ablation.py`) call `config_builder.build()` instead of reading YAML directly. This guarantees that any dataset-specific change never requires modifying `train.py` or ablation scripts.
+
+```python
+# config_builder.py usage
+from core.config_builder import build_config
+config = build_config(
+    pipeline_yaml="configs/pipeline.yaml",
+    dataset_yaml="configs/datasets/santander.yaml",
+    overrides={}   # CLI overrides (ablation HP)
+)
+```
 
 == pipeline.yaml Key Settings
 
@@ -1088,6 +1125,20 @@ Step Functions (AWS): 5 state machines x 2/week -> ~$0.002/month (effectively fr
 + Docker environment reproduction test
 + SageMaker `--dry-run` verification
 + SageMaker submission
+
+== Checkpoint Resume
+
+Training checkpoints are saved to S3 on each epoch. The trainer supports both `.pt` and `.pth` file patterns when scanning for the latest checkpoint (file pattern fix applied — both extensions are checked).
+
+*Epoch counting*: After resume, epoch numbering continues from the saved epoch index (not reset to 0). The `trainer.py` reads `checkpoint["epoch"]` and sets `start_epoch = checkpoint["epoch"] + 1`.
+
+```bash
+# Resume training from latest checkpoint in S3
+python scripts/run_sagemaker_teacher.py \
+  --config configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
+  --resume  # auto-detects latest .pt/.pth in output S3 path
+```
 
 == Pipeline State Auto-Recovery
 

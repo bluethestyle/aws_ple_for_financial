@@ -331,6 +331,17 @@ Reverse KL은 mode-seeking 특성으로 일부 모드를 무시할 위험이 있
 
 == IG 기반 피쳐 선택
 
+=== 이중 목적 선택
+
+IG 피쳐 선택은 가중 결합($alpha = 0.7$ 예측 + $0.3$ 설명)을 통해 두 가지 목적을 균형 있게 달성합니다.
+
+$ "score"_i = alpha dot "IG"_i^"predictive" + (1 - alpha) dot "IG"_i^"explanation" $
+
+- *예측 목적* ($alpha = 0.7$): 증류 LGBM의 태스크 AUC/F1을 극대화하는 피쳐
+- *설명 목적* ($0.3$): IG 귀인이 역매핑 딕셔너리를 통해 인간이 읽을 수 있는 금융 언어로 명확히 변환되는 피쳐
+
+이 이중 목적은 선택된 피쳐 집합이 정확한 예측과 규제 등급 설명(AI 기본법 제34조)을 모두 지원하도록 보장합니다.
+
 === 3단계 파이프라인
 
 _아래 차원 수치는 풀뱅크 설계(734D) 기준입니다. Santander 구현(~349D 입력 / 403D Phase 0 후)에서는 중간 차원이 달라질 수 있습니다._
@@ -408,6 +419,46 @@ Hard Label은 `get_label()`, Soft Label은 `get_weight()`를 통해 전달한다
   [9], [통합 검증 (ONNX-PyTorch 수치 동치성)],
   [10], [배포 아티팩트 업로드],
 )
+
+== 적응형 증류 임계값
+
+증류된 LGBM은 무조건 수용되지 않습니다. 수용을 위해서는 태스크별로 *랜덤 기준선의 2배* 이상의 적응형 임계값을 충족해야 합니다. 이 하한선 미만이면 Student는 SKIP으로 분류되고, 증류 라운드는 폐기되며 Teacher 직접 추론 경로가 활성화됩니다.
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  inset: 8pt,
+  stroke: 0.4pt + luma(200),
+  [*태스크 유형*], [*하한 임계값*], [*SKIP 정책*],
+  [이진 (CTR/CVR/Churn)], [AUC $>$ 0.5 + $delta_"min"$ (랜덤 2배)], [Student 폐기, 2계층 (Teacher 직접) 활성화],
+  [다중 클래스 (NBA)], [Top-1 정확도 $>$ 1/C + $delta_"min"$], [Student 폐기, 인기도 규칙으로 폴백],
+  [회귀 (LTV)], [RMSE $<$ 기준선 평균 예측기], [Student 폐기, 전역 평균 사용],
+)
+
+이는 단순 기준선보다 나쁜 증류 모델의 배포를 방지하여 금감원 AI RMF C-1(출시 전 위험경감 조치 검증)을 충족합니다.
+
+== 캘리브레이션: Platt Scaling
+
+FD-TVS Stage 1은 모든 태스크 확률이 공통 $[0, 1]$ 스케일에 있을 것을 요구합니다. 확률이 중요한 태스크(이탈, product_stability, cross_sell_count)에는 증류 후 *Platt scaling*을 적용합니다.
+
+$ p_"calibrated" = sigma(a dot f(bold(x)) + b) $
+
+여기서 $f(bold(x))$는 LGBM 원시 점수이고, $a, b$는 홀드아웃 캘리브레이션 세트(학습 데이터 제외)에서 적합됩니다. 캘리브레이션은 ECE(Expected Calibration Error)를 줄이고, 예측 확률 0.8이 실제 양성률 약 80%에 대응하도록 보장합니다.
+
+== 시간적 드리프트 모니터링
+
+모집단 수준의 PSI 외에도 세 가지 지표가 증류 LGBM 입력 피쳐와 예측 출력의 분포 이동을 시계열로 감시합니다.
+
+#table(
+  columns: (auto, 1fr, auto),
+  inset: 8pt,
+  stroke: 0.4pt + luma(200),
+  [*지표*], [*감지 대상*], [*임계값*],
+  [PSI (모집단 안정성 지수)], [전체 입력 분포 이동], [> 0.25 critical],
+  [JSD (Jensen-Shannon 발산)], [대칭적 분포 거리; KL보다 근-영 셀에 안정적], [> 0.10 alert],
+  [순위 상관 (Spearman)], [재학습 주기 간 피쳐 중요도 순위 안정성], [< 0.70 alert],
+)
+
+세 가지 모두 피쳐별로 일간 계산됩니다. `ConsecutiveDriftTracker`는 PSI > 0.25가 3일 연속 지속될 때 자동 재학습을 트리거합니다. JSD 및 순위 상관 경고는 OpsAgent에 전달되어 서술적 분석이 이루어집니다.
 
 #pagebreak()
 
@@ -526,10 +577,19 @@ $ "confidence" = |p - 0.5| times 2 $ <confidence>
   inset: 8pt,
   stroke: 0.4pt + luma(200),
   [*Layer*], [*대상*], [*방식*], [*LLM 호출*], [*처리량*],
-  [L1], [1,200만 전량], [Template (6 categories $times$ 5 variants, hash 선택)], [0], [$tilde$20분],
-  [L2a], [$tilde$50만/주], [LLM rewrite (vLLM Qwen3-8B-AWQ, 3-layer safety gate)], [1], [$tilde$1.0초/건],
-  [L2b], [$tilde$6.7만 샘플링], [품질 검증 (factuality, relevance, naturalness)], [1], [--],
+  [L1], [1,200만 전량], [3-에이전트 파이프라인 (FactExtractor → InterpretationRegistry → TemplateEngine → SelfChecker)], [0], [$tilde$20분],
+  [L2a], [$tilde$50만/주], [LLM rewrite (Bedrock Claude Haiku, 3-layer safety gate)], [1], [$tilde$1.0초/건],
+  [L2b], [$tilde$6.7만 샘플링], [품질 검증 (Bedrock Claude Haiku; 사실성, 관련성, 자연스러움)], [1], [--],
 )
+
+=== 3-에이전트 사유 파이프라인 (L1)
+
+L1 사유 생성은 결정론적 4단계 에이전트 파이프라인으로 실행됩니다 --- LLM 호출 없음.
+
++ *FactExtractor:* YAML 설정 Python 표현식을 통해 피쳐 값에서 고객 수준 서술적 팩트를 추출합니다(예: "예적금 중심 포트폴리오", "리스크 회피 성향"). 샌드박스 환경에서 완전 결정론적으로 동작합니다.
++ *InterpretationRegistry:* 사전 등록된 3-tuple 풍부화(피쳐 → display_name, 방향, 설명)를 통해 IG 귀인 상위 5개 피쳐를 금융 언어로 매핑합니다. 항목이 없으면 `ReverseMapper`(Level RM)로 폴백합니다.
++ *TemplateEngine:* $"hash"("customer"_"id" : "category") mod 5$로 템플릿 변형을 선택하고 FactExtractor 출력 + IG 해석을 주입합니다.
++ *SelfChecker:* 규칙 기반 컴플라이언스 게이트 --- 사유가 출시되기 전에 금지 패턴(비교 광고, 수익 보장 표현 등)이 없는지 검증합니다.
 
 *규제 근거:* 금융소비자보호법 제19조는 전 고객에 대한 동등한 설명의무를 요구한다.
 L1이 1,200만 전량에 비용 0의 템플릿을 제공하여 이를 충족한다.
@@ -562,7 +622,8 @@ $ "variant"_"index" = "hash"("customer"_"id" : "category") mod 5 $
 
 우선순위 큐: rich 먼저, moderate 다음, sparse 제외.
 3-Layer Safety Gate를 통과한 후 rewrite가 적용된다.
-vLLM Qwen3-8B-AWQ를 RTX 4070 (12GB VRAM)에서 구동한다.
+*AWS 배포:* Bedrock Claude Haiku (\$0.25/1M input tokens; VPC PrivateLink; Anthropic으로 데이터 미전송).
+*온프레미스:* RTX 4070 (12GB VRAM)에서 vLLM Qwen3-8B-AWQ 구동.
 
 === 프롬프트 4계층 구조
 
@@ -737,14 +798,20 @@ $arrow$ 상담원 전달 $arrow$ 고객 설득 $arrow$ 전환/피드백 $arrow$ 
 
 ```
 PLE-adaTT Teacher (학습)
-  |-> Knowledge Distillation (T=5, alpha=0.3)
-    |-> LGBM Student (태스크별, 200D 피쳐)
+  |-> Knowledge Distillation (T=5, alpha=0.3) + 적응형 임계값 (랜덤 2배 하한)
+    |-> LGBM Student (태스크별, 200D 피쳐) + Platt 캘리브레이션 (확률 중요 태스크)
       |-> ONNX Export (ZipMap 제거)
-        |-> Triton Inference Server (15 태스크, Dynamic Batching)
+        |-> Lambda FallbackRouter
+            |-> 1계층: LGBM ONNX (기본)
+            |-> 2계층: PLE SageMaker Endpoint (폴오버)
+            |-> 3계층: 규칙 엔진 (13개 태스크, Financial DNA 라우팅)
           |-> FD-TVS Scoring (4-Stage)
             |-> Feature Grounding (IG -> Reverse Mapping -> Context Assembly)
-              |-> Recommendation Reason (L1 -> L2a -> L2b)
-                |-> Audit Archive (Parquet)
+              |-> Recommendation Reason
+                  L1: FactExtractor -> InterpretationRegistry -> TemplateEngine -> SelfChecker
+                  L2a: Bedrock Claude Haiku (rewrite)
+                  L2b: Bedrock Claude Haiku (검증)
+                |-> Audit Archive (Parquet, ComplianceAuditStore)
 ```
 
 == LGBM $arrow$ ONNX 변환
@@ -789,10 +856,31 @@ GPU 활용률을 유지한다.
 == Calibration 고려사항
 
 FD-TVS Stage 1은 모든 태스크 확률이 공통 스케일 $[0, 1]$에 있을 것을 요구한다.
-CTR이 과잉 확신(overconfident)이고 CVR이 과소 확신(underconfident)이면
-가중 합산에 편향이 발생한다.
-Temperature Scaling (Guo et al., ICML 2017)을 통한 사후 보정이
-향후 개선 과제로 식별되어 있다.
+확률이 중요한 태스크(이탈, product_stability, cross_sell_count)는 증류 후 Platt scaling을 적용한다(§1 캘리브레이션 참조). 나머지 태스크에는 Temperature Scaling(Guo et al., ICML 2017)을 경량 대안으로 사용한다.
+
+== 3계층 폴백 아키텍처
+
+Lambda 서빙 레이어는 가용성과 신뢰도에 따라 세 계층 중 하나를 선택하는 `FallbackRouter`를 구현한다.
+
+#table(
+  columns: (auto, 1fr, 1fr),
+  inset: 8pt,
+  stroke: 0.4pt + luma(200),
+  [*계층*], [*메커니즘*], [*생성 출력*],
+  [1계층: 증류 LGBM], [Lambda를 통한 ONNX 모델; 태스크별 Platt 캘리브레이션], [`scores`, `contributing_features` (IG top-5)],
+  [2계층: PLE 직접 추론], [SageMaker Endpoint; LGBM SKIP 또는 Lambda cold-start 실패 시 활성화], [`scores`, `contributing_features` (IG top-5)],
+  [3계층: 규칙 엔진], [Python 규칙 셋: 13개 태스크별 규칙 + Financial DNA 피쳐 라우팅], [`scores` (휴리스틱), `contributing_features` (규칙 기반)],
+)
+
+세 계층 모두 `contributing_features`를 생성하여 성능 저하 서빙 시에도 AI 기본법 제34조 및 금소법 제19조에 따른 설명 컴플라이언스를 유지한다.
+
+=== 규칙 엔진 설계
+
+규칙 엔진은 Financial DNA 피쳐 라우팅을 중심으로 구성된 13개 태스크별 규칙을 구현한다.
+
+- *DNA 라우팅:* 항상소득 고객($"CV" < 0.2$) → 장기 상품 규칙; 일시소득 고객($"CV" >= 0.5$) → 단기·저관여 규칙
+- *태스크 규칙:* 13개 태스크 각각에 3--5개 해석 가능한 피쳐 기반 휴리스틱 점수 함수 (예: 이탈 규칙은 최신성 + 빈도 + 고객지원 통화 수 사용)
+- *contributing_features:* 규칙이 규칙을 트리거한 상위 3개 피쳐를 선택하여 사유 생성 파이프라인에 `contributing_features`로 반환
 
 == LLM 증류: Gemini Teacher $arrow$ Qwen Student (QLoRA)
 
@@ -805,11 +893,13 @@ Temperature Scaling (Guo et al., ICML 2017)을 통한 사후 보정이
   [*측면*], [*예측 모델 증류*], [*LLM 증류*],
   [목적], [예측 정확도], [텍스트 생성 품질],
   [Teacher], [PLE-Cluster-adaTT], [Google Gemini],
-  [Student], [LightGBM], [Qwen3-8B],
+  [Student], [LightGBM], [Qwen3-8B (온프레미스)],
   [전달 대상], [Soft labels (logits/probs)], [텍스트 출력 (추천 사유)],
   [손실 함수], [KL Divergence + CE], [Cross-Entropy (SFT)],
   [학습 방법], [Soft label learning], [QLoRA fine-tuning],
 )
+
+*AWS 서빙 참고:* 프로덕션 AWS Lambda에서 L2a rewrite와 L2b 검증은 *Bedrock Claude Haiku*를 사용합니다(Qwen3-8B 아님). Qwen3-8B QLoRA는 온프레미스 대안입니다. 두 경로 모두 동일한 PromptSanitizer와 3-Layer Safety Gate를 공유합니다.
 
 === QLoRA: LoRA 수학적 기초
 
