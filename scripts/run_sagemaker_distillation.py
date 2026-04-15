@@ -210,7 +210,9 @@ def submit_distillation_job(
     # CPU instance — LGBM does not need GPU (CLAUDE.md 1.6: Phase 0/distill on CPU)
     instance_type = aws_config.get("cpu_instance_type", DISTILL_INSTANCE_TYPE)
     timestamp = time.strftime("%m%d-%H%M")
-    job_name = f"ple-distill-{scenario[:18]}-{timestamp}"
+    # SageMaker job names: [a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}
+    safe_scenario = scenario.replace("_", "-")[:18]
+    job_name = f"ple-distill-{safe_scenario}-{timestamp}"
     s3_output_uri = f"s3://{s3_bucket}/{S3_OUTPUT_PREFIX}/{scenario}"
 
     logger.info("=" * 60)

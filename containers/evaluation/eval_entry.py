@@ -154,9 +154,12 @@ def _find_checkpoint(model_dir: str) -> str:
         logger.info("Using checkpoint: %s", best)
         return str(best)
 
-    candidates = sorted(model_path.glob("*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    candidates = sorted(
+        list(model_path.glob("*.pt")) + list(model_path.glob("*.pth")),
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
     if not candidates:
-        raise FileNotFoundError(f"No .pt checkpoint found in {model_dir}")
+        raise FileNotFoundError(f"No .pt/.pth checkpoint found in {model_dir}")
 
     logger.info("Using checkpoint (most recent): %s", candidates[0])
     return str(candidates[0])
