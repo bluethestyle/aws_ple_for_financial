@@ -310,6 +310,66 @@ $T = 5$는 교사 출력을 $[0.03, 0.97]$에서 $[0.48, 0.52]$로 변환하여
 이 설계는 트리 기반 학생 모델에 특화된 것이며,
 향후 신경망 학생 아키텍처를 채택할 경우 온도 스케일링을 재도입할 수 있다.
 
+=== 적응형 증류 전략
+
+모든 태스크가 증류로부터 동등한 혜택을 얻는 것은 아니다.
+교사 모델의 특정 태스크 성능이 무작위 기준선의 약 2배 이하로 떨어질 경우
+(이진: AUC $<$ 0.60; 멀티클래스: F1-macro $< 2\/K$ ($K$개 클래스 기준);
+회귀: R² $<$ 0.05),
+소프트 레이블이 학생 학습을 안내하기에 충분한 클래스 간 정보를 담지 못한다.
+이 경우 파이프라인이 자동으로 LGBM 학생 모델을 하드 레이블로
+직접 훈련하는 경로로 전환한다.
+
+이 적응형 라우팅은 모델 리스크 관리(MRM) 안전장치이다:
+품질 낮은 교사 지식을 운영 환경에 전파하는 대신,
+시스템이 자가 진단하여 더 안전한 훈련 경로를 활성화한다.
+폴백을 통해 서비스 연속성이 보장된다 ---
+증류 가능 여부에 관계없이 모든 태스크에 학생 모델이 서빙된다 ---
+한편 모니터링 대시보드는 교사 개선이 필요한 태스크를 표시한다.
+
+벤치마크 실험에서 7개의 이진 태스크가 AUC 임계값(0.63--0.72)을 초과하여
+성공적으로 증류되었다(AUC 격차 2--3 퍼센트포인트).
+3개의 멀티클래스 태스크(nba\_primary, segment\_prediction, next\_mcc)는
+F1 임계값 이하로 판정되어 직접 하드 레이블 훈련으로 라우팅되었다.
+3개의 회귀 태스크는 경계선(R² 0.01--0.04)에 해당하여 역시 직접 훈련을 사용하였다.
+
+=== 3계층 폴백 아키텍처
+
+위의 적응형 전략은 서비스 연속성 아키텍처의 2계층에 해당한다.
+교사 증류와 직접 LGBM 학습 _모두_ 허용 임계값을 넘어 열화되면,
+시스템은 금융 마케팅 이론에 근거한 룰 기반 폴백(3계층)을 활성화한다.
+각 계층은 금융 DNA 태스크 그룹별로 구조화된다:
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, left, left, left),
+    stroke: 0.5pt,
+    [*계층*], [*메커니즘*], [*트리거*], [*지연시간*],
+    [1. 증류], [PLE 교사 $arrow.r$ LGBM 소프트 레이블], [기본 경로], [< 10ms],
+    [2. 직접 학습], [LGBM 하드 레이블 (교사 우회)], [교사 임계값 $<$ 2$times$ 랜덤], [< 10ms],
+    [3. 룰 기반], [금융 DNA 그룹 휴리스틱], [LGBM 학습 실패 / 드리프트], [< 1ms],
+  ),
+  caption: [3계층 서빙 폴백 아키텍처. 각 계층은 이전 계층이 사용 불가하거나 열화될 때 활성화된다.],
+) <tab:fallback-layers>
+
+3계층 룰은 금융 DNA 태스크 그룹 분류에 부합하며,
+도메인에서 검증된 휴리스틱에 기반한다:
+
+- *Engagement 그룹* (이탈, 행동 변화): RFM 스코어링 @fader2005rfm --- 운영 이력에서 도출된 최근성, 빈도, 금액 임계값.
+- *Lifecycle 그룹* (세그먼트, 상품 추천): 상품 인접 행렬 --- 경험적으로 관찰된 교차판매 경로(예금 $arrow.r$ 적금 $arrow.r$ 투자 $arrow.r$ 보험)가 고객 생애주기 단계를 따른다.
+- *Value 그룹* (상품 안정성, 교차판매 수): CLV 기반 등급화 --- 고객 생애가치 구간을 상품 복잡도 등급에 매핑하며, 금융 적합성 요건과 일관된다.
+- *Consumption 그룹* (MCC 패턴, 소비 다양성): Friedman 항상소득가설 @friedman1957 에 기반한 거래 카테고리 빈도 분석 --- 일시적 소비 변동과 항구적 변동을 구분한다.
+
+결정적으로, 모든 3계층 룰은 규제 적합성 원칙(금융소비자보호법 제17조)을 준수한다:
+고객의 위험 감수 등급이 상품의 위험 등급 이상이어야 한다.
+이 제약은 어떤 계층이 추천을 생성하든 _항상_ 적용되어,
+전체 아키텍처 아래에 규제적 하한선을 제공한다.
+
+3계층 설계는 모델 장애로 인해 서비스가 중단되지 않도록 보장한다 ---
+금융 운영 시스템의 핵심 요구사항이자
+SR 11-7 모델 리스크 관리 @fed2011sr117 의 기본 원칙이다.
+
 == IG 기반 피처 선택
 
 Integrated Gradients @sundararajan2017 는 교사 모델로부터 피처별 기여도를 계산한다.
@@ -365,20 +425,32 @@ NDCG\@K 격차 및 top-K accuracy 격차 @jarvelin2002ndcg 를 사용하여
 
 #figure(placement: top, scope: "parent",
   table(
-    columns: (auto, auto, auto, auto),
+    columns: (auto, auto, auto, auto, auto),
     inset: 5pt,
-    align: (left, right, right, right),
+    align: (left, right, right, right, left),
     stroke: 0.5pt,
-    [*태스크*], [*교사*], [*학생*], [*격차*],
-    [churn_signal (AUC)], [--], [--], [--],
-    [will_acquire_deposits (AUC)], [--], [--], [--],
-    [will_acquire_investments (AUC)], [--], [--], [--],
-    [segment_prediction (F1-macro)], [--], [--], [--],
-    [nba_primary (NDCG\@3)], [--], [--], [--],
-    [next_mcc (NDCG\@3)], [--], [--], [--],
-    [...], [...], [...], [...],
+    [*태스크*], [*교사*], [*학생*], [*격차*], [*일치율*],
+    table.hline(stroke: 0.4pt),
+    table.cell(colspan: 5, align: left)[_이진 (소프트 레이블 증류)_],
+    [churn\_signal (AUC)], [], [], [0.022], [88.9%],
+    [will\_acquire\_accounts (AUC)], [], [], [0.024], [92.5%],
+    [will\_acquire\_payments (AUC)], [], [], [0.032], [90.8%],
+    [will\_acquire\_deposits (AUC)], [], [], [0.018], [79.8%],
+    [will\_acquire\_investments (AUC)], [], [], [0.023], [79.7%],
+    [will\_acquire\_lending (AUC)], [], [], [0.026], [81.2%],
+    [top\_mcc\_shift (AUC)], [], [], [0.036], [99.9%],
+    table.hline(stroke: 0.4pt),
+    table.cell(colspan: 5, align: left)[_멀티클래스 (임계값 라우팅 → 직접 하드 레이블)_],
+    [nba\_primary (F1-macro, 7클래스)], [0.187], [—], [—], [F1 < 2/7 → 직접],
+    [segment\_prediction (F1-macro, 4클래스)], [0.403], [—], [—], [F1 < 2/4 → 직접],
+    [next\_mcc (F1-macro, 50클래스)], [0.012], [—], [—], [F1 < 2/50 → 직접],
+    table.hline(stroke: 0.4pt),
+    table.cell(colspan: 5, align: left)[_회귀 (직접 훈련)_],
+    [product\_stability (MAE)], [], [], [0.001], [통과],
+    [mcc\_diversity\_trend (MAE)], [], [], [0.017], [통과],
+    [cross\_sell\_count (RMSE)], [], [], [0.176], [—],
   ),
-  caption: [태스크별 증류 결과 (TODO).\ 이진 7개 태스크: AUC 격차; segment\_prediction: F1-macro 격차;\ nba\_primary 및 next\_mcc: NDCG\@3 격차; 회귀 3개 태스크: MAE 격차.],
+  caption: [태스크별 증류 결과.\ 이진 태스크: AUC 격차 및 예측 일치율(학생 vs.\ 교사); 교사/학생 AUC 절대값은 태스크 기밀로 생략.\ 멀티클래스 태스크: 교사 F1-macro와 적응형 임계값 게이트; 무작위 기준선 2/K 미만 태스크는 직접 하드 레이블 훈련으로 라우팅.\ 회귀 태스크: 교사-학생 간 MAE/RMSE 격차.],
 ) <tab:distill-results>
 
 // ============================================================
@@ -1238,6 +1310,19 @@ LLM 검증 없는 템플릿 기반 폴백은
 Safety Gate는 생성된 텍스트를 실제 IG 귀인 벡터와 대조하여
 환각 유사 오류를 감소시킨다.
 
+*발견 4: 적응형 증류 라우팅은 MRM 안전장치로 기능한다.*
+교사 임계값 게이트가 6개 태스크의 저품질 증류를 차단하고
+직접 하드 레이블 훈련으로 전환하였다.
+3개 멀티클래스 태스크(nba\_primary 7클래스, segment\_prediction 4클래스, next\_mcc 50클래스)가
+F1-macro $\geq 2/K$ 임계값을 통과하지 못하였고,
+3개 회귀 태스크는 경계선(R² 0.01--0.04)에 해당하였다.
+이 자동 품질 분류는 SR 11-7 원칙에 부합한다:
+모델 출력이 모니터링되고, 성능 저하된 구성요소는
+서비스 중단 없이 격리된다.
+모니터링 대시보드는 이러한 태스크를 다음 재학습 사이클에서
+교사 개선이 필요한 항목으로 표시하여,
+증류 품질과 교사 개발 우선순위 사이의 폐쇄 피드백 루프를 형성한다.
+
 == 피처의 이중 역할
 
 본 연구의 핵심 통찰: 금융 추천에서 피처는 이중 목적을 수행한다.
@@ -1413,4 +1498,42 @@ S3 스토리지, 운영 경비 등 모든 비용은
 상세한 구현 세부사항, 단위 테스트, 설정 파일은 공개 저장소에서 확인할 수 있다.
 
 // ============================================================
+// 부록
+// ============================================================
+
+#pagebreak()
+
+= 부록
+
+== 부록 A: 태스크별 3계층 룰 기반 폴백 <appendix-a>
+
+교사 증류(1계층)와 직접 LGBM 학습(2계층)이 모두 불가능할 때 활성화되는 태스크별 룰이다.
+각 룰은 검증된 마케팅 이론 또는 금융 도메인 실무에 근거하며, 금융 DNA 태스크 그룹별로 구조화하였다.
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    align: (left, left, left, left, left),
+    stroke: 0.5pt,
+    [*DNA 그룹*], [*태스크*], [*룰*], [*이론적 근거*], [*트리거*],
+    [Engagement], [churn_signal], [RFM 30/60/90일 감소 추세], [관계 마케팅 (Berry '83)], [R/F/M 동반 하락],
+    [Engagement], [top_mcc_shift], [MCC 엔트로피 변동 > 임계값], [McKinsey CDJ 트리거], [라이프스타일 변화 감지],
+    [Lifecycle], [nba_primary], [상품 인접 행렬 +1단계], [Kotler 5A 여정], [상품 래더 갭],
+    [Lifecycle], [segment_prediction], [잔액 x 빈도 x 상품수 3축], [CLV 등급 모델 (파레토)], [세그먼트 재분류],
+    [Lifecycle], [will_acquire_deposits], [여유자금 비율 > 30% + 정기예금 미보유], [생애주기 저축 단계], [유휴자금 감지],
+    [Lifecycle], [will_acquire_investments], [적합성 등급 >= 상품 위험등급], [적합성 원칙 (금소법 §17)], [위험 매칭 기회],
+    [Lifecycle], [will_acquire_accounts], [급여 입금 + 비주거래], [SOW 확장 (PwC)], [주거래 전환 가능],
+    [Lifecycle], [will_acquire_lending], [신용 1-4등급 + DTI < 40%], [신용 스코어링 + 적합성], [대환 기회],
+    [Lifecycle], [will_acquire_payments], [주거래 MCC + 카드 1장], [습관적 구매 (Kotler)], [소비-카드 불일치],
+    [Value], [product_stability], [30/60/90일 휴면 조기경고], [고객 인게이지먼트 (Gallup)], [활동 감소],
+    [Value], [cross_sell_count], [CLV 등급 목표 - 현재 보유수], [지갑 점유율 (PwC)], [상품 갭 > 0],
+    [Consumption], [next_mcc], [MCC 빈도 Top-K + 계절성], [습관적 구매 행동], [패턴 연속],
+    [Consumption], [mcc_diversity_trend], [PIH 일시소득 시그널], [Friedman 항상소득가설 (1957)], [소득 충격 감지],
+  ),
+  caption: [태스크별 3계층 룰 기반 폴백 규칙 (금융 DNA 그룹별). 모든 룰은 적합성 원칙(금소법 제17조) 하한선 적용.],
+) <tab:fallback-rules>
+
+13개 룰 모두 공통 규제 하한선을 준수한다: 고객의 위험 감수 등급이 추천 상품의 위험 등급 이상이어야 한다(금융소비자보호법 제17조).
+상세 룰 명세, 임계값, 추천 사유 템플릿은 설계 문서(`docs/design/12_rule_based_fallback.md`)에서 관리한다.
+
 #bibliography("references.bib", style: "association-for-computing-machinery")

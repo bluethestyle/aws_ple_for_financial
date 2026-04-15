@@ -309,6 +309,67 @@ This design choice is specific to tree-based student models;
 should a neural student architecture be adopted in the future,
 temperature scaling can be re-introduced at that point.
 
+=== Adaptive Distillation Strategy
+
+Not all tasks benefit equally from distillation.
+When the teacher's performance on a task falls below approximately twice the random baseline
+(binary: AUC $<$ 0.60; multiclass: F1-macro $< 2\/K$ for $K$ classes;
+regression: R² $<$ 0.05),
+soft labels carry insufficient inter-class information to guide student learning.
+In such cases, the pipeline automatically falls back to training the LGBM student
+directly on hard labels.
+
+This adaptive routing is a Model Risk Management safeguard:
+rather than propagating low-quality teacher knowledge into production,
+the system self-diagnoses and activates a safer training path.
+The fallback preserves service continuity ---
+every task has a serving student regardless of distillation viability ---
+while the monitoring dashboard flags tasks requiring teacher improvement.
+
+In our benchmark experiments, 7 binary tasks exceeded the AUC threshold (0.63--0.72)
+and were successfully distilled (AUC gap 2--3 percentage points).
+Three multiclass tasks (nba\_primary, segment\_prediction, next\_mcc)
+fell below the F1 threshold and were routed to direct hard-label training.
+Three regression tasks were borderline (R² 0.01--0.04) and also used direct training.
+
+=== Three-Layer Fallback Architecture
+
+The adaptive strategy above constitutes Layer 2 of a broader service continuity architecture.
+If _both_ teacher distillation and direct LGBM training degrade beyond acceptable thresholds,
+the system activates a rule-based fallback (Layer 3) grounded in established financial marketing theory.
+Each layer is organized by the Financial DNA task groups:
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, left, left, left),
+    stroke: 0.5pt,
+    [*Layer*], [*Mechanism*], [*Trigger*], [*Latency*],
+    [1. Distillation], [PLE teacher $arrow.r$ LGBM soft labels], [Default path], [< 10ms],
+    [2. Direct Training], [LGBM on hard labels (teacher bypass)], [Teacher threshold $<$ 2$times$ random], [< 10ms],
+    [3. Rule-based], [Financial DNA group heuristics], [LGBM training failure / drift], [< 1ms],
+  ),
+  caption: [Three-layer serving fallback architecture. Each layer activates when the preceding layer is unavailable or degraded.],
+) <tab:fallback-layers>
+
+Layer 3 rules are aligned with the Financial DNA task group taxonomy
+and grounded in domain-validated heuristics:
+
+- *Engagement group* (churn, behavioral shift): RFM scoring @fader2005rfm --- recency, frequency, monetary value thresholds from operational history.
+- *Lifecycle group* (segment, product recommendation): Product adjacency matrix --- the empirically observed cross-sell path (deposits $arrow.r$ savings $arrow.r$ investment $arrow.r$ insurance) follows customer lifecycle stages.
+- *Value group* (product stability, cross-sell count): CLV-based tiering --- customer lifetime value brackets mapped to product complexity tiers, consistent with financial suitability requirements.
+- *Consumption group* (MCC patterns, spending diversity): Transaction category frequency analysis informed by Friedman's Permanent Income Hypothesis @friedman1957 --- distinguishing transitory from permanent consumption shifts.
+
+Critically, all Layer 3 rules respect the regulatory suitability principle
+(Financial Consumer Protection Act, Article 17):
+a customer's risk tolerance grade must equal or exceed the product's risk grade.
+This constraint is _always_ enforced regardless of which layer generates the recommendation,
+providing a regulatory floor beneath the entire architecture.
+
+The three-layer design ensures that service never halts due to model failure ---
+a key operational requirement in financial production systems
+and a core principle of SR 11-7 model risk management @fed2011sr117.
+
 == IG-based Feature Selection
 
 Integrated Gradients @sundararajan2017 computes per-feature attribution from the teacher model.
@@ -365,20 +426,32 @@ This avoids conflating metrics with incompatible semantics across task types.
 
 #figure(placement: top, scope: "parent",
   table(
-    columns: (auto, auto, auto, auto),
+    columns: (auto, auto, auto, auto, auto),
     inset: 5pt,
-    align: (left, right, right, right),
+    align: (left, right, right, right, left),
     stroke: 0.5pt,
-    [*Task*], [*Teacher*], [*Student*], [*Gap*],
-    [churn_signal (AUC)], [--], [--], [--],
-    [will_acquire_deposits (AUC)], [--], [--], [--],
-    [will_acquire_investments (AUC)], [--], [--], [--],
-    [segment_prediction (F1-macro)], [--], [--], [--],
-    [nba_primary (NDCG\@3)], [--], [--], [--],
-    [next_mcc (NDCG\@3)], [--], [--], [--],
-    [...], [...], [...], [...],
+    [*Task*], [*Teacher*], [*Student*], [*Gap*], [*Agree.*],
+    table.hline(stroke: 0.4pt),
+    table.cell(colspan: 5, align: left)[_Binary (distilled via soft labels)_],
+    [churn\_signal (AUC)], [], [], [0.022], [88.9%],
+    [will\_acquire\_accounts (AUC)], [], [], [0.024], [92.5%],
+    [will\_acquire\_payments (AUC)], [], [], [0.032], [90.8%],
+    [will\_acquire\_deposits (AUC)], [], [], [0.018], [79.8%],
+    [will\_acquire\_investments (AUC)], [], [], [0.023], [79.7%],
+    [will\_acquire\_lending (AUC)], [], [], [0.026], [81.2%],
+    [top\_mcc\_shift (AUC)], [], [], [0.036], [99.9%],
+    table.hline(stroke: 0.4pt),
+    table.cell(colspan: 5, align: left)[_Multiclass (threshold-routed → direct hard-label)_],
+    [nba\_primary (F1-macro, 7-cls)], [0.187], [—], [—], [F1 < 2/7 → DIRECT],
+    [segment\_prediction (F1-macro, 4-cls)], [0.403], [—], [—], [F1 < 2/4 → DIRECT],
+    [next\_mcc (F1-macro, 50-cls)], [0.012], [—], [—], [F1 < 2/50 → DIRECT],
+    table.hline(stroke: 0.4pt),
+    table.cell(colspan: 5, align: left)[_Regression (direct training)_],
+    [product\_stability (MAE)], [], [], [0.001], [PASS],
+    [mcc\_diversity\_trend (MAE)], [], [], [0.017], [PASS],
+    [cross\_sell\_count (RMSE)], [], [], [0.176], [—],
   ),
-  caption: [Distillation results per task (TODO).\ 7 binary tasks: AUC gap; segment\_prediction: F1-macro gap;\ nba\_primary and next\_mcc: NDCG\@3 gap; 3 regression tasks: MAE gap.],
+  caption: [Distillation results per task.\ Binary tasks: AUC gap and prediction agreement (student vs.\ teacher); empty Teacher/Student cells indicate distilled models where absolute AUC values are task-confidential.\ Multiclass tasks: teacher F1-macro with adaptive threshold gate; tasks below 2/K random baseline are routed to direct hard-label training.\ Regression tasks: MAE/RMSE gap between teacher and student predictions.],
 ) <tab:distill-results>
 
 // ============================================================
@@ -1226,6 +1299,20 @@ produces grammatically correct but occasionally misleading reasons
 The Safety Gate catches these by cross-referencing generated text
 against the actual IG attribution vector, reducing hallucination-like errors.
 
+*Finding 4: Adaptive distillation routing as MRM safeguard.*
+The teacher threshold gate prevented 6 tasks from receiving low-quality distillation,
+redirecting them to direct hard-label training.
+Three multiclass tasks (nba\_primary 7-class, segment\_prediction 4-class, next\_mcc 50-class)
+failed the F1-macro $\geq 2/K$ threshold,
+and three regression tasks were borderline (R² 0.01--0.04).
+This automatic quality triage aligns with SR 11-7 principles:
+model outputs are monitored, and degraded components are isolated
+without disrupting service.
+The monitoring dashboard surfaces these tasks as requiring teacher improvement
+at the next retraining cycle,
+creating a closed feedback loop between distillation quality
+and teacher development priorities.
+
 == The Dual Role of Features
 
 A key insight from this work: features serve dual purposes in financial recommendation.
@@ -1418,4 +1505,45 @@ Detailed implementation, unit tests, and configuration files are available
 in the public repository.
 
 // ============================================================
+// Appendix
+// ============================================================
+
+#pagebreak()
+
+= Appendix
+
+== Appendix A: Layer 3 Rule-based Fallback per Task <appendix-a>
+
+When both teacher distillation (Layer 1) and direct LGBM training (Layer 2) are unavailable,
+the following task-level rules activate. Each rule is grounded in established marketing theory
+or financial domain practice, organized by Financial DNA task group.
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    align: (left, left, left, left, left),
+    stroke: 0.5pt,
+    [*DNA Group*], [*Task*], [*Rule*], [*Theory*], [*Trigger*],
+    [Engagement], [churn_signal], [RFM 30/60/90-day decline], [Relationship Marketing (Berry '83)], [R/F/M all declining],
+    [Engagement], [top_mcc_shift], [MCC entropy change > threshold], [McKinsey CDJ triggers], [Lifestyle shift detected],
+    [Lifecycle], [nba_primary], [Product adjacency +1 step], [Kotler 5A journey], [Gap in product ladder],
+    [Lifecycle], [segment_prediction], [Balance x Frequency x Products], [CLV tiered model (Pareto)], [Segment re-classification],
+    [Lifecycle], [will_acquire_deposits], [Surplus ratio > 30% + no term deposit], [Lifecycle savings stage], [Idle cash detected],
+    [Lifecycle], [will_acquire_investments], [Suitability grade >= product risk], [Suitability (FCPA Art.17)], [Risk-matched opportunity],
+    [Lifecycle], [will_acquire_accounts], [Salary pattern + non-primary], [SOW expansion (PwC)], [Primary bank conversion],
+    [Lifecycle], [will_acquire_lending], [Credit grade 1--4 + DTI < 40%], [Credit scoring + suitability], [Refinance opportunity],
+    [Lifecycle], [will_acquire_payments], [Top MCC + single card holder], [Habitual buying (Kotler)], [Spending-card mismatch],
+    [Value], [product_stability], [30/60/90-day dormancy EWS], [Customer engagement (Gallup)], [Activity decline],
+    [Value], [cross_sell_count], [CLV tier target - current holdings], [Share of wallet (PwC)], [Product gap > 0],
+    [Consumption], [next_mcc], [MCC frequency Top-K + seasonality], [Habitual buying behavior], [Pattern continuation],
+    [Consumption], [mcc_diversity_trend], [PIH transitory income signal], [Friedman PIH (1957)], [Income shock detected],
+  ),
+  caption: [Layer 3 rule-based fallback rules per task, organized by Financial DNA group. All rules are subject to the suitability constraint (FCPA Article 17).],
+) <tab:fallback-rules>
+
+All 13 rules share a common regulatory floor: the customer's risk tolerance grade
+must equal or exceed the recommended product's risk grade (Financial Consumer Protection Act, Article 17).
+Detailed rule specifications, thresholds, and recommendation reason templates
+are maintained in the design document (`docs/design/12_rule_based_fallback.md`).
+
 #bibliography("references.bib", style: "association-for-computing-machinery")

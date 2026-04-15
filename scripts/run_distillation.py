@@ -339,9 +339,140 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # Step 3: Train LGBM students
+    # ================================================================
+    # Step 2.5: Teacher performance threshold — adaptive distillation
+    #
+    # Evaluate teacher soft labels against hard labels to determine
+    # per-task distillation viability. Tasks where the teacher
+    # performs near random are better served by direct hard-label
+    # LGBM training (no distillation) — this is a Model Risk
+    # Management safeguard.
+    #
+    # Threshold: teacher must exceed 2x random baseline.
+    #   binary:     AUC > 0.60
+    #   multiclass: F1_macro > 2/num_classes
+    #   regression: R^2 > 0.05
+    # ================================================================
+    from sklearn.metrics import roc_auc_score, f1_score, r2_score
+
+    soft_labels = trainer.get_soft_labels()
+    distill_tasks: list[str] = []
+    hardlabel_tasks: list[str] = []
+
+    logger.info("=" * 60)
+    logger.info("Teacher threshold check (2x random baseline)")
+    logger.info("=" * 60)
+
+    for t in pipeline_config.tasks:
+        task_name = t.name
+        task_type = t.type
+        teacher_soft = soft_labels.get(task_name)
+        hard = hard_labels.get(task_name)
+
+        if teacher_soft is None or hard is None:
+            logger.warning("  %s: no soft/hard labels — skipping", task_name)
+            continue
+
+        teacher_np = teacher_soft.numpy() if hasattr(teacher_soft, 'numpy') else np.array(teacher_soft)
+        hard_np = hard if isinstance(hard, np.ndarray) else np.array(hard)
+
+        viable = False
+        metric_str = ""
+
+        try:
+            if task_type == "binary":
+                preds = teacher_np.flatten()
+                labels = hard_np.flatten()
+                valid = (labels == 0) | (labels == 1)
+                if valid.sum() > 10 and len(set(labels[valid].tolist())) == 2:
+                    auc = roc_auc_score(labels[valid], preds[valid])
+                    viable = auc > 0.60
+                    metric_str = f"AUC={auc:.4f} (threshold=0.60)"
+
+            elif task_type == "multiclass":
+                n_classes = getattr(t, 'num_classes', None) or int(hard_np.max()) + 1
+                threshold = 2.0 / n_classes
+                if teacher_np.ndim > 1 and teacher_np.shape[-1] > 1:
+                    pred_classes = teacher_np.argmax(axis=-1)
+                else:
+                    pred_classes = teacher_np.flatten().astype(int)
+                true_classes = hard_np.flatten().astype(int)
+                valid = true_classes >= 0
+                if valid.sum() > 10:
+                    f1 = f1_score(true_classes[valid], pred_classes[valid],
+                                  average='macro', zero_division=0)
+                    viable = f1 > threshold
+                    metric_str = f"F1={f1:.4f} (threshold={threshold:.4f}, {n_classes}-class)"
+
+            elif task_type == "regression":
+                preds = teacher_np.flatten()
+                labels = hard_np.flatten()
+                if np.var(labels) > 1e-10:
+                    r2 = r2_score(labels, preds)
+                    viable = r2 > 0.05
+                    metric_str = f"R2={r2:.4f} (threshold=0.05)"
+
+        except Exception as e:
+            logger.debug("  %s: threshold check error: %s", task_name, e)
+
+        if viable:
+            distill_tasks.append(task_name)
+            logger.info("  [DISTILL] %s: %s", task_name, metric_str)
+        else:
+            hardlabel_tasks.append(task_name)
+            logger.info("  [DIRECT]  %s: %s — below threshold, using hard labels",
+                        task_name, metric_str)
+
+    logger.info("Distillation: %d tasks, Direct LGBM: %d tasks",
+                len(distill_tasks), len(hardlabel_tasks))
+    logger.info("=" * 60)
+
+    # Step 3: Train LGBM students — adaptive per task
     logger.info("Training LGBM student models...")
+
+    # 3a: Distilled tasks (soft + hard labels via StudentTrainer)
+    if distill_tasks:
+        logger.info("  [DISTILL] %d tasks: %s", len(distill_tasks), distill_tasks)
     students = trainer.train_students(features, hard_labels)
+
+    # 3b: Hard-label-only tasks — retrain with alpha=1.0 (pure hard label)
+    if hardlabel_tasks:
+        logger.info("  [DIRECT] %d tasks: %s — retraining with hard labels only",
+                    len(hardlabel_tasks), hardlabel_tasks)
+        import lightgbm as lgb
+
+        for task_name in hardlabel_tasks:
+            t_spec = next((t for t in pipeline_config.tasks if t.name == task_name), None)
+            if t_spec is None or task_name not in hard_labels:
+                continue
+
+            y = hard_labels[task_name]
+            lgbm_params = dict(student_config.lgbm_params)
+            task_overrides = student_config.task_lgbm_overrides.get(task_name, {})
+            lgbm_params.update(task_overrides)
+
+            if t_spec.type == "binary":
+                lgbm_params.setdefault("objective", "binary")
+                lgbm_params.setdefault("metric", "auc")
+            elif t_spec.type == "multiclass":
+                n_classes = getattr(t_spec, 'num_classes', None) or int(y.max()) + 1
+                lgbm_params["objective"] = "multiclass"
+                lgbm_params["num_class"] = n_classes
+                lgbm_params.setdefault("metric", "multi_logloss")
+            else:
+                lgbm_params.setdefault("objective", "regression")
+                lgbm_params.setdefault("metric", "mae")
+
+            lgbm_params.setdefault("verbosity", -1)
+            n_estimators = lgbm_params.pop("n_estimators", 300)
+
+            ds = lgb.Dataset(features, label=y)
+            model = lgb.train(
+                lgbm_params, ds,
+                num_boost_round=n_estimators,
+            )
+            students[task_name] = model
+            logger.info("    %s: direct LGBM trained (%d rounds)", task_name, n_estimators)
 
     # Step 4: Fidelity validation — teacher-student agreement check
     logger.info("Running fidelity validation (8 metrics per task)...")
@@ -520,8 +651,14 @@ def main() -> None:
     output_path.mkdir(parents=True, exist_ok=True)
 
     summary = {
-        "tasks_distilled": list(saved.keys()),
+        "tasks_distilled": distill_tasks,
+        "tasks_direct_hardlabel": hardlabel_tasks,
         "num_students": len(saved),
+        "adaptive_strategy": {
+            "distill_count": len(distill_tasks),
+            "direct_count": len(hardlabel_tasks),
+            "threshold_rule": "binary: AUC>0.60, multiclass: F1>2/K, regression: R2>0.05",
+        },
         "temperature": student_config.temperature,
         "alpha": student_config.alpha,
         "lgbm_params": student_config.lgbm_params,
