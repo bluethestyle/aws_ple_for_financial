@@ -436,8 +436,7 @@ Four principles guide the architecture:
 + *Robust Explainability*: Model structure itself generates explanations.
   Each expert's name carries business meaning (e.g., "Temporal" = time patterns, "HGCN" = product hierarchy),
   so CGC gate weights are directly interpretable without post-hoc methods.
-+ *Graceful Degradation*: Removing any single expert does not cause catastrophic performance loss.
-  The remaining experts redistribute gate weights to compensate.
++ *Expert Contribution Diagnostics*: The heterogeneous design enables per-expert contribution analysis --- identifying which inductive biases are beneficial vs.\ harmful in a given data regime. Homogeneous experts would show uniform, uninformative degradation.
 + *Flexible Extensibility*: New features, tasks, or experts are added via YAML configuration,
   not code changes. The system has been extended from 4 to 13 tasks without architectural modification.
 + *Unified Manageability*: The entire pipeline (feature engineering → training → distillation → serving → monitoring)
@@ -1209,9 +1208,9 @@ This finding underscores that _loss balancing correctness_ can dominate
 _architectural sophistication_ in heterogeneous MTL ---
 a practical lesson often overlooked in architecture-focused papers.
 
-== Graceful Degradation (RQ4)
+== Expert Contribution Analysis: Beneficial vs.\ Negative Transfer (RQ4)
 
-We assess robustness by examining how much performance changes when each expert is individually removed from the full model (baseline AUC = 0.6724, joint_full 10-epoch). Positive ΔAUC indicates the expert contributes negative transfer; negative ΔAUC indicates the expert is beneficial.
+We assess each expert's contribution by examining how performance changes when it is individually removed from the full model (baseline AUC = 0.6724, joint\_full 10-epoch). Positive ΔAUC indicates the expert contributes negative transfer; negative ΔAUC indicates the expert is beneficial.
 
 #figure(
   table(
@@ -1229,10 +1228,16 @@ We assess robustness by examining how much performance changes when each expert 
     [−LightGCN], [−0.0173], [beneficial],
     [−HGCN], [*−0.0478*], [structurally essential],
   ),
-  caption: [Graceful degradation: ΔAUC relative to full 7-expert model (AUC = 0.6724). Positive = expert causes negative transfer; negative = expert is beneficial. Bold = largest degradation.],
+  caption: [Expert contribution analysis: ΔAUC relative to full 7-expert model (AUC = 0.6724). Positive = expert causes negative transfer; negative = expert is beneficial. Bold = largest degradation.],
 ) <tab:degradation>
 
-Removing Temporal or TDA _improves_ aggregate AUC, indicating negative transfer from these experts in the synthetic setting. Conversely, removing HGCN (−0.048) or LightGCN (−0.017) causes significant degradation, establishing these graph-based experts as structurally essential. This asymmetric degradation pattern --- some experts dispensable, others critical --- validates the heterogeneous design: a homogeneous expert pool would show uniform degradation.
+Four of seven experts show negative transfer (removing them _improves_ aggregate AUC), while two graph-based experts (HGCN, LightGCN) are clearly beneficial. This asymmetric pattern requires careful interpretation along three dimensions.
+
+*Synthetic data limitation.* The negative transfer from Temporal and TDA is attributable to the synthetic benchmark's data characteristics. Synthetic transaction sequences lack genuine temporal patterns --- MCC codes are generated from persona-weighted distributions with stickiness, but without real behavioral dynamics such as seasonality, life-event triggers, or spending regime changes. When an expert's inductive bias (temporal dynamics, topological persistence) has no matching signal in the data, it injects noise into the shared representation. In production data where genuine behavioral sequences carry predictive signal, these experts' contributions are expected to change substantially.
+
+*Single-metric blind spot.* Aggregate AUC averages across 7 binary tasks and does not capture contributions to multiclass ranking (NDCG\@3) or regression (MAE). An expert may reduce binary AUC while improving multiclass or regression performance --- effects invisible in the aggregate. Per-task-type analysis is required before concluding an expert is dispensable.
+
+*Diagnostic value of asymmetry.* The most important observation is not _which_ experts are harmful, but that the heterogeneous design _enables this diagnosis_. A homogeneous MLP expert pool would show uniform, undifferentiated degradation --- every expert would degrade similarly because they share the same inductive bias. The heterogeneous basket produces an _actionable diagnostic_: "Temporal is harmful in synthetic data; HGCN is structurally essential" is a statement that directly informs architecture decisions. This diagnostic capability is itself a contribution of the heterogeneous expert design, independent of whether any individual expert improves aggregate AUC.
 
 == Explainability Analysis (RQ5)
 
@@ -1421,7 +1426,7 @@ ranking-relevant representations in the heterogeneous setting.
 Validation loss alone is an unreliable stopping criterion
 when task types are heterogeneous and regression loss dominates.
 We recommend selecting the best checkpoint using a composite metric
---- e.g., $alpha cdot "AUC" + beta cdot "NDCG@3" + gamma cdot (1 - "MAE")$ ---
+--- e.g., $alpha dot.c "AUC" + beta dot.c "NDCG" + gamma dot.c (1 - "MAE")$ ---
 rather than minimum val\_loss.
 In our setting, this corresponds to selecting epoch 10 over epoch 30,
 recovering +0.4pp AUC and +3.0pp NDCG\@3.
@@ -1443,7 +1448,7 @@ rather than parameter scale, and (4) knowledge distillation eliminating GPU serv
 In financial recommendation services, maintaining AUC above an operational threshold
 matters far more than pushing it higher.
 The heterogeneous expert design directly supports this _defensive_ posture:
-graceful degradation (ablation shows no single expert is a critical point of failure),
+expert contribution diagnostics (ablation reveals which inductive biases are beneficial vs.\ harmful per data regime),
 drift detection triggering automatic retraining,
 and the champion-challenger gate requiring manual approval before deployment.
 The architecture prioritizes _not getting worse_ over _getting better_ ---
