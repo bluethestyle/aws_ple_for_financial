@@ -48,6 +48,10 @@ _CACHE: Dict[str, Any] = {
     "models": {},           # task_name -> lgb.Booster (champion)
     "features": {},         # task_name -> {"indices": [...], "names": [...]}
     "tasks_meta": [],       # list of {"name": str, "type": str}
+    # 3-layer fallback components (loaded once at cold start)
+    "fallback_router": None,   # FallbackRouter instance | None
+    "rule_engine": None,       # RuleBasedRecommender instance | None
+    "calibrators": {},         # task_name -> calibrator object
 }
 
 # Variant model cache: variant_name -> {"version": str, "models": {task->Booster}, "features": {}}
@@ -136,6 +140,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     predictions: Dict[str, Any] = {}
     raw_feature_list = list(features.values())
 
+    import numpy as np
+
     for task_name in tasks_to_score:
         booster = models[task_name]
         sel = feat_meta.get(task_name, {})
@@ -156,7 +162,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         else:
             selected = raw_feature_list
 
-        import numpy as np
         X = np.array(selected, dtype=np.float32).reshape(1, -1)
         raw = booster.predict(X)  # shape: (1,) binary or (1, n_classes)
 
@@ -164,15 +169,79 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         task_type = _get_task_type(task_name, tasks_meta)
         predictions[task_name] = _normalise(raw[0], task_type)
 
+    # --- 3-layer fallback routing ---
+    # When fallback_router is None (not configured), all tasks use LGBM as-is
+    # (backward-compatible path).
+    layer_used_per_task: Dict[str, int] = {}
+    fallback_router = _CACHE.get("fallback_router")
+    rule_engine = _CACHE.get("rule_engine")
+    calibrators = _CACHE.get("calibrators") or {}
+
+    if fallback_router is not None:
+        routing = fallback_router.route_all(
+            task_names=tasks_to_score,
+            lgbm_models={t: models[t] for t in tasks_to_score},
+            rule_engine=rule_engine,
+        )
+        for task_name, layer in routing.items():
+            layer_used_per_task[task_name] = layer
+            if layer == 3 and rule_engine is not None:
+                try:
+                    rule_result = rule_engine.predict(
+                        features=features,
+                        task_name=task_name,
+                    )
+                    predictions[task_name] = rule_result["prediction"]
+                    logger.debug(
+                        "FallbackRouter: task=%s → Layer 3 (rule=%s)",
+                        task_name, rule_result.get("rule_name", ""),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Rule engine failed for task=%s, keeping LGBM output",
+                        task_name,
+                        exc_info=True,
+                    )
+
+    # --- Calibration ---
+    # Applied silently: caller sees the same response shape.
+    calibrated_tasks: List[str] = []
+    if calibrators:
+        for task_name, raw_val in list(predictions.items()):
+            cal = calibrators.get(task_name)
+            if cal is None:
+                continue
+            try:
+                task_type = _get_task_type(task_name, tasks_meta)
+                if task_type == "binary":
+                    x = np.array([[float(raw_val)]])
+                    prob = cal.predict_proba(x)[0, 1]
+                    predictions[task_name] = round(float(prob), 6)
+                elif task_type == "multiclass":
+                    x = np.array([raw_val])
+                    prob = cal.predict_proba(x)[0].tolist()
+                    predictions[task_name] = [round(float(p), 6) for p in prob]
+                calibrated_tasks.append(task_name)
+            except Exception:
+                logger.warning(
+                    "Calibration failed for task=%s, keeping raw value",
+                    task_name,
+                    exc_info=True,
+                )
+
     elapsed = round((time.perf_counter() - t0) * 1000.0, 2)
 
-    result = {
+    result: Dict[str, Any] = {
         "user_id": user_id,
         "version": version,
         "variant": variant_name,
         "predictions": predictions,
         "elapsed_ms": elapsed,
     }
+    if layer_used_per_task:
+        result["layer_used_per_task"] = layer_used_per_task
+    if calibrated_tasks:
+        result["calibrated_tasks"] = calibrated_tasks
 
     # --- Async performance logging (best-effort) ---
     try:
@@ -260,6 +329,11 @@ def _ensure_loaded(s3) -> None:
         _CACHE["models"] = models
         _CACHE["features"] = feat_meta
         _CACHE["tasks_meta"] = tasks_meta
+
+        # Load 3-layer fallback components (best-effort; failures are non-fatal)
+        _CACHE["fallback_router"] = _load_fallback_router(s3, bucket, active_version, tasks_meta)
+        _CACHE["rule_engine"] = _load_rule_engine(s3, bucket, active_version)
+        _CACHE["calibrators"] = _load_calibrators(s3, bucket, active_version, list(models.keys()))
 
         logger.info(
             "Loaded %d student models for version %s",
@@ -353,6 +427,133 @@ def _read_promoted_version(s3) -> str:
     obj = s3.get_object(Bucket=bucket, Key=key)
     data = json.loads(obj["Body"].read())
     return data["active_version"]
+
+
+# ---------------------------------------------------------------------------
+# 3-layer fallback component loaders
+# ---------------------------------------------------------------------------
+
+def _load_fallback_router(
+    s3, bucket: str, version: str, tasks_meta: List[Dict[str, str]]
+) -> Optional[Any]:
+    """Load FallbackRouter from pipeline config stored in S3.
+
+    Expects ``{version}/pipeline_config.json`` to exist alongside the model
+    artifacts.  Returns ``None`` if the config cannot be loaded or the
+    FallbackRouter import fails.
+    """
+    try:
+        config_key = f"models/artifacts/{version}/pipeline_config.json"
+        # Strip leading bucket path from REGISTRY_BASE prefix
+        _, base_prefix = _parse_s3_uri(REGISTRY_BASE.rstrip("/"))
+        config_key = f"{base_prefix.rstrip('/')}/{version}/pipeline_config.json"
+
+        obj = s3.get_object(Bucket=bucket, Key=config_key)
+        pipeline_cfg = json.loads(obj["Body"].read())
+
+        # Inject tasks_meta so the router can look up task types
+        pipeline_cfg.setdefault("tasks", tasks_meta)
+
+        from core.recommendation.fallback_router import FallbackRouter
+        router = FallbackRouter(pipeline_cfg)
+        logger.info("FallbackRouter loaded for version %s", version)
+        return router
+    except s3.exceptions.NoSuchKey:
+        logger.info(
+            "pipeline_config.json not found for version %s — "
+            "FallbackRouter disabled (LGBM-only mode)",
+            version,
+        )
+        return None
+    except Exception:
+        logger.warning(
+            "Failed to load FallbackRouter for version %s",
+            version,
+            exc_info=True,
+        )
+        return None
+
+
+def _load_rule_engine(s3, bucket: str, version: str) -> Optional[Any]:
+    """Load RuleBasedRecommender using the pipeline config from S3.
+
+    Returns ``None`` if the config is absent or import fails.
+    """
+    try:
+        _, base_prefix = _parse_s3_uri(REGISTRY_BASE.rstrip("/"))
+        config_key = f"{base_prefix.rstrip('/')}/{version}/pipeline_config.json"
+
+        obj = s3.get_object(Bucket=bucket, Key=config_key)
+        pipeline_cfg = json.loads(obj["Body"].read())
+
+        from core.recommendation.rule_engine import RuleBasedRecommender
+        engine = RuleBasedRecommender(pipeline_cfg)
+        logger.info("RuleBasedRecommender loaded for version %s", version)
+        return engine
+    except s3.exceptions.NoSuchKey:
+        logger.info(
+            "pipeline_config.json not found for version %s — "
+            "RuleBasedRecommender disabled",
+            version,
+        )
+        return None
+    except Exception:
+        logger.warning(
+            "Failed to load RuleBasedRecommender for version %s",
+            version,
+            exc_info=True,
+        )
+        return None
+
+
+def _load_calibrators(
+    s3, bucket: str, version: str, task_names: List[str]
+) -> Dict[str, Any]:
+    """Download and deserialise ``calibrator.joblib`` for each task.
+
+    Expects the layout::
+
+        {REGISTRY_BASE}/{version}/students/{task_name}/calibrator.joblib
+
+    Tasks without a calibrator file are silently skipped.
+    """
+    try:
+        import joblib
+    except ImportError:
+        logger.warning("joblib not installed — calibration disabled")
+        return {}
+
+    _, base_prefix = _parse_s3_uri(REGISTRY_BASE.rstrip("/"))
+    students_prefix = f"{base_prefix.rstrip('/')}/{version}/students"
+
+    calibrators: Dict[str, Any] = {}
+    for task_name in task_names:
+        cal_key = f"{students_prefix}/{task_name}/calibrator.joblib"
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".joblib", delete=False) as f:
+                tmp_path = f.name
+            s3.download_file(bucket, cal_key, tmp_path)
+            calibrators[task_name] = joblib.load(tmp_path)
+            logger.info("Calibrator loaded for task=%s", task_name)
+        except s3.exceptions.NoSuchKey:
+            pass  # No calibrator for this task — normal
+        except Exception:
+            logger.warning(
+                "Failed to load calibrator for task=%s",
+                task_name,
+                exc_info=True,
+            )
+        finally:
+            try:
+                import os as _os
+                _os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    logger.info(
+        "Calibrators loaded: %d/%d tasks", len(calibrators), len(task_names)
+    )
+    return calibrators
 
 
 # ---------------------------------------------------------------------------

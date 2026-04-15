@@ -50,12 +50,18 @@ class TaskPrediction:
         task_type: One of ``binary``, ``multiclass``, ``regression``.
         raw_value: Raw model output (logit or raw score).
         normalised_value: After sigmoid / softmax / identity.
+        layer_used: Which fallback layer produced the prediction
+            (1=distilled LGBM, 2=direct LGBM, 3=rule-based).
+            ``None`` when no FallbackRouter is configured.
+        calibrated: Whether Platt / isotonic calibration was applied.
     """
 
     task_name: str
     task_type: str
     raw_value: Any
     normalised_value: Any
+    layer_used: Optional[int] = None
+    calibrated: bool = False
 
 
 @dataclass
@@ -210,6 +216,9 @@ class RecommendationService:
         cold_start_handler: Optional[Any] = None,
         variant_models: Optional[Dict[str, Any]] = None,
         consent_manager: Optional[Any] = None,
+        fallback_router: Optional[Any] = None,
+        rule_engine: Optional[Any] = None,
+        calibrators: Optional[Dict[str, Any]] = None,
     ) -> None:
         from .feature_store import AbstractFeatureStore
 
@@ -222,6 +231,14 @@ class RecommendationService:
         self._pipeline_config = pipeline_config or {}
         self._cold_start_handler = cold_start_handler
         self._consent_manager = consent_manager
+
+        # --- 3-layer fallback components (all optional) ---
+        # When fallback_router is None the service behaves exactly as before
+        # (pure LGBM inference, no routing, no calibration).
+        self._fallback_router = fallback_router
+        self._rule_engine = rule_engine
+        # {task_name: calibrator} — sklearn-compatible objects with .predict_proba()
+        self._calibrators: Dict[str, Any] = calibrators or {}
 
         # Variant-specific models for A/B testing.
         # Key: variant name (e.g. "control", "challenger").
@@ -240,7 +257,8 @@ class RecommendationService:
         logger.info(
             "RecommendationService initialised: tasks=%s, "
             "kill_switch=%s, ab_test=%s (%d variant models), "
-            "pipeline=%s, cold_start=%s, consent_manager=%s",
+            "pipeline=%s, cold_start=%s, consent_manager=%s, "
+            "fallback_router=%s, rule_engine=%s, calibrators=%d",
             [t["name"] for t in tasks_meta],
             kill_switch is not None,
             ab_manager is not None,
@@ -248,6 +266,9 @@ class RecommendationService:
             pipeline is not None,
             cold_start_handler is not None,
             consent_manager is not None,
+            fallback_router is not None,
+            rule_engine is not None,
+            len(self._calibrators),
         )
 
     def register_variant_model(
@@ -381,10 +402,88 @@ class RecommendationService:
 
         # ---- 6. Output normalisation ----
         normalised: Dict[str, Any] = {}
+        layer_used_map: Dict[str, Optional[int]] = {}
+
         for task_name, raw in raw_predictions.items():
             task_type = self._task_type_map.get(task_name, "regression")
             raw_val = raw[0] if isinstance(raw, np.ndarray) and raw.ndim >= 1 else raw
             normalised[task_name] = OutputNormalizer.normalise(raw_val, task_type)
+            layer_used_map[task_name] = None  # unknown until router decides
+
+        # ---- 6b. 3-layer fallback routing ----
+        # When no FallbackRouter is configured, all tasks stay on LGBM
+        # (backward-compatible path).
+        if self._fallback_router is not None:
+            routing = self._fallback_router.route_all(
+                task_names=list(raw_predictions.keys()),
+                lgbm_models={t: active_model for t in raw_predictions},
+                rule_engine=self._rule_engine,
+            )
+
+            for task_name, layer in routing.items():
+                layer_used_map[task_name] = layer
+                if layer == 3 and self._rule_engine is not None:
+                    # Replace LGBM output with rule-based prediction
+                    try:
+                        rule_result = self._rule_engine.predict(
+                            features=enriched_features,
+                            task_name=task_name,
+                        )
+                        normalised[task_name] = rule_result["prediction"]
+                        # Carry rule metadata into the per-task entry
+                        metadata.setdefault("rule_reasons", {})[task_name] = (
+                            rule_result.get("reason", "")
+                        )
+                        logger.debug(
+                            "FallbackRouter: task=%s → Layer 3 (rule), "
+                            "rule=%s, confidence=%.3f",
+                            task_name,
+                            rule_result.get("rule_name", ""),
+                            rule_result.get("confidence", 0.0),
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Rule engine failed for task=%s, keeping LGBM output",
+                            task_name,
+                            exc_info=True,
+                        )
+
+            # Summarise layer distribution for observability
+            from collections import Counter
+            layer_counts = Counter(routing.values())
+            metadata["fallback_layers"] = dict(layer_counts)
+            metadata["layer_used_per_task"] = layer_used_map
+
+        # ---- 6c. Calibration ----
+        # Apply per-task Platt / isotonic calibrator when available.
+        # Calibration is applied silently — caller sees the same response shape.
+        calibrated_tasks: List[str] = []
+        if self._calibrators:
+            for task_name, cal_value in list(normalised.items()):
+                calibrator = self._calibrators.get(task_name)
+                if calibrator is None:
+                    continue
+                try:
+                    task_type = self._task_type_map.get(task_name, "regression")
+                    if task_type == "binary":
+                        x = np.array([[float(cal_value)]])
+                        prob = calibrator.predict_proba(x)[0, 1]
+                        normalised[task_name] = round(float(prob), 6)
+                    elif task_type == "multiclass":
+                        x = np.array([cal_value])
+                        prob = calibrator.predict_proba(x)[0].tolist()
+                        normalised[task_name] = [round(float(p), 6) for p in prob]
+                    # regression calibration not applied (no standard form)
+                    calibrated_tasks.append(task_name)
+                    logger.debug("Calibrated task=%s", task_name)
+                except Exception:
+                    logger.warning(
+                        "Calibration failed for task=%s, keeping raw value",
+                        task_name,
+                        exc_info=True,
+                    )
+            if calibrated_tasks:
+                metadata["calibrated_tasks"] = calibrated_tasks
 
         # For cold-start, overlay strategy-based defaults for tasks where
         # LGBM output with a zero-filled vector is unreliable.
@@ -533,6 +632,68 @@ class RecommendationService:
         )
 
     # ------------------------------------------------------------------
+    # Calibration
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _load_calibrators(model_dir: str) -> Dict[str, Any]:
+        """Load ``calibrator.joblib`` files from per-task subdirectories.
+
+        Expects the layout::
+
+            {model_dir}/
+              {task_name}/
+                calibrator.joblib
+
+        Tasks without a ``calibrator.joblib`` are silently skipped.
+
+        Args:
+            model_dir: Local directory containing per-task subdirectories.
+
+        Returns:
+            ``{task_name: calibrator_object}`` — only tasks that have a
+            calibrator file are included.
+        """
+        import os
+        try:
+            import joblib
+        except ImportError:
+            logger.warning(
+                "_load_calibrators: joblib not installed, skipping calibration"
+            )
+            return {}
+
+        calibrators: Dict[str, Any] = {}
+        if not os.path.isdir(model_dir):
+            logger.warning(
+                "_load_calibrators: model_dir not found: %s", model_dir
+            )
+            return calibrators
+
+        for task_name in os.listdir(model_dir):
+            task_dir = os.path.join(model_dir, task_name)
+            cal_path = os.path.join(task_dir, "calibrator.joblib")
+            if not os.path.isfile(cal_path):
+                continue
+            try:
+                calibrators[task_name] = joblib.load(cal_path)
+                logger.info(
+                    "_load_calibrators: loaded calibrator for task=%s", task_name
+                )
+            except Exception:
+                logger.warning(
+                    "_load_calibrators: failed to load calibrator for task=%s",
+                    task_name,
+                    exc_info=True,
+                )
+
+        logger.info(
+            "_load_calibrators: loaded %d calibrators from %s",
+            len(calibrators), model_dir,
+        )
+        return calibrators
+
+    # ------------------------------------------------------------------
     # Health
     # ------------------------------------------------------------------
 
@@ -547,6 +708,9 @@ class RecommendationService:
             "kill_switch_enabled": self._kill_switch is not None,
             "ab_test_enabled": self._ab_manager is not None,
             "pipeline_enabled": self._pipeline is not None,
+            "fallback_router_enabled": self._fallback_router is not None,
+            "rule_engine_enabled": self._rule_engine is not None,
+            "calibrators_loaded": list(self._calibrators.keys()),
         }
 
     # ------------------------------------------------------------------
