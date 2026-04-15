@@ -1251,26 +1251,61 @@ $ H_t = - sum_k w_(t,k) log w_(t,k) $
 where $w_(t,k)$ is the gate weight for expert $k$ on task $t$.
 Maximum entropy $log K$ (K=7 experts, $log 7 approx 1.95$) indicates
 uniform expert utilization; entropy near zero indicates routing collapse.
+We report normalized entropy ratio $H_t / log K in [0, 1]$
+to facilitate comparison across different numbers of experts.
 
-We compare gate entropy between softmax and sigmoid CGC gates
-across all 13 tasks, reporting mean entropy, minimum entropy (worst-case task),
-and expert utilization rate (fraction of experts with $w > 0.05$).
+=== CGC Layer Gate Specialization
 
-// TODO: Compare ple_softmax vs ple_sigmoid checkpoints
+Measured on the PLE-softmax checkpoint,
+CGC layer gate weights show meaningful task-level specialization
+with entropy ratios ranging from 0.33 to 0.88 across the 13 tasks and 2 CGC layers.
+This confirms that routing collapse has not occurred:
+all tasks engage multiple experts, while distinct tasks show distinct routing patterns.
+
 #figure(
   table(
     columns: (auto, auto, auto, auto),
     inset: 4pt,
-    align: (left, right, right, right),
+    align: (left, right, right, left),
     stroke: 0.5pt,
     table.header(
-      [*Gate Type*], [*Mean $H_t$*], [*Min $H_t$*], [*Utilization ($w>0.05$)*],
+      [*Task*], [*Layer 1 $H/log K$*], [*Layer 2 $H/log K$*], [*Interpretation*],
     ),
-    [Softmax CGC], [--], [--], [--],
-    [Sigmoid CGC], [--], [--], [--],
+    [top_mcc_shift],      [0.347], [0.542], [Single expert dominance],
+    [product_stability],  [0.428], [0.705], [Concentrated routing],
+    [segment_prediction], [0.612], [0.332], [Layer 2 concentrates],
+    [nba_primary],        [0.877], [0.724], [Diverse expert usage],
+    [will_acquire_payments], [0.882], [0.688], [Diverse expert usage],
+    [CGC Attention (all tasks)], [1.000], [1.000], [Uniform (undifferentiated)],
   ),
-  caption: [Gate entropy comparison. Higher entropy and utilization indicate healthier expert routing without collapse.],
+  caption: [Per-task CGC gate entropy ratios ($H_t \/ log K$, higher = more uniform).
+    Low-entropy tasks concentrate on 1--2 experts;
+    high-entropy tasks draw broadly across the expert basket.
+    CGC attention weights remain perfectly uniform across all tasks,
+    indicating that expert selection operates at the extraction layer,
+    not at the attention aggregation layer.],
 ) <tab:gate-entropy>
+
+The divergence between extraction-layer and attention-layer routing
+is structurally informative.
+_Low-entropy tasks_ (top_mcc_shift: 0.347, product_stability: 0.428,
+segment_prediction layer 2: 0.332) concentrate predominantly on 1--2 experts,
+suggesting that these tasks are solved by a narrow analytical lens
+(e.g., temporal trend or graph structure alone).
+_High-entropy tasks_ (will_acquire_payments: 0.882, nba_primary: 0.877)
+draw broadly from the expert basket, consistent with the nature of
+next-best-action and payment acquisition tasks
+that integrate multiple behavioral signals simultaneously.
+
+Notably, CGC _attention_ weights remain perfectly uniform
+(entropy ratio = 1.000 across all tasks and both layers),
+indicating that the attention aggregation mechanism has not differentiated ---
+functionally equivalent to simple averaging of expert outputs.
+This suggests the model relies on the extraction-layer gates
+to perform meaningful routing,
+while the attention mechanism acts as a residual blending layer.
+Future work may benefit from regularizing or removing the
+attention aggregation to reduce parameter redundancy.
 
 // ============================================================
 = Discussion
@@ -1344,6 +1379,52 @@ a single model replaces 13 individual models with no performance penalty,
 enabling unified training, serving, and monitoring.
 PLE softmax provides incremental gains (NDCG\@3 +0.013)
 at no additional serving cost.
+
+== Training Dynamics: Loss--Metric Decoupling and Epoch Selection
+
+A 30-epoch training run (cosine LR with $T_0 = 10$, warm restarts)
+reveals a systematic decoupling between validation loss
+and discriminative metrics that has practical implications
+for best-model selection in heterogeneous MTL.
+
+*Observation: metrics peak at epoch 10, not epoch 30.*
+Validation loss decreases monotonically across all 30 epochs
+(32.11 $arrow$ 22.68, $-$29.4\%),
+suggesting continued learning by a standard stopping criterion.
+However, discriminative metrics peak at epoch 10 and subsequently degrade:
+AUC peaks at epoch 10 (0.6726) and falls to 0.6687 at epoch 30 ($-$0.4pp),
+while NDCG\@3 peaks at epoch 10 (0.6976) and drops to 0.6673 at epoch 30 ($-$3.0pp).
+
+*Mechanism: regression task dominance of the loss function.*
+The aggregate validation loss is dominated by the three regression tasks,
+which produce large MAE values relative to binary cross-entropy magnitudes.
+Continued training genuinely improves regression MAE
+(0.9596 $arrow$ 0.9580 at epoch 30),
+but at the cost of overfitting to synthetic benchmark noise
+in the classification and ranking tasks.
+The benchmark's formula-based feature--label relationships
+are fully learned by epoch 10;
+subsequent epochs overfit to residual noise
+that has no counterpart in the discriminative metrics.
+
+*Cosine LR restarts amplify the effect.*
+The cosine schedule with $T_0 = 10$ causes sharp metric oscillations
+at cycle boundaries (epochs 11, 20, 29):
+NDCG\@3 drops abruptly at each restart as the learning rate
+spikes and disrupts the representation alignment
+that the gate weights have accumulated.
+This suggests that cosine warm restarts, while beneficial
+for escaping loss plateaus, may periodically damage
+ranking-relevant representations in the heterogeneous setting.
+
+*Implication: composite metric for best-model selection.*
+Validation loss alone is an unreliable stopping criterion
+when task types are heterogeneous and regression loss dominates.
+We recommend selecting the best checkpoint using a composite metric
+--- e.g., $alpha cdot "AUC" + beta cdot "NDCG@3" + gamma cdot (1 - "MAE")$ ---
+rather than minimum val\_loss.
+In our setting, this corresponds to selecting epoch 10 over epoch 30,
+recovering +0.4pp AUC and +3.0pp NDCG\@3.
 
 == Practical Implications
 

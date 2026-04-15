@@ -370,6 +370,27 @@ The three-layer design ensures that service never halts due to model failure ---
 a key operational requirement in financial production systems
 and a core principle of SR 11-7 model risk management @fed2011sr117.
 
+=== Lambda Serving Integration
+
+All three layers are integrated into a unified Lambda serving path:
+
+```
+Customer request → Lambda Handler
+  → RecommendationService.predict()
+    → FallbackRouter.route_all()
+    ├── Layer 1/2: LGBM predict → Platt calibration → response
+    └── Layer 3: RuleBasedRecommender.predict() → response
+    → contributing_features → InterpretationRegistry reverse mapping
+    → 3-agent reason pipeline (FactExtractor → TemplateEngine → SelfChecker)
+  → Response with prediction + reason + audit trail
+```
+
+Key integration properties:
+- `FallbackRouter` auto-routes each task to its appropriate layer based on availability and metric thresholds; the caller is unaware of which layer served the prediction.
+- Calibrated probabilities (Platt scaling) are applied on Layer 1/2 outputs for probability-critical tasks (`churn_signal`, `product_stability`, `cross_sell_count`) where raw LGBM probabilities are systematically biased.
+- For Layer 3, `contributing_features` from rule firings are injected directly into the reason pipeline, bypassing IG computation. This enables interpretable reasons even when no model is available.
+- All three layers produce an identical response schema --- prediction, probability, contributing features, reason text, audit token --- ensuring the API contract is transparent to callers regardless of which layer served the request.
+
 == IG-based Feature Selection
 
 Integrated Gradients @sundararajan2017 computes per-feature attribution from the teacher model.
@@ -550,7 +571,7 @@ The reverse-mapping layer is integrated as Level RM, so glossary value-substitut
 
 === Agent 1: Feature Selector
 
-Selects features for explanation based on:
+Implemented as `FactExtractor`, this agent selects features for explanation based on:
 - IG attribution scores (model-driven relevance)
 - Business reverse-mapping richness (explanation-driven relevance)
 - Customer context (personalization: different features matter for different customer profiles)
@@ -558,11 +579,12 @@ The Feature Selector uses the Financial DNA axis from the companion paper's two-
 to select features from the relevant customer dimension
 (e.g., lifecycle features for a retention recommendation, spending-pattern features for a benefit recommendation),
 ensuring explanations address the dimension most pertinent to the recommended action.
+For Layer 3 (rule-based) predictions, `contributing_features` from rule firings are passed directly to this agent, bypassing IG computation. This enables the same agent interface regardless of which serving layer produced the prediction.
 
 === Agent 2: Reason Generator
 
-Receives selected features with their business reverse-mappings and generates
-a natural-language recommendation reason.
+Implemented as `InterpretationRegistry` + `TemplateEngine`, this agent receives selected features with their business reverse-mappings and generates a natural-language recommendation reason.
+The `InterpretationRegistry` reverse-maps each feature name to Korean business descriptions via the 5-level cascade (IG direction → L3 → L2 → L1 → reverse-mapping layer); the `TemplateEngine` then assembles these into a coherent recommendation reason.
 The Reason Generator structures its narrative around Financial DNA groups ---
 opening with the customer's current state (lifecycle), grounding the recommendation
 in observed behavior (engagement/consumption), and framing the value proposition
@@ -594,7 +616,7 @@ Grounding constraints:
 
 === Agent 3: Safety Gate
 
-Validates the generated reason against:
+Implemented as `SelfChecker`, this agent validates the generated reason against:
 
 #figure(placement: top, scope: "parent",
   table(
@@ -625,6 +647,20 @@ Customer-facing recommendation reasons require natural, professional Korean text
   [*Cloud (AWS)*: L2a rewriting uses Solar Pro 22B (Upstage, Bedrock Marketplace) --- top performance on Korean benchmarks (KMMLU). L2b self-critique also uses Solar (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku.],
 )
 Bedrock ensures that input/output data is never transmitted to model providers (Anthropic, Upstage) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet, ensuring that financial customer data never leaves the AWS Region (ap-northeast-2) --- structurally satisfying the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
+
+The backend is config-driven, allowing the deployment environment to be switched without code changes:
+
+```yaml
+llm_provider:
+  backend: bedrock  # or openai / gemini / solar / local / dummy
+```
+
+The three serving layers of reason generation map to Bedrock invocation as follows:
+- *L1 (synchronous)*: Template-based, ~1ms latency, always available. No Bedrock call; the TemplateEngine generates deterministic Korean from InterpretationRegistry reverse-mappings. This is the guaranteed fallback for all customers.
+- *L2a (async)*: Bedrock Claude Haiku rewrites the L1 template into richer, more natural Korean. Submitted via SQS; result cached in DynamoDB. Processing priority is determined by context richness (data availability), not customer tier, satisfying the equal-explanation obligation (금소법 §19).
+- *L2b (async)*: Bedrock validates L2a output for PII leakage, hallucination, and regulatory compliance before promotion. Human review is applied to a 5% sampling for quality assurance.
+
+The Bedrock infrastructure is shared between reason generation and operational agents (Section 5); time-slot separation resolves quota contention.
 
 === Fact Compression Layer (Mem0 Adoption)
 
@@ -1236,6 +1272,11 @@ satisfying both SR 11-7 expectations and EU AI Act Art. 9 risk management requir
   ),
   caption: [Serving latency breakdown (Lambda serverless, no GPU).],
 ) <tab:serving>
+
+The entire teacher training and distillation cycle runs on SageMaker Spot instances,
+with GPU (ml.g4dn.xlarge) for teacher training and CPU (ml.m5.2xlarge) for LGBM distillation.
+Spot pricing reduces compute cost by approximately 70% versus on-demand;
+interruption risk is managed by automatic checkpointing and job resume.
 
 == Regulatory Compliance Audit
 
