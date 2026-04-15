@@ -1,0 +1,55 @@
+{
+  "ops_report": {
+    "generated_at": "2026-04-15T04:33:57.904846+00:00",
+    "period": "daily",
+    "status": "YELLOW",
+    "attention_required": [
+      {
+        "checkpoint": "CP2",
+        "severity": "WARNING",
+        "finding": "Phase 0: zero_variance"
+      }
+    ],
+    "all_checkpoints": {
+      "CP2": {
+        "status": "YELLOW",
+        "completed_stages": [
+          "adapter",
+          "feature_engineering",
+          "normalization",
+          "tensor_save"
+        ],
+        "zero_variance_cols": 66,
+        "nan_ratio_max": 0
+      },
+      "CP3": {
+        "status": "GREEN",
+        "final_loss": null,
+        "best_val_auc": null,
+        "epochs_completed": 10
+      },
+      "CP4": {
+        "status": "GREEN",
+        "task_fidelity": {
+          "churn_signal": false,
+          "product_stability": true,
+          "nba_primary": false,
+          "cross_sell_count": false,
+          "will_acquire_deposits": false,
+          "will_acquire_investments": false,
+          "will_acquire_accounts": false,
+          "will_acquire_lending": false,
+          "will_acquire_payments": false,
+          "segment_prediction": false,
+          "next_mcc": false,
+          "mcc_diversity_trend": true,
+          "top_mcc_shift": true
+        },
+        "max_gap": 0.036385487407136874,
+        "tasks_above_threshold": []
+      }
+    },
+    "diagnoses": [],
+    "metadata": {}
+  }
+}
