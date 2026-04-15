@@ -61,9 +61,11 @@
   in this heterogeneous setting due to 156 task-pair affinity estimation instability,
   while the single largest improvement comes from correcting a subtle uncertainty-weighting
   implementation gap where per-task loss weights were silently ignored.
-  *Third*, we propose _GradSurgery_, a task-type gradient projection method
+  *Third*, we experiment with _GradSurgery_, a task-type gradient projection method
   that replaces loss-level transfer with gradient-level conflict resolution,
   reducing the 156 task-pair problem to 3 task-type-group projections.
+  However, GradSurgery shows no meaningful advantage over the PLE-only baseline
+  while requiring significantly more VRAM (due to \texttt{retain\_graph}), and is not adopted for production.
   Ablation results: PLE with softmax gating achieves the best NDCG\@3 (0.714)
   among gate variants, softmax outperforms sigmoid in the heterogeneous setting
   (reversing findings from homogeneous-task literature),
@@ -151,7 +153,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Gate Type Analysis for Heterogeneous MTL*: We demonstrate that softmax gating outperforms sigmoid in 13-task heterogeneous settings (7 binary + 3 multiclass + 3 regression), reversing the conventional preference from homogeneous-task literature @tang2020 @sigmoid_moe2024. The reversal is attributed to softmax's protective isolation of minority-type tasks from majority-type gradient corruption.
 
-+ *Loss-Level vs.~Gradient-Level Transfer*: We show that adaTT (loss-level transfer) degrades performance at 13-task scale due to 156 task-pair affinity estimation instability, and propose GradSurgery (gradient-level projection between 3 task-type groups) as a safer alternative that avoids degradation.
++ *Loss-Level vs.~Gradient-Level Transfer*: We show that adaTT (loss-level transfer) degrades performance at 13-task scale due to 156 task-pair affinity estimation instability, and experiment with GradSurgery (gradient-level projection between 3 task-type groups) as an alternative that avoids adaTT's degradation but shows no additional gain and incurs VRAM overhead from `retain_graph`; GradSurgery is not adopted for production.
 
 + *Uncertainty Weighting Correction*: We identify and fix a subtle implementation gap where per-task `loss_weight` was silently ignored under uncertainty weighting --- yielding the single largest performance improvement ($+$0.018 NDCG\@3, $+$0.031 F1-macro), larger than any architectural change.
 
@@ -870,7 +872,7 @@ their losses reinforce each other, regardless of the expert that produced the pr
 
 _Note_: While theoretically motivated, our ablation (Section 5.3) shows that adaTT
 *degrades* performance at the 13-task scale due to 156-pair affinity estimation instability.
-GradSurgery (Section 5.3) is proposed as a gradient-level alternative.
+GradSurgery (Section 5.3) was tested as a gradient-level alternative but not adopted due to lack of improvement and VRAM overhead.
 
 == Logit Transfer
 
@@ -1368,7 +1370,7 @@ exceeds the method's estimation capacity.
 
 *GradSurgery: gradient-level projection as an alternative.*
 To address the loss-level transfer limitation,
-we propose task-type gradient surgery (GradSurgery),
+we tested task-type gradient surgery (GradSurgery),
 which replaces loss-level transfer with gradient-level conflict resolution.
 Instead of estimating 156 pair-wise affinities,
 GradSurgery aggregates task gradients into 3 type-groups
@@ -1382,9 +1384,11 @@ while best NDCG\@3 (0.6918) is lower than softmax-alone (0.7144).
 Critically, GradSurgery does _not_ degrade performance ---
 unlike adaTT, which drops AUC by $-$0.019.
 However, the `retain_graph` overhead constrains batch size on 12GB GPUs,
-and the NDCG gap suggests that gradient-level projection
+the NDCG gap suggests that gradient-level projection
 may not fully capture the ranking signal that PLE's representation-level
-gate routing provides.
+gate routing provides, and GradSurgery shows no meaningful advantage
+over PLE softmax alone.
+GradSurgery was therefore not adopted for production.
 The most robust configuration remains PLE softmax without transfer mechanisms.
 
 *Operational motivation validated.*
@@ -1621,14 +1625,15 @@ that architectural sophistication is the primary lever for MTL improvement,
 and highlights that implementation correctness of loss weighting
 deserves the same scrutiny as architecture design.
 
-*Third*, we propose GradSurgery,
+*Third*, we tested GradSurgery,
 a task-type gradient projection method that addresses inter-task interference
 at the gradient level rather than the loss level,
 reducing the $O(k^2)$ task-pair estimation problem to $O(1)$ type-group projections.
 GradSurgery avoids the degradation caused by loss-level transfer
 (F1-macro 0.203 vs.~adaTT's 0.199; MAE 0.959 vs.~0.971),
 but does not surpass PLE softmax alone on the primary ranking metric
-(NDCG\@3 0.692 vs.~0.714).
+(NDCG\@3 0.692 vs.~0.714) and incurs significant VRAM overhead from `retain_graph`.
+GradSurgery is therefore not adopted for production.
 The most effective configuration is therefore PLE softmax _without_ transfer mechanisms ---
 structural expert isolation through gating proves more robust
 than numerical gradient manipulation.
