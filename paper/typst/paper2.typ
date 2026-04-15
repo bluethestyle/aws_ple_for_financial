@@ -704,6 +704,17 @@ Caching uses a dual backend (in-memory + DynamoDB) with composite key `customer_
 
 // TODO: Cache hit rate analysis
 
+=== Serving Security
+
+Financial customer data requires PII protection both inbound (raw feature inputs) and outbound (generated recommendation text).
+Two modules enforce this at the serving boundary:
+
+- *`PIIEncryptor` (inbound)*: scans feature input vectors for PII patterns (resident registration numbers, card numbers, account numbers) before inference. Detected PII fields are hashed in-place using HMAC-SHA256 with a per-customer salt, so model inference operates on anonymized values. Controlled via `SECURITY_FEATURE_SCAN=true` environment variable.
+
+- *`PromptSanitizer` (outbound)*: scrubs PII from generated recommendation reason text before it is returned to the customer interface. Additionally, `PromptSanitizer` classifies prompt sensitivity into three tiers --- HIGH (contains financial identifiers or account-level data), MEDIUM (contains behavioral patterns), LOW (generic recommendation context) --- and routes accordingly: HIGH prompts are sent exclusively to Amazon Bedrock (data stays within the AWS region), MEDIUM to Gemini, LOW to any available provider. Controlled via `SECURITY_PII_SCRUB=true` environment variable.
+
+This two-layer boundary ensures that neither raw PII nor LLM-generated outputs that contain PII can escape the serving perimeter, satisfying the data minimization principle of GDPR and Korean PIPA.
+
 // ============================================================
 = Operational Agent Pipeline
 <ops-agents>
@@ -760,6 +771,9 @@ The OpsAgent runs after training completion and drift monitoring DAG executions.
 ) <fig:opsagent-example>
 
 *Triggers*: drift monitoring DAG completion, training job completion.
+Stage completion events are emitted by `ChangeDetector` at the end of every pipeline stage (training, eval, distillation, serving, reason generation), providing the event stream from which OpsAgent selects its input window.
+A `{"action": "heartbeat"}` endpoint on the Lambda handler returns system health status without running inference, allowing the OpsAgent to confirm serving availability before submitting a health report.
+Model version changes are tracked at Lambda cold start: when the champion model version changes, an event is emitted so the OpsAgent can flag the transition in its next report.
 
 The OpsAgent does not make promotion decisions ---
 it surfaces the information a human needs to make one.
@@ -799,6 +813,8 @@ opt-out statistics, governance checklist status.
 The AuditAgent converts quantitative fairness metrics into regulatory language,
 explicitly referencing the applicable regulation (FSS guideline number, EU AI Act article)
 so that the human reviewer can act without cross-referencing documentation.
+`AuditLogger` records training and distillation completion events as immutable audit entries,
+ensuring that the AuditAgent's input is a tamper-evident, time-ordered record of pipeline activity.
 
 == Design Principles
 
@@ -993,6 +1009,22 @@ enabling operators to discuss the impact assessment interactively.
   caption: [EU AI Act article-level compliance mapping.],
 ) <tab:euai-mapping>
 
+=== Compliance Pipeline Implementation
+
+The GDPR/금소법 compliance obligations listed above are enforced through a pipeline of four modules connected to the Lambda handler and `RecommendationService`:
+
+- *`ConsentManager`*: verifies that the customer has granted AI recommendation consent before any prediction is executed. Absence of consent short-circuits the pipeline and returns a compliant blocked response without logging feature data.
+
+- *`AIDecisionOptOut`*: implements GDPR Article 22 and Korean Personal Information Protection Act (PIPA) right to refuse AI profiling. When a customer's opt-out flag is set, the handler returns a blocked response immediately, before any model inference occurs.
+
+- *`RegulatoryComplianceChecker`*: runs 금소법 §17 suitability assessment before the recommendation is generated. Product risk level is compared against the customer's registered risk tolerance; unsuitable recommendations are blocked with an audit record rather than silently filtered.
+
+- *`ProfilingRightsManager`*: handles data access and deletion requests under GDPR Articles 15 and 17, providing a single entry point for data-subject rights requests that propagates to the feature store and audit tables.
+
+- *`ComplianceAuditStore`*: logs every prediction with the executing task list, serving layers activated, elapsed time, and compliance check outcomes. The log is appended in real time and is the source of truth for audit trail integrity checks performed by the AuditAgent.
+
+All checks operate with graceful degradation: if the compliance service is temporarily unavailable, a warning is logged and the recommendation proceeds, ensuring that a transient infrastructure failure does not create a customer-facing outage.
+
 == Korean AI Basic Act (passed 2024.12, effective 2026.1)
 
 Korea's AI Basic Act (passed by the National Assembly December 2024, promulgated January 2025, effective January 2026) @koreaaiact2024 introduces a domestic
@@ -1083,6 +1115,18 @@ The system implements this at multiple levels:
 - *Model replacement approval*: Champion-Challenger results require human sign-off.
 - *Incident escalation*: Automated anomaly detection triggers human investigation.
 - *Fairness review*: Periodic human audit of fairness metrics.
+
+=== Monitoring Implementation
+
+The monitoring layer is composed of three purpose-built modules that feed the governance pipeline:
+
+- *`DriftDetector`*: computes Population Stability Index (PSI) per feature between successive distillation runs. Feature-level PSI complements the existing prediction-level drift signal, enabling early detection of input distribution shifts before they degrade model performance.
+
+- *`FairnessMonitor`*: evaluates demographic bias across protected attributes (age group, gender, income tier) in batch serving predictions. Outputs disparate impact (DI), statistical parity difference (SPD), and equalized odds difference (EOD) per task, providing the per-segment audit trail required by EU AI Act Art. 10(2)(f).
+
+- *`GovernanceReportGenerator`*: produces a per-distillation-cycle governance report consolidating drift status, fairness findings, audit trail integrity, and checklist compliance. Reports are saved to S3 with HMAC signatures, forming the documentation corpus for regulatory submission.
+
+`AuditLogger` records the start and completion of training and distillation events as structured log entries, creating the time-ordered provenance chain that links every deployed model version to its training run and input data snapshot.
 
 == Pipeline Auditability for High-Risk AI
 <pipeline-audit>

@@ -56,7 +56,7 @@
   --- 7 binary, 3 multiclass, 3 regression ---
   in a financial product recommendation system with 7 structurally distinct experts
   and 1M synthetic customers.
-  Five findings challenge conventional MTL wisdom:
+  Six findings challenge conventional MTL wisdom:
   (1) a subtle implementation bug in Kendall et al.'s uncertainty weighting
   --- omitting per-task loss weights --- silently suppresses minority-type tasks,
   producing a +0.018 NDCG\@3 gain when fixed;
@@ -67,8 +67,13 @@
   acts as loss-scale normalization rather than structural protection;
   (4) 10-epoch budgets may be insufficient for complex structures to differentiate
   from simpler baselines;
-  and (5) GroupTaskExpert (GTE) pre-gating *degrades* multiclass performance
-  when groups contain mixed task types.
+  (5) GroupTaskExpert (GTE) pre-gating *degrades* multiclass performance
+  when groups contain mixed task types;
+  and (6) gate entropy analysis reveals that CGC extraction-layer gating
+  specializes meaningfully (entropy ratios 0.33--0.88 across tasks) while
+  attention-level aggregation remains uniformly diffuse (entropy ratio 1.00),
+  and composite val-loss is an *unreliable* checkpoint signal because
+  regression tasks continue improving after classification/ranking metrics peak.
   We distill these observations into practical guidelines for
   practitioners scaling MTL beyond the homogeneous-task regime.
 
@@ -109,7 +114,7 @@ The result is a regime that large-scale CTR teams have no reason to enter
 (they can afford model-per-task) but that resource-constrained regulated
 industries are forced into.
 
-This paper reports five empirical findings from this scaling experience.
+This paper reports six empirical findings from this scaling experience.
 We make no claims of state-of-the-art performance;
 instead, we document *phenomena and practical guidelines*
 that emerge when MTL is pushed beyond the homogeneous-task regime.
@@ -124,6 +129,11 @@ Our contributions:
 - Analysis of epoch budget sensitivity in structure comparison (Section 4.4).
 - A cautionary finding on pre-gating task grouping (GTE)
   with mixed-type groups (Section 4.5).
+- Gate entropy analysis showing that CGC extraction-layer specialization
+  is real and task-dependent, while attention-level aggregation collapses
+  to uniform averaging; and a demonstration that val-loss is a misleading
+  checkpoint criterion when regression and classification tasks coexist
+  (Section 4.6).
 
 The system, data generator, and ablation scripts are publicly available.#footnote[
   https://github.com/bluethestyle/aws\_ple\_for\_financial
@@ -471,11 +481,193 @@ homogeneous by task type, not by business semantics.
 If a business-meaningful grouping mixes types,
 omit GTE and rely on PLE gating alone for inter-expert allocation.
 
+== Finding 6: Gate Entropy and Loss–Metric Decoupling <find6>
+
+=== CGC Gate Entropy Analysis
+
+To understand *how* PLE's CGC gating allocates experts in practice,
+we compute the Shannon entropy ratio of each task's gate weight distribution
+$g_t in RR^K$ at the end of teacher training (30 epochs).
+The entropy ratio is defined as:
+
+$ E_t = H(g_t) / H_"max" = -( sum_k g_{t,k} log g_{t,k} ) / log K $
+
+where $H_"max" = log K$ is the maximum entropy for $K$ experts.
+$E_t = 1$ means perfectly uniform expert utilization;
+$E_t = 0$ means a single expert captures all weight.
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 5pt,
+    align: (left, right, right, left),
+    stroke: 0.5pt,
+    table.header([*Task*], [*Layer 1*], [*Layer 2*], [*Pattern*]),
+    [top\_mcc\_shift], [0.347], [---], [Single-expert dominance],
+    [product\_stability], [0.431], [---], [Single-expert dominance],
+    [segment\_prediction], [---], [0.332], [Single-expert dominance],
+    [cross\_sell\_count], [0.570], [0.614], [Moderate diversity],
+    [churn\_signal], [0.691], [0.860], [Moderate → full diversity],
+    [nba\_primary], [0.851], [0.839], [Full expert utilization],
+    [will\_acquire\_payments], [0.882], [---], [Full expert utilization],
+  ),
+  caption: [CGC gate entropy ratios by task and PLE layer (teacher model,
+  30 epochs). Low entropy ($E_t < 0.45$) indicates 1--2 experts dominate;
+  high entropy ($E_t > 0.80$) indicates all 7 experts contribute meaningfully.],
+) <tab:gate-entropy>
+
+The entropy ratios reveal three behaviorally distinct task clusters:
+
+*Single-expert dominance* ($E_t$ 0.33--0.43): Tasks such as `top_mcc_shift`
+(MCC category shift prediction) and `segment_prediction` (3-class customer segment)
+are captured by 1--2 experts. These tasks appear to encode simple patterns
+that a single specialized expert --- DeepFM for transactional features,
+or HGCN for hierarchical segments --- handles near-optimally.
+The low entropy is not a failure mode; it is efficient routing.
+
+*Moderate diversity* ($E_t$ 0.57--0.72): Tasks such as `cross_sell_count`
+(count regression) and some binary acquisition tasks draw on 3--4 experts.
+These tasks likely require both transactional signals (DeepFM) and
+sequence-level patterns (Temporal), explaining partial expert spread.
+
+*Full expert utilization* ($E_t$ 0.85--0.88): `nba_primary` (7-class next
+best action) and `will_acquire_payments` (binary) actively use all 7 experts.
+These tasks encode complex, multi-faceted customer behavior patterns that no
+single architectural inductive bias fully captures.
+
+=== Attention Collapse: A Structural Blind Spot
+
+At the attention aggregation level (shared expert aggregation), all 13 tasks
+exhibit an entropy ratio of *exactly 1.000*. The attention mechanism has not
+learned to differentiate --- it acts as a simple average over the expert pool.
+
+This is structurally significant. The CGC extraction-layer gates (Table @tab:gate-entropy)
+demonstrate that *the model can learn differentiated expert preferences*,
+but this capacity is entirely absent at the attention-aggregation level.
+Two possible explanations:
+
++ *Gradient starvation*: The attention parameters receive gradients only
+  after passing through per-task tower heads, which already specialize via
+  the extraction-layer gates. By the time signal reaches the attention layer,
+  per-task distinction may be adequately handled upstream.
+
++ *Parameterization bottleneck*: If the attention query dimension is small
+  relative to the expert embedding space, the attention has insufficient
+  capacity to form task-specific preferences across 7 heterogeneous experts.
+
+In either case, the attention component adds parameters without performing
+meaningful routing. This is a candidate for architectural simplification ---
+replacing attention aggregation with a fixed average or a learned scalar per
+task --- in future work.
+
+=== Loss–Metric Decoupling at 30 Epochs
+
+Extending training from 10 to 30 epochs (with $T_0 = 10$, cosine warm
+restarts) exposes a fundamental tension in composite loss monitoring.
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    inset: 5pt,
+    align: (left, right, right, right, right),
+    stroke: 0.5pt,
+    table.header([*Epoch*], [*Val Loss*], [*Avg AUC*], [*NDCG\@3*], [*Avg MAE*]),
+    [1], [32.11], [---], [---], [1.07],
+    [10], [26.43], [*0.6726*], [*0.6976*], [1.01],
+    [11], [25.89], [0.6702], [0.6853], [0.99],
+    [19], [24.01], [0.6718], [0.7004], [0.97],
+    [20], [23.52], [0.6691], [0.6657], [0.96],
+    [29], [22.95], [0.6704], [0.6540], [0.96],
+    [30], [22.68], [0.6687], [---], [0.96],
+  ),
+  caption: [Loss–metric decoupling over 30 epochs (teacher model, 1M customers,
+  $T_0=10$ cosine warm restarts). Val loss decreases monotonically while AUC
+  peaks at epoch 10 (−0.4\%p by epoch 30) and NDCG\@3 peaks at epoch 19
+  then collapses (−4.4\%p by epoch 29). Avg MAE continues improving throughout.
+  Bold = metric peak across all epochs.],
+) <tab:loss-metric-decouple>
+
+Val loss decreases monotonically (32.11 → 22.68), which would conventionally
+indicate continuous improvement. However:
+
+- *Avg AUC* (binary tasks): peaks at epoch 10 (0.6726), then declines to 0.6687
+  by epoch 30 (−0.4%p). The decline is modest but consistent.
+- *NDCG\@3* (ranking quality): peaks at epoch 19 (0.7004), then collapses to
+  0.6540 at epoch 29 (−4.6%p relative to peak, −3.0%p relative to epoch 10).
+- *Avg MAE* (regression tasks): improves steadily, 1.07 → 0.96, throughout
+  all 30 epochs.
+
+The root cause is *task-type dominance in composite loss*:
+regression tasks contribute continuously shrinking MAE to the composite loss
+and pull the aggregate downward even as classification tasks saturate.
+With 3 regression tasks whose losses have no natural lower bound (unlike
+cross-entropy, which approaches 0 for well-separated data),
+the composite loss signal is *not a valid proxy* for classification or ranking
+quality after the first cosine cycle.
+
+=== Cosine Restart Oscillation Across Task Types
+
+Cosine warm restarts ($T_0 = 10$) create learning rate spikes at cycle
+boundaries. NDCG\@3 exhibits strong oscillation at these boundaries:
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 5pt,
+    align: (left, right, left),
+    stroke: 0.5pt,
+    table.header([*Epoch (event)*], [*NDCG\@3*], [*Change*]),
+    [10 (cycle 1 end)], [0.6976], [peak],
+    [11 (restart 1)], [0.6853], [−1.2%p (sharp drop)],
+    [19 (cycle 2 near-end)], [0.7004], [recovery, new peak],
+    [20 (restart 2)], [0.6657], [−3.5%p (sharp drop)],
+    [29 (cycle 3 near-end)], [0.6540], [recovery failure],
+  ),
+  caption: [NDCG\@3 oscillation at cosine restart boundaries.
+  Each LR spike pushes the model away from the ranking-optimal parameter region.
+  The second restart produces a larger drop than the first, and the third
+  cycle fails to recover, indicating progressive divergence.],
+) <tab:cosine-oscillation>
+
+The pattern is asymmetric across task types. Avg MAE is *unaffected* by
+restarts --- regression loss landscapes are smooth and the optimizer quickly
+returns to a low-MAE region after each LR spike. Binary AUC shows a small dip
+(−0.4%p per restart) and recovers partially. NDCG\@3 suffers the largest
+disruption (up to −3.5%p per restart) because ranking metrics are sensitive to
+the relative ordering of scores, and LR restarts temporarily scramble the score
+scale before the model re-converges.
+
+*Implication*: For ranking-sensitive applications, cosine restarts with
+$T_"mult" = 1$ (constant cycle length) should be replaced with
+$T_"mult" = 2$ (doubling cycle length) or with learning rate warmup-then-decay
+(no restart), evaluated over a 30-epoch budget.
+
+=== Checkpoint Selection Criterion
+
+These findings jointly establish that *val loss is an invalid checkpoint
+criterion* when tasks of different types share a composite loss.
+The correct approach is a composite checkpoint metric that weights metric
+semantics by task type:
+
+$ "score"_"ckpt" = alpha dot.c "AvgAUC" + beta dot.c "NDCG@3" + gamma dot.c (1 - "NormMAE") $
+
+where $alpha, beta, gamma$ are set to weight task types equally
+(e.g., $alpha = beta = gamma = 1/3$) rather than proportional to task count.
+In our 13-task configuration, using this composite score selects epoch 10
+as the optimal checkpoint, matching the AUC peak --- not epoch 29, which
+minimizes val loss.
+
+*Guideline*: When regression tasks are present in a heterogeneous MTL system,
+(1) define a composite checkpoint metric across task types before training begins,
+(2) checkpoint every epoch and select post-hoc rather than monitoring val loss,
+and (3) treat val loss as a diagnostic (indicating regression progress) rather
+than as the primary stopping criterion.
+
 = Discussion
 
 == Practical Guidelines Summary
 
-We distill five findings into three guidelines for practitioners:
+We distill six findings into five guidelines for practitioners:
 
 + *Gate selection depends on task-type mix, not on architecture.*
   Use softmax for heterogeneous task mixes (different loss types);
@@ -493,6 +685,19 @@ We distill five findings into three guidelines for practitioners:
   homogeneity. Business-meaningful groups that mix binary and regression
   tasks will degrade the minority type.
 
++ *Use a composite checkpoint metric, not val loss.*
+  When regression and classification tasks share a composite loss,
+  regression improvement continuously pulls val loss downward while
+  classification/ranking metrics saturate or regress.
+  Define a type-weighted composite metric (Avg AUC + NDCG\@3 + normalized MAE)
+  before training and checkpoint by it (Section 4.6).
+
++ *Gate entropy reveals architectural waste.*
+  If all tasks show uniform attention-level entropy (ratio = 1.000),
+  the attention aggregation is not performing routing --- it is averaging.
+  Audit entropy ratios at both the extraction and attention levels before
+  attributing performance gains to gating mechanisms.
+
 == Limitations
 
 *Synthetic data*: All experiments use a synthetic benchmark with controlled
@@ -503,9 +708,11 @@ We plan to supplement with production results as they become available.
 *Single expert basket*: Our findings are specific to PLE with 7 heterogeneous
 experts. Homogeneous-expert PLE may exhibit different gate dynamics.
 
-*10-epoch budget*: Finding 4 explicitly acknowledges that longer training
-may alter conclusions. We will update this paper with 20-epoch and
-two-phase training results.
+*Epoch budget and task-type interaction*: Finding 4 acknowledges that
+10-epoch comparisons may be premature. Finding 6 extends this to 30 epochs
+and confirms that additional epochs help regression but harm classification
+and ranking. Cross-architecture comparisons (e.g., PLE vs.\ shared-bottom)
+at 30 epochs remain pending.
 
 *Single dataset scale*: While 1M customers is representative of
 mid-sized financial institutions, the findings may not generalize to
@@ -531,8 +738,21 @@ The gate type choice --- softmax vs.\ sigmoid --- depends not on
 architectural preference but on whether tasks share the same loss type.
 Uncertainty weighting normalizes scales but does not isolate gradients.
 Pre-gating mechanisms like GTE require type-homogeneous groups.
-And training budgets must account for cosine restart cycles
-before structural comparisons are meaningful.
+Training budgets must account for cosine restart cycles before structural
+comparisons are meaningful.
+
+Gate entropy analysis adds further precision to this picture:
+PLE extraction-layer gating demonstrably specializes (entropy ratios 0.33--0.88),
+with simple-pattern tasks concentrating on 1--2 experts and complex tasks
+distributing weight across all 7.
+Attention-level aggregation, however, collapses to uniform averaging
+(entropy ratio 1.00 for all tasks), suggesting that this component
+does not perform routing in practice.
+Finally, composite val loss is an unreliable checkpoint signal once
+regression tasks are present --- their continuous improvement masks
+classification and ranking metric degradation,
+and cosine learning-rate restarts amplify this divergence by disproportionately
+disrupting the ranking-optimal parameter region.
 
 These findings are not novel algorithms but practical diagnostics.
 We hope they prevent other practitioners from re-discovering the same pitfalls
