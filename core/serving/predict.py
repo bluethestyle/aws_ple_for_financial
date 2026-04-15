@@ -747,6 +747,76 @@ class RecommendationService:
         logger.info(
             "predict_batch: processed %d users", len(results),
         )
+
+        # ---- Fairness monitoring (non-blocking, batch-level) ----
+        # Requires each response's metadata to carry protected-attribute fields
+        # (e.g. "age_group", "gender") so FairnessMonitor can compute DI/SPD/EOD.
+        # If the metadata fields are absent the monitor is a no-op.
+        if self._fairness_monitor is not None and results:
+            try:
+                # Build recommendation list expected by FairnessMonitor:
+                # [{attribute_key: value, "recommended": bool, ...}, ...]
+                _fairness_recs: List[Dict[str, Any]] = []
+                for _res in results:
+                    _rec_entry: Dict[str, Any] = {
+                        "recommended": len(_res.recommendations) > 0,
+                    }
+                    # Carry protected attributes from context if present
+                    _ctx = context or {}
+                    for _attr in self._fairness_monitor.protected_attributes:
+                        if _attr in _ctx:
+                            _rec_entry[_attr] = _ctx[_attr]
+                        elif _attr in _res.metadata:
+                            _rec_entry[_attr] = _res.metadata[_attr]
+                    _fairness_recs.append(_rec_entry)
+
+                # Only run if at least one protected attribute column is populated
+                _populated_attrs = [
+                    attr for attr in self._fairness_monitor.protected_attributes
+                    if any(attr in r for r in _fairness_recs)
+                ]
+                if _populated_attrs:
+                    # Evaluate fairness for each populated attribute using
+                    # automatic group-pair detection (distinct values in batch).
+                    _group_pairs_by_attr: Dict[str, List] = {}
+                    for _attr in _populated_attrs:
+                        _vals = list({r[_attr] for r in _fairness_recs if _attr in r})
+                        if len(_vals) >= 2:
+                            _group_pairs_by_attr[_attr] = [
+                                (_vals[0], _vals[i]) for i in range(1, len(_vals))
+                            ]
+                    if _group_pairs_by_attr:
+                        _fairness_results = self._fairness_monitor.evaluate_all_attributes(
+                            recommendations=_fairness_recs,
+                            group_pairs_by_attribute=_group_pairs_by_attr,
+                        )
+                        _violations = sum(
+                            len(m.violations)
+                            for m in _fairness_results.values()
+                        )
+                        if _violations:
+                            logger.warning(
+                                "FairnessMonitor: %d violation(s) detected "
+                                "across %d attribute(s) in batch of %d",
+                                _violations, len(_fairness_results), len(results),
+                            )
+                        else:
+                            logger.info(
+                                "FairnessMonitor: all checks passed "
+                                "(batch=%d, attributes=%s)",
+                                len(results), list(_fairness_results.keys()),
+                            )
+                else:
+                    logger.debug(
+                        "FairnessMonitor: no protected-attribute data in batch "
+                        "(pass attributes via context or response metadata)"
+                    )
+            except Exception:
+                logger.debug(
+                    "FairnessMonitor batch check failed (non-fatal)",
+                    exc_info=True,
+                )
+
         return results
 
     # ------------------------------------------------------------------
@@ -774,23 +844,72 @@ class RecommendationService:
                 "ig_top_features": context.get("ig_top_features", []),
             }
 
+            # ---- Security: sanitize reason_prompt before LLM call ----
+            # If the pipeline will call an LLM for reason generation,
+            # classify and scrub the prompt to enforce VPC boundary rules.
+            # HIGH/MEDIUM prompts are routed to Bedrock; LOW can use external.
+            if self._prompt_sanitizer is not None:
+                reason_prompt = context.get("reason_prompt", "")
+                if reason_prompt:
+                    try:
+                        import hashlib as _hl
+                        final_prompt, provider, san_result = (
+                            self._prompt_sanitizer.sanitize_and_route(reason_prompt)
+                        )
+                        context = {
+                            **context,
+                            "reason_prompt": final_prompt,
+                            "llm_provider": provider,
+                        }
+                        if san_result.scrubbed:
+                            logger.info(
+                                "PromptSanitizer: scrubbed %d item(s) from "
+                                "reason_prompt (sensitivity=%s, provider=%s, "
+                                "user_hash=%s)",
+                                san_result.scrub_count,
+                                san_result.sensitivity,
+                                provider,
+                                _hl.sha256(user_id.encode()).hexdigest()[:8],
+                            )
+                    except Exception:
+                        logger.warning(
+                            "PromptSanitizer failed for reason_prompt (non-fatal)",
+                            exc_info=True,
+                        )
+
             result = self._pipeline.recommend(
                 customer_id=user_id,
                 candidate_items=[candidate],
                 customer_context=context,
             )
 
-            return [
-                {
+            # ---- Security: scrub PII from returned reason strings ----
+            # Reason strings may contain interpolated customer values;
+            # scrub before they leave the service boundary.
+            items_out = []
+            for item in result.items:
+                reasons = item.reasons
+                if self._prompt_sanitizer is not None and reasons:
+                    scrubbed_reasons = []
+                    for r in reasons:
+                        if isinstance(r, str):
+                            try:
+                                r_scrubbed, _ = self._prompt_sanitizer.scrub(r)
+                                scrubbed_reasons.append(r_scrubbed)
+                            except Exception:
+                                scrubbed_reasons.append(r)
+                        else:
+                            scrubbed_reasons.append(r)
+                    reasons = scrubbed_reasons
+                items_out.append({
                     "item_id": item.item_id,
                     "rank": item.rank,
                     "score": item.score,
                     "score_components": item.score_components,
-                    "reasons": item.reasons,
+                    "reasons": reasons,
                     "metadata": item.metadata,
-                }
-                for item in result.items
-            ]
+                })
+            return items_out
         except Exception:
             logger.exception(
                 "RecommendationService: pipeline failed for user_id=%s",

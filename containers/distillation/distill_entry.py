@@ -1306,6 +1306,24 @@ def run_distillation(
         except Exception as _gov_exc:
             logger.warning("Governance report generation failed (non-fatal): %s", _gov_exc, exc_info=True)
 
+    # ---- Agent: distillation stage completion event (optional, non-blocking) ----
+    # Emits a ChangeDetector event so OpsAgent CP4 can correlate distillation runs.
+    try:
+        from core.agent.change_detector import ChangeDetector as _ChangeDetector
+        _cd = _ChangeDetector()
+        _cd.on_pipeline_stage_complete(
+            stage="stage_distill",
+            artifacts={
+                "summary_path": str(summary_path),
+                "model_output_dir": str(model_out_dir),
+                "output_dir": str(out_dir),
+                "tasks_distilled": list(students.keys()) if "students" in dir() else [],
+            },
+        )
+        logger.info("ChangeDetector: stage_distill event emitted")
+    except Exception as _e:
+        logger.debug("ChangeDetector stage_distill event failed (non-fatal): %s", _e)
+
     return str(summary_path)
 
 

@@ -102,6 +102,34 @@ _CACHE: Dict[str, Any] = {
 # Variant model cache: variant_name -> {"version": str, "models": {task->Booster}, "features": {}}
 _VARIANT_CACHE: Dict[str, Dict[str, Any]] = {}
 
+# ---------------------------------------------------------------------------
+# Agent infrastructure — lazy singleton (optional, non-blocking)
+# Activated when AGENT_ENABLED=true is set in the Lambda environment.
+# ChangeDetector emits model-version events; HeartbeatScheduler tracks
+# agent health across warm invocations.
+# ---------------------------------------------------------------------------
+
+AGENT_ENABLED = os.environ.get("AGENT_ENABLED", "false").lower() == "true"
+
+_CHANGE_DETECTOR: Optional[Any] = None   # core.agent.change_detector.ChangeDetector
+
+
+def _get_change_detector() -> Optional[Any]:
+    """Lazy-initialise the ChangeDetector singleton (once per execution environment)."""
+    global _CHANGE_DETECTOR
+    if not AGENT_ENABLED:
+        return None
+    if _CHANGE_DETECTOR is None:
+        try:
+            from core.agent.change_detector import ChangeDetector
+            _CHANGE_DETECTOR = ChangeDetector()
+            logger.info("ChangeDetector initialised (agent infrastructure)")
+        except Exception as e:
+            logger.warning("ChangeDetector unavailable: %s", e)
+            _CHANGE_DETECTOR = False  # sentinel: skip future attempts
+    return _CHANGE_DETECTOR if _CHANGE_DETECTOR is not False else None
+
+
 # A/B test configuration (from env or event)
 AB_ENABLED = os.environ.get("AB_ENABLED", "false").lower() == "true"
 AB_CHALLENGER_VERSION = os.environ.get("AB_CHALLENGER_VERSION", "")
@@ -126,6 +154,18 @@ REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Lambda entry point for LGBM multi-task inference."""
     t0 = time.perf_counter()
+
+    # ---- Heartbeat / health check (agent infrastructure) ----
+    # Invoked with {"action": "heartbeat"} by the OpsAgent HeartbeatScheduler.
+    # Returns current cache state without running inference.
+    if event.get("action") == "heartbeat":
+        return {
+            "status": "ok",
+            "version": _CACHE.get("version"),
+            "models_loaded": list(_CACHE.get("models", {}).keys()),
+            "agent_enabled": AGENT_ENABLED,
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+        }
 
     user_id: str = event.get("user_id", "")
     features: Dict[str, float] = event.get("features", {})
@@ -435,6 +475,26 @@ def _ensure_loaded(s3) -> None:
             "Loaded %d student models for version %s",
             len(models), active_version,
         )
+
+        # ---- Agent: model version change event (non-blocking) ----
+        # Fires on every cold start or version promotion so ChangeDetector
+        # can emit a "model" event to the OpsAgent / AuditAgent pipeline.
+        _cd = _get_change_detector()
+        if _cd is not None:
+            try:
+                _cd.on_pipeline_stage_complete(
+                    stage="stage_serving",
+                    artifacts={
+                        "version": active_version,
+                        "tasks_loaded": list(models.keys()),
+                        "fallback_router": _CACHE.get("fallback_router") is not None,
+                        "rule_engine": _CACHE.get("rule_engine") is not None,
+                        "calibrators": list(_CACHE.get("calibrators", {}).keys()),
+                        "source": "lambda_cold_start",
+                    },
+                )
+            except Exception:
+                logger.debug("ChangeDetector cold-start event failed (non-fatal)", exc_info=True)
 
     finally:
         import shutil

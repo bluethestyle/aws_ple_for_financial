@@ -114,16 +114,10 @@ def _get_service():
         ab_manager = ABTestManager(variants=config.ab_variants)
 
     # ---- Pipeline (optional) ----
+    # NOTE: compliance_audit_store is not yet constructed at this point;
+    # it is wired into the pipeline after the compliance block below.
     pipeline = None
-    if config.pipeline_config.get("enabled", False):
-        try:
-            from core.recommendation.pipeline import RecommendationPipeline
-            pipeline = RecommendationPipeline(config.pipeline_config)
-        except Exception:
-            logger.warning(
-                "RecommendationPipeline init failed, proceeding without it",
-                exc_info=True,
-            )
+    _pipeline_config = config.pipeline_config
 
     # ---- Compliance module (config-driven, all components non-blocking) ----
     compliance_cfg = config_dict.get("compliance", {})
@@ -137,7 +131,7 @@ def _get_service():
 
     if compliance_enabled:
         use_dynamo = compliance_cfg.get("use_dynamo", True)
-        region = compliance_cfg.get("region", os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"))
+        region = compliance_cfg.get("region") or os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION", "")
         audit_prefix = compliance_cfg.get("audit_table_prefix", "ple-audit")
 
         try:
@@ -207,6 +201,20 @@ def _get_service():
             regulatory_checker = None
             compliance_audit_store = None
 
+    # ---- Pipeline (optional) — built after compliance store is ready ----
+    if _pipeline_config.get("enabled", False):
+        try:
+            from core.recommendation.pipeline import RecommendationPipeline
+            pipeline = RecommendationPipeline(
+                _pipeline_config,
+                audit_store=compliance_audit_store,
+            )
+        except Exception:
+            logger.warning(
+                "RecommendationPipeline init failed, proceeding without it",
+                exc_info=True,
+            )
+
     _service = RecommendationService(
         model=model,
         feature_store=feature_store,
@@ -214,7 +222,7 @@ def _get_service():
         kill_switch=kill_switch,
         ab_manager=ab_manager,
         pipeline=pipeline,
-        pipeline_config=config.pipeline_config,
+        pipeline_config=_pipeline_config,
         consent_manager=consent_manager,
         regulatory_checker=regulatory_checker,
         ai_opt_out=ai_opt_out,
@@ -242,6 +250,19 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     Returns:
         Dict with ``statusCode`` and ``body``.
+
+    Special request types handled before inference:
+
+    * ``rights_request``: Submits a data-subject rights request
+      (개보법 + GDPR) to the ProfilingRightsManager.  Payload::
+
+          {"rights_request": true,
+           "user_id": "U001",
+           "right_type": "access" | "rectify" | "delete" | "restrict" | "port",
+           "details": {...}}
+
+    All compliance middleware is non-blocking: if the compliance service
+    is unavailable the request falls through to normal inference.
     """
     try:
         service = _get_service()
@@ -250,6 +271,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         body = event
         if "body" in event and isinstance(event["body"], str):
             body = json.loads(event["body"])
+
+        # ---- Profiling rights middleware (개보법 + GDPR) ----
+        # Route data-subject rights requests before any inference.
+        # Non-blocking: if profiling_rights_manager is None or raises,
+        # we return a clear error rather than falling through to inference.
+        if body.get("rights_request", False):
+            return _handle_rights_request(body)
 
         # Batch mode
         if body.get("batch", False):
@@ -270,6 +298,49 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     except Exception as exc:
         logger.exception("Lambda handler error")
         return _error(500, str(exc))
+
+
+def _handle_rights_request(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Route a data-subject rights request to ProfilingRightsManager.
+
+    Non-blocking: if the compliance module is unavailable, returns a
+    503 rather than silently dropping the request.
+    """
+    user_id = body.get("user_id")
+    right_type = body.get("right_type")
+    details = body.get("details", {})
+
+    if not user_id:
+        return _error(400, "Missing required field: user_id for rights_request")
+    if not right_type:
+        return _error(400, "Missing required field: right_type for rights_request")
+
+    try:
+        from core.compliance import ProfilingRightsManager
+        # Use in-memory fallback if DynamoDB is unavailable (non-blocking)
+        mgr = ProfilingRightsManager(use_dynamo=True)
+        request_id = mgr.submit_request(
+            customer_id=user_id,
+            right_type=right_type,
+            details=details,
+        )
+        logger.info(
+            "Rights request submitted: user_id=%s, right_type=%s, request_id=%s",
+            user_id, right_type, request_id,
+        )
+        return _success({
+            "request_id": request_id,
+            "user_id": user_id,
+            "right_type": right_type,
+            "status": "pending",
+        })
+    except Exception as exc:
+        logger.warning(
+            "ProfilingRightsManager unavailable for user_id=%s: %s",
+            user_id, exc,
+            exc_info=True,
+        )
+        return _error(503, f"Rights request service temporarily unavailable: {exc}")
 
 
 # ---------------------------------------------------------------------------

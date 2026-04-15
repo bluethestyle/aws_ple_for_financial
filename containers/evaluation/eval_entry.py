@@ -442,6 +442,26 @@ def run_eval(
     # --- Save ---
     evaluator.save(metrics, str(out_path))
     logger.info("eval_metrics.json written to %s", out_path)
+
+    # ---- Agent: evaluation stage completion event (optional, non-blocking) ----
+    # Emits a ChangeDetector event so OpsAgent CP3 can track eval results.
+    try:
+        from core.agent.change_detector import ChangeDetector as _ChangeDetector
+        _cd = _ChangeDetector()
+        _cd.on_pipeline_stage_complete(
+            stage="stage_train",   # eval is part of training pipeline (P3)
+            artifacts={
+                "eval_metrics_path": str(out_path),
+                "checkpoint_path": checkpoint_path,
+                "val_samples": n_val,
+                "data_dir": str(channel_path),
+                "agg_auc": metrics.get("auc"),
+            },
+        )
+        logger.info("ChangeDetector: eval stage event emitted")
+    except Exception as _e:
+        logger.debug("ChangeDetector eval event failed (non-fatal): %s", _e)
+
     return str(out_path)
 
 

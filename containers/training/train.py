@@ -1877,11 +1877,62 @@ def main() -> None:
         start_time, epochs, ple_config,
     )
 
+    # ---- 8. Audit log — training completed (optional, non-blocking) ----
+    _audit_cfg = config.get("monitoring", {}).get("audit", {})
+    if _audit_cfg.get("enabled", False):
+        try:
+            from core.monitoring.audit_logger import AuditLogger
+
+            _audit_logger = AuditLogger(
+                s3_bucket=_audit_cfg.get("s3_bucket", ""),
+                s3_prefix=_audit_cfg.get("s3_prefix", "audit_logs"),
+            )
+            _agg_auc = final_metrics.get("auc", 0.0)
+            _audit_logger.log_operation(
+                operation="training:completed",
+                user="system",
+                status="SUCCESS",
+                metadata={
+                    "task_name": task_name,
+                    "phase": phase,
+                    "epochs_trained": getattr(trainer, "current_epoch", epochs),
+                    "num_tasks": len(tasks),
+                    "input_dim": ple_config.input_dim,
+                    "total_params": sum(p.numel() for p in model.parameters()),
+                    "agg_auc": round(_agg_auc, 4),
+                    "total_time_seconds": round(time.time() - start_time, 1),
+                    "ablation_scenario": hp.get("ablation_scenario", ""),
+                },
+            )
+            logger.info("Audit log entry recorded for training:completed")
+        except Exception as _audit_exc:
+            logger.debug("Audit logging failed (non-fatal): %s", _audit_exc)
+
     total_time = time.time() - start_time
     logger.info("=" * 60)
     logger.info("Training complete in %.1fs", total_time)
     logger.info("Final metrics: %s", final_metrics)
     logger.info("=" * 60)
+
+    # ---- Agent: training stage completion event (optional, non-blocking) ----
+    # Emits a ChangeDetector event so OpsAgent CP3 can correlate training runs.
+    try:
+        from core.agent.change_detector import ChangeDetector as _ChangeDetector
+        _cd = _ChangeDetector()
+        _cd.on_pipeline_stage_complete(
+            stage="stage_train",
+            artifacts={
+                "task_name": task_name,
+                "epochs_trained": getattr(trainer, "current_epoch", epochs),
+                "total_time_seconds": round(total_time, 1),
+                "final_loss": final_metrics.get("loss"),
+                "model_dir": model_dir,
+                "output_dir": output_dir,
+            },
+        )
+        logger.info("ChangeDetector: stage_train event emitted")
+    except Exception as _e:
+        logger.debug("ChangeDetector stage_train event failed (non-fatal): %s", _e)
 
 
 if __name__ == "__main__":
