@@ -474,6 +474,83 @@ def main() -> None:
             students[task_name] = model
             logger.info("    %s: direct LGBM trained (%d rounds)", task_name, n_estimators)
 
+    # ================================================================
+    # Step 3.5: Calibration — Platt scaling for probability-critical tasks
+    #
+    # Tasks listed in distillation.calibration.tasks need accurate
+    # probability outputs (not just ranking). Apply post-hoc calibration
+    # using sklearn CalibratedClassifierCV on the validation split.
+    # ================================================================
+    _calib_cfg = _distillation_cfg.get("calibration", {})
+    _calib_tasks = set(_calib_cfg.get("tasks", []))
+    _calib_method = _calib_cfg.get("method", "platt")
+    calibrated_models: dict[str, Any] = {}
+
+    if _calib_cfg.get("enabled", False) and _calib_tasks:
+        from sklearn.calibration import CalibratedClassifierCV
+        from sklearn.base import BaseEstimator, ClassifierMixin
+
+        class _LGBMProbWrapper(BaseEstimator, ClassifierMixin):
+            """Wrap a trained LGBM model for sklearn calibration."""
+            def __init__(self, lgbm_model):
+                self.lgbm_model = lgbm_model
+                self.classes_ = np.array([0, 1])
+            def fit(self, X, y):
+                return self
+            def predict_proba(self, X):
+                raw = self.lgbm_model.predict(X)
+                return np.column_stack([1 - raw, raw])
+
+        # Use last 20% of data as calibration set (separate from training)
+        n_total = len(features)
+        calib_start = int(n_total * 0.8)
+        X_calib = features[calib_start:]
+
+        logger.info("=" * 60)
+        logger.info("Calibration: %s method on %d tasks", _calib_method, len(_calib_tasks))
+        logger.info("  Calibration set: %d samples (last 20%%)", len(X_calib))
+        logger.info("=" * 60)
+
+        _sklearn_method = "sigmoid" if _calib_method == "platt" else "isotonic"
+
+        for task_name in _calib_tasks:
+            if task_name not in students or task_name not in hard_labels:
+                logger.warning("  %s: skipped (no model or labels)", task_name)
+                continue
+
+            t_spec = next((t for t in pipeline_config.tasks if t.name == task_name), None)
+            if t_spec is None:
+                continue
+
+            y_calib = hard_labels[task_name][calib_start:]
+            model = students[task_name]
+
+            try:
+                if t_spec.type == "binary":
+                    wrapper = _LGBMProbWrapper(model)
+                    calibrator = CalibratedClassifierCV(
+                        wrapper, method=_sklearn_method, cv="prefit",
+                    )
+                    calibrator.fit(X_calib, y_calib)
+                    calibrated_models[task_name] = calibrator
+                    logger.info("  [CALIBRATED] %s: %s scaling applied", task_name, _calib_method)
+
+                elif t_spec.type == "regression":
+                    # For regression, calibration = bias correction via linear fit
+                    raw_preds = model.predict(X_calib)
+                    from sklearn.linear_model import LinearRegression
+                    lr = LinearRegression()
+                    lr.fit(raw_preds.reshape(-1, 1), y_calib)
+                    calibrated_models[task_name] = {"lgbm": model, "bias_corrector": lr}
+                    logger.info("  [CALIBRATED] %s: linear bias correction (slope=%.4f, intercept=%.4f)",
+                                task_name, lr.coef_[0], lr.intercept_)
+
+                else:
+                    logger.info("  %s: multiclass calibration not implemented, skipped", task_name)
+
+            except Exception as e:
+                logger.warning("  %s: calibration failed: %s", task_name, e)
+
     # Step 4: Fidelity validation — teacher-student agreement check
     logger.info("Running fidelity validation (8 metrics per task)...")
     from core.training.distillation_validator import (
@@ -481,7 +558,25 @@ def main() -> None:
         ValidationCriteria,
     )
 
-    validator = DistillationValidator(criteria=ValidationCriteria())
+    # Build ValidationCriteria from config (distillation.fidelity section)
+    _fidelity_cfg = _distillation_cfg.get("fidelity", {})
+    _bin_cfg = _fidelity_cfg.get("binary", {})
+    _mc_cfg = _fidelity_cfg.get("multiclass", {})
+    _reg_cfg = _fidelity_cfg.get("regression", {})
+
+    criteria = ValidationCriteria(
+        max_auc_gap=_bin_cfg.get("max_auc_gap", 0.05),
+        min_binary_agreement=_bin_cfg.get("min_agreement", 0.85),
+        max_jsd=_bin_cfg.get("max_jsd", 0.10),
+        min_ranking_corr=_bin_cfg.get("min_ranking_corr", 0.90),
+        max_calibration_gap=_bin_cfg.get("max_calibration_gap", 0.05),
+        min_multiclass_agreement=_mc_cfg.get("min_agreement", 0.70),
+        max_f1_macro_gap=_mc_cfg.get("max_f1_macro_gap", 0.10),
+        regression_quartile_agreement_min=_reg_cfg.get("min_quartile_agreement", 0.70),
+        max_mae_gap=_reg_cfg.get("max_mae_gap", 0.05),
+        max_rmse_gap=_reg_cfg.get("max_rmse_gap", 0.10),
+    )
+    validator = DistillationValidator(criteria=criteria)
     fidelity_results = []
 
     # Get teacher soft labels for comparison
@@ -494,20 +589,31 @@ def main() -> None:
 
         student_model = students[task_name]
 
-        # Student predictions on the same training features.
-        # Custom fobj → predict() returns raw margins, not probabilities.
-        # Apply sigmoid (binary) or softmax (multiclass) to match teacher scale.
-        raw_preds = student_model.predict(features)
-
-        if task_spec.type == "binary" and student_config.use_custom_objective:
-            student_preds = 1.0 / (1.0 + np.exp(-raw_preds))
-        elif task_spec.type == "multiclass" and student_config.use_custom_objective:
-            n_classes = task_spec.num_classes
-            raw_2d = raw_preds.reshape(-1, n_classes)
-            exp_shifted = np.exp(raw_2d - raw_2d.max(axis=1, keepdims=True))
-            student_preds = exp_shifted / exp_shifted.sum(axis=1, keepdims=True)
+        # Use calibrated model if available for this task
+        if task_name in calibrated_models:
+            calib = calibrated_models[task_name]
+            if task_spec.type == "binary" and hasattr(calib, "predict_proba"):
+                student_preds = calib.predict_proba(features)[:, 1]
+            elif task_spec.type == "regression" and isinstance(calib, dict):
+                raw = calib["lgbm"].predict(features)
+                student_preds = calib["bias_corrector"].predict(raw.reshape(-1, 1))
+            else:
+                student_preds = student_model.predict(features)
         else:
-            student_preds = raw_preds
+            # Student predictions on the same training features.
+            # Custom fobj -> predict() returns raw margins, not probabilities.
+            # Apply sigmoid (binary) or softmax (multiclass) to match teacher scale.
+            raw_preds = student_model.predict(features)
+
+            if task_spec.type == "binary" and student_config.use_custom_objective:
+                student_preds = 1.0 / (1.0 + np.exp(-raw_preds))
+            elif task_spec.type == "multiclass" and student_config.use_custom_objective:
+                n_classes = task_spec.num_classes
+                raw_2d = raw_preds.reshape(-1, n_classes)
+                exp_shifted = np.exp(raw_2d - raw_2d.max(axis=1, keepdims=True))
+                student_preds = exp_shifted / exp_shifted.sum(axis=1, keepdims=True)
+            else:
+                student_preds = raw_preds
 
         # Teacher predictions (soft labels)
         teacher_preds = soft_labels.get(task_name)

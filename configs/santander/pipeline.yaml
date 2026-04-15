@@ -861,7 +861,9 @@ training:
 # ---------------------------------------------------------------------------
 distillation:
   temperature: 1.0  # T=1: use teacher probabilities as-is (no temperature scaling for LGBM student)
-  alpha: 0.3
+  alpha: 0.3        # hard label weight (1-alpha = soft label weight)
+
+  # LGBM student hyperparameters (shared default)
   lgbm:
     num_leaves: 127
     learning_rate: 0.05
@@ -869,6 +871,41 @@ distillation:
     min_child_samples: 50
     subsample: 0.8
     colsample_bytree: 0.8
+
+  # Teacher threshold gating — tasks below 2x random baseline
+  # are routed to direct hard-label LGBM training (MRM safeguard)
+  teacher_threshold:
+    binary_min_auc: 0.60          # AUC > 0.60 (random = 0.50, 2x = N/A for AUC)
+    multiclass_min_f1_ratio: 2.0  # F1 > 2/K (K = num_classes)
+    regression_min_r2: 0.05       # R2 > 0.05
+
+  # Calibration — Platt scaling for tasks that need accurate probability values
+  # Tasks not listed here skip calibration (ranking-only usage)
+  calibration:
+    enabled: true
+    method: platt       # platt | isotonic
+    tasks:
+      - churn_signal          # 이탈 확률 → 리텐션 예산 배분 기준
+      - product_stability     # 안정성 점수 → 이탈 위험 등급 산정
+      - cross_sell_count      # 예상 교차판매 수 → 목표 대비 gap 계산
+
+  # Fidelity validation thresholds (per task type)
+  fidelity:
+    binary:
+      max_auc_gap: 0.05
+      min_agreement: 0.85
+      max_jsd: 0.10
+      min_ranking_corr: 0.90
+      max_calibration_gap: 0.05  # only checked for calibration.tasks
+    multiclass:
+      min_agreement: 0.70
+      max_jsd: 0.10
+      max_f1_macro_gap: 0.10
+    regression:
+      min_ranking_corr: 0.90
+      min_quartile_agreement: 0.70
+      max_mae_gap: 0.05
+      max_rmse_gap: 0.10
 
 # ---------------------------------------------------------------------------
 # Ablation Scenarios
