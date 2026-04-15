@@ -40,6 +40,48 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------------
+# Security: lazy-import guards so the handler works even if core.security
+# is not packaged (e.g. lightweight Lambda layer without full source tree).
+# ---------------------------------------------------------------------------
+
+def _get_prompt_sanitizer():
+    """Return a cached PromptSanitizer instance, or None if unavailable."""
+    if _CACHE.get("_prompt_sanitizer") is None:
+        try:
+            from core.security import PromptSanitizer
+            _CACHE["_prompt_sanitizer"] = PromptSanitizer(
+                internal_provider="bedrock",
+                external_provider="gemini",
+                scrub_for_external=True,
+            )
+            logger.info("PromptSanitizer initialised")
+        except Exception as e:
+            logger.warning("PromptSanitizer unavailable: %s", e)
+            _CACHE["_prompt_sanitizer"] = False  # sentinel: skip future attempts
+    obj = _CACHE.get("_prompt_sanitizer")
+    return obj if obj is not False else None
+
+
+def _get_pii_encryptor():
+    """Return a cached PIIEncryptor for inbound feature scrubbing, or None."""
+    if _CACHE.get("_pii_encryptor") is None:
+        try:
+            from core.security import LocalSaltManager, PIIEncryptor
+            salt_mgr = LocalSaltManager()
+            _CACHE["_pii_encryptor"] = PIIEncryptor(salt_mgr)
+            logger.info("PIIEncryptor initialised (LocalSaltManager)")
+        except Exception as e:
+            logger.warning("PIIEncryptor unavailable: %s", e)
+            _CACHE["_pii_encryptor"] = False
+    obj = _CACHE.get("_pii_encryptor")
+    return obj if obj is not False else None
+
+
+# Env-var flags (set in Lambda config / CDK)
+_SECURITY_PII_SCRUB = os.environ.get("SECURITY_PII_SCRUB", "true").lower() == "true"
+_SECURITY_FEATURE_SCAN = os.environ.get("SECURITY_FEATURE_SCAN", "false").lower() == "true"
+
+# ---------------------------------------------------------------------------
 # Module-level cache (persists across warm invocations)
 # ---------------------------------------------------------------------------
 
@@ -52,6 +94,9 @@ _CACHE: Dict[str, Any] = {
     "fallback_router": None,   # FallbackRouter instance | None
     "rule_engine": None,       # RuleBasedRecommender instance | None
     "calibrators": {},         # task_name -> calibrator object
+    # Security components (lazy-initialised on first use)
+    "_prompt_sanitizer": None,   # PromptSanitizer | False
+    "_pii_encryptor": None,      # PIIEncryptor | False
 }
 
 # Variant model cache: variant_name -> {"version": str, "models": {task->Booster}, "features": {}}
@@ -89,6 +134,33 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     if not user_id:
         return {"error": "user_id required", "status": 400}
+
+    # ---- Security: scan inbound features for raw PII columns (non-blocking) ----
+    if _SECURITY_FEATURE_SCAN and features:
+        encryptor = _get_pii_encryptor()
+        if encryptor is not None:
+            try:
+                import pandas as _pd
+                from core.security.domains import PIIDomain, resolve_domain
+                pii_cols = [
+                    col for col in features
+                    if resolve_domain(col) != PIIDomain.DEFAULT
+                ]
+                if pii_cols:
+                    logger.warning(
+                        "Inbound features contain %d raw PII column(s): %s — "
+                        "these should be pre-hashed by the caller",
+                        len(pii_cols), pii_cols,
+                    )
+                    # Hash them in place so they don't propagate raw
+                    feat_df = _pd.DataFrame([features])
+                    col_domain_map = {c: resolve_domain(c) for c in pii_cols}
+                    hashed_df = encryptor.hash_dataframe(feat_df, col_domain_map)
+                    features = hashed_df.iloc[0].to_dict()
+            except Exception:
+                logger.warning(
+                    "Feature PII scan failed (non-fatal)", exc_info=True
+                )
 
     import boto3
     s3 = boto3.client("s3", region_name=REGION)
@@ -242,6 +314,30 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         result["layer_used_per_task"] = layer_used_per_task
     if calibrated_tasks:
         result["calibrated_tasks"] = calibrated_tasks
+
+    # ---- Security: scrub PII from outbound response (fail-closed for PII) ----
+    if _SECURITY_PII_SCRUB:
+        sanitizer = _get_prompt_sanitizer()
+        if sanitizer is not None:
+            try:
+                # Scrub the echoed user_id — mask any raw PII patterns
+                raw_uid = result.get("user_id", "")
+                if raw_uid:
+                    scrubbed_uid, scrub_count = sanitizer.scrub(raw_uid)
+                    if scrub_count > 0:
+                        logger.warning(
+                            "Scrubbed %d PII item(s) from outbound user_id "
+                            "(original hash=%s)",
+                            scrub_count,
+                            __import__("hashlib").sha256(
+                                raw_uid.encode()
+                            ).hexdigest()[:8],
+                        )
+                        result["user_id"] = scrubbed_uid
+            except Exception:
+                logger.warning(
+                    "Outbound PII scrub failed (non-fatal)", exc_info=True
+                )
 
     # --- Async performance logging (best-effort) ---
     try:

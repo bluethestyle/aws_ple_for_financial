@@ -1,7 +1,7 @@
 # Santander Ablation Study 설계 문서
 
 > **프로젝트**: AIOps PLE Financial — Santander Customer Product Recommendation
-> **데이터셋**: 941,132 users x 89 columns x 13 tasks x 7 shared experts x 350D features (benchmark v4)
+> **데이터셋**: 941,132 users x 89 columns x 13 tasks x 7 shared experts x ~349D input / 403D after Phase 0 (benchmark v12)
 > **최종 갱신**: 2026-04-13
 > **Config 경로**: `configs/santander/pipeline.yaml`, `configs/santander/feature_groups.yaml`, `configs/santander/item_universe.yaml`
 > **Orchestrator**: `scripts/run_santander_ablation.py`
@@ -62,7 +62,7 @@ raw_data["main"] (941K x 89)
   +-- Stage 4 --> df_features (941K x ~500D, 총합)
   |                 checkpoints/features.parquet
   |                 ※ FeatureRouter: 각 Expert는 지정된 피처 그룹의 서브셋만 수신
-  |                    (350D 라우팅 기준 — benchmark v12: deepfm=109D, temporal_ensemble=129D, hgcn=27D (merchant_hierarchy Poincaré),
+  |                    (라우팅 차원 — benchmark v12, Phase 0 이후 403D 기준: deepfm=109D, temporal_ensemble=129D, hgcn=27D (merchant_hierarchy Poincaré),
   |                     perslay=32D, causal=103D, lightgcn=66D, optimal_transport=69D)
   |
   +-- Stage 5 --> df_labels (941K x 13 label cols)
@@ -266,7 +266,7 @@ logit_transfer_strength = 0.5
 > **adaTT warmup/freeze 고려사항**: ablation 실험(10ep)에서 warmup_epochs=3, freeze_epoch=8 기준으로 설정. Best config Teacher 학습(30+20ep)에서는 warmup_epochs=10, freeze_epoch=28로 확장. `grad_interval=10` (epoch-only 추출 금지). uncertainty weighting과 adaTT는 either/or가 아니라 순차 적용 (uncertainty → loss scale 정규화 → adaTT transfer). preflight 로그에서 설정 적용 여부 반드시 확인.
 
 ```
-Input (~500D, 총 350D 활성 피처 — benchmark v4)
+Input (~500D total; ~349D input / 403D after Phase 0 활성 피처 — benchmark v12)
   |
   v
 [FeatureRouter] ── Expert별 지정 피처 그룹 서브셋만 라우팅 (전체 브로드캐스트 아님)
@@ -306,7 +306,7 @@ Input (~500D, 총 350D 활성 피처 — benchmark v4)
 | **LightGCN** | 협업 필터링 그래프 | **66D** | emb_dim=64, n_layers=3 |
 | **Optimal Transport** | 분포 매칭 | **69D** | hidden=[128,64], sinkhorn_iter=50 |
 
-> **FeatureRouter 활성화**: 전체 ~500D 피처를 모든 Expert에 브로드캐스트하지 않고, 각 Expert의 설계 목적에 맞는 피처 그룹만 라우팅한다. 총 모델 파라미터: 4.77M → ~2.8M (감소). 라우팅 입력 차원의 합이 총 피처 수(~500D)를 초과하는 것은 일부 피처 그룹이 복수 Expert에 공유되기 때문이다 (현재 활성 350D 기준 — benchmark v4).
+> **FeatureRouter 활성화**: 전체 ~500D 피처를 모든 Expert에 브로드캐스트하지 않고, 각 Expert의 설계 목적에 맞는 피처 그룹만 라우팅한다. 총 모델 파라미터: 4.77M → ~2.8M (감소). 라우팅 입력 차원의 합이 총 피처 수(~500D)를 초과하는 것은 일부 피처 그룹이 복수 Expert에 공유되기 때문이다 (현재 활성 ~349D input / 403D after Phase 0 기준 — benchmark v12).
 
 Task expert: MLP (hidden=[256,128], dropout=0.1) -- 각 태스크마다 1개
 

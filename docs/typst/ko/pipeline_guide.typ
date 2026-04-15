@@ -288,7 +288,7 @@ generator_params:
 
 == FeatureRouter — Expert별 피처 서브셋 라우팅 (활성화됨)
 
-*FeatureRouter*는 현재 *활성화* 상태이다. 각 expert는 전체 350D 피처 중 자신에게 지정된 feature group만 입력으로 받는다. `feature_groups.yaml`의 `target_experts` 선언이 실제 런타임 라우팅을 결정한다. expert_routing은 그룹 단위로 동작하며, `build_model()` 시점에 `feature_groups.yaml`에서 자동 빌드된다.
+*FeatureRouter*는 현재 *활성화* 상태이다. 각 expert는 전체 ~349D 입력(Phase 0 후 403D) 피처 중 자신에게 지정된 feature group만 입력으로 받는다. `feature_groups.yaml`의 `target_experts` 선언이 실제 런타임 라우팅을 결정한다. expert_routing은 그룹 단위로 동작하며, `build_model()` 시점에 `feature_groups.yaml`에서 자동 빌드된다.
 
 *Expert별 입력 차원 (Phase 0 v3/v4):*
 
@@ -305,7 +305,7 @@ generator_params:
   [optimal\_transport], [127D], [Snapshot/State 혼합],
 )
 
-전체 피처는 350D이며, 각 expert는 전체의 부분집합을 입력으로 받는다. FeatureRouter 활성화로 모델 파라미터가 4.77M → ~2.8M으로 감소했다.
+전체 피처는 ~349D 입력(Phase 0 후 403D)이며, 각 expert는 전체의 부분집합을 입력으로 받는다. FeatureRouter 활성화로 모델 파라미터가 4.77M → ~2.8M으로 감소했다.
 
 *구현 방식*: `target_experts` config에서 읽어 `FeatureRouter`가 `feature_group_ranges`를 참조, expert별로 해당 컬럼 범위를 슬라이싱하여 전달한다. 하드코딩 라우팅은 금지한다.
 
@@ -360,7 +360,7 @@ PLE 2-Phase Training:
   - 7 shared experts: deepfm, temporal_ensemble, hgcn, perslay,
                       causal, lightgcn, optimal_transport
   - 1 task expert: mlp (태스크별)
-  - 14 tasks (4 tiers): binary/multiclass/regression
+  - 13 tasks (4 groups): binary 7 / multiclass 3 / regression 3
   - Uncertainty weighting (Kendall et al.)
   - AMP (Mixed Precision) 필수 활성화
 ```
@@ -525,7 +525,7 @@ ablation:
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
     spacing: (12pt, 18pt),
-    node((0,0), [PLE Teacher \ (GPU, 14 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
+    node((0,0), [PLE Teacher \ (GPU, 13 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
     edge((0,0), (0,1), "->", label: [Forward pass — soft labels (temperature=5.0) \ S3에 저장], label-side: right),
     node((0,1), [LGBM Students (CPU, per-task) \ loss = 0.3 × hard\_loss + 0.7 × soft\_loss \ num\_leaves: 127, n\_estimators: 500 \ Per-task fidelity validation (AUC gap < threshold)], fill: rgb("#e8f5e9"), width: 72mm),
     edge((0,1), (0,2), "->"),
@@ -928,7 +928,7 @@ for col in labels.column_names:
 *해결*:
 ```bash
 # 1. batch_size 증가 (VRAM 허용 범위 내)
-# 941K 데이터 → batch_size: 4096~6144 권장
+# 941K 데이터 → batch_size: 5632 권장
 
 # 2. DataLoader num_workers 확인
 # pipeline.yaml ablation.training_defaults.num_workers: 2
@@ -1048,7 +1048,7 @@ grep "budget_limit" configs/santander/pipeline.yaml
 
 + *ProfilerReport 비활성화*: `disable_profiler=True` (SageMaker estimator)
 + *AMP 활성화*: g4dn T4 GPU에서 \~2배 속도 향상
-+ *batch_size 최적화*: 941K → 4096\~6144 권장
++ *batch_size 최적화*: 941K → 5632 권장
 + *Spot 동시 4대 이하*: AZ 경쟁 방지
 + *max_wait = max_run + 1시간*: 과도한 대기 방지
 + *source 패키지 1회 빌드*: 모든 Job에서 재사용

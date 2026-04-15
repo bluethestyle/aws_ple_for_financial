@@ -125,6 +125,88 @@ def _get_service():
                 exc_info=True,
             )
 
+    # ---- Compliance module (config-driven, all components non-blocking) ----
+    compliance_cfg = config_dict.get("compliance", {})
+    compliance_enabled = compliance_cfg.get("enabled", False)
+
+    consent_manager = None
+    ai_opt_out = None
+    profiling_rights_manager = None
+    regulatory_checker = None
+    compliance_audit_store = None
+
+    if compliance_enabled:
+        use_dynamo = compliance_cfg.get("use_dynamo", True)
+        region = compliance_cfg.get("region", os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"))
+        audit_prefix = compliance_cfg.get("audit_table_prefix", "ple-audit")
+
+        try:
+            from core.compliance import (
+                ComplianceAuditStore,
+                InMemoryAuditStore,
+                ConsentManager,
+                AIDecisionOptOut,
+                ProfilingRightsManager,
+                RegulatoryComplianceChecker,
+                get_audit_store,
+            )
+
+            # Audit store — shared across all compliance components
+            if use_dynamo:
+                compliance_audit_store = ComplianceAuditStore(
+                    table_prefix=audit_prefix,
+                    region=region,
+                )
+            else:
+                compliance_audit_store = InMemoryAuditStore()
+            logger.info("ComplianceAuditStore initialised (dynamo=%s)", use_dynamo)
+
+            # Consent manager (channel-level, 금소법)
+            consent_manager = ConsentManager(
+                table_name=compliance_cfg.get("consent_table", "ple-consent"),
+                region=region,
+                use_dynamo=use_dynamo,
+            )
+            logger.info("ConsentManager initialised")
+
+            # AI opt-out (AI기본법 제31조 / GDPR Art. 22)
+            ai_opt_out = AIDecisionOptOut(
+                table_name=compliance_cfg.get("optout_table", "ple-ai-optout"),
+                region=region,
+                use_dynamo=use_dynamo,
+            )
+            logger.info("AIDecisionOptOut initialised")
+
+            # Profiling rights manager (개보법 + GDPR)
+            profiling_rights_manager = ProfilingRightsManager(
+                table_name=compliance_cfg.get(
+                    "profiling_rights_table", "ple-profiling-rights"
+                ),
+                region=region,
+                use_dynamo=use_dynamo,
+            )
+            logger.info("ProfilingRightsManager initialised")
+
+            # Regulatory checker — uses audit store + serving config as context
+            regulatory_checker = RegulatoryComplianceChecker(
+                audit_store=compliance_audit_store,
+                config=compliance_cfg.get("regulatory_config", {}),
+            )
+            logger.info("RegulatoryComplianceChecker initialised")
+
+        except Exception:
+            logger.warning(
+                "Compliance module init failed; proceeding without compliance checks "
+                "(non-blocking)",
+                exc_info=True,
+            )
+            # Reset to None so the service runs unchecked rather than crashing
+            consent_manager = None
+            ai_opt_out = None
+            profiling_rights_manager = None
+            regulatory_checker = None
+            compliance_audit_store = None
+
     _service = RecommendationService(
         model=model,
         feature_store=feature_store,
@@ -133,9 +215,17 @@ def _get_service():
         ab_manager=ab_manager,
         pipeline=pipeline,
         pipeline_config=config.pipeline_config,
+        consent_manager=consent_manager,
+        regulatory_checker=regulatory_checker,
+        ai_opt_out=ai_opt_out,
+        compliance_audit_store=compliance_audit_store,
     )
 
-    logger.info("RecommendationService initialised successfully")
+    logger.info(
+        "RecommendationService initialised successfully "
+        "(compliance_enabled=%s)",
+        compliance_enabled,
+    )
     return _service
 
 

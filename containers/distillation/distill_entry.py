@@ -1050,6 +1050,124 @@ def run_distillation(
             selection_result.reduction_pct,
         )
 
+    # --- Step 4.6: Feature-level drift monitoring (DriftDetector / PSI) ---
+    # This complements Step 4.5b (prediction drift via DistillationDriftMonitor).
+    # Here we measure PSI on input features — avoids duplicating prediction drift.
+    _feat_drift_cfg = _distillation_cfg.get("feature_drift", {})
+    if _feat_drift_cfg.get("enabled", False):
+        try:
+            from core.monitoring.drift_detector import DriftDetector
+
+            _feat_baseline_path = Path(
+                _feat_drift_cfg.get("baseline_path", "outputs/distillation_baseline/feature_baseline.json")
+            )
+            _psi_warn = float(_feat_drift_cfg.get("psi_threshold_warning", 0.1))
+            _psi_crit = float(_feat_drift_cfg.get("psi_threshold_critical", 0.25))
+            _feat_drift_detector = DriftDetector(
+                psi_threshold_warning=_psi_warn,
+                psi_threshold_critical=_psi_crit,
+            )
+
+            logger.info("=" * 60)
+            logger.info("Step 4.6: Feature-level drift monitoring (PSI)")
+            logger.info("  warning=%.2f  critical=%.2f", _psi_warn, _psi_crit)
+            logger.info("=" * 60)
+
+            if _feat_baseline_path.exists():
+                with open(_feat_baseline_path, encoding="utf-8") as _fdf:
+                    _feat_baseline: Dict[str, Any] = json.load(_fdf)
+
+                # Convert {col: list} baseline + current dict of numpy arrays
+                _current_feat_dict: Dict[str, np.ndarray] = {
+                    c: features[:, i]
+                    for i, c in enumerate(feature_cols)
+                    if i < features.shape[1]
+                }
+                _baseline_feat_dict: Dict[str, Any] = _feat_baseline.get("feature_samples", {})
+
+                _feat_drift_result = _feat_drift_detector.detect_drift(
+                    baseline_data=_baseline_feat_dict,
+                    current_data=_current_feat_dict,
+                )
+                _fd_summary = _feat_drift_result["summary"]
+                logger.info(
+                    "Feature PSI — critical: %d, warning: %d, max_psi: %.4f",
+                    _fd_summary["critical_count"],
+                    _fd_summary["warning_count"],
+                    _fd_summary["max_psi"],
+                )
+                with open(out_dir / "feature_drift_report.json", "w") as _fdf_out:
+                    json.dump(
+                        {
+                            "summary": _fd_summary,
+                            "warning_features": _feat_drift_result["warning_features"],
+                            "critical_features": _feat_drift_result["critical_features"],
+                            "psi_scores": {
+                                k: round(v, 6) if isinstance(v, float) else v
+                                for k, v in _feat_drift_result["psi_scores"].items()
+                            },
+                        },
+                        _fdf_out, indent=2, default=str,
+                    )
+                logger.info("Feature drift report saved to %s/feature_drift_report.json", out_dir)
+            else:
+                logger.info(
+                    "No feature baseline at %s — saving current as first baseline",
+                    _feat_baseline_path,
+                )
+
+            # Save current feature samples as baseline (sampled to save space)
+            _n_sample = min(10000, features.shape[0])
+            _rng_sample = np.random.RandomState(42)
+            _sample_idx = _rng_sample.choice(features.shape[0], size=_n_sample, replace=False)
+            _new_baseline = {
+                "feature_samples": {
+                    c: features[_sample_idx, i].tolist()
+                    for i, c in enumerate(feature_cols)
+                    if i < features.shape[1]
+                }
+            }
+            _feat_baseline_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(_feat_baseline_path, "w", encoding="utf-8") as _fdf_save:
+                json.dump(_new_baseline, _fdf_save)
+            logger.info("Feature baseline updated at %s", _feat_baseline_path)
+
+        except Exception as _feat_drift_exc:
+            logger.warning(
+                "Feature drift monitoring failed (non-fatal): %s",
+                _feat_drift_exc, exc_info=True,
+            )
+    else:
+        logger.info("Feature drift monitoring disabled (distillation.feature_drift.enabled=false).")
+
+    # --- Step 4.7: Audit log — distillation event ---
+    _audit_cfg = _raw_yaml.get("monitoring", {}).get("audit", {})
+    if _audit_cfg.get("enabled", False):
+        try:
+            from core.monitoring.audit_logger import AuditLogger
+
+            _audit_logger = AuditLogger(
+                s3_bucket=_audit_cfg.get("s3_bucket", ""),
+                s3_prefix=_audit_cfg.get("s3_prefix", "audit_logs"),
+            )
+            _audit_logger.log_operation(
+                operation="distillation:completed",
+                user="system",
+                status="SUCCESS",
+                metadata={
+                    "num_tasks": len(pipeline_config.tasks),
+                    "distill_tasks": distill_tasks,
+                    "direct_tasks": hardlabel_tasks,
+                    "fidelity_passed": failed_count == 0,
+                    "feature_count": len(feature_cols),
+                    "sample_count": int(len(features)),
+                    "config_path": config_path,
+                },
+            )
+            logger.info("Audit log entry recorded for distillation:completed")
+        except Exception as _audit_exc:
+            logger.warning("Audit logging failed (non-fatal): %s", _audit_exc)
+
     # --- Step 5: Save LGBM models + fidelity + feature selections ---
     saved = trainer.save_students(
         str(model_out_dir),
@@ -1132,6 +1250,61 @@ def run_distillation(
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2, default=str)
     logger.info("Summary saved to %s", summary_path)
+
+    # --- Step 6: Governance report (optional) ---
+    _gov_cfg = _raw_yaml.get("monitoring", {}).get("governance_report", {})
+    if _gov_cfg.get("enabled", False):
+        try:
+            from core.monitoring.governance_report import GovernanceReportGenerator
+
+            _gov_gen = GovernanceReportGenerator(
+                s3_bucket=_gov_cfg.get("s3_bucket", ""),
+                s3_prefix=_gov_cfg.get("s3_prefix", "governance_reports"),
+                system_name=_gov_cfg.get("system_name", "PLE-Cluster-adaTT"),
+            )
+
+            # Build fidelity dict for drift_data shape expected by generator
+            _drift_for_gov = {
+                "summary": {
+                    "drift_detected": bool(
+                        summary.get("fidelity", {}).get("failed", 0) > 0
+                    ),
+                    "total_features": summary.get("feature_count", 0),
+                    "warning_count": 0,
+                    "critical_count": summary.get("fidelity", {}).get("failed", 0),
+                    "max_psi": 0.0,
+                    "avg_psi": 0.0,
+                }
+            }
+
+            _gov_period = _gov_cfg.get("period", "monthly")
+            _gov_report = _gov_gen.generate_report(
+                period=_gov_period,
+                drift_data=_drift_for_gov,
+                model_changes=[
+                    {
+                        "event": "distillation_cycle",
+                        "tasks_distilled": distill_tasks,
+                        "tasks_direct": hardlabel_tasks,
+                        "fidelity_all_passed": failed_count == 0,
+                    }
+                ],
+            )
+            _gov_report_dict = _gov_gen.to_dict(_gov_report)
+
+            # Save locally
+            _gov_path = out_dir / "governance_report.json"
+            with open(_gov_path, "w", encoding="utf-8") as _gf:
+                json.dump(_gov_report_dict, _gf, indent=2, default=str)
+            logger.info("Governance report saved to %s", _gov_path)
+
+            # Archive to S3 if configured
+            _gov_s3_uri = _gov_gen.archive_report(_gov_report)
+            if _gov_s3_uri:
+                logger.info("Governance report archived: %s", _gov_s3_uri)
+
+        except Exception as _gov_exc:
+            logger.warning("Governance report generation failed (non-fatal): %s", _gov_exc, exc_info=True)
 
     return str(summary_path)
 

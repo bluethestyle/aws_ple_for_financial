@@ -187,7 +187,7 @@
   fill: rgb("#fffbeb"),
 )[
   #text(weight: "bold", fill: rgb("#92400e"))[Design vs. Implementation Dimensionality Notice] \
-  This document is written based on the *full-bank design (734D)*. The current Santander benchmark implementation uses *350D (13 feature groups)*. Dimensional figures in the body (734D, 200D, 140D, etc.) reflect the full-bank design; intermediate dimensions may differ in the actual Santander implementation. For the dimension specifications of the actual implementation, refer to `outputs/phase0/feature_schema.json`.
+  This document is written based on the *full-bank design (734D)*. The current Santander benchmark implementation uses *~349D raw input (13 feature groups), expanding to 403D after Phase 0 log1p expansion*. Dimensional figures in the body (734D, 200D, 140D, etc.) reflect the full-bank design; intermediate dimensions may differ in the actual Santander implementation. For the dimension specifications of the actual implementation, refer to `outputs/phase0/feature_schema.json`.
 ]
 
 #v(0.5em)
@@ -223,7 +223,7 @@ The Student achieves approximately 5ms per 1K batch on an 8GB RAM CPU, deliverin
   [Parameters], [$tilde$50M], [$tilde$300--500 trees/task],
   [Memory], [20GB VRAM (GPU)], [$tilde$8GB RAM (CPU)],
   [Inference Speed], [$tilde$50ms / 1K batch], [$tilde$5ms / 1K batch],
-  [Feature Dimensionality], [734D (design) / 350D (impl.)], [200D (after IG selection, design basis)],
+  [Feature Dimensionality], [734D (design) / ~349D raw / 403D post-Phase-0 (impl.)], [200D (after IG selection, design basis)],
   [Training Data], [Raw features + labels], [Raw features + Hard Labels + Soft Labels],
 )
 
@@ -260,7 +260,12 @@ $T$ is constrained to $[3, 7]$.
 - $T = 7$: Multi-class tasks (NBA 12-class, Timing 28-class)
 - $T > 10$: Risk of excessive information loss
 
-#note[LGBM Student Temperature][
+#block(
+  stroke: (left: 2pt + rgb("#6B7280")),
+  inset: (left: 8pt, right: 8pt, top: 6pt, bottom: 6pt),
+  width: 100%,
+)[
+  *LGBM Student Temperature* \
   For LGBM students, $T = 1$ (standard softmax) is used when the teacher outputs are passed as soft labels to the GBDT objective. The LGBM custom objective receives probability vectors directly — applying $T > 1$ smoothing on top of LGBM's own internal optimization is redundant and can degrade calibration. The $T = 3$–$5$ range is appropriate for neural-to-neural distillation, not DNN→GBDT.
 ]
 
@@ -335,9 +340,9 @@ it unsuitable for distillation.
 
 === 3-Stage Pipeline
 
-_The dimensionality figures below are based on the full-bank design (734D). Intermediate dimensions may differ in the Santander implementation (350D)._
+_The dimensionality figures below are based on the full-bank design (734D). Intermediate dimensions may differ in the Santander implementation (~349D raw / 403D post-Phase-0)._
 
-*Full-bank design basis:* 734D (design) / 350D (impl.) $arrow$ 200D (Stage 1) $arrow$ ~140D (Stage 2) $arrow$ final LGBM input
+*Full-bank design basis:* 734D (design) / ~349D raw / 403D post-Phase-0 (impl.) $arrow$ 200D (Stage 1) $arrow$ ~140D (Stage 2) $arrow$ final LGBM input
 
 *Stage 1 -- Integrated Gradients (734D $arrow$ 200D):*
 

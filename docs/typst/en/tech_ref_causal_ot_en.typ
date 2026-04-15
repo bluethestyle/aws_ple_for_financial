@@ -181,7 +181,7 @@
 )[
   #text(weight: "bold", fill: anthropic-accent)[Design vs. Implementation Note.]
   This document is written against the full-bank design (734D).
-  The current Santander benchmark implementation uses 350D (13 feature groups).
+  The current Santander benchmark implementation uses ~349D raw input (13 feature groups), expanding to 403D after Phase 0 log1p expansion.
 ]
 
 #v(0.5em)

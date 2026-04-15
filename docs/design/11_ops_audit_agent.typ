@@ -1349,7 +1349,7 @@ ops_report:
   all_checkpoints:
     CP1: {status: GREEN, rows: 941132, delta: "+0.2%"}
     CP2: {status: GREEN, duration: "4m32s", zero_var: 0}
-    CP3: {status: YELLOW, detail: "1/14 tasks degrading"}
+    CP3: {status: YELLOW, detail: "1/13 tasks degrading"}
     CP4: {status: GREEN, max_fidelity_gap: "2.1%"}
     CP5: {status: GREEN, latency_p50: "12ms"}
     CP6: {status: YELLOW, detail: "p95 trending up"}

@@ -527,10 +527,10 @@ The EU AI Act is likely to classify financial AI recommendation systems as *high
     All recommendation outputs automatically include AI usage labeling],
     [Explain system operation], [2-Layer recommendation rationale (L1 Template + L2 LLM)\
     3-Agent pipeline (Feature Selector $arrow$ Reason Generator $arrow$ Safety Gate)],
-    [Disclose input data specification], [Feature schema auto-documentation (350D current Phase 0 v3/v4 / 734D full-bank design)\
+    [Disclose input data specification], [Feature schema auto-documentation (~349D input / 403D post-Phase-0 current / 734D full-bank design)\
     Training data source, scope, and pseudonymization status recorded],
     [Disclose performance level], [Model card auto-generation (architecture, performance, feature importance)\
-    Per-task independent AUC tracking (14 tasks)],
+    Per-task independent metric tracking (13 tasks: avg_auc binary / avg_f1_macro multiclass / avg_mae regression)],
     [Log generation obligation], [HMAC + hash chain audit log (S3 Object Lock WORM)\
     Full recommendation history Parquet archiving],
   )
@@ -747,7 +747,7 @@ DynamoDB-based serverless management (auto-scaling, per-item TTL):
 
 3 fairness metrics are continuously monitored across 5 protected attributes.
 
-Note on income: *income* is an input feature and a protected attribute monitored for fairness bias. It is _not_ a model task. The deterministic bucket derivation `income_tier` was removed from tasks (v14 task set) due to leakage --- the model could trivially reconstruct the label from the feature. The income _feature_ itself is retained and monitored.
+Note on income: *income* is an input feature and a protected attribute monitored for fairness bias. It is _not_ a model task. The deterministic bucket derivation `income_tier` was removed from tasks (13-task set, v14 → v13 reduction) due to leakage --- the model could trivially reconstruct the label from the feature. Similarly, `tenure_stage`, `spend_level`, and `engagement_score` were removed as deterministic transformations of inputs. The income _feature_ itself is retained and monitored.
 
 #grid(
   columns: (1fr, 1fr),

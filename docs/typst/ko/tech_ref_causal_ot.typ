@@ -178,7 +178,7 @@
 )[
   #text(weight: "bold", fill: anthropic-accent)[설계 vs 구현 참고.]
   본 문서는 풀뱅크 설계(734D)를 기준으로 작성되었습니다.
-  현재 Santander 벤치마크 구현은 350D (13 feature groups)입니다.
+  현재 Santander 벤치마크 구현은 ~349D 입력 / Phase 0 후 403D (13 feature groups)입니다.
 ]
 
 #v(0.5em)

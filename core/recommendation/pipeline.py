@@ -139,12 +139,15 @@ class RecommendationPipeline:
         interpretation_registry: Optional[InterpretationRegistry] = None,
         reason_cache: Optional[ReasonCache] = None,
         context_store: Optional[ContextVectorStore] = None,
+        change_detector: Optional[Any] = None,
     ) -> None:
         self.config = config
         self._audit_store = audit_store
         self._audit_archiver = audit_archiver
         self.interpretation_registry = interpretation_registry
         self.reason_cache = reason_cache
+        # Agent ChangeDetector — receives reason-generation events (optional)
+        self._change_detector = change_detector
         pipe_cfg = config.get("pipeline", {})
 
         # ---- Scorer ----
@@ -543,6 +546,36 @@ class RecommendationPipeline:
                 logger.exception(
                     "Audit archiver failed for customer_id=%s",
                     customer_id,
+                )
+
+        # ---- Agent: reason-generation change event (optional, non-blocking) ----
+        # Fires on every recommend() call so AuditAgent can sample reason quality
+        # (CP6 — 추천 응답 checkpoint) without touching the result object.
+        if self._change_detector is not None:
+            try:
+                reason_layers = [
+                    reasons[0].get("category", "L1")
+                    for item in result.items
+                    for reasons in [item.reasons]
+                    if reasons
+                ]
+                self._change_detector.on_pipeline_stage_complete(
+                    stage="stage_cpe",
+                    artifacts={
+                        "customer_id": customer_id,
+                        "items_returned": len(result.items),
+                        "total_candidates": result.total_candidates,
+                        "elapsed_ms": result.elapsed_ms,
+                        "reason_layers": reason_layers,
+                        "reasons_generated": sum(
+                            1 for item in result.items if item.reasons
+                        ),
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "ChangeDetector reason-generation event failed (non-fatal)",
+                    exc_info=True,
                 )
 
         return result

@@ -208,7 +208,7 @@ if not result.passed:
 ### Per-Task Loss 계산 흐름
 
 ```
-Task Towers (14개 출력)
+Task Towers (13개 출력)
     ↓
 ┌──────────────────────────────────────────────────┐
 │ Per-task loss 계산                                 │
@@ -262,9 +262,9 @@ Task Towers (14개 출력)
 ```yaml
 training:
   experiment_name: santander_ple
-  batch_size: 2048             # 941K users / 2048 = ~460 steps/epoch
+  batch_size: 5632             # 941K users / 5632 = ~167 steps/epoch (optimized for VRAM)
   epochs: 10                   # ablation 기준 10 epoch (변경: 50 → 10, 2026-04-13)
-  learning_rate: 0.001
+  learning_rate: 0.0005
   weight_decay: 0.01
   seed: 42
 

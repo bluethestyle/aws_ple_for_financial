@@ -337,7 +337,7 @@ Key components:
   - 7 shared experts: deepfm, temporal_ensemble, hgcn, perslay,
                       causal, lightgcn, optimal_transport
   - 1 task expert: mlp (per task)
-  - 14 tasks (4 tiers): binary/multiclass/regression
+  - 13 tasks (4 tiers): 7 binary / 3 multiclass / 3 regression
   - Uncertainty weighting (Kendall et al.)
   - AMP (Mixed Precision) must be enabled
 ```
@@ -502,7 +502,7 @@ ablation:
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
     spacing: (12pt, 18pt),
-    node((0,0), [PLE Teacher \ (GPU, 14 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
+    node((0,0), [PLE Teacher \ (GPU, 13 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
     edge((0,0), (0,1), "->", label: [Forward pass — soft labels (temperature=5.0) \ Store in S3], label-side: right),
     node((0,1), [LGBM Students (CPU, per-task) \ loss = 0.3 × hard\_loss + 0.7 × soft\_loss \ num\_leaves: 127, n\_estimators: 500 \ Per-task fidelity validation (AUC gap < threshold)], fill: rgb("#e8f5e9"), width: 72mm),
     edge((0,1), (0,2), "->"),
@@ -658,14 +658,14 @@ All parameters are read from YAML config. Hard-coding in Python code is prohibit
 
 ```yaml
 tasks:
-  - name: has_nba          # Task name (unique)
+  - name: churn_signal     # Task name (unique); 13 tasks total: 7 binary, 3 multiclass, 3 regression
     type: binary           # binary | multiclass | regression
     loss: focal            # focal | ce | huber
     loss_params:
-      alpha: 0.90          # focal alpha (reflects positive rate)
+      alpha: 0.85          # focal alpha (reflects positive rate ~5.1%)
       gamma: 2.0
-    loss_weight: 2.5       # Uncertainty weighting initial weight
-    label_col: has_nba     # Label column name
+    loss_weight: 2.0       # Uncertainty weighting initial weight
+    label_col: churn_signal  # Label column name
 ```
 
 === training Section
@@ -772,20 +772,20 @@ Key fields per group:
   distill: true            # Whether to include in distillation
 ```
 
-== task_groups Section (adaTT)
+== task_groups Section (GradSurgery / task-type projection)
+
+_Note: adaTT degrades at 13-task scale. Replaced by GradSurgery (PCGrad task-type projection)._
 
 ```yaml
-task_groups:
-  - name: engagement
-    tasks: [has_nba, next_mcc, top_mcc_shift]
-    adatt_intra_strength: 0.8   # Intra-group transfer strength
-    adatt_inter_strength: 0.3   # Inter-group transfer strength
-  - name: lifecycle
-    tasks: [churn_signal, product_stability, segment_prediction]
-  - name: value
-    tasks: [mcc_diversity_trend]
-  - name: consumption
-    tasks: [nba_primary, cross_sell_count, will_acquire_*]
+# grad_surgery section (replaces adaTT task_groups)
+grad_surgery:
+  enabled: true
+  task_type_groups:
+    binary: [churn_signal, will_acquire_deposits, will_acquire_investments,
+             will_acquire_accounts, will_acquire_lending, will_acquire_payments,
+             top_mcc_shift]
+    multiclass: [nba_primary, segment_prediction, next_mcc]
+    regression: [product_stability, cross_sell_count, mcc_diversity_trend]
 ```
 
 == task_relationships (Logit Transfer)
@@ -905,7 +905,7 @@ for col in labels.column_names:
 *Solution*:
 ```bash
 # 1. Increase batch_size (within VRAM limits)
-# 941K data -> batch_size: 4096~6144 recommended
+# 941K data -> batch_size: 5632 recommended (validated)
 
 # 2. Check DataLoader num_workers
 # pipeline.yaml ablation.training_defaults.num_workers: 2
@@ -1025,7 +1025,7 @@ grep "budget_limit" configs/santander/pipeline.yaml
 
 + *Disable ProfilerReport*: `disable_profiler=True` (SageMaker estimator)
 + *Enable AMP*: \~2x speedup on g4dn T4 GPU
-+ *Optimize batch_size*: 941K -> 4096\~6144 recommended
++ *Optimize batch_size*: 941K -> 5632 recommended (AMP FP16, lr 0.0005)
 + *Spot concurrency <= 4*: Prevent AZ competition
 + *max_wait = max_run + 1 hour*: Prevent excessive waiting
 + *Build source package once*: Reuse across all Jobs

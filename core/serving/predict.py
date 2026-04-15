@@ -202,6 +202,19 @@ class RecommendationService:
             consent before running inference.  If the user has not granted
             consent for the requested channel, a blocked response is returned
             without generating recommendations.
+        regulatory_checker: Optional
+            :class:`~core.compliance.regulatory_checker.RegulatoryComplianceChecker`.
+            When provided, a suitability check (금소법 §17 / KFS-002) is run
+            before each prediction.  On failure the response is returned with
+            ``compliance_blocked=True`` in metadata; the check is non-blocking
+            when the compliance service is unavailable.
+        ai_opt_out: Optional :class:`~core.compliance.ai_opt_out.AIDecisionOptOut`.
+            When provided, customers who have opted out of AI decisions receive
+            a blocked response without AI inference (AI기본법 제31조 / GDPR Art. 22).
+        compliance_audit_store: Optional
+            :class:`~core.compliance.audit_store.ComplianceAuditStore`.
+            When provided, every recommendation decision is logged to the
+            compliance audit trail (post-prediction).
     """
 
     def __init__(
@@ -219,6 +232,13 @@ class RecommendationService:
         fallback_router: Optional[Any] = None,
         rule_engine: Optional[Any] = None,
         calibrators: Optional[Dict[str, Any]] = None,
+        regulatory_checker: Optional[Any] = None,
+        ai_opt_out: Optional[Any] = None,
+        compliance_audit_store: Optional[Any] = None,
+        change_detector: Optional[Any] = None,
+        audit_logger: Optional[Any] = None,
+        fairness_monitor: Optional[Any] = None,
+        prompt_sanitizer: Optional[Any] = None,
     ) -> None:
         from .feature_store import AbstractFeatureStore
 
@@ -231,6 +251,26 @@ class RecommendationService:
         self._pipeline_config = pipeline_config or {}
         self._cold_start_handler = cold_start_handler
         self._consent_manager = consent_manager
+
+        # --- Compliance components (all optional, non-blocking) ---
+        self._regulatory_checker = regulatory_checker
+        self._ai_opt_out = ai_opt_out
+        self._compliance_audit_store = compliance_audit_store
+
+        # --- Agent infrastructure (optional, backward-compatible) ---
+        # ChangeDetector receives serving-stage events (prediction audit trail).
+        self._change_detector = change_detector
+
+        # --- Monitoring components (all optional) ---
+        # AuditLogger: HMAC-signed immutable audit trail for every inference.
+        self._audit_logger = audit_logger
+        # FairnessMonitor: post-batch bias detection across protected attributes.
+        self._fairness_monitor = fairness_monitor
+
+        # --- Security: PromptSanitizer (core.security) ---
+        # Classifies and scrubs prompts before they reach any LLM provider.
+        # When None, no sanitization is performed (backward-compatible).
+        self._prompt_sanitizer = prompt_sanitizer
 
         # --- 3-layer fallback components (all optional) ---
         # When fallback_router is None the service behaves exactly as before
@@ -258,7 +298,9 @@ class RecommendationService:
             "RecommendationService initialised: tasks=%s, "
             "kill_switch=%s, ab_test=%s (%d variant models), "
             "pipeline=%s, cold_start=%s, consent_manager=%s, "
-            "fallback_router=%s, rule_engine=%s, calibrators=%d",
+            "fallback_router=%s, rule_engine=%s, calibrators=%d, "
+            "regulatory_checker=%s, ai_opt_out=%s, compliance_audit_store=%s, "
+            "change_detector=%s, audit_logger=%s, fairness_monitor=%s",
             [t["name"] for t in tasks_meta],
             kill_switch is not None,
             ab_manager is not None,
@@ -269,6 +311,12 @@ class RecommendationService:
             fallback_router is not None,
             rule_engine is not None,
             len(self._calibrators),
+            regulatory_checker is not None,
+            ai_opt_out is not None,
+            compliance_audit_store is not None,
+            change_detector is not None,
+            audit_logger is not None,
+            fairness_monitor is not None,
         )
 
     def register_variant_model(
@@ -340,6 +388,62 @@ class RecommendationService:
                         elapsed_ms=self._elapsed(t0),
                         metadata={"blocked": "consent_not_granted", "reason": reason},
                     )
+
+        # ---- 1c. AI opt-out check (AI기본법 제31조 / GDPR Art. 22) ----
+        # Non-blocking: if the opt-out service is down we log a warning and
+        # continue so that customers are never blocked by a service failure.
+        if self._ai_opt_out is not None:
+            try:
+                if self._ai_opt_out.is_opted_out(user_id):
+                    fallback_type = self._ai_opt_out.get_fallback_type(user_id)
+                    logger.info(
+                        "AI opt-out active: user_id=%s, fallback=%s",
+                        user_id, fallback_type,
+                    )
+                    return PredictionResponse(
+                        user_id=user_id,
+                        elapsed_ms=self._elapsed(t0),
+                        fallback_used=True,
+                        metadata={
+                            "blocked": "ai_opt_out",
+                            "fallback_type": fallback_type,
+                        },
+                    )
+            except Exception:
+                logger.warning(
+                    "AI opt-out check failed for user_id=%s; continuing (non-blocking)",
+                    user_id,
+                    exc_info=True,
+                )
+
+        # ---- 1d. Regulatory suitability check (금소법 §17 / KFS-002) ----
+        # Runs the suitability category check before inference.  Failures are
+        # non-blocking — the recommendation proceeds but metadata is annotated.
+        if self._regulatory_checker is not None:
+            try:
+                suitability_results = self._regulatory_checker.run_category("suitability")
+                critical_failures = [
+                    r for r in suitability_results
+                    if not r.passed and r.item.severity == "critical"
+                ]
+                if critical_failures:
+                    logger.warning(
+                        "Regulatory suitability check FAILED for user_id=%s: %s",
+                        user_id,
+                        [r.item.id for r in critical_failures],
+                    )
+                    metadata["compliance_suitability_failed"] = [
+                        r.item.id for r in critical_failures
+                    ]
+                else:
+                    metadata["compliance_suitability_passed"] = True
+            except Exception:
+                logger.warning(
+                    "Regulatory suitability check raised exception for user_id=%s; "
+                    "continuing (non-blocking)",
+                    user_id,
+                    exc_info=True,
+                )
 
         # ---- 2. A/B variant selection ----
         variant_name = ""
@@ -531,7 +635,30 @@ class RecommendationService:
         if self._ab_manager is not None and variant_name:
             self._ab_manager.record_latency(variant_name, elapsed)
 
-        return PredictionResponse(
+        # ---- 9. Agent audit event (optional, non-blocking) ----
+        # Fire a serving-stage change event so OpsAgent CP6 can track
+        # prediction volume, latency, and layer distribution.
+        if self._change_detector is not None:
+            try:
+                self._change_detector.on_pipeline_stage_complete(
+                    stage="stage_serving",
+                    artifacts={
+                        "user_id": user_id,
+                        "tasks": list(normalised.keys()),
+                        "layer_used_per_task": layer_used_map,
+                        "elapsed_ms": elapsed,
+                        "variant": variant_name,
+                        "is_coldstart": is_coldstart,
+                        "recommendations_count": len(recommendations),
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "ChangeDetector audit event failed (non-fatal)",
+                    exc_info=True,
+                )
+
+        response = PredictionResponse(
             user_id=user_id,
             predictions=normalised,
             recommendations=recommendations,
@@ -541,6 +668,55 @@ class RecommendationService:
             elapsed_ms=elapsed,
             metadata=metadata,
         )
+
+        # ---- 10. Compliance audit trail (post-prediction) ----
+        # Every recommendation decision is logged for regulatory audit.
+        # Non-blocking: a DynamoDB write failure must not affect the user response.
+        if self._compliance_audit_store is not None:
+            try:
+                self._compliance_audit_store.log_event("embedding", {
+                    "pk": f"recommendation#{user_id}",
+                    "user_id": user_id,
+                    "tasks_predicted": list(normalised.keys()),
+                    "items_returned": len(recommendations),
+                    "variant": variant_name,
+                    "fallback_used": is_coldstart,
+                    "elapsed_ms": elapsed,
+                    "compliance_suitability_passed": metadata.get(
+                        "compliance_suitability_passed", False
+                    ),
+                    "compliance_suitability_failed": metadata.get(
+                        "compliance_suitability_failed", []
+                    ),
+                })
+            except Exception:
+                logger.warning(
+                    "Compliance audit log failed for user_id=%s; "
+                    "continuing (non-blocking)",
+                    user_id,
+                    exc_info=True,
+                )
+
+        # ---- 11. AuditLogger — model inference record (non-blocking) ----
+        # Records model_id, input/output dims, and latency for HMAC-signed
+        # immutable audit trail.  Gated by self._audit_logger being set.
+        if self._audit_logger is not None:
+            try:
+                self._audit_logger.log_model_inference(
+                    model_id=variant_name or "champion",
+                    input_dim=len(enriched_features),
+                    output_dim=len(normalised),
+                    latency_ms=elapsed,
+                    status="SUCCESS",
+                    user="system",
+                )
+            except Exception:
+                logger.debug(
+                    "AuditLogger.log_model_inference failed (non-fatal)",
+                    exc_info=True,
+                )
+
+        return response
 
     # ------------------------------------------------------------------
     # Batch inference

@@ -357,7 +357,7 @@ Phase 0 Generator는 cuDF primary → pandas fallback 패턴을 따른다.
 | **0** | Data Preparation (Processing Job) | 1 |
 | **1** | Feature Group Ablation (full + base_only + bottom-up + top-down) | 16 |
 | **2** | Expert Ablation (deepfm baseline + bottom-up + top-down + mlp_only) | 16 |
-| **3** | Task x Structure Cross (4 tiers x 4 structures) | 16 |
+| **3** | Task x Structure Cross (4 tiers x 9 structures) | 36 |
 | **4** | Best-Config Teacher + Distillation | 2 |
 | **5** | Analysis + HTML Report | 1 |
 

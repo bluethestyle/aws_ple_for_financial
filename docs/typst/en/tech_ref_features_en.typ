@@ -243,7 +243,7 @@
 
 #v(12pt)
 #warn[Design vs. Implementation Dimensions][
-  This document is written based on the *full-bank design (734D)*. The current Santander benchmark implementation uses *350D (13 feature groups)*. For the actual implementation dimension specifications, refer to `outputs/phase0/feature_schema.json`. The Appendix "Design vs. Implementation Dimension Mapping" details the per-group differences.
+  This document is written based on the *full-bank design (734D)*. The current Santander benchmark implementation uses *~349D raw input (13 feature groups), expanding to 403D after Phase 0 log1p expansion*. For the actual implementation dimension specifications, refer to `outputs/phase0/feature_schema.json`. The Appendix "Design vs. Implementation Dimension Mapping" details the per-group differences.
 ]
 
 // =====================================================================
@@ -1068,11 +1068,11 @@ The `_log` copies of power-law columns (generated in Stage 1) are preserved *wit
 // =====================================================================
 = Appendix: Design vs. Implementation Dimension Mapping
 
-#warn[Note][This Appendix summarizes the dimensional differences between the full-bank design (734D) and the current Santander benchmark implementation (350D, Phase 0 v3/v4). Implementation dimensions can be verified in `outputs/phase0/feature_schema.json`.]
+#warn[Note][This Appendix summarizes the dimensional differences between the full-bank design (734D) and the current Santander benchmark implementation (~349D raw input / 403D post-Phase-0, Phase 0 v3/v4). Implementation dimensions can be verified in `outputs/phase0/feature_schema.json`.]
 
 #styled-table(
   (1.2fr, 1fr, 1fr, 2fr),
-  table.header([*Feature Groups*], [*Design (734D)*], [*Implementation (350D)*], [*Notes*]),
+  table.header([*Feature Groups*], [*Design (734D)*], [*Implementation (~349D)*], [*Notes*]),
   [TDA], [70D], [32D], [tda\_global 16D + tda\_local 16D],
   [HMM], [48D + 5D (separate)], [25D], [main tensor only],
   [Base (Profile, etc.)], [238D], [47D], [Demographics, RFM, Financial Summary reduced],
@@ -1080,7 +1080,7 @@ The `_log` copies of power-law columns (generated in Stage 1) are preserved *wit
   [Merchant / Hierarchy], [27D], [34D], [MCC Poincaré embeddings + brand embeddings (Phase 0 v3/v4)],
   [GMM], [22D], [53D], [number of clusters and derived features expanded],
   [Others (Economics, SIR, etc.)], [335D], [93D], [Mamba, Wave, Crime, etc.; expanded vs. prior],
-  [*Total*], [*734D*], [*350D*], [13 feature groups],
+  [*Total*], [*734D*], [*~349D (raw) / 403D (post-Phase-0)*], [13 feature groups; +54D from log1p copies],
 )
 
 

@@ -242,7 +242,21 @@
 
 #warn[Design vs. Implementation Note][
   This document is written based on the full-bank design (734D).
-  The current Santander benchmark implementation is 350D (13 feature groups).
+  The current Santander benchmark implementation is ~349D raw input (13 feature groups), expanding to 403D after Phase 0 log1p expansion.
+]
+
+#block(
+  width: 100%,
+  inset: 10pt,
+  radius: 4pt,
+  fill: rgb("#fff3cd"),
+  stroke: (left: 3pt + rgb("#ffc107")),
+)[
+  *adaTT Scale Note (2026-04-15).* adaTT degrades at 13-task scale. Loss-level transfer
+  (156 task pairs) undoes PLE's representation-level separation, causing gradient interference.
+  The active implementation replaces adaTT with *GradSurgery (PCGrad task-type projection)*,
+  which respects PLE's expert boundaries. This document is retained as a reference for
+  the adaTT design; see `grad_surgery.py` for the current implementation.
 ]
 
 
@@ -597,7 +611,7 @@ only clearly opposing gradient directions are blocked.
 Setting to 0 would over-prune paths and weaken adaTT effectiveness.
 
 Diagnostic API: `detect_negative_transfer()` returns negative transfer pairs in the form
-`{"churn_signal": ["has_nba", "nba_primary"]}`.
+`{"churn_signal": ["will_acquire_lending", "nba_primary"]}`.
 
 == 3.9 Analogy to Attention Mechanism
 

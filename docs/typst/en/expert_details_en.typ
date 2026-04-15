@@ -85,10 +85,10 @@
   topological structure (PersLay/TDA), collaborative filtering (LightGCN),
   causal inference (Causal/NOTEARS), and distributional matching (Optimal Transport)---and
   no single expert can substitute for any other.
-  Additionally, this document covers the dynamic knowledge transfer mechanism across 14 tasks
-  via adaTT (Adaptive Task-aware Transfer), and the 350-dimensional feature engineering framework
-  derived from 11 academic disciplines (Phase 0 v3/v4). With FeatureRouter active, each expert receives a
-  designated subset of the 350D tensor rather than the full input.
+  Additionally, this document covers the gradient-conflict resolution mechanism across 13 tasks
+  via GradSurgery (PCGrad task-type projection, replacing adaTT at 13-task scale), and the ~349D
+  feature engineering framework (403D after Phase 0 log1p expansion) derived from 11 academic disciplines.
+  With FeatureRouter active, each expert receives a designated subset of the 403D tensor rather than the full input.
 
   #v(0.3em)
   #text(weight: "bold")[Keywords:]
@@ -107,8 +107,8 @@
 )[
   #text(weight: "bold")[Design vs. Implementation Note.]
   This document is written based on the full-bank design (734D).
-  The current Santander benchmark implementation uses 350D (Phase 0 v3/v4, 12 feature groups).
-  FeatureRouter is active: each expert receives a per-expert subset of the 350D tensor
+  The current Santander benchmark implementation uses ~349D input (12 feature groups), expanding to 403D after Phase 0 (log1p copies appended).
+  FeatureRouter is active: each expert receives a per-expert subset of the 403D tensor
   (deepfm=168D, temporal\_ensemble=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, ot=127D),
   reducing model parameters from 4.77M to ~2.8M. Routing is group-level, auto-built from
   \`target_experts\` in feature_groups.yaml. HGCN receives merchant_hierarchy (27D MCC Poincaré);
@@ -595,7 +595,7 @@ Short concat 128D + Long concat 192D + Global stats MLP 32D + Phase transition 1
     stroke: 0.5pt,
     [*PersLay Input*], [32D feature subset (FeatureRouter: Snapshot-axis TDA groups) or raw persistence diagrams],
     [*PersLay Output*], [64D expert representation for PLE gate],
-    [*TDA Offline Output*], [70D features integrated into main 350D tensor],
+    [*TDA Offline Output*], [70D features integrated into main ~349D tensor (403D after Phase 0)],
     [*Computation*], [Ripser++ (GPU) $arrow$ Ripser (CPU) $arrow$ giotto-tda (fallback)],
   ),
   caption: [PersLay / TDA Expert I/O specification. FeatureRouter provides 32D input subset.],
@@ -695,7 +695,7 @@ Example: "Premium cardholders have high travel insurance adoption" may be due to
 confounder --- the card does not _cause_ insurance adoption.
 
 A/B testing is the gold standard but does not scale
-(14 tasks $times$ $N$ strategies = infeasible), is slow (weeks), and provides only
+(13 tasks $times$ $N$ strategies = infeasible), is slow (weeks), and provides only
 population-level ATE.
 
 == Alternative Comparison
@@ -910,13 +910,26 @@ Cuturi (NeurIPS 2013), Kantorovich (1942).
 = adaTT (Adaptive Task-aware Transfer) <sec8-adatt>
 // ============================================================
 
+#block(
+  width: 100%,
+  inset: 10pt,
+  radius: 4pt,
+  fill: rgb("#fff3cd"),
+  stroke: (left: 3pt + rgb("#ffc107")),
+)[
+  *Scale Note (2026-04-15).* adaTT degrades at 13-task scale: loss-level transfer undoes PLE's
+  representation-level separation (156 task pairs, combinatorial coupling). adaTT is retained here
+  for reference; the active implementation replaces it with *GradSurgery (PCGrad task-type projection)*,
+  which operates at the gradient level and respects PLE's expert boundaries.
+]
+
 == Motivation: Negative Transfer in Multi-Task Learning
 
-When 14 simultaneous tasks share expert parameters,
+When 13 simultaneous tasks share expert parameters,
 gradient conflicts cause negative transfer.
 Three fundamental limitations of fixed-tower MTL:
 (1) The shared backbone equally affects all tasks --- no mechanism to detect/prevent one task's optimization from degrading another's predictions,
-(2) Unable to measure which of the 14 task pairs help or harm each other,
+(2) Unable to measure which of the 13 task pairs help or harm each other,
 (3) Fixed weights cannot track task relationships that change across training stages.
 
 == Core Mechanism: Gradient Cosine Similarity
@@ -970,9 +983,9 @@ $ w_(i arrow j) = "softmax"(bold(R)_(i,j) / T) $
     columns: (auto, auto, auto, auto),
     stroke: 0.5pt,
     [*Group*], [*Tasks*], [*Intra-strength*], [*Business Meaning*],
-    [engagement], [has\_nba, engagement\_score, cross\_sell\_count,\ will\_acquire\_deposits, will\_acquire\_investments,\ will\_acquire\_accounts, will\_acquire\_lending,\ will\_acquire\_payments], [0.8], [Customer engagement/conversion],
-    [lifecycle], [churn\_signal, product\_stability,\ tenure\_stage, segment\_prediction], [0.7], [Customer lifecycle],
-    [value], [income\_tier, spend\_level, nba\_primary], [0.6], [Customer value/behavior],
+    [engagement], [cross\_sell\_count, will\_acquire\_deposits,\ will\_acquire\_investments, will\_acquire\_accounts,\ will\_acquire\_lending, will\_acquire\_payments], [0.8], [Customer engagement/conversion],
+    [lifecycle], [churn\_signal, product\_stability,\ segment\_prediction], [0.7], [Customer lifecycle],
+    [value], [nba\_primary], [0.6], [Customer value/behavior],
     [consumption], [next\_mcc, mcc\_diversity\_trend, top\_mcc\_shift], [0.7], [Consumption pattern],
   ),
   caption: [adaTT task group definitions. Inter-group strength: 0.3.],
@@ -1045,7 +1058,7 @@ blocking clearly adversarial gradients.
 - A lightweight variant of Hypernetworks (Ha et al., 2017): uses observed gradients instead of learned task embeddings
   as the conditioning signal, enabling zero-delay adaptation to changing task relationships.
 - `detect_negative_transfer()` API returns the list of adversarial tasks for each task
-  (e.g., `{"churn_signal": ["has_nba", "nba_primary"]}`).
+  (e.g., `{"churn_signal": ["will_acquire_lending", "nba_primary"]}`).
 
 *Key References:*
 Tang et al. (RecSys 2020), Yu et al. (NeurIPS 2020), Fifty et al. (ICML 2021),
@@ -1054,7 +1067,7 @@ Chen et al. (ICML 2018), Navon et al. (ICML 2022).
 #pagebreak()
 
 // ============================================================
-= Feature Engineering Overview --- 11 Disciplines, 350D <sec9-features>
+= Feature Engineering Overview --- 11 Disciplines, ~349D Input / 403D Post-Phase-0 <sec9-features>
 // ============================================================
 
 == Feature Engineering Philosophy
@@ -1084,7 +1097,7 @@ the formulas capture the same patterns irrespective of the surface domain.
     [MAB (Decision Theory)], [4D], [Explore/exploit balance], [HHI trend, recency-weighted entropy],
     [Graph Embedding], [111D], [Collaborative filtering + hierarchical structure], [LightGCN (64D) + H-GCN (47D)],
   ),
-  caption: [Feature framework derived from 11 academic disciplines. Total 350D (Phase 0 v3/v4: TDA 70D + GMM 22D + HMM 48D + Economics 17D + Multidisciplinary 24D + MAB 4D + Graph 111D + LNN statistics 18D + HMM 5D summary + additional 31D = 350D including model-derived features).],
+  caption: [Feature framework derived from 11 academic disciplines. ~349D raw input (Phase 0 v3/v4: TDA 70D + GMM 22D + HMM 48D + Economics 17D + Multidisciplinary 24D + MAB 4D + Graph 111D + LNN statistics 18D + HMM 5D summary + additional); expands to 403D after Phase 0 log1p copies are appended.],
 )
 
 == Economics Features (17D)

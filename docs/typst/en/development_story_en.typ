@@ -942,7 +942,7 @@ distribution shape on the student.
 
 The investigation began with a puzzling trend in ablation results: as architectural
 complexity increased — from shared bottom to PLE, from no transfer to adaTT —
-NDCG@3 declined rather than improved. The question that forced a root-cause search
+NDCG\@3 declined rather than improved. The question that forced a root-cause search
 was simple: why would a more sophisticated architecture produce worse recommendations?
 
 The answer was in the loss computation. The on-prem uncertainty weighting
@@ -971,7 +971,7 @@ dominated gradient updates; tasks representing the system's primary business
 objectives — next-product prediction and churn — were swamped.
 
 The fix was a single line: restore the `loss_weight` multiplication and remove
-the erroneous `/2` on the log-variance term. Outcome: +0.018 NDCG@3,
+the erroneous `/2` on the log-variance term. Outcome: +0.018 NDCG\@3,
 +0.031 F1-macro. These gains were larger than any architectural modification
 tested across the entire ablation study.
 

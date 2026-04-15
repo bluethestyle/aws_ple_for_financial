@@ -161,9 +161,9 @@
   계층 구조(Hyperbolic GCN), 위상 구조(PersLay/TDA), 협업 필터링(LightGCN),
   인과 추론(Causal/NOTEARS), 분포 매칭(Optimal Transport)이라는 고유한 수학적 관점을 제공하며,
   어떠한 단일 전문가도 다른 전문가의 역할을 대체할 수 없다.
-  추가로 adaTT(Adaptive Task-aware Transfer)를 통한 14개 태스크 간 동적 지식 전이 메커니즘과
-  11개 학문 분야에서 도출된 350차원 피처 엔지니어링 체계(Phase 0 v3/v4)를 기술한다.
-  FeatureRouter 활성화로 각 전문가는 전체 350D 중 지정된 서브셋만 입력으로 받으며
+  추가로 GradSurgery(PCGrad 기반 태스크-타입 투영, adaTT를 13-task 규모에서 대체)를 통한 13개 태스크 간
+  gradient 충돌 해소 메커니즘과, 11개 학문 분야에서 도출된 ~349D 입력 피처 / Phase 0 후 403D 체계(Phase 0 v3/v4)를 기술한다.
+  FeatureRouter 활성화로 각 전문가는 전체 ~349D 중 지정된 서브셋만 입력으로 받으며
   (deepfm=168D, temporal=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, ot=127D),
   출력은 64D로 균일하게 유지된다.
 
@@ -182,8 +182,8 @@
 )[
   #text(weight: "bold", fill: anthropic-accent)[설계 vs 구현 참고.]
   본 문서는 풀뱅크 설계(734D)를 기준으로 작성되었습니다.
-  현재 Santander 벤치마크 구현은 350D (Phase 0 v3/v4, 12 feature groups)입니다.
-  *FeatureRouter 활성화*: 각 전문가는 전체 350D를 모두 받는 것이 아니라
+  현재 Santander 벤치마크 구현은 ~349D 입력 / Phase 0 후 403D (Phase 0 v3/v4, 13 feature groups)입니다.
+  *FeatureRouter 활성화*: 각 전문가는 전체 ~349D를 모두 받는 것이 아니라
   `feature_groups.yaml`의 `target_experts` 선언에 따라 서브셋만 입력받습니다.
   전문가별 실제 입력 차원: deepfm=168D, temporal=139D, hgcn=27D, perslay=32D,
   causal=161D, lightgcn=100D, ot=127D. 모델 파라미터: 4.77M → ~2.8M (감소).
@@ -270,7 +270,7 @@ Deep MLP는 flatten된 $[B, 448]$에서 동작한다.
     columns: (auto, auto),
     stroke: 0.5pt,
     [*Input (설계)*], [644D normalized feature tensor $[B, 644]$],
-    [*Input (현재 구현)*], [168D — FeatureRouter가 350D에서 DeepFM 지정 서브셋 슬라이싱],
+    [*Input (현재 구현)*], [168D — FeatureRouter가 ~349D에서 DeepFM 지정 서브셋 슬라이싱],
     [*Internal*], [필드 임베딩 $arrow$ FM + Deep MLP (입력 차원에 따라 자동 조정)],
     [*Output*], [64D expert representation for PLE CGC Gate],
     [*Parameters*], [$tilde 169$K (설계 기준; 109D 입력 시 비례 감소)],
@@ -767,7 +767,7 @@ He et al. (SIGIR 2020), Rendle et al. (UAI 2009), Kipf & Welling (ICLR 2017).
 교란 변수(confounder)에 의한 것일 수 있다 --- 카드가 보험 가입을 _야기_하는 것이 아니다.
 
 A/B 테스트는 gold standard이지만 규모 확장이 불가능하다
-(14개 태스크 $times$ $N$개 전략 = 실행 불가), 느리고 (수 주 소요),
+(13개 태스크 $times$ $N$개 전략 = 실행 불가), 느리고 (수 주 소요),
 집단 수준 ATE만 제공한다.
 
 == 대안 비교
@@ -982,11 +982,11 @@ Cuturi (NeurIPS 2013), Kantorovich (1942).
 
 == 동기: Multi-Task Learning에서의 Negative Transfer
 
-14개 동시 태스크가 전문가 파라미터를 공유할 때
+13개 동시 태스크가 전문가 파라미터를 공유할 때
 gradient 충돌이 negative transfer를 야기한다.
 고정 타워 MTL의 세 가지 근본적 한계:
 (1) 공유 backbone이 모든 태스크에 동일하게 영향 --- 한 태스크의 최적화가 다른 태스크 예측을 악화시켜도 감지/방지 메커니즘 없음,
-(2) 14개 태스크 간 어떤 쌍이 서로 돕는지/해치는지 측정 불가,
+(2) 13개 태스크 간 어떤 쌍이 서로 돕는지/해치는지 측정 불가,
 (3) 고정 가중치로는 학습 단계에 따라 변하는 태스크 관계를 추적 불가.
 
 == Core Mechanism: Gradient Cosine Similarity
@@ -1124,7 +1124,7 @@ Chen et al. (ICML 2018), Navon et al. (ICML 2022).
 #pagebreak()
 
 // ============================================================
-= Feature Engineering Overview --- 11 Disciplines, 350D <sec9-features>
+= Feature Engineering Overview --- 11 Disciplines, ~349D input / 403D post-Phase 0 <sec9-features>
 // ============================================================
 
 == 피처 엔지니어링 철학
@@ -1144,7 +1144,7 @@ Chen et al. (ICML 2018), Navon et al. (ICML 2022).
 )[
   *FeatureRouter와 피처 그룹 라우팅*
 
-  전체 350D 피처 텐서는 모든 전문가에게 동일하게 전달되는 것이 아니다.
+  전체 ~349D 피처 텐서는 모든 전문가에게 동일하게 전달되는 것이 아니다.
   `feature_groups.yaml`의 `target_experts` 선언에 따라 `FeatureRouter`가
   각 전문가에게 관련 서브셋만 슬라이싱하여 전달한다.
   예를 들어 PersLay는 TDA 피처 그룹(32D)만, LightGCN은 product_hierarchy(32D) + graph_collaborative(66D) 포함 100D만 입력받는다.
@@ -1172,7 +1172,7 @@ Chen et al. (ICML 2018), Navon et al. (ICML 2022).
     [MAB (Decision Theory)], [4D], [탐색/활용 균형], [HHI trend, recency-weighted entropy],
     [Graph Embedding], [111D], [협업 필터링 + 계층 구조], [LightGCN (64D) + H-GCN (47D)],
   ),
-  caption: [11개 학문 분야에서 도출된 피처 체계. 총 350D (Phase 0 v3/v4: TDA 70D + GMM 22D + HMM 48D + Economics 17D + Multidisciplinary 24D + MAB 4D + Graph 111D + LNN statistics 18D + HMM 5D summary + 추가 31D = 350D 포함 모델 파생 피처).],
+  caption: [11개 학문 분야에서 도출된 피처 체계. 입력 ~349D / Phase 0 후 403D (Phase 0 v3/v4: TDA 70D + GMM 22D + HMM 48D + Economics 17D + Multidisciplinary 24D + MAB 4D + Graph 111D + LNN statistics 18D + HMM 5D summary + 추가 31D; log 복사본 등 Phase 0 변환으로 403D).],
 )
 
 == Economics Features (17D)
@@ -1255,7 +1255,7 @@ cycle period, attractor strength, trajectory length.
 
 == Five-Axis Feature Taxonomy
 
-전체 시스템의 350D main tensor (Phase 0 v3/v4 구현 기준) + 별도 입력은 5개 피처 축에 걸쳐 있다.
+전체 시스템의 ~349D 입력 / Phase 0 후 403D main tensor (Phase 0 v3/v4 구현 기준) + 별도 입력은 5개 피처 축에 걸쳐 있다.
 설계 기준 734D main tensor + 68D separate input도 동일 분류 체계를 따른다:
 
 + *Static/Snapshot:* demographics, account status
