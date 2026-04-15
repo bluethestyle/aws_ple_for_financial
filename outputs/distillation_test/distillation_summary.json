@@ -1,0 +1,245 @@
+{
+  "tasks_distilled": [
+    "churn_signal",
+    "product_stability",
+    "nba_primary",
+    "cross_sell_count",
+    "will_acquire_deposits",
+    "will_acquire_investments",
+    "will_acquire_accounts",
+    "will_acquire_lending",
+    "will_acquire_payments",
+    "segment_prediction",
+    "next_mcc",
+    "mcc_diversity_trend",
+    "top_mcc_shift"
+  ],
+  "num_students": 13,
+  "temperature": 1.0,
+  "alpha": 0.3,
+  "lgbm_params": {
+    "num_leaves": 127,
+    "learning_rate": 0.05,
+    "n_estimators": 500,
+    "min_child_samples": 50,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8
+  },
+  "task_lgbm_overrides": {},
+  "output_dir": "outputs/distillation_test",
+  "feature_count": 349,
+  "sample_count": 1000000,
+  "fidelity": {
+    "all_passed": false,
+    "passed": 3,
+    "failed": 10,
+    "per_task": {
+      "churn_signal": {
+        "passed": false,
+        "metrics": {
+          "auc_gap": 0.0223,
+          "agreement_rate": 0.8891,
+          "jsd": 0.0064,
+          "ranking_corr": 0.9641,
+          "calibration_gap": 0.1013
+        }
+      },
+      "product_stability": {
+        "passed": true,
+        "metrics": {
+          "ranking_corr": 0.9481,
+          "quartile_agreement": 0.7811,
+          "mae_gap": 0.0011,
+          "teacher_mae": 0.1232,
+          "student_mae": 0.122,
+          "rmse_gap": 0.0014,
+          "teacher_rmse": 0.1528,
+          "student_rmse": 0.1514
+        }
+      },
+      "nba_primary": {
+        "passed": false,
+        "metrics": {
+          "agreement_rate": 0.1544,
+          "jsd": 0.0264,
+          "f1_macro_gap": 0.1111,
+          "teacher_f1_macro": 0.1867,
+          "student_f1_macro": 0.0756
+        }
+      },
+      "cross_sell_count": {
+        "passed": false,
+        "metrics": {
+          "ranking_corr": 0.9487,
+          "quartile_agreement": 0.8044,
+          "mae_gap": 0.0183,
+          "teacher_mae": 0.9517,
+          "student_mae": 0.97,
+          "rmse_gap": 0.1758,
+          "teacher_rmse": 2.412,
+          "student_rmse": 2.2362
+        }
+      },
+      "will_acquire_deposits": {
+        "passed": false,
+        "metrics": {
+          "auc_gap": 0.0177,
+          "agreement_rate": 0.7981,
+          "jsd": 0.0049,
+          "ranking_corr": 0.9852,
+          "calibration_gap": 0.091
+        }
+      },
+      "will_acquire_investments": {
+        "passed": false,
+        "metrics": {
+          "auc_gap": 0.0232,
+          "agreement_rate": 0.7973,
+          "jsd": 0.0053,
+          "ranking_corr": 0.9752,
+          "calibration_gap": 0.0957
+        }
+      },
+      "will_acquire_accounts": {
+        "passed": false,
+        "metrics": {
+          "auc_gap": 0.0238,
+          "agreement_rate": 0.9245,
+          "jsd": 0.0045,
+          "ranking_corr": 0.9818,
+          "calibration_gap": 0.0822
+        }
+      },
+      "will_acquire_lending": {
+        "passed": false,
+        "metrics": {
+          "auc_gap": 0.0256,
+          "agreement_rate": 0.8122,
+          "jsd": 0.0052,
+          "ranking_corr": 0.9626,
+          "calibration_gap": 0.0944
+        }
+      },
+      "will_acquire_payments": {
+        "passed": false,
+        "metrics": {
+          "auc_gap": 0.0319,
+          "agreement_rate": 0.908,
+          "jsd": 0.005,
+          "ranking_corr": 0.9767,
+          "calibration_gap": 0.0893
+        }
+      },
+      "segment_prediction": {
+        "passed": false,
+        "metrics": {
+          "agreement_rate": 0.218,
+          "jsd": 0.0232,
+          "f1_macro_gap": 0.2221,
+          "teacher_f1_macro": 0.4034,
+          "student_f1_macro": 0.1813
+        }
+      },
+      "next_mcc": {
+        "passed": false,
+        "metrics": {
+          "agreement_rate": 0.0125,
+          "jsd": 0.0991,
+          "f1_macro_gap": 0.0056,
+          "teacher_f1_macro": 0.0118,
+          "student_f1_macro": 0.0174
+        }
+      },
+      "mcc_diversity_trend": {
+        "passed": true,
+        "metrics": {
+          "ranking_corr": 0.9694,
+          "quartile_agreement": 0.8036,
+          "mae_gap": 0.0166,
+          "teacher_mae": 1.7797,
+          "student_mae": 1.7631,
+          "rmse_gap": 0.0204,
+          "teacher_rmse": 2.2267,
+          "student_rmse": 2.2063
+        }
+      },
+      "top_mcc_shift": {
+        "passed": true,
+        "metrics": {
+          "auc_gap": 0.0364,
+          "agreement_rate": 0.9985,
+          "jsd": 0.0002,
+          "ranking_corr": 0.9651,
+          "calibration_gap": 0.0084
+        }
+      }
+    }
+  },
+  "feature_selection": {
+    "churn_signal": {
+      "selected": 280,
+      "original": 349,
+      "reduction_pct": 19.8
+    },
+    "product_stability": {
+      "selected": 278,
+      "original": 349,
+      "reduction_pct": 20.3
+    },
+    "nba_primary": {
+      "selected": 283,
+      "original": 349,
+      "reduction_pct": 18.9
+    },
+    "cross_sell_count": {
+      "selected": 273,
+      "original": 349,
+      "reduction_pct": 21.8
+    },
+    "will_acquire_deposits": {
+      "selected": 284,
+      "original": 349,
+      "reduction_pct": 18.6
+    },
+    "will_acquire_investments": {
+      "selected": 281,
+      "original": 349,
+      "reduction_pct": 19.5
+    },
+    "will_acquire_accounts": {
+      "selected": 283,
+      "original": 349,
+      "reduction_pct": 18.9
+    },
+    "will_acquire_lending": {
+      "selected": 282,
+      "original": 349,
+      "reduction_pct": 19.2
+    },
+    "will_acquire_payments": {
+      "selected": 281,
+      "original": 349,
+      "reduction_pct": 19.5
+    },
+    "segment_prediction": {
+      "selected": 276,
+      "original": 349,
+      "reduction_pct": 20.9
+    },
+    "next_mcc": {
+      "selected": 284,
+      "original": 349,
+      "reduction_pct": 18.6
+    },
+    "mcc_diversity_trend": {
+      "selected": 278,
+      "original": 349,
+      "reduction_pct": 20.3
+    },
+    "top_mcc_shift": {
+      "selected": 280,
+      "original": 349,
+      "reduction_pct": 19.8
+    }
+  }
+}

@@ -1,0 +1,196 @@
+{
+  "status": "FAILED",
+  "passed": 3,
+  "failed": 10,
+  "failed_tasks": [
+    "churn_signal",
+    "nba_primary",
+    "cross_sell_count",
+    "will_acquire_deposits",
+    "will_acquire_investments",
+    "will_acquire_accounts",
+    "will_acquire_lending",
+    "will_acquire_payments",
+    "segment_prediction",
+    "next_mcc"
+  ],
+  "details": {
+    "churn_signal": {
+      "passed": false,
+      "metrics": {
+        "auc_gap": 0.022322783015296555,
+        "agreement_rate": 0.889104,
+        "jsd": 0.006419604787721322,
+        "ranking_corr": 0.9640769199517628,
+        "calibration_gap": 0.10129147420403481
+      },
+      "failures": [
+        "calibration_gap=0.1013 > 0.05"
+      ]
+    },
+    "product_stability": {
+      "passed": true,
+      "metrics": {
+        "ranking_corr": 0.9480970733991547,
+        "quartile_agreement": 0.781119,
+        "mae_gap": 0.0011415663248660612,
+        "teacher_mae": 0.1231529638171196,
+        "student_mae": 0.12201139749225354,
+        "rmse_gap": 0.0013933890636491642,
+        "teacher_rmse": 0.15275411307811737,
+        "student_rmse": 0.1513607240144682
+      },
+      "failures": []
+    },
+    "nba_primary": {
+      "passed": false,
+      "metrics": {
+        "agreement_rate": 0.154444,
+        "jsd": 0.026370608331140463,
+        "f1_macro_gap": 0.11111671264771202,
+        "teacher_f1_macro": 0.186707601162176,
+        "student_f1_macro": 0.07559088851446398
+      },
+      "failures": [
+        "f1_macro_gap=0.1111 > 0.1",
+        "agreement=0.1544 < 0.7"
+      ]
+    },
+    "cross_sell_count": {
+      "passed": false,
+      "metrics": {
+        "ranking_corr": 0.9487463237919515,
+        "quartile_agreement": 0.804434,
+        "mae_gap": 0.018302047601712834,
+        "teacher_mae": 0.9517163634300232,
+        "student_mae": 0.970018411031736,
+        "rmse_gap": 0.17576057847984572,
+        "teacher_rmse": 2.4119951725006104,
+        "student_rmse": 2.2362345940207646
+      },
+      "failures": [
+        "rmse_gap=0.1758 > 0.1"
+      ]
+    },
+    "will_acquire_deposits": {
+      "passed": false,
+      "metrics": {
+        "auc_gap": 0.01769765208044849,
+        "agreement_rate": 0.798062,
+        "jsd": 0.00489076406921293,
+        "ranking_corr": 0.9851764612415079,
+        "calibration_gap": 0.09104886524326572
+      },
+      "failures": [
+        "agreement=0.7981 < 0.85",
+        "calibration_gap=0.0910 > 0.05"
+      ]
+    },
+    "will_acquire_investments": {
+      "passed": false,
+      "metrics": {
+        "auc_gap": 0.023204669694254276,
+        "agreement_rate": 0.797262,
+        "jsd": 0.005325224976529129,
+        "ranking_corr": 0.9752297189988652,
+        "calibration_gap": 0.09571368019997131
+      },
+      "failures": [
+        "agreement=0.7973 < 0.85",
+        "calibration_gap=0.0957 > 0.05"
+      ]
+    },
+    "will_acquire_accounts": {
+      "passed": false,
+      "metrics": {
+        "auc_gap": 0.023829657505613167,
+        "agreement_rate": 0.924522,
+        "jsd": 0.00449359433611221,
+        "ranking_corr": 0.9818416596140421,
+        "calibration_gap": 0.08218456536596583
+      },
+      "failures": [
+        "calibration_gap=0.0822 > 0.05"
+      ]
+    },
+    "will_acquire_lending": {
+      "passed": false,
+      "metrics": {
+        "auc_gap": 0.025557408159273654,
+        "agreement_rate": 0.812173,
+        "jsd": 0.0052463563486206816,
+        "ranking_corr": 0.9626039776077193,
+        "calibration_gap": 0.09444675590587201
+      },
+      "failures": [
+        "agreement=0.8122 < 0.85",
+        "calibration_gap=0.0944 > 0.05"
+      ]
+    },
+    "will_acquire_payments": {
+      "passed": false,
+      "metrics": {
+        "auc_gap": 0.031934041519678824,
+        "agreement_rate": 0.908032,
+        "jsd": 0.004989184860561303,
+        "ranking_corr": 0.976724504976901,
+        "calibration_gap": 0.08931002342182601
+      },
+      "failures": [
+        "calibration_gap=0.0893 > 0.05"
+      ]
+    },
+    "segment_prediction": {
+      "passed": false,
+      "metrics": {
+        "agreement_rate": 0.218027,
+        "jsd": 0.023156067832401525,
+        "f1_macro_gap": 0.22208198430225798,
+        "teacher_f1_macro": 0.40341980517538667,
+        "student_f1_macro": 0.1813378208731287
+      },
+      "failures": [
+        "f1_macro_gap=0.2221 > 0.1",
+        "agreement=0.2180 < 0.7"
+      ]
+    },
+    "next_mcc": {
+      "passed": false,
+      "metrics": {
+        "agreement_rate": 0.012505,
+        "jsd": 0.09909788033529633,
+        "f1_macro_gap": 0.005567324785215348,
+        "teacher_f1_macro": 0.011832870521795531,
+        "student_f1_macro": 0.01740019530701088
+      },
+      "failures": [
+        "agreement=0.0125 < 0.7"
+      ]
+    },
+    "mcc_diversity_trend": {
+      "passed": true,
+      "metrics": {
+        "ranking_corr": 0.9693892642821414,
+        "quartile_agreement": 0.803577,
+        "mae_gap": 0.01662469042286885,
+        "teacher_mae": 1.77968430519104,
+        "student_mae": 1.7630596147681712,
+        "rmse_gap": 0.020416338316346483,
+        "teacher_rmse": 2.2266664505004883,
+        "student_rmse": 2.206250112184142
+      },
+      "failures": []
+    },
+    "top_mcc_shift": {
+      "passed": true,
+      "metrics": {
+        "auc_gap": 0.036385487407136874,
+        "agreement_rate": 0.99848,
+        "jsd": 0.0002089992245321302,
+        "ranking_corr": 0.9650578366886713,
+        "calibration_gap": 0.008389818141654194
+      },
+      "failures": []
+    }
+  }
+}
