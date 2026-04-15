@@ -128,6 +128,14 @@ def upload_checkpoint(
     )
     s3.upload_file(str(local), s3_bucket, s3_key)
 
+    # Also upload config.json if it exists alongside the checkpoint
+    # (teacher_loader.py needs it for feature_schema + label_schema)
+    config_json = local.parent / "config.json"
+    if config_json.exists():
+        config_key = f"{S3_CHECKPOINT_PREFIX}/{scenario}/config.json"
+        logger.info("Uploading config.json -> s3://%s/%s", s3_bucket, config_key)
+        s3.upload_file(str(config_json), s3_bucket, config_key)
+
     dir_uri = f"s3://{s3_bucket}/{S3_CHECKPOINT_PREFIX}/{scenario}/"
     logger.info("Checkpoint uploaded. S3 model channel: %s", dir_uri)
     return dir_uri
