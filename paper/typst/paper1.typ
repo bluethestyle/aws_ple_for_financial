@@ -237,9 +237,12 @@ Expert collapse manifests in two forms:
 due to shared architecture and gradient dynamics;
 (2) _routing collapse_ --- gate weights concentrate on a single expert,
 effectively deactivating others regardless of their functional diversity.
-Our heterogeneous expert design structurally prevents (1),
-while sigmoid gating @sigmoid_moe2024 mitigates (2)
-by allowing independent, non-competitive expert contributions.
+Our heterogeneous expert design structurally prevents (1).
+For (2), prior work suggests sigmoid gating @sigmoid_moe2024 mitigates routing collapse
+through independent expert contributions.
+However, our ablation (Section 5.3) reveals that in heterogeneous task settings,
+softmax's competitive isolation better protects minority-type tasks ---
+a reversal of the homogeneous-task finding.
 
 Our work provides a *structural guarantee* against expert collapse:
 a DeepFM expert cannot converge to the same function as an HGCN expert
@@ -300,10 +303,10 @@ each capturing a fundamentally different aspect of customer identity:
     align: left,
     stroke: 0.5pt,
     [*DNA*], [*Question*], [*Tasks*],
-    [Engagement], [What do they _do_?], [engagement #linebreak() next_mcc #linebreak() mcc_trend #linebreak() top_mcc_shift],
-    [Lifecycle], [Where _are_ they?], [churn #linebreak() segment],
-    [Value], [How much are they _worth_?], [cross_sell #linebreak() stability],
-    [Consumption], [What _will_ they buy?], [will_acquire\_\* (5), nba_primary],
+    [Engagement], [What do they _do_?], [next\_mcc #linebreak() mcc\_diversity\_trend #linebreak() top\_mcc\_shift],
+    [Lifecycle], [Where _are_ they?], [churn\_signal #linebreak() segment\_prediction],
+    [Value], [How much are they _worth_?], [cross\_sell\_count #linebreak() product\_stability],
+    [Consumption], [What _will_ they buy?], [will\_acquire\_\* (5) #linebreak() nba\_primary],
   ),
   caption: [Financial DNA decomposition (Axis 1). Four irreducible dimensions of customer identity.],
 ) <tab:dna-axis>
@@ -726,11 +729,15 @@ We implement both gate types for empirical comparison:
 
 The sigmoid variant evaluates each expert's relevance independently
 before normalization, allowing multiple experts to receive high weight simultaneously.
-This is particularly important for tasks that require multiple analytical perspectives ---
-for example, churn prediction benefits from both temporal trends _and_ causal pathways,
-and neither should be suppressed to boost the other.
-The structure ablation compares these gate types
-with 20-epoch training to assess convergence behavior.
+The theoretical expectation is that sigmoid benefits heterogeneous experts
+by preserving non-redundant signals.
+However, our structure ablation (Section 5.3) reveals a surprising reversal:
+softmax *outperforms* sigmoid in the 13-task heterogeneous setting,
+because its competitive allocation *protects* minority-type tasks
+(multiclass, regression) from gradient corruption by the majority type (binary).
+This finding challenges the theoretical prediction and highlights
+that task-type heterogeneity, not just expert heterogeneity,
+determines the optimal gate design.
 
 === Temporal Ensemble: Expert-within-Expert
 
@@ -861,6 +868,10 @@ which is architecturally cumbersome when experts produce outputs of different sh
 if two tasks have similar gradient directions (high cosine similarity),
 their losses reinforce each other, regardless of the expert that produced the prediction.
 
+_Note_: While theoretically motivated, our ablation (Section 5.3) shows that adaTT
+*degrades* performance at the 13-task scale due to 156-pair affinity estimation instability.
+GradSurgery (Section 5.3) is proposed as a gradient-level alternative.
+
 == Logit Transfer
 
 While adaTT handles symmetric inter-task relationships,
@@ -920,10 +931,10 @@ $w_(t,k)$ carries business meaning without additional interpretation:
 
 #block(inset: 8pt, stroke: 0.5pt + gray, radius: 3pt, width: 100%)[
   #text(size: 9pt)[
-    _Example_: For customer $c$, the recommendation of investment funds is driven by: \
-    #h(1em) Temporal (0.35) --- spending has been increasing over 3 months \
-    #h(1em) HGCN (0.28) --- merchant category hierarchy places investment MCC near current spending \
-    #h(1em) DeepFM (0.22) --- income × product-holding interaction pattern \
+    _Example_: For customer $c$, the recommendation of a commuter check card is driven by: \
+    #h(1em) Temporal (0.35) --- card spending has been increasing over 3 months \
+    #h(1em) HGCN (0.28) --- merchant category hierarchy shows concentration in transit and convenience MCCs \
+    #h(1em) DeepFM (0.22) --- commute-related product × channel interaction pattern \
     #h(1em) Others (0.15)
   ]
 ]
@@ -1241,7 +1252,7 @@ Four of seven experts show negative transfer (removing them _improves_ aggregate
 
 == Explainability Analysis (RQ5)
 
-The sigmoid CGC gate produces sparse, interpretable routing weights: each expert receives a non-negative weight independent of other experts, enabling direct attribution of "which expert contributed how much" per task. Unlike softmax gates where weights are coupled through the normalization denominator, sigmoid weights allow a task to strongly activate multiple experts simultaneously or suppress all but one. We examine per-task gate weight distributions across all 13 tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition (e.g., temporal expert weighted highly for churn prediction, causal expert for intervention-sensitive tasks).
+The CGC gate produces interpretable routing weights that enable direct attribution of "which expert contributed how much" per task. Under the recommended softmax configuration, weights sum to one, making relative contributions directly comparable. We examine per-task gate weight distributions across all 13 tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition (e.g., temporal expert weighted highly for churn prediction, causal expert for intervention-sensitive tasks).
 
 Gate weights from the CGC extraction layers provide per-task expert utilization profiles. Tasks with low entropy ratio (e.g., top_mcc_shift at 0.347) concentrate on 1--2 experts, providing clear attribution: the recommendation is driven primarily by the dominant expert's feature group. Tasks with high entropy (e.g., will_acquire_payments at 0.882) leverage diverse experts, requiring multi-factor explanation. This entropy-based explainability directly maps to the Financial DNA task groups and enables the rule-based fallback (Layer 3) to select appropriate explanation templates per task.
 
