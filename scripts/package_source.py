@@ -46,6 +46,7 @@ _INCLUDE_DIRS = [
     "core",
     "containers/training",
     "containers/evaluation",
+    "containers/distillation",   # PLE -> LGBM distillation entry point
     # New split-config layout
     "configs/datasets",          # dataset-specific YAMLs (e.g. santander.yaml)
     # Legacy layout — kept for backward compatibility
@@ -112,12 +113,13 @@ def build_staging(
     """Create a lightweight staging directory for SageMaker jobs.
 
     Copies:
-      - containers/training/train.py  (training entry point)
-      - containers/evaluation/        (eval entry point)
-      - core/                         (model, training, data, pipeline)
-      - configs/pipeline.yaml         (common pipeline config)
-      - configs/datasets/             (dataset-specific YAMLs)
-      - configs/santander/            (legacy layout, kept for backward compat)
+      - containers/training/train.py     (training entry point)
+      - containers/evaluation/           (eval entry point)
+      - containers/distillation/         (PLE -> LGBM distillation entry point)
+      - core/                            (model, training, data, pipeline)
+      - configs/pipeline.yaml            (common pipeline config)
+      - configs/datasets/                (dataset-specific YAMLs)
+      - configs/santander/               (legacy layout, kept for backward compat)
 
     Excludes __pycache__ and .pyc files.
 
