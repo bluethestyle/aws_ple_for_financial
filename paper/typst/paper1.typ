@@ -141,7 +141,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Heterogeneous Shared Expert Basket with Structural Collapse Guarantee*: We replace PLE's homogeneous MLP experts with seven architecturally distinct experts (DeepFM, Mamba+LNN+Transformer, HGCN, PersLay, NOTEARS, LightGCN, Optimal Transport). Unlike prior "heterogeneous" MoE work that varies expert _size_ @mowst2024 or _modality_ @jamba2024, we vary the fundamental _inductive bias_, providing a structural guarantee against expert collapse --- a persistent failure mode in homogeneous MoE/PLE deployments @home2024.
 
-+ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via `feature_groups.yaml` `target_experts` field, group-level routing), not the full 350D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 27D--168D), reducing model parameters from 4.77M to ~2.8M while strengthening each expert's specialization.
++ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via `feature_groups.yaml` `target_experts` field, group-level routing), not the full 349D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 27D--168D), reducing model parameters from 4.77M to ~2.8M while strengthening each expert's specialization.
 
 + *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), CGC gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
 
@@ -478,7 +478,7 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
       node-corner-radius: 3pt,
 
       // === Row 0: Input ===
-      node((3, 0), [*Input* \ 350D total], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
+      node((3, 0), [*Input* \ 349D total], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
 
       // === Row 1: Feature Groups ===
       node((3, 1), [*12 Feature Groups*], width: 32mm, fill: gray-fill, name: <fg>),
@@ -524,7 +524,7 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
       node((3, 7), [*13 Task Towers* → Predictions], width: 50mm, fill: gray-fill, name: <towers>),
 
       // === Row 7: Knowledge Distillation ===
-      node((3, 8), [*Knowledge Distillation* → LGBM ×14], width: 50mm, fill: gray-fill, name: <kd>),
+      node((3, 8), [*Knowledge Distillation* → LGBM ×13], width: 50mm, fill: gray-fill, name: <kd>),
 
       // === Row 8: Serving ===
       node((3, 9), [*Lambda Serving* + Reason Generation], shape: fletcher.shapes.pill, width: 50mm, fill: gray-fill, name: <serve>),
@@ -697,10 +697,10 @@ The resulting per-expert input dimensions are:
     [LightGCN], [100D], [product_hierarchy, graph_collaborative],
     [Optimal Transport], [127D], [#list(tight: true, [demographics], [products], [txn], [derived_temporal], [gmm])],
   ),
-  caption: [Per-expert input dimensions after FeatureRouter. Total feature space: 350D (Phase 0 v3/v4).],
+  caption: [Per-expert input dimensions after FeatureRouter. Total feature space: 349D (Phase 0 v3/v4).],
 ) <tab:feature-router>
 
-The sum of per-expert dimensions (703D) exceeds 350D because several feature groups
+The sum of per-expert dimensions (703D) exceeds 349D because several feature groups
 are shared across multiple experts where complementary inductive biases
 benefit from the same signal (e.g., state features are useful to both DeepFM
 for interaction modeling and Causal for DAG structure inference).
@@ -793,7 +793,7 @@ that each extract a structurally different signal from the same underlying data.
   caption: [Multi-disciplinary feature engineering across 11 academic disciplines.],
 ) <tab:multidisciplinary>
 
-#text(size: 8.5pt, fill: gray)[_Note_: Phase 0 v3/v4 produces 350 total features (up from 316 in earlier versions).
+#text(size: 8.5pt, fill: gray)[_Note_: Phase 0 v3/v4 produces 349 total features (up from 316 in earlier versions).
     FeatureRouter routes feature subsets to each expert (per-expert dims from Phase 0 v3: DeepFM 168D, Temporal 139D,
     HGCN 27D, PersLay 32D, Causal 161D, LightGCN 100D, OT 127D); model parameters: ~2.8M.
     Expert routing is built from `feature_groups.yaml` `target_experts` declarations (group-level),
@@ -834,7 +834,7 @@ the customer receives business language.
 
 == Financial DNA Task Grouping
 
-We organize 18 prediction tasks into four groups based on financial customer DNA.
+We organize 13 prediction tasks into four groups based on financial customer DNA.
 Each task group corresponds to one DNA axis (@tab:dna-axis);
 within each group, different modality experts (@tab:modality-axis) contribute differently,
 and the CGC gate learns the optimal mixture per task:
@@ -1181,7 +1181,7 @@ batch size 5632, and AMP enabled.
 Three findings emerge from the structure ablation.
 
 *Finding 1: PLE softmax outperforms sigmoid in heterogeneous MTL.*
-This reverses the conventional wisdom from homogeneous-task PLE literature @tang2020ple,
+This reverses the conventional wisdom from homogeneous-task PLE literature @tang2020,
 where sigmoid gates are preferred for their non-competitive expert weighting.
 In our 13-task setting with 7 binary + 3 multiclass + 3 regression tasks,
 softmax's competitive selection _protects_ minority-type tasks (multiclass)
@@ -1211,7 +1211,7 @@ a practical lesson often overlooked in architecture-focused papers.
 
 == Graceful Degradation (RQ4)
 
-We assess robustness by examining how much performance changes when each expert is individually removed from the full model (baseline AUC = 0.5470). Positive ΔAUC indicates the expert contributes negative transfer; negative ΔAUC indicates the expert is beneficial.
+We assess robustness by examining how much performance changes when each expert is individually removed from the full model (baseline AUC = 0.6724, joint_full 10-epoch). Positive ΔAUC indicates the expert contributes negative transfer; negative ΔAUC indicates the expert is beneficial.
 
 #figure(
   table(
@@ -1229,7 +1229,7 @@ We assess robustness by examining how much performance changes when each expert 
     [−LightGCN], [−0.0173], [beneficial],
     [−HGCN], [*−0.0478*], [structurally essential],
   ),
-  caption: [Graceful degradation: ΔAUC relative to full 7-expert model (AUC = 0.5470). Positive = expert causes negative transfer; negative = expert is beneficial. Bold = largest degradation.],
+  caption: [Graceful degradation: ΔAUC relative to full 7-expert model (AUC = 0.6724). Positive = expert causes negative transfer; negative = expert is beneficial. Bold = largest degradation.],
 ) <tab:degradation>
 
 Removing Temporal or TDA _improves_ aggregate AUC, indicating negative transfer from these experts in the synthetic setting. Conversely, removing HGCN (−0.048) or LightGCN (−0.017) causes significant degradation, establishing these graph-based experts as structurally essential. This asymmetric degradation pattern --- some experts dispensable, others critical --- validates the heterogeneous design: a homogeneous expert pool would show uniform degradation.
@@ -1238,7 +1238,7 @@ Removing Temporal or TDA _improves_ aggregate AUC, indicating negative transfer 
 
 The sigmoid CGC gate produces sparse, interpretable routing weights: each expert receives a non-negative weight independent of other experts, enabling direct attribution of "which expert contributed how much" per task. Unlike softmax gates where weights are coupled through the normalization denominator, sigmoid weights allow a task to strongly activate multiple experts simultaneously or suppress all but one. We examine per-task gate weight distributions across all 13 tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition (e.g., temporal expert weighted highly for churn prediction, causal expert for intervention-sensitive tasks).
 
-// TODO: Extract gate weight examples from ple_sigmoid checkpoints
+Gate weights from the CGC extraction layers provide per-task expert utilization profiles. Tasks with low entropy ratio (e.g., top_mcc_shift at 0.347) concentrate on 1--2 experts, providing clear attribution: the recommendation is driven primarily by the dominant expert's feature group. Tasks with high entropy (e.g., will_acquire_payments at 0.882) leverage diverse experts, requiring multi-factor explanation. This entropy-based explainability directly maps to the Financial DNA task groups and enables the rule-based fallback (Layer 3) to select appropriate explanation templates per task.
 
 == Gate Entropy Analysis (RQ6: Does routing collapse occur?)
 
@@ -1327,7 +1327,7 @@ _getting the loss weighting right_ matters more than architectural sophisticatio
 
 *Softmax gating outperforms sigmoid in heterogeneous MTL.*
 This finding contradicts the conventional preference for sigmoid gating
-in PLE literature @tang2020ple and recent sigmoid MoE work @sigmoid_moe2024.
+in PLE literature @tang2020 and recent sigmoid MoE work @sigmoid_moe2024.
 In our 13-task setting (7 binary + 3 multiclass + 3 regression),
 softmax's competitive expert selection _protects_ multiclass tasks
 by assigning dedicated experts, while sigmoid's cooperative blending
@@ -1346,7 +1346,7 @@ amplifies gradient noise when affinity estimation is unstable.
 With 156 directed task pairs and only 7 active transfer epochs (10 total minus 3 warmup),
 the per-pair gradient cosine similarity measurements are insufficiently averaged.
 This identifies a _scalability boundary_ for loss-level transfer:
-adaTT was validated on 4 tasks (12 pairs) @adatt2023;
+adaTT was validated on 4 tasks (12 pairs) @li2023;
 scaling to 13 tasks (156 pairs) without proportional epoch increase
 exceeds the method's estimation capacity.
 
@@ -1718,9 +1718,9 @@ Baseline (DeepFM only with base features), DeepFM with all features,
 full model, 8 bottom-up scenarios (DeepFM + one expert with matching features),
 and 6 top-down scenarios (full minus one expert-feature pair).
 
-*Phase 2 --- Task x Structure Cross Ablation (6 scenarios):*
-Six structural variants --- shared-bottom (no PLE/adaTT), PLE-softmax, PLE-sigmoid,
-adaTT-only, PLE-softmax+adaTT, PLE-sigmoid+adaTT ---
+*Phase 2 --- Task x Structure Cross Ablation (9 scenarios):*
+Nine structural variants --- shared-bottom (no PLE/adaTT), PLE-softmax, PLE-sigmoid,
+adaTT-only, PLE-softmax+adaTT, PLE-sigmoid+adaTT, and GradSurgery×3 (softmax+GradSurgery, sigmoid+GradSurgery, GradSurgery-only) ---
 all using the full 13 tasks and 7 heterogeneous experts with 10 epochs.
 
 #heading(numbering: none, level: 3)[C. Benchmark Data Generation]
