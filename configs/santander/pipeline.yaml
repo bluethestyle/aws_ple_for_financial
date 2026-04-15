@@ -872,6 +872,18 @@ distillation:
     subsample: 0.8
     colsample_bytree: 0.8
 
+  # Per-task LGBM overrides (merged with lgbm defaults above)
+  task_lgbm_overrides:
+    cross_sell_count:
+      objective: huber       # Huber instead of L2 — robust to outliers (RMSE gap 0.176 fix)
+      alpha: 0.9             # Huber delta parameter
+    mcc_diversity_trend:
+      objective: huber
+      alpha: 0.9
+    product_stability:
+      objective: huber
+      alpha: 0.9
+
   # Teacher threshold gating — tasks below 2x random baseline
   # are routed to direct hard-label LGBM training (MRM safeguard)
   teacher_threshold:
