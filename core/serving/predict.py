@@ -434,6 +434,14 @@ class RecommendationService:
                         metadata.setdefault("rule_reasons", {})[task_name] = (
                             rule_result.get("reason", "")
                         )
+                        # contributing_features for reason pipeline
+                        # Convert [{name, value, role}] → [(name, value)]
+                        # for compatibility with generate_l1 / InterpretationRegistry
+                        cf = rule_result.get("contributing_features", [])
+                        if cf:
+                            metadata.setdefault("contributing_features", {})[task_name] = [
+                                (f["name"], f.get("value", 0.0)) for f in cf
+                            ]
                         logger.debug(
                             "FallbackRouter: task=%s → Layer 3 (rule), "
                             "rule=%s, confidence=%.3f",
@@ -496,6 +504,22 @@ class RecommendationService:
                         normalised[task_name] = strategy_default
 
         # ---- 7. Optional pipeline (scoring + reasons) ----
+        # Inject contributing_features from Layer 3 rules into context
+        # so RecommendationPipeline can use them as ig_top_features
+        # for reason generation (bypasses Agent 1 / IG computation).
+        layer3_features = metadata.get("contributing_features", {})
+        if layer3_features:
+            # Merge all Layer 3 task features into a single list for the pipeline
+            all_cf = []
+            for task_cf in layer3_features.values():
+                all_cf.extend(task_cf)
+            # Deduplicate by feature name, keep highest value
+            seen = {}
+            for name, value in all_cf:
+                if name not in seen or value > seen[name]:
+                    seen[name] = value
+            ctx["ig_top_features"] = sorted(seen.items(), key=lambda x: -x[1])
+
         recommendations: List[Dict[str, Any]] = []
         if self._pipeline is not None:
             recommendations = self._run_pipeline(
