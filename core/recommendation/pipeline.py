@@ -157,7 +157,18 @@ class RecommendationPipeline:
         # ---- Selector ----
         self.selector = TopKSelector(config)
 
-        # ---- Reason generation ----
+        # ---- Agent 1: Feature Selector + Fact Extractor ----
+        self.fact_extractor = None
+        fact_cfg = config.get("reason", {}).get("fact_extractor", {})
+        fact_config_path = fact_cfg.get("config_path", "")
+        if fact_config_path:
+            try:
+                from .reason.fact_extractor import FactExtractor
+                self.fact_extractor = FactExtractor(fact_config_path)
+            except Exception as exc:
+                logger.warning("FactExtractor init failed: %s", exc)
+
+        # ---- Agent 2: Reason generation ----
         self.enable_reasons: bool = pipe_cfg.get("enable_reasons", True)
         self.template_engine: Optional[TemplateEngine] = None
         if self.enable_reasons:
@@ -384,7 +395,18 @@ class RecommendationPipeline:
                     )
 
             if not cache_hit and self.template_engine and self.enable_reasons:
-                # ---- InterpretationRegistry → enrich ig_top_features (수정 1, 4) ----
+                # ---- Agent 1: Feature Selector + Fact Extractor ----
+                # Extract customer facts (runs for ALL layers — facts are
+                # independent of prediction method)
+                customer_facts: List[str] = []
+                if self.fact_extractor is not None:
+                    try:
+                        raw_features = customer_context or {}
+                        customer_facts = self.fact_extractor.extract(raw_features)
+                    except Exception:
+                        logger.debug("FactExtractor failed, continuing without facts", exc_info=True)
+
+                # ---- Agent 2: InterpretationRegistry → enrich ig_top_features ----
                 ig_features_for_reason = sel.get("ig_top_features", [])
                 if self.interpretation_registry is not None and ig_features_for_reason:
                     interp_results = self.interpretation_registry.interpret_batch(
@@ -431,6 +453,9 @@ class RecommendationPipeline:
                     )
 
             meta: Dict[str, Any] = {}
+            # Agent 1 output: customer facts for audit trail / L2a enrichment
+            if customer_facts:
+                meta["customer_facts"] = customer_facts
             # ---- Feature interpretation (수정 1): prefer InterpretationRegistry ----
             if self.interpretation_registry is not None:
                 ig_features = sel.get("ig_top_features", [])
