@@ -368,7 +368,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     fe_path = os.path.join(os.path.dirname(__file__), fe_path)
                 fact_extractor = FactExtractor(fe_path)
                 _CACHE["_fact_extractor"] = fact_extractor
-            except Exception:
+            except Exception as _fe_exc:
+                logger.warning("FactExtractor init failed: %s", _fe_exc)
                 _CACHE["_fact_extractor"] = False
 
         # Agent 2: TemplateEngine
@@ -378,7 +379,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 from core.recommendation.reason.template_engine import TemplateEngine
                 template_engine = TemplateEngine(reason_cfg)
                 _CACHE["_template_engine"] = template_engine
-            except Exception:
+            except Exception as _te_exc:
+                logger.warning("TemplateEngine init failed: %s", _te_exc)
                 _CACHE["_template_engine"] = False
 
         # Generate reasons for top-3 tasks
@@ -433,7 +435,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     try:
                         bedrock_cfg = (
                             reason_cfg
-                            .get("reason", {})
                             .get("llm_provider", {})
                             .get("bedrock", {})
                         )
