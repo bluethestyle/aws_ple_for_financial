@@ -154,7 +154,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Uncertainty Weighting Correction*: We identify and fix a subtle implementation gap where per-task loss weights were silently ignored under uncertainty weighting --- yielding the single largest performance improvement ($+$0.018 NDCG\@3, $+$0.031 F1-macro), larger than any architectural change.
 
-+ *Comprehensive Ablation*: 9 structure scenarios $times$ 15 expert scenarios on a reproducible 1M-customer benchmark with Gaussian Copula + latent variable variance budget.
++ *Comprehensive Ablation*: 27 scenarios (18 joint feature+expert + 9 structure cross) on a reproducible 1M-customer benchmark with Gaussian Copula + latent variable variance budget.
 
 + *Config-driven Pipeline*: End-to-end system (feature engineering → training → distillation → serving) controlled by two configuration files, enabling deployment by teams with 1--2 ML engineers.
 
@@ -1604,6 +1604,10 @@ DDP support is architecturally designed but not yet experimentally validated.
 *LLM dependency.*
 Recommendation reason generation relies on LLM inference,
 introducing latency and cost trade-offs (detailed in companion paper).
+
+== Ethics and Data Statement
+
+All experiments in this paper use *fully synthetic benchmark data* generated via Gaussian Copula with a fixed random seed (seed=42). No real customer data is included or was used in any reported experiment. The benchmark data generator and all configuration files are publicly available in the repository. The system is designed for deployment on low-risk check card products only; investment and insurance recommendations are explicitly excluded from the operational scope (see companion paper, Section 6.3).
 
 == Future Work: Scaling Considerations
 
