@@ -689,8 +689,8 @@ A rule-based engine extracts Korean facts from feature values --- deterministica
   ["리스크 회피 성향" (risk-averse tendency)],
 )
 
-These facts are extracted at Phase 0 batch time, stored in the context vector store,
-and injected into the L2a prompt as a "Customer Facts" section at serving time.
+These facts are extracted at serving time via config-driven rules (15 categories)
+and injected into the L2a prompt as a "Customer Facts" section.
 The L2a model (Claude Sonnet 4.6 on AWS; Exaone 3.5 on-premises) then generates reasons *with customer understanding*, not just raw feature values.
 
 Rules are defined in a YAML configuration file
@@ -1420,9 +1420,9 @@ First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the 
     [L2a first call (Bedrock Sonnet)], [2.4s], [~\$0.01], [On-demand; cached thereafter],
     [L2a cache hit], [6ms], [< \$0.001], [DynamoDB; measured],
     [Cold start], [~6s], [—], [S3 model download; amortized],
-    [Vector search (1M rows)], [63ms], [< \$0.01], [DuckDB vss brute-force cosine],
+    [LanceDB case search], [< 100ms], [< \$0.01], [Cold-start grounding; past recommendation cases],
   ),
-  caption: [Serving latency breakdown (Lambda serverless, no GPU). Measured values on warm Lambda. Vector search used for cold-start\/new customer grounding via DuckDB vss on Lance format files.],
+  caption: [Serving latency breakdown (Lambda serverless, no GPU). Measured values on warm Lambda. LanceDB stores accumulated recommendation cases (LGBM top features + generated reasons); cold-start customers search similar past cases for grounding.],
 ) <tab:serving>
 
 Of the 13 tasks served by the production Lambda: 10 tasks are served by Layer 2 LGBM
