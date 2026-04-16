@@ -177,6 +177,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
         }
 
+    # ---- On-demand L2a reason request ----
+    # Invoked with {"action": "reason", "user_id": "...", "task_name": "...", "l1_text": "..."}
+    # when the customer clicks a product detail / requests explanation.
+    # Returns cached L2a if available, otherwise calls Bedrock synchronously and caches.
+    if event.get("action") == "reason":
+        return _handle_reason_request(event, t0)
+
     user_id: str = event.get("user_id", "")
     features: Dict[str, float] = event.get("features", {})
     ctx: Dict[str, Any] = event.get("context", {})
@@ -629,6 +636,144 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logger.warning("Monitoring write failed (non-fatal)", exc_info=True)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# On-demand L2a reason generation
+# ---------------------------------------------------------------------------
+
+def _handle_reason_request(event: Dict[str, Any], t0: float) -> Dict[str, Any]:
+    """Handle on-demand L2a reason request (product detail / explanation click).
+
+    Flow:
+      1. Check DynamoDB reason_cache → if hit, return immediately
+      2. If miss, call Bedrock Sonnet synchronously → cache → return
+    """
+    user_id = event.get("user_id", "")
+    task_name = event.get("task_name", "")
+    l1_text = event.get("l1_text", "")
+    facts = event.get("facts", "")
+    similar_context = event.get("similar_context", "")
+
+    if not user_id or not task_name:
+        return {"error": "user_id and task_name required", "status": 400}
+
+    import boto3
+    ddb = _CACHE.get("_ddb_client")
+    if ddb is None:
+        ddb = boto3.client("dynamodb", region_name=REGION)
+        _CACHE["_ddb_client"] = ddb
+
+    # 1. Cache lookup
+    cache_key = f"{user_id}:{task_name}"
+    try:
+        resp = ddb.get_item(
+            TableName="reason_cache",
+            Key={"pk": {"S": cache_key}},
+        )
+        if "Item" in resp:
+            cached = resp["Item"].get("l2a_reason", {}).get("S", "")
+            if cached:
+                return {
+                    "user_id": user_id,
+                    "task_name": task_name,
+                    "l2a_reason": cached,
+                    "source": "cache",
+                    "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                }
+    except Exception:
+        logger.debug("reason_cache lookup failed", exc_info=True)
+
+    # 2. Bedrock synchronous call
+    if not l1_text:
+        return {
+            "user_id": user_id,
+            "task_name": task_name,
+            "l2a_reason": "",
+            "source": "no_l1_text",
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+        }
+
+    try:
+        # Load config for model_id
+        reason_cfg = _CACHE.get("_reason_config")
+        if reason_cfg is None:
+            _local_cfg = os.path.join(os.path.dirname(__file__), "configs", "merged_config.json")
+            try:
+                with open(_local_cfg, encoding="utf-8") as _rcf:
+                    reason_cfg = json.load(_rcf)
+                _CACHE["_reason_config"] = reason_cfg
+            except Exception:
+                reason_cfg = {}
+
+        bedrock_cfg = reason_cfg.get("llm_provider", {}).get("bedrock", {})
+        model_cfg = bedrock_cfg.get("models", {}).get("reason_generation", {})
+        model_id = model_cfg.get("model_id", "global.anthropic.claude-sonnet-4-6")
+        bedrock_region = bedrock_cfg.get("region", REGION)
+
+        bedrock_client = boto3.client("bedrock-runtime", region_name=bedrock_region)
+
+        context_parts = [l1_text]
+        if facts:
+            context_parts.append(f"고객 특성: {facts}")
+        if similar_context:
+            context_parts.append(f"유사 고객 참고: {similar_context}")
+
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": int(model_cfg.get("max_tokens", 256)),
+            "temperature": float(model_cfg.get("temperature", 0.3)),
+            "system": (
+                "당신은 금융 상품 추천사유 작성자입니다. "
+                "입력된 추천사유를 고객에게 전달할 자연스러운 한국어 1~2문장으로 "
+                "다듬어 출력하세요. 분석, 검토, 마크다운, 제목, 목록 없이 "
+                "오직 다듬어진 문장만 출력하세요."
+            ),
+            "messages": [{"role": "user", "content": "\n".join(context_parts)}],
+        })
+
+        response = bedrock_client.invoke_model(
+            modelId=model_id, body=body,
+            contentType="application/json", accept="application/json",
+        )
+        result = json.loads(response["body"].read())
+        l2a_text = result.get("content", [{}])[0].get("text", "").strip()
+
+        # Cache the result
+        if l2a_text:
+            ttl = int(time.time()) + 24 * 3600
+            ddb.put_item(
+                TableName="reason_cache",
+                Item={
+                    "pk": {"S": cache_key},
+                    "user_id": {"S": user_id},
+                    "task_name": {"S": task_name},
+                    "l2a_reason": {"S": l2a_text},
+                    "model_id": {"S": model_id},
+                    "created_at": {"S": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+                    "ttl": {"N": str(ttl)},
+                },
+            )
+
+        return {
+            "user_id": user_id,
+            "task_name": task_name,
+            "l2a_reason": l2a_text or l1_text,
+            "source": "bedrock",
+            "model_id": model_id,
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+        }
+
+    except Exception as exc:
+        logger.warning("L2a on-demand failed: %s", exc, exc_info=True)
+        return {
+            "user_id": user_id,
+            "task_name": task_name,
+            "l2a_reason": l1_text,
+            "source": "fallback",
+            "error": str(exc),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+        }
 
 
 # ---------------------------------------------------------------------------
