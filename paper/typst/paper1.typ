@@ -1244,17 +1244,17 @@ We assess each expert's contribution by examining how performance changes when i
     table.header(
       [*Removed Expert*], [*ΔAUC*], [*Interpretation*],
     ),
-    [−Temporal], [+0.0283], [negative transfer],
-    [−TDA], [+0.0238], [negative transfer],
-    [−Causal], [+0.0170], [negative transfer],
-    [−OT], [+0.0163], [negative transfer],
-    [−LightGCN], [−0.0173], [beneficial],
-    [−HGCN], [*−0.0478*], [structurally essential],
+    [−LightGCN], [+0.0003], [marginal negative transfer],
+    [−TDA], [+0.0002], [marginal negative transfer],
+    [−Temporal], [+0.0001], [negligible],
+    [−Causal], [+0.0001], [negligible],
+    [−HGCN], [0.0000], [neutral],
+    [−OT], [*−0.0004*], [marginal benefit],
   ),
-  caption: [Expert contribution analysis: ΔAUC relative to full 7-expert model (AUC = 0.6724). Positive = expert causes negative transfer; negative = expert is beneficial. Bold = largest degradation.],
+  caption: [Expert contribution analysis: ΔAUC relative to full 7-expert model (AUC = 0.6724). Values computed from @tab:joint-ablation top-down results. Magnitudes are small ($<$ 0.001) due to synthetic data limitations --- genuine expert differentiation requires production data with real behavioral signals.],
 ) <tab:degradation>
 
-Four of seven experts show negative transfer (removing them _improves_ aggregate AUC), while two graph-based experts (HGCN, LightGCN) are clearly beneficial. This asymmetric pattern requires careful interpretation along three dimensions.
+Expert ΔAUC magnitudes are uniformly small ($<$ 0.001), reflecting the synthetic benchmark's limited capacity to differentiate experts. No expert is clearly beneficial or harmful at this scale. This near-uniform result requires careful interpretation along three dimensions.
 
 *Synthetic data limitation.* The negative transfer from Temporal and TDA is attributable to the synthetic benchmark's data characteristics. Synthetic transaction sequences lack genuine temporal patterns --- MCC codes are generated from persona-weighted distributions with stickiness, but without real behavioral dynamics such as seasonality, life-event triggers, or spending regime changes. When an expert's inductive bias (temporal dynamics, topological persistence) has no matching signal in the data, it injects noise into the shared representation. In production data where genuine behavioral sequences carry predictive signal, these experts' contributions are expected to change substantially.
 
