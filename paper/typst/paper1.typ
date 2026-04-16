@@ -568,10 +568,7 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
       edge(<towers>, <kd>, "->"),
       edge(<kd>, <serve>, "->"),
 
-      // === adaTT: dashed arrows (optional, disabled by default) ===
-      edge(<tg1>, <tg2>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)], label-anchor: "north", label-sep: 2pt),
-      edge(<tg2>, <tg3>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)], label-anchor: "north", label-sep: 2pt),
-      edge(<tg3>, <tg4>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)], label-anchor: "north", label-sep: 2pt),
+      // adaTT arrows removed — adaTT degrades at 13-task scale (Section 5.3)
 
 
     )
@@ -1303,22 +1300,24 @@ Low-entropy tasks concentrate on 1--2 experts; high-entropy tasks draw broadly a
 CGC attention weights remain perfectly uniform across all tasks, indicating that expert selection operates at the extraction layer, not at the attention aggregation layer.
 
 #figure(
+  placement: top,
+  scope: "parent",
   table(
-    columns: (auto, auto, auto, auto),
-    inset: 4pt,
+    columns: (1.2fr, 0.6fr, 0.6fr, 1fr),
+    inset: 5pt,
     align: (left, right, right, left),
     stroke: 0.5pt,
     table.header(
-      [*Task*], [*Layer 1 $H/log K$*], [*Layer 2 $H/log K$*], [*Interpretation*],
+      [*Task*], [*Layer 1 $H\/log K$*], [*Layer 2 $H\/log K$*], [*Interpretation*],
     ),
-    [top_mcc_shift],      [0.347], [0.542], [Single expert dominance],
-    [product_stability],  [0.428], [0.705], [Concentrated routing],
-    [segment_prediction], [0.612], [0.332], [Layer 2 concentrates],
-    [nba_primary],        [0.877], [0.724], [Diverse expert usage],
-    [will_acquire_payments], [0.882], [0.688], [Diverse expert usage],
+    [top\_mcc\_shift],          [0.347], [0.542], [Single expert dominance],
+    [product\_stability],      [0.428], [0.705], [Concentrated routing],
+    [segment\_prediction],     [0.612], [0.332], [Layer 2 concentrates],
+    [nba\_primary],            [0.877], [0.724], [Diverse expert usage],
+    [will\_acquire\_payments],  [0.882], [0.688], [Diverse expert usage],
     [CGC Attention (all tasks)], [1.000], [1.000], [Uniform (undifferentiated)],
   ),
-  caption: [Per-task CGC gate entropy ratios ($H_t \/ log K$; higher = more uniform expert usage).],
+  caption: [Per-task CGC gate entropy ratios ($H_t \/ log K$; higher = more uniform).],
 ) <tab:gate-entropy>
 
 The divergence between extraction-layer and attention-layer routing

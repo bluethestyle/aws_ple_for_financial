@@ -116,7 +116,7 @@ We propose a full-chain solution from prediction to persuasion:
 
 + *3-Agent Reason Generation Pipeline*: Role-separated agents (selection → generation → safety) with independent improvement and audit logging.
 
-+ *Safety Gate for Financial Compliance*: Automated checking for hallucination, inappropriate investment advice, and regulatory violations (Financial Consumer Protection Act (금소법), Suitability Principle (적합성 원칙)).
++ *Safety Gate for Financial Compliance*: Automated checking for hallucination, inappropriate investment advice, and regulatory violations (Financial Consumer Protection Act (금소법, FCPA), Suitability Principle).
 
 + *5-Agent Architecture (3 Serving + 2 Ops)*: Beyond the 3 serving agents, two operational agents (OpsAgent, AuditAgent) interpret monitoring and compliance outputs in natural language, enabling small-team MLOps without dedicated MLOps staff.
 
@@ -233,9 +233,9 @@ enabling independent improvement of each component.
       node((1.5, 3.6), [*Lambda Serving* \ #text(size: 8pt)[GPU-free real-time inference] \ #text(size: 8pt)[3-layer fallback, LGBM gain features]], width: 55mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
 
       edge(<teacher>, <gate>, "->", label: [per-task perf.]),
-      edge(<gate>, <distill>, "->", label: [DISTILL], label-pos: 0.35),
-      edge(<gate>, <direct>, "->", label: [DIRECT]),
-      edge(<gate>, <rule>, "->", label: [SKIP], label-pos: 0.35),
+      edge(<gate>, <distill>, "->", label: [DISTILL], label-side: left),
+      edge(<gate>, <direct>, "->", label: [DIRECT], label-side: left),
+      edge(<gate>, <rule>, "->", label: [SKIP], label-side: right),
       edge(<distill>, <serve>, "->"),
       edge(<direct>, <serve>, "->"),
       edge(<rule>, <serve>, "->"),
@@ -399,16 +399,32 @@ and a core principle of SR 11-7 model risk management @fed2011sr117.
 
 All three layers are integrated into a unified Lambda serving path:
 
-```
-Customer request → Lambda Handler
-  → RecommendationService.predict()
-    → FallbackRouter.route_all()
-    ├── Layer 1/2: LGBM predict → Platt calibration → response
-    └── Layer 3: RuleBasedRecommender.predict() → response
-    → contributing_features → InterpretationRegistry reverse mapping
-    → 3-agent reason pipeline (FactExtractor → TemplateEngine → SelfChecker)
-  → Response with prediction + reason + audit trail
-```
+#figure(
+  fletcher.diagram(
+    spacing: (10pt, 12pt),
+    node-stroke: 0.5pt + luma(100),
+    edge-stroke: 0.6pt + luma(100),
+    node-corner-radius: 3pt,
+
+    node((1, 0), [*Customer Request*], fill: luma(240), width: 42mm),
+    edge((1, 0), (1, 0.8), "->"),
+    node((1, 0.8), [*Lambda Handler* \ #text(size: 7pt)[FallbackRouter.route\_all()]], fill: rgb("#d6e6f0"), width: 48mm),
+
+    edge((1, 0.8), (0, 1.8), "->", label: [L1/L2], label-side: left),
+    edge((1, 0.8), (2, 1.8), "->", label: [L3], label-side: right),
+
+    node((0, 1.8), [*LGBM Predict* \ #text(size: 7pt)[+ Platt calibration]], fill: rgb("#e8f5e9"), width: 36mm),
+    node((2, 1.8), [*Rule Engine* \ #text(size: 7pt)[Financial DNA rules]], fill: rgb("#fce4ec"), width: 36mm),
+
+    edge((0, 1.8), (1, 2.8), "->"),
+    edge((2, 1.8), (1, 2.8), "->"),
+
+    node((1, 2.8), [*Reason Pipeline* \ #text(size: 7pt)[Feature Selector → Generator → Safety Gate]], fill: rgb("#fff3e0"), width: 55mm),
+    edge((1, 2.8), (1, 3.6), "->"),
+    node((1, 3.6), [*Response* \ #text(size: 7pt)[prediction + reason + audit trail]], fill: luma(240), width: 48mm),
+  ),
+  caption: [Lambda serving integration. FallbackRouter auto-routes to Layer 1/2 (LGBM) or Layer 3 (rules).],
+)
 
 Key integration properties:
 - `FallbackRouter` auto-routes each task to its appropriate layer based on availability and metric thresholds; the caller is unaware of which layer served the prediction.
@@ -544,7 +560,7 @@ The interpretation registry interprets features into Korean via a 5-level cascad
 )
 
 Only features unresolved by this cascade fall to raw fallback.
-The reverse-mapping layer is integrated as Level RM, so glossary value-substitution templates (e.g., `"월 평균 \{value\}건 거래"` — "average \{value\} monthly transactions") operate as part of the cascade. All fallback text outputs Korean.
+The reverse-mapping layer is integrated as Level RM, so glossary value-substitution templates (e.g., "average \{value\} monthly transactions") operate as part of the cascade. All fallback text outputs are generated in Korean; English translations are shown throughout this paper. Korean originals are available in the public repository.
 
 == 3-Agent Pipeline Architecture
 
@@ -630,17 +646,15 @@ Grounding constraints:
   )[
     #text(size: 9pt)[
       *L1 (template, 0.1ms):* \
-      "소비 패턴의 변화에 맞춘 혜택입니다. 다양한 소비 카테고리를 활용하시는 고객님께 맞춤 소비 혜택을 추천드립니다." \
-      #text(size: 8pt, style: "italic")[[EN: "Benefits tailored to your changing spending patterns. We recommend customized spending benefits for your diverse category usage."]] \
+      "Benefits tailored to your changing spending patterns. We recommend customized spending benefits for your diverse category usage." \
       \
       *L2a (Bedrock Claude Sonnet rewrite, 2.4s):* \
-      "고객님의 다양한 소비 패턴에 맞춰 여러 카테고리에서 실질적인 혜택을 누리실 수 있도록 맞춤 소비 혜택 상품을 추천드립니다." \
-      #text(size: 8pt, style: "italic")[[EN: "We recommend a customized spending benefit product so you can enjoy practical benefits across multiple categories."]] \
+      "We recommend a customized spending benefit product so you can enjoy practical benefits across multiple categories." \
       \
       _SelfChecker verdict: pass_
     ]
   ],
-  caption: [Actual Lambda production output for task top\_mcc\_shift (customer 10). L1 template in 0.1ms; L2a Bedrock rewrite cached at 6ms. [Output in Korean; English translation: "Benefits tailored to your changing spending patterns." → "We recommend a customized spending benefit product across multiple categories."]],
+  caption: [Actual Lambda production output for task top\_mcc\_shift (customer 10). L1 template in 0.1ms; L2a Bedrock rewrite cached at 6ms. English translations are shown above; Korean originals are in the public repository.],
 ) <fig:reason-example>
 
 === Agent 3: Safety Gate
@@ -665,7 +679,7 @@ Implemented as `SelfChecker`, this agent validates the generated reason against:
 
 On failure: automatic fallback to template-based safe reason.
 All gate decisions are logged for audit trail.
-Upstream of the 3-agent pipeline, the constraint engine applies eligibility and suitability filters --- verifying customer context, usage patterns, and product-specific constraints --- so that no recommendation reaches the customer without passing a suitability check, as required by the Korean Financial Consumer Protection Act (금소법) Article 19.
+Upstream of the 3-agent pipeline, the constraint engine applies eligibility and suitability filters --- verifying customer context, usage patterns, and product-specific constraints --- so that no recommendation reaches the customer without passing a suitability check, as required by the Korean Financial Consumer Protection Act (금소법, FCPA) Article 19.
 
 === Serving Model Selection
 
@@ -686,7 +700,7 @@ llm_provider:
 
 The three serving layers of reason generation map to Bedrock invocation as follows:
 - *L1 (synchronous)*: Template-based, ~1ms latency, always available. No Bedrock call; the TemplateEngine generates deterministic Korean from InterpretationRegistry reverse-mappings. This is the guaranteed fallback for all customers.
-- *L2a (on-demand)*: When a customer clicks for detail, a synchronous Bedrock Claude Sonnet call rewrites the L1 template into richer, more natural Korean (first call ~2.4s); the result is cached in DynamoDB so subsequent requests return instantly (~6ms cache hit). Processing priority is determined by context richness (data availability), not customer tier, satisfying the equal-explanation obligation (금소법 §19).
+- *L2a (on-demand)*: When a customer clicks for detail, a synchronous Bedrock Claude Sonnet call rewrites the L1 template into richer, more natural Korean (first call ~2.4s); the result is cached in DynamoDB so subsequent requests return instantly (~6ms cache hit). Processing priority is determined by context richness (data availability), not customer tier, satisfying the equal-explanation obligation (FCPA §19).
 - *L2b (async)*: Bedrock validates L2a output for PII leakage, hallucination, and regulatory compliance before promotion. Human review is applied to a 5% sampling for quality assurance.
 
 The Bedrock infrastructure is shared between reason generation and operational agents (Section 5); time-slot separation resolves quota contention.
@@ -698,9 +712,9 @@ the fact extraction layer adds *customer-level narrative facts*.
 A rule-based engine extracts Korean facts from feature values --- deterministically and without any LLM calls. Example facts include:
 
 #list(tight: true,
-  ["예적금 중심 포트폴리오" (deposit-focused portfolio)],
-  ["최근 3개월 카드 사용 증가" (recent card usage growth)],
-  ["리스크 회피 성향" (risk-averse tendency)],
+  ["Deposit-focused portfolio"],
+  ["Recent 3-month card usage growth"],
+  ["Risk-averse tendency"],
 )
 
 These facts are extracted at serving time via config-driven rules (15 categories)
@@ -790,14 +804,11 @@ The OpsAgent runs after training completion and drift monitoring DAG executions.
   )[
     #text(size: 9pt)[
       *OpsAgent CP4 finding (measured):* \
-      "증류 fidelity gap 0.1858 > 임계값 0.05. 8/10 태스크 calibration\_gap 초과.
-      교사 모델 변경 또는 피처 분포 변동 가능성.
-      해당 태스크의 교사-학생 예측 분포 비교 분석 권장." \
-      #text(size: 8pt, style: "italic")[[EN: "Distillation fidelity gap 0.1858 > threshold 0.05. 8/10 tasks exceeded calibration gap. Possible teacher model change or feature distribution shift. Recommend comparing teacher-student prediction distributions for affected tasks."]] \
+      "Distillation fidelity gap 0.1858 > threshold 0.05. 8/10 tasks exceeded calibration gap. Possible teacher model change or feature distribution shift. Recommend comparing teacher-student prediction distributions for affected tasks." \
       _3-agent consensus: 3/3 FAIL (unanimous)_
     ]
   ],
-  caption: [OpsAgent Model Health Report --- actual CP4 distillation finding with 3-agent consensus verdict. [Report text translated from Korean: "Distillation fidelity gap 0.1858 \> threshold 0.05. 8/10 tasks exceeded calibration\_gap. Possible teacher model change or feature distribution shift. Recommend comparing teacher-student prediction distributions for affected tasks."]],
+  caption: [OpsAgent Model Health Report --- actual CP4 distillation finding with 3-agent consensus verdict. Report generated in Korean; English translation shown above.],
 ) <fig:opsagent-example>
 
 *Triggers*: drift monitoring DAG completion, training job completion.
@@ -830,13 +841,11 @@ opt-out statistics, governance checklist status.
   )[
     #text(size: 9pt)[
       *AuditAgent finding (measured):* \
-      "추천사유 grounding score 0.33 (임계값 0.50): top-3 태스크 중 1개만 한글 키워드 매칭.
-      편향 DI = 1.0 (4개 보호그룹 동등 처리). 금소법 적합성 위반 0건 (5개 룰 검증 완료)." \
-      #text(size: 8pt, style: "italic")[[EN: "Grounding score 0.33 (threshold 0.50): only 1 of top-3 tasks had Korean keyword match. Bias DI = 1.0 (4 protected groups treated equally). Financial Consumer Protection Act violations: 0 (5 rules verified)."]] \
-      _3-agent consensus: grounding FAIL (1W+2F), fairness WARN (2P+1W), 금소법 (FCPA) PASS (3/3 unanimous)_
+      "Recommendation reason grounding score 0.33 (threshold 0.50): only 1 of top-3 tasks had keyword match. Bias DI = 1.0 (4 protected groups treated equally). Financial Consumer Protection Act (금소법) violations: 0 (5 rules verified)." \
+      _3-agent consensus: grounding FAIL (1W+2F), fairness WARN (2P+1W), FCPA PASS (3/3 unanimous)_
     ]
   ],
-  caption: [AuditAgent Regulatory Compliance Report --- actual measured results with consensus verdicts. [Report text translated from Korean: "Recommendation reason grounding score 0.33 (threshold 0.50): only 1 of top-3 tasks had Korean keyword match. Bias DI = 1.0 (4 protected groups treated equally). Financial Consumer Protection Act suitability violations: 0 (5 rules verified)."]],
+  caption: [AuditAgent Regulatory Compliance Report --- actual measured results with consensus verdicts. Report generated in Korean; English translation shown above.],
 ) <fig:auditagent-example>
 
 *Triggers*: fairness monitoring DAG completion, quarterly governance cycle.
@@ -974,9 +983,9 @@ any FAIL vote yields FAIL verdict regardless of majority.
     [*AuditAgent Item*], [*Votes*], [*Verdict*], [*Minority*],
     [Reason grounding (score 0.33)], [1 WARN + 2 FAIL], [FAIL], [$alpha$ (less strict)],
     [Fairness DI = 1.0], [2 PASS + 1 WARN], [WARN], [$alpha$ (conservative)],
-    [FCPA (금소법) compliance], [3/3 PASS], [PASS], [none (unanimous)],
+    [FCPA compliance], [3/3 PASS], [PASS], [none (unanimous)],
   ),
-  caption: [AuditAgent 3-agent consensus results. Grounding score 0.33 triggers FAIL (1 of 3 sampled tasks). Fairness DI = 1.0 is ideal but $alpha$ flags small-sample caveat. Financial Consumer Protection Act (금소법) compliance: unanimous PASS, 5 rules, 0 violations.],
+  caption: [AuditAgent 3-agent consensus results. Grounding score 0.33 triggers FAIL (1 of 3 sampled tasks). Fairness DI = 1.0 is ideal but $alpha$ flags small-sample caveat. Financial Consumer Protection Act (금소법, FCPA) compliance: unanimous PASS, 5 rules, 0 violations.],
 ) <tab:audit-consensus>
 
 == Diagnostic Case Store
@@ -1080,13 +1089,13 @@ enabling operators to discuss the impact assessment interactively.
 
 === Compliance Pipeline Implementation
 
-The GDPR/금소법 compliance obligations listed above are enforced through a pipeline of four modules connected to the Lambda handler and `RecommendationService`:
+The GDPR/FCPA compliance obligations listed above are enforced through a pipeline of four modules connected to the Lambda handler and `RecommendationService`:
 
 - *`ConsentManager`*: verifies that the customer has granted AI recommendation consent before any prediction is executed. Absence of consent short-circuits the pipeline and returns a compliant blocked response without logging feature data.
 
 - *`AIDecisionOptOut`*: implements GDPR Article 22 and Korean Personal Information Protection Act (PIPA) right to refuse AI profiling. When a customer's opt-out flag is set, the handler returns a blocked response immediately, before any model inference occurs.
 
-- *`RegulatoryComplianceChecker`*: runs 금소법 §17 suitability assessment before the recommendation is generated. Product risk level is compared against the customer's registered risk tolerance; unsuitable recommendations are blocked with an audit record rather than silently filtered.
+- *`RegulatoryComplianceChecker`*: runs FCPA §17 suitability assessment before the recommendation is generated. Product risk level is compared against the customer's registered risk tolerance; unsuitable recommendations are blocked with an audit record rather than silently filtered.
 
 - *`ProfilingRightsManager`*: handles data access and deletion requests under GDPR Articles 15 and 17, providing a single entry point for data-subject rights requests that propagates to the feature store and audit tables.
 
@@ -1381,11 +1390,11 @@ TemplateEngine before L2a Bedrock rewrite.
     align: (left, left),
     stroke: 0.5pt,
     [*Task*], [*L1 Template Reason*],
-    [top\_mcc\_shift], [소비 패턴의 변화에 맞춘 혜택입니다. 다양한 소비 카테고리를 활용하시는 고객님께 맞춤 소비 혜택을(를) 추천드립니다.],
-    [will\_acquire\_investments#super[†]], [고객님의 재무 목표에 부합할 수 있습니다. 현재 금융 라이프사이클 단계에 적합한 투자 상품입니다.],
-    [churn\_signal], [고객님의 소중한 거래 관계를 유지하고자 합니다. 고객님의 이용 패턴을 분석하여 고객 유지 프로그램을(를) 추천드립니다.],
+    [top\_mcc\_shift], [Benefits tailored to your changing spending patterns. We recommend customized spending benefits for your diverse category usage.(를)],
+    [will\_acquire\_investments#super[†]], [This may align with your financial goals. This investment product is suited to your current financial lifecycle stage.],
+    [churn\_signal], [We aim to maintain your valued transaction relationship. We analyze your usage patterns to recommend a customer retention program.(를)],
   ),
-  caption: [L1 template reason examples from production Lambda (ple-predict), in Korean, before L2a rewrite. The artifact "(를)" in rows 1 and 3 is the type of defect L2a corrects. †Benchmark-only task; deployment restricted to low-risk products (Section 6.3). [Row 1: "Benefits tailored to your changing spending patterns." Row 2: "May align with your financial goals." Row 3: "We aim to maintain your valued transaction relationship."]],
+  caption: [L1 template reason examples from production Lambda (ple-predict), translated from Korean, before L2a rewrite. The artifact "(를)" in rows 1 and 3 is the type of grammatical defect L2a corrects (a Korean object-marker placeholder left by the template engine). †Benchmark-only task; deployment restricted to low-risk products (Section 6.3).],
 ) <tab:l1-reasons>
 
 === L2a Bedrock Rewrite Example
@@ -1398,17 +1407,15 @@ Below is the measured before/after pair for the `top_mcc_shift` task:
   inset: 8pt,
   radius: 4pt,
   [
-    *L1 (template):* 소비 패턴의 변화에 맞춘 혜택입니다. 다양한 소비 카테고리를 활용하시는 고객님께 맞춤 소비 혜택을(를) 추천드립니다. \
-    #text(size: 8pt, style: "italic")[[EN: "Benefits tailored to your changing spending patterns. We recommend customized spending benefits for your diverse category usage."]]
+    *L1 (template):* "Benefits tailored to your changing spending patterns. We recommend customized spending benefits for your diverse category usage.(를)" \
+    #text(size: 8pt, style: "italic")[Note: "(를)" is a Korean object-marker placeholder artifact left by the template engine; L2a eliminates it.]
 
-    *L2a (Bedrock rewrite):* 고객님의 다양한 소비 패턴에 맞춰 여러 카테고리에서 실질적인 혜택을 누리실 수 있도록 맞춤 소비 혜택 상품을 추천드립니다. \
-    #text(size: 8pt, style: "italic")[[EN: "We recommend a customized spending benefit product so you can enjoy practical benefits across multiple categories."]]
+    *L2a (Bedrock rewrite):* "We recommend a customized spending benefit product so you can enjoy practical benefits across multiple categories in line with your diverse spending patterns."
   ]
 )
 
-The L2a rewrite eliminates the template artifact "(를)", merges the two-sentence structure
-into a single coherent utterance, and preserves the grounding signal (소비 패턴 [spending patterns], 카테고리 [categories], 혜택 [benefits]).
-[L2a output translated: "We recommend a customized spending benefit product so that you can enjoy practical benefits across multiple categories in line with your diverse spending patterns."]
+The L2a rewrite eliminates the template artifact "(를)" (a Korean object-marker placeholder), merges the two-sentence structure
+into a single coherent utterance, and preserves the grounding signal (spending patterns, categories, benefits).
 First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the same
 (task, feature-signature) pair retrieve the cached result from DynamoDB in 6ms.
 
@@ -1467,7 +1474,7 @@ _checklist compliance_, _audit trail integrity_, and _fairness metrics_.
 
 *Checklist compliance.*
 The system implements 14 regulatory requirements mapped from
-the Korean Financial Consumer Protection Act (금소법) Articles 17--19,
+the Korean Financial Consumer Protection Act (금소법, FCPA) Articles 17--19,
 EU AI Act Articles 13--14, and FSS AI Guidelines.
 Key items include: suitability assessment before recommendation (Art. 19),
 AI-generated content disclosure (Art. 17),
@@ -1760,9 +1767,11 @@ or financial domain practice, organized by Financial DNA task group.
 #figure(
   placement: top,
   scope: "parent",
+  {set text(size: 8pt)
   table(
-    columns: (auto, auto, auto, auto, auto, auto),
+    columns: (0.7fr, 1fr, 1.2fr, 1fr, 1fr, 1.2fr),
     align: (left, left, left, left, left, left),
+    inset: 4pt,
     stroke: 0.5pt,
     [*DNA Group*], [*Task*], [*Rule*], [*Theory*], [*Trigger*], [*Key Features*],
     [Engagement], [churn_signal], [RFM 30/60/90-day decline], [Relationship Marketing (Berry '83)], [R/F/M all declining], [HMM lifecycle, TDA persistence, Mamba temporal],
@@ -1778,8 +1787,8 @@ or financial domain practice, organized by Financial DNA task group.
     [Value], [cross_sell_count], [CLV tier target - current holdings], [Share of wallet (PwC)], [Product gap > 0], [LightGCN, GMM cluster, HGCN],
     [Consumption], [next_mcc], [MCC frequency Top-K + seasonality], [Habitual buying behavior], [Pattern continuation], [Mamba temporal, merchant_hierarchy, TDA local],
     [Consumption], [mcc_diversity_trend], [PIH transitory income signal], [Friedman PIH (1957)], [Income shock detected], [economics PIH, TDA global, GMM],
-  ),
-  caption: [Layer 3 rule-based fallback rules per task, organized by Financial DNA group. All rules are subject to the suitability constraint (FCPA Article 17).],
+  )},
+  caption: [Layer 3 rule-based fallback rules per task. All rules subject to FCPA Article 17 suitability constraint.],
 ) <tab:fallback-rules>
 
 All 13 rules share a common regulatory floor: the customer's risk tolerance grade
