@@ -224,18 +224,18 @@ enabling independent improvement of each component.
 
       node((1, 1.2), [*Threshold Gate* \ #text(size: 8pt)[AUC $>$ 0.60 / F1 $>$ 2/K / R² $>$ 0.05] \ #text(size: 8pt)[routes: DISTILL / DIRECT / SKIP]], width: 65mm, fill: gate-fill, name: <gate>),
 
-      node((0.3, 2.4), [*LGBM Student* \ #text(size: 8pt)[soft labels (7 tasks)] \ #text(size: 8pt)[CPU, daily inference]], width: 45mm, fill: student-fill, name: <distill>),
+      node((0, 3), [*LGBM Student* \ #text(size: 8pt)[soft labels (7 tasks)] \ #text(size: 8pt)[CPU, daily inference]], width: 45mm, fill: student-fill, name: <distill>),
 
-      node((1.5, 2.4), [*LGBM Direct* \ #text(size: 8pt)[hard labels (3 tasks)] \ #text(size: 8pt)[teacher bypass]], width: 45mm, fill: student-fill, name: <direct>),
+      node((1, 3), [*LGBM Direct* \ #text(size: 8pt)[hard labels (3 tasks)] \ #text(size: 8pt)[teacher bypass]], width: 45mm, fill: student-fill, name: <direct>),
 
-      node((2.7, 2.4), [*Rule Engine* \ #text(size: 8pt)[Financial DNA heuristics] \ #text(size: 8pt)[(3 tasks)]], width: 45mm, fill: rule-fill, name: <rule>),
+      node((2, 3), [*Rule Engine* \ #text(size: 8pt)[Financial DNA heuristics] \ #text(size: 8pt)[(3 tasks)]], width: 45mm, fill: rule-fill, name: <rule>),
 
-      node((1.5, 3.6), [*Lambda Serving* \ #text(size: 8pt)[GPU-free real-time inference] \ #text(size: 8pt)[3-layer fallback, LGBM gain features]], width: 55mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
+      node((1, 4.2), [*Lambda Serving* \ #text(size: 8pt)[GPU-free real-time inference] \ #text(size: 8pt)[3-layer fallback, LGBM gain features]], width: 55mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
 
       edge(<teacher>, <gate>, "->", label: [per-task perf.]),
-      edge(<gate>, <distill>, "->", label: [DISTILL], label-side: left),
+      edge(<gate>, <distill>, "->", label: [DISTILL], label-side: right),
       edge(<gate>, <direct>, "->", label: [DIRECT], label-side: left),
-      edge(<gate>, <rule>, "->", label: [SKIP], label-side: right),
+      edge(<gate>, <rule>, "->", label: [SKIP], label-side: left),
       edge(<distill>, <serve>, "->"),
       edge(<direct>, <serve>, "->"),
       edge(<rule>, <serve>, "->"),
@@ -407,21 +407,21 @@ All three layers are integrated into a unified Lambda serving path:
     node-corner-radius: 3pt,
 
     node((1, 0), [*Customer Request*], fill: luma(240), width: 42mm),
-    edge((1, 0), (1, 0.8), "->"),
-    node((1, 0.8), [*Lambda Handler* \ #text(size: 7pt)[FallbackRouter.route\_all()]], fill: rgb("#d6e6f0"), width: 48mm),
+    edge((1, 0), (1, 1.0), "->"),
+    node((1, 1.0), [*Lambda Handler* \ #text(size: 7pt)[FallbackRouter.route\_all()]], fill: rgb("#d6e6f0"), width: 48mm),
 
-    edge((1, 0.8), (0, 1.8), "->", label: [L1/L2], label-side: left),
-    edge((1, 0.8), (2, 1.8), "->", label: [L3], label-side: right),
+    edge((1, 1.0), (0.4, 3), "->", label: [L1/L2], label-side: left),
+    edge((1, 1.0), (1.6, 3), "->", label: [L3], label-side: right),
 
-    node((0, 1.8), [*LGBM Predict* \ #text(size: 7pt)[+ Platt calibration]], fill: rgb("#e8f5e9"), width: 36mm),
-    node((2, 1.8), [*Rule Engine* \ #text(size: 7pt)[Financial DNA rules]], fill: rgb("#fce4ec"), width: 36mm),
+    node((0.4, 3), [*LGBM Predict* \ #text(size: 7pt)[Platt calibration]], fill: rgb("#e8f5e9"), width: 36mm),
+    node((1.6, 3), [*Rule Engine* \ #text(size: 7pt)[Financial DNA rules]], fill: rgb("#fce4ec"), width: 36mm),
 
-    edge((0, 1.8), (1, 2.8), "->"),
-    edge((2, 1.8), (1, 2.8), "->"),
+    edge((0.4, 3), (1, 4), "->"),
+    edge((1.6, 3), (1, 4), "->"),
 
-    node((1, 2.8), [*Reason Pipeline* \ #text(size: 7pt)[Feature Selector → Generator → Safety Gate]], fill: rgb("#fff3e0"), width: 55mm),
-    edge((1, 2.8), (1, 3.6), "->"),
-    node((1, 3.6), [*Response* \ #text(size: 7pt)[prediction + reason + audit trail]], fill: luma(240), width: 48mm),
+    node((1, 4), [*Reason Pipeline* \ #text(size: 7pt)[Feature Selector → Generator → Safety Gate]], fill: rgb("#fff3e0"), width: 55mm),
+    edge((1, 4), (1, 5), "->"),
+    node((1, 5), [*Response* \ #text(size: 7pt)[prediction + reason + audit trail]], fill: luma(240), width: 48mm),
   ),
   caption: [Lambda serving integration. FallbackRouter auto-routes to Layer 1/2 (LGBM) or Layer 3 (rules).],
 )
@@ -595,8 +595,8 @@ The reverse-mapping layer is integrated as Level RM, so glossary value-substitut
       edge(<pred>, <a1>, "->"),
       edge(<a1>, <a2>, "->", label: [selected features]),
       edge(<a2>, <a3>, "->", label: [generated reason]),
-      edge(<a3>, <pass>, "->", label: [pass]),
-      edge(<a3>, <fail>, "->", label: [fail]),
+      edge(<a3>, <pass>, "->"),
+      edge(<a3>, <fail>, "->"),
       edge(<a2>, <audit>, "->", stroke: 0.4pt + luma(160)),
       edge(<a3>, <audit>, "->", stroke: 0.4pt + luma(160)),
     )
@@ -1435,7 +1435,7 @@ First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the 
 
 #figure(placement: top, scope: "parent",
   table(
-    columns: (1fr, auto, auto, 1fr),
+    columns: (0.6fr, auto, auto, 1fr),
     inset: 5pt,
     align: (left, left, right, left),
     stroke: 0.5pt,
@@ -1764,22 +1764,22 @@ or financial domain practice, organized by Financial DNA task group.
   scope: "parent",
   {set text(size: 8pt)
   table(
-    columns: (0.7fr, 1fr, 1.2fr, 1fr, 1fr, 1.2fr),
+    columns: (0.6fr, 1.3fr, 1.2fr, 1fr, 1fr, 1.5fr),
     align: (left, left, left, left, left, left),
     inset: 4pt,
     stroke: 0.5pt,
     [*DNA Group*], [*Task*], [*Rule*], [*Theory*], [*Trigger*], [*Key Features*],
     [Engagement], [churn_signal], [RFM 30/60/90-day decline], [Relationship Marketing (Berry '83)], [R/F/M all declining], [HMM lifecycle, TDA persistence, Mamba temporal],
-    [Engagement], [top_mcc_shift], [MCC entropy change > threshold], [McKinsey CDJ triggers], [Lifestyle shift detected], [TDA local, merchant_hierarchy, Mamba temporal],
-    [Lifecycle], [nba_primary], [Product adjacency +1 step], [Kotler 5A journey], [Gap in product ladder], [GMM cluster, LightGCN, economics PIH],
-    [Lifecycle], [segment_prediction], [Balance x Frequency x Products], [CLV tiered model (Pareto)], [Segment re-classification], [GMM cluster ID, HMM behavior, TDA global],
+    [Engagement], [top_mcc_shift], [MCC entropy change > threshold], [McKinsey CDJ triggers], [Lifestyle shift detected], [TDA local,\ merchant_hierarchy,\ Mamba temporal],
+    [Lifecycle], [nba_primary], [Product adjacency +1 step], [Kotler 5A journey], [Gap in product ladder], [GMM cluster, LightGCN, \ economics PIH],
+    [Lifecycle], [segment_prediction], [Balance x Frequency x Products], [CLV tiered model (Pareto)], [Segment re-classification], [GMM cluster ID,\ HMM behavior, TDA global],
     [Lifecycle], [will_acquire_deposits], [Surplus ratio > 30% + no term deposit], [Lifecycle savings stage], [Idle cash detected], [economics PIH, HMM journey, GMM cluster],
-    [Lifecycle], [will_acquire_investments], [Suitability grade >= product risk], [Suitability (FCPA Art.17)], [Risk-matched opportunity], [causal NOTEARS, HGCN hyperbolic, economics],
+    [Lifecycle], [will_acquire_investments], [Suitability grade >= product risk], [Suitability (FCPA Art.17)], [Risk-matched opportunity], [causal NOTEARS,\ HGCN hyperbolic, economics],
     [Lifecycle], [will_acquire_accounts], [Salary pattern + non-primary], [SOW expansion (PwC)], [Primary bank conversion], [LightGCN, Mamba temporal, txn_behavior],
     [Lifecycle], [will_acquire_lending], [Credit grade 1--4 + DTI < 40%], [Credit scoring + suitability], [Refinance opportunity], [causal NOTEARS, economics PIH, HMM lifecycle],
-    [Lifecycle], [will_acquire_payments], [Top MCC + single card holder], [Habitual buying (Kotler)], [Spending-card mismatch], [merchant_hierarchy, TDA local, Mamba temporal],
+    [Lifecycle], [will_acquire_payments], [Top MCC + single card holder], [Habitual buying (Kotler)], [Spending-card mismatch], [merchant_hierarchy,\ TDA local, Mamba temporal],
     [Value], [product_stability], [30/60/90-day dormancy EWS], [Customer engagement (Gallup)], [Activity decline], [Mamba temporal, HMM behavior, TDA persistence],
-    [Value], [cross_sell_count], [CLV tier target - current holdings], [Share of wallet (PwC)], [Product gap > 0], [LightGCN, GMM cluster, HGCN],
+    [Value], [cross_sell_count], [CLV tier target - current holdings], [Share of wallet (PwC)], [Product gap > 0], [LightGCN, GMM cluster, \ HGCN],
     [Consumption], [next_mcc], [MCC frequency Top-K + seasonality], [Habitual buying behavior], [Pattern continuation], [Mamba temporal, merchant_hierarchy, TDA local],
     [Consumption], [mcc_diversity_trend], [PIH transitory income signal], [Friedman PIH (1957)], [Income shock detected], [economics PIH, TDA global, GMM],
   )},
