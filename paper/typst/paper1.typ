@@ -307,10 +307,8 @@ each capturing a fundamentally different aspect of customer identity:
     [Value], [How much are they _worth_?], [cross\_sell\_count #linebreak() product\_stability],
     [Consumption], [What _will_ they buy?], [will\_acquire\_\* (5) #linebreak() nba\_primary],
   ),
-  caption: [Financial DNA decomposition (Axis 1). Four irreducible dimensions of customer identity.],
+  caption: [Financial DNA decomposition (Axis 1). Four tasks removed in early development (income tier, tenure stage, spend level, engagement score) were deterministic feature transformations.],
 ) <tab:dna-axis>
-
-#footnote[Four tasks present in early development (income tier, tenure stage, spend level, engagement score) were removed after identifying them as deterministic feature transformations that do not constitute genuine prediction objectives.]
 
 *nba_primary target design.* `nba_primary` targets _product groups_ (7 classes), not individual product indices.
 The 7 classes are: 0 = no NBA, 1 = savings/guarantee, 2 = checking accounts, 3 = deposits, 4 = investments, 5 = credit loans, 6 = debits.
