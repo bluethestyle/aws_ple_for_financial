@@ -458,9 +458,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     "generation_method": "template_l1",
                 }
 
-            # --- LanceDB: Retrieve similar customer context (coldstart/new customers) ---
-            # For customers with sparse history, find similar existing customers
-            # to ground the reason generation with relevant context.
+            # --- LanceDB: Similar customer search (coldstart/new) ---
+            # Native lancedb ANN search on S3-hosted Lance format.
+            # Only triggered for sparse/new customers.
             similar_context = ""
             is_sparse = (
                 len([v for v in features.values() if v and v != 0.0]) < 50
@@ -469,39 +469,38 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             )
             if is_sparse:
                 try:
-                    _ctx_store = _CACHE.get("_context_store")
-                    if _ctx_store is None:
-                        from core.recommendation.reason.context_store import ContextVectorStore
-                        store_path = os.environ.get(
-                            "CONTEXT_STORE_PATH",
-                            reason_cfg.get("serving_prep", {}).get("context_store", {}).get(
-                                "store_path", "",
-                            ),
-                        )
+                    _lance_tbl = _CACHE.get("_lancedb_table")
+                    if _lance_tbl is None:
+                        store_path = os.environ.get("CONTEXT_STORE_PATH", "")
                         if store_path:
-                            _ctx_store = ContextVectorStore(store_path=store_path, backend="auto")
-                            _CACHE["_context_store"] = _ctx_store
+                            import lancedb as _ldb
+                            _db = _ldb.connect(store_path)
+                            _lance_tbl = _db.open_table("customer_context")
+                            _CACHE["_lancedb_table"] = _lance_tbl
+                            logger.info("LanceDB connected: %s", store_path)
                         else:
-                            _CACHE["_context_store"] = False
+                            _CACHE["_lancedb_table"] = False
 
-                    if _ctx_store and _ctx_store is not False:
+                    if _lance_tbl and _lance_tbl is not False:
                         import numpy as _np2
-                        feat_vector = _np2.array(
-                            [float(features.get(c, 0.0) or 0.0) for c in sorted(features.keys())[:349]],
-                            dtype=_np2.float32,
+                        _feat_keys = sorted(features.keys())[:349]
+                        _qvec = [float(features.get(c, 0.0) or 0.0) for c in _feat_keys]
+                        _results = (
+                            _lance_tbl.search(_qvec)
+                            .limit(3)
+                            .to_list()
                         )
-                        neighbors = _ctx_store.search(feat_vector, k=3)
-                        if neighbors:
+                        if _results:
                             similar_context = "; ".join(
-                                f"유사고객({n[0]}): {n[2].get('segment', '?')}"
-                                for n in neighbors
+                                f"유사고객({r.get('customer_id','?')}): {r.get('segment','?')}"
+                                for r in _results
                             )
                             logger.info(
-                                "LanceDB grounding: %d similar customers for sparse user %s",
-                                len(neighbors), user_id,
+                                "LanceDB search: %d similar customers for user %s",
+                                len(_results), user_id,
                             )
                 except Exception:
-                    logger.debug("LanceDB context retrieval failed (non-fatal)", exc_info=True)
+                    logger.debug("LanceDB search failed (non-fatal)", exc_info=True)
 
             # --- L2a Rewrite: async via SQS (non-blocking) ---
             # Publish L2a rewrite request to SQS queue. A separate consumer Lambda
