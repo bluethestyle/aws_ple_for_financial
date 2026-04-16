@@ -170,6 +170,10 @@ class RecommendationPipeline:
             if scoring_cfg.get("risk_penalty"):
                 rp = scoring_cfg["risk_penalty"]
                 scorer_sub["risk_threshold_churn"] = rp.get("max_churn_prob", 0.3)
+            if scoring_cfg.get("segment_task_weights"):
+                scorer_sub["segment_task_weights"] = scoring_cfg["segment_task_weights"]
+            if scoring_cfg.get("dynamic_weight_rules"):
+                scorer_sub["dynamic_weight_rules"] = scoring_cfg["dynamic_weight_rules"]
             config.setdefault("scorer", {})[scorer_name] = scorer_sub
         self.scorer: AbstractScorer = ScorerRegistry.create(scorer_name, config)
 

@@ -599,7 +599,7 @@ The platform deploys a **5-agent architecture**: 3 serving agents and 2 ops/audi
 
 | Agent | Type | Responsibility |
 |---|---|---|
-| Feature Selector | Serving | Selects relevant features per request using IG-based ranking |
+| Feature Selector | Serving | Selects relevant features per request using LGBM gain importance ranking |
 | Reason Generator | Serving | Produces human-readable recommendation rationales |
 | Safety Gate | Serving | Filters outputs against regulatory and fairness constraints |
 | OpsAgent | Ops/Audit | Monitors pipeline health, drift, and SLA adherence |
@@ -646,10 +646,11 @@ Requests are classified by context richness rather than customer tier:
 
 | Agent | Model |
 |---|---|
-| Reason Generator | Claude Sonnet |
-| Safety Gate | Claude Sonnet |
-| OpsAgent | Claude Haiku (high-frequency checks) |
-| AuditAgent | Claude Opus (weekly compliance reports) |
+| Reason Generator | Claude Sonnet 4.6 (`us.anthropic.claude-sonnet-4-5-20251101-v1:0`) |
+| Safety Gate | Claude Sonnet 4.6 (self-critique; factuality check uses Haiku 4.5) |
+| OpsAgent | Claude Sonnet 4.6 (`us.anthropic.claude-sonnet-4-5-20251101-v1:0`) |
+| AuditAgent | Claude Sonnet 4.6 (dialog) / Claude Opus (quarterly deep audit) |
+| Factuality Check | Claude Haiku 4.5 (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) |
 | Embeddings | Titan Embeddings V2 |
 
 **On-Premises:**

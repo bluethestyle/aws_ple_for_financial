@@ -36,6 +36,11 @@
 - **Checkpoint resume 시 epoch counting**: `remaining = target_epoch - current_epoch`. 총 시행횟수가 아닌 목표까지 남은 횟수만 진행.
 - **3계층 서빙 폴백**: Layer 1 (PLE→LGBM 증류) → Layer 2 (LGBM 직접 학습) → Layer 3 (금융 DNA 기반 룰). 서비스 중단 없는 구조.
 
+### 1.9 정규화 및 피처 범주화 규칙 (2026-04-15)
+- **Normalizer에서 범주형 ID와 확률 컬럼을 StandardScaler에서 제외**한다. 예: customer_id 파생 정수, 이미 [0,1] 범위인 calibrated 확률 컬럼은 scaler를 적용하면 분포가 왜곡된다. `feature_groups.yaml`의 `exclude_from_scaler: [categorical_id, probability]` 필드로 선언.
+- **피처 범주 맵은 feature_groups.yaml에서 자동 빌드**한다. `FEATURE_GROUP_COLUMN_PREFIXES` 같은 하드코딩 딕셔너리를 코드에 넣지 않는다. Phase 0 완료 후 feature_schema.json에 기록된 group→column 매핑을 읽는다.
+- **FD-TVS 태스크 가중치는 동적(세그먼트 × 행동)**이어야 한다. `scoring.segment_task_weights`(세그먼트 기반 승수, 1.0~1.5 클리핑)와 `scoring.dynamic_weight_rules`(피처 임계값 기반 부스팅)를 반드시 config-driven으로 관리한다. 온프레미스의 상품 단위 가중치 방식을 태스크 단위로 개선한 설계이다.
+
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:
   1. **Phase 0 출력 검증**: feature_stats.json에서 zero-variance 컬럼, NaN 비율, 생성된 피처 컬럼 수 확인

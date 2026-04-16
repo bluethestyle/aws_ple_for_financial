@@ -52,6 +52,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -82,9 +83,26 @@ class TemplateEngine:
             "item_name_map", {},
         )
 
-        # Feature prefix -> template category mapping
-        self.feature_category_map: Dict[str, str] = te_cfg.get(
-            "feature_category_map", {},
+        # Feature prefix -> template category mapping (config-driven only)
+        # Priority: feature_groups.yaml auto-map → pipeline.yaml overrides
+        self.feature_category_map: Dict[str, str] = {}
+
+        # Auto-map from feature_groups.yaml (interpretation.category per group)
+        _fg_path = te_cfg.get(
+            "feature_groups_path",
+            str(Path(config.get("_config_dir", "configs")) / "feature_groups.yaml"),
+        )
+        self._load_feature_groups(_fg_path)
+
+        # Config overrides from pipeline.yaml take highest priority
+        _config_map = te_cfg.get("feature_category_map", {})
+        self.feature_category_map.update(_config_map)
+
+        logger.info(
+            "Feature category map: %d entries (%d from feature_groups, %d from config)",
+            len(self.feature_category_map),
+            len(self.feature_category_map) - len(_config_map),
+            len(_config_map),
         )
 
         # Template pool: {category: [template_strings]}
@@ -467,8 +485,42 @@ class TemplateEngine:
     # Helpers
     # ------------------------------------------------------------------
 
+    def _load_feature_groups(self, path: str) -> None:
+        """Auto-build feature_category_map from feature_groups.yaml."""
+        from pathlib import Path
+        fg_path = Path(path)
+        if not fg_path.exists():
+            logger.debug("feature_groups.yaml not found at %s", path)
+            return
+        try:
+            import yaml
+            with open(fg_path, encoding="utf-8") as f:
+                fg_data = yaml.safe_load(f)
+            for group in fg_data.get("feature_groups", []):
+                interp = group.get("interpretation", {})
+                category = interp.get("category", "")
+                if not category:
+                    continue
+                # Map group columns to category
+                for col in group.get("columns", []):
+                    self.feature_category_map.setdefault(col, category)
+                # Also map group prefix for dynamically generated columns
+                prefix = group.get("prefix", group.get("name", ""))
+                if prefix:
+                    self.feature_category_map.setdefault(prefix, category)
+            logger.info(
+                "Auto-mapped %d entries from feature_groups.yaml",
+                len(self.feature_category_map),
+            )
+        except Exception as exc:
+            logger.warning("Failed to load feature_groups.yaml: %s", exc)
+
     def _classify_feature(self, feat_name: str) -> Optional[str]:
         """Map a feature name to a template category via prefix matching."""
+        # Exact match first
+        if feat_name in self.feature_category_map:
+            return self.feature_category_map[feat_name]
+        # Prefix match
         for prefix, category in self.feature_category_map.items():
             if feat_name.startswith(prefix):
                 return category

@@ -88,7 +88,7 @@ Store (RAG)        Reason Orchestrator
 | **7** | DataLoader | Cross-sectional auto-detect → random split / temporal split, PyArrow 로딩 | `containers/training/train.py` | - |
 | **8** | PLETrainer (2-phase) | PLE + adaTT + 7 heterogeneous experts, AMP FP32 loss, VRAM diagnostics; 체크포인트 재개 지원 (파일 패턴 고정, epoch 카운트 수정) | `core/training/trainer.py` | GPU required |
 | **8.5** | Model Analysis | IG, CCA, Gate Analysis, HGCN Interpretable, Multi Interpreter, Template Engine, XAI Quality, Model Card | `core/analysis/` | GPU partial |
-| **9** | StudentTrainer (Distillation) | PLE teacher → LGBM students (soft label + fidelity validation) | `core/distillation/` | - |
+| **9** | StudentTrainer (Distillation) | PLE teacher → LGBM students (soft label + fidelity validation); LGBM gain importance-based feature selection (OOM-safe, replaces teacher IG attribution) | `core/distillation/` | - |
 | **9.5** | Context Vector Store | 추천 사유 임베딩 저장소 (RAG retrieval) | `core/serving/context_store.py` | - |
 | **10** | CPE + Agentic Orchestrator | FD-TVS scoring, DNA modifier, L1+L2a+L2b 추론, constraint engine | `core/serving/` | - |
 

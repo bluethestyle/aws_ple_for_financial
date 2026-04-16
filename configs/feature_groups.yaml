@@ -1,126 +1,435 @@
-# Feature Group Definitions — Single Source of Truth
-#
-# This file defines every feature group in the pipeline.  Downstream systems
-# (reverse mapper, template engine, distillation) auto-configure themselves
-# from these definitions, eliminating manual config duplication.
-#
-# Usage:
-#   from core.feature.group_config import load_feature_groups
-#   groups = load_feature_groups("configs/feature_groups.yaml")
-#
-#   # Auto-configure downstream systems:
-#   reverse_mapper = ReverseMapper.from_feature_groups(groups)
-#   template_engine = TemplateEngine.from_feature_groups(groups)
-#   fg_distill = FeatureGroupDistillation(groups)
-#   pipeline = RecommendationPipeline.from_feature_groups(groups, config)
-
 feature_groups:
-
-  # -------------------------------------------------------------------------
-  # 1. Base customer profile (transform-type: modifies existing columns)
-  # -------------------------------------------------------------------------
-  - name: base_profile
-    type: transform
-    transformers: [standard_scaler]
-    columns: [age, income, tenure, total_spend]
-    output_dim: 4
-    target_experts: [deepfm, mlp]
-    interpretation:
-      category: demographics
-      template: "{feature} is {value}, indicating a {direction} customer profile"
-      narrative_lens: lifecycle
-      primary_tasks: [churn, ltv]
-    distill: true
-    distill_weight: 1.0
-
-  # -------------------------------------------------------------------------
-  # 2. TDA topological features (generate-type: creates new columns)
-  # -------------------------------------------------------------------------
-  - name: tda_topology
-    type: generate
-    generator: tda_extractor
-    generator_params:
-      short_window_days: 90
-      long_window_days: 365
-    output_dim: 70
-    target_experts: [temporal]
-    interpretation:
-      category: domain_topology
-      template: "Transaction topology shows {pattern} pattern"
-      narrative_lens: engagement
-      primary_tasks: [ctr, cvr]
-    distill: true
-    distill_weight: 0.5           # Hard to distill to LGBM
-
-  # -------------------------------------------------------------------------
-  # 3. HMM behavioural states
-  # -------------------------------------------------------------------------
-  - name: hmm_states
-    type: generate
-    generator: hmm_triple_mode
-    generator_params:
-      modes: [journey, lifecycle, behavior]
-      state_dim: 16
-    output_dim: 48
-    target_experts: [temporal]
-    interpretation:
-      category: behavioral_state
-      template: "Customer {mode} state indicates {state}"
-      narrative_lens: lifecycle
-      primary_tasks: [churn, retention, life_stage]
-    distill: false                 # Not distillable to LGBM
-
-  # -------------------------------------------------------------------------
-  # 4. Hyperbolic graph embeddings
-  # -------------------------------------------------------------------------
-  - name: graph_embeddings
-    type: generate
-    generator: hyperbolic_embedding
-    generator_params:
-      hierarchy_sources: [category, product, region]
-      curvature: 1.0
-    output_dim: 20
-    target_experts: []             # Plugin expert (HGCN) if available
-    interpretation:
-      category: graph_structure
-      template: "Position in {hierarchy} hierarchy suggests {insight}"
-      narrative_lens: consumption
-      primary_tasks: [nba, brand_prediction]
-    distill: false                 # Graph structure not distillable
-
-  # -------------------------------------------------------------------------
-  # 5. Multidisciplinary features (chemical kinetics, epidemics, etc.)
-  # -------------------------------------------------------------------------
-  - name: multidisciplinary
-    type: generate
-    generator: multidisciplinary
-    generator_params:
-      modules: [chemical_kinetics, epidemic_diffusion, interference, crime_pattern]
-    output_dim: 24
-    target_experts: [deepfm]
-    interpretation:
-      category: cross_domain
-      template: "{module}: {insight}"
-      narrative_lens: engagement
-      primary_tasks: [spending_category, merchant_affinity]
-    distill: true
-    distill_weight: 0.7
-
-  # -------------------------------------------------------------------------
-  # 6. Temporal pattern features
-  # -------------------------------------------------------------------------
-  - name: temporal_patterns
-    type: generate
-    generator: temporal_pattern
-    generator_params:
-      windows: [7, 30, 90]
-      features: [amount, count]
-    output_dim: 30
-    target_experts: [temporal, mamba]
-    interpretation:
-      category: temporal
-      template: "{window}-day {metric} trend is {direction}"
-      narrative_lens: engagement
-      primary_tasks: [engagement, timing]
-    distill: true
-    distill_weight: 1.0
+- name: demographics
+  columns:
+  - age
+  - income
+  - income_log
+  - months_observed
+  - tenure_months
+  interpretation:
+    category: demographics
+    description: Customer demographics (age, income, tenure)
+- name: product_holding
+  columns:
+  - num_products
+  - prod_auto_debit
+  - prod_checking
+  - prod_credit_card
+  - prod_derivados
+  - prod_direct_debit
+  - prod_e_account
+  - prod_funds
+  - prod_guarantee
+  - prod_home_acct
+  - prod_junior_acct
+  - prod_loans
+  - prod_long_deposit
+  - prod_medium_deposit
+  - prod_mortgage
+  - prod_particular_acct
+  - prod_particular_plus
+  - prod_payroll
+  - prod_payroll_acct
+  - prod_pension_deposit
+  - prod_pension_plan
+  - prod_saving
+  - prod_securities
+  - prod_short_deposit
+  - prod_taxes
+  - product_diversity
+  interpretation:
+    category: product_holding
+    description: Product portfolio composition
+- name: transaction_rfm
+  columns:
+  - synth_afternoon_ratio
+  - synth_evening_ratio
+  - synth_frequency
+  - synth_monthly_txns
+  - synth_morning_ratio
+  - synth_night_ratio
+  - synth_recency_days
+  interpretation:
+    category: transaction
+    description: RFM-based transaction behavior features
+- name: spending_pattern
+  columns:
+  - synth_avg_amount
+  - synth_monetary
+  - synth_monthly_spend
+  interpretation:
+    category: spending
+    description: Spending patterns and amounts
+- name: engagement
+  columns:
+  - is_active
+  - is_cold_start
+  - synth_fraud_ratio
+  - total_acquisitions
+  - total_churns
+  interpretation:
+    category: engagement
+    description: Customer engagement and churn indicators
+- name: consumption
+  columns:
+  - synth_unique_mcc
+  - synth_unique_mcc_l1_idx
+  - synth_unique_merchants
+  - txn_mcc_seq_l1_idx
+  interpretation:
+    category: consumption
+    description: Spending category diversity
+- name: hmm_lifecycle
+  columns:
+  - hmm_states_journey_dwell_time
+  - hmm_states_journey_prob_advocacy
+  - hmm_states_journey_prob_awareness
+  - hmm_states_journey_prob_consideration
+  - hmm_states_journey_prob_interest
+  - hmm_states_journey_prob_retention
+  - hmm_states_journey_state_id
+  - hmm_states_journey_transition_entropy
+  - hmm_states_lifecycle_dwell_time
+  - hmm_states_lifecycle_prob_at_risk
+  - hmm_states_lifecycle_prob_churned
+  - hmm_states_lifecycle_prob_growing
+  - hmm_states_lifecycle_prob_mature
+  - hmm_states_lifecycle_prob_new
+  - hmm_states_lifecycle_state_id
+  - hmm_states_lifecycle_transition_entropy
+  interpretation:
+    category: lifecycle
+    description: HMM-based customer lifecycle states
+- name: hmm_behavior
+  columns:
+  - hmm_states_behavior_dwell_time
+  - hmm_states_behavior_prob_conservative
+  - hmm_states_behavior_prob_dormant
+  - hmm_states_behavior_prob_exploratory
+  - hmm_states_behavior_prob_investor
+  - hmm_states_behavior_prob_routine
+  - hmm_states_behavior_prob_splurge
+  - hmm_states_behavior_state_id
+  - hmm_states_behavior_transition_entropy
+  interpretation:
+    category: behavior
+    description: HMM-based behavioral states
+- name: gmm_cluster
+  columns:
+  - gmm_clustering_cluster_id
+  - gmm_clustering_cluster_prob_0
+  - gmm_clustering_cluster_prob_1
+  - gmm_clustering_cluster_prob_10
+  - gmm_clustering_cluster_prob_11
+  - gmm_clustering_cluster_prob_12
+  - gmm_clustering_cluster_prob_13
+  - gmm_clustering_cluster_prob_14
+  - gmm_clustering_cluster_prob_15
+  - gmm_clustering_cluster_prob_16
+  - gmm_clustering_cluster_prob_17
+  - gmm_clustering_cluster_prob_17_log
+  - gmm_clustering_cluster_prob_18
+  - gmm_clustering_cluster_prob_18_log
+  - gmm_clustering_cluster_prob_19
+  - gmm_clustering_cluster_prob_19_log
+  - gmm_clustering_cluster_prob_1_log
+  - gmm_clustering_cluster_prob_2
+  - gmm_clustering_cluster_prob_3
+  - gmm_clustering_cluster_prob_4
+  - gmm_clustering_cluster_prob_5
+  - gmm_clustering_cluster_prob_5_log
+  - gmm_clustering_cluster_prob_6
+  - gmm_clustering_cluster_prob_7
+  - gmm_clustering_cluster_prob_8
+  - gmm_clustering_cluster_prob_9
+  - gmm_clustering_entropy
+  interpretation:
+    category: segment
+    description: GMM cluster membership probabilities
+- name: model_derived
+  columns:
+  - model_derived_bandit_exploitation_score
+  - model_derived_bandit_exploration_rate
+  - model_derived_bandit_regret_proxy
+  - model_derived_bandit_ucb_score
+  - model_derived_gmm_prob_0
+  - model_derived_gmm_prob_1
+  - model_derived_gmm_prob_2
+  - model_derived_gmm_prob_3
+  - model_derived_gmm_prob_4
+  - model_derived_lnn_attention_w0_7d
+  - model_derived_lnn_attention_w1_14d
+  - model_derived_lnn_attention_w2_30d
+  - model_derived_lnn_ema_m0_0.1
+  - model_derived_lnn_ema_m0_0.3
+  - model_derived_lnn_ema_m0_0.5
+  - model_derived_lnn_ema_m1_0.1
+  - model_derived_lnn_ema_m1_0.3
+  - model_derived_lnn_ema_m1_0.5
+  - model_derived_lnn_time_const_lag1
+  - model_derived_lnn_time_const_lag1_log
+  - model_derived_lnn_time_const_lag30
+  - model_derived_lnn_time_const_lag30_log
+  - model_derived_lnn_time_const_lag7
+  - model_derived_lnn_time_const_lag7_log
+  - model_derived_lnn_velocity_m0_1d
+  - model_derived_lnn_velocity_m0_30d
+  - model_derived_lnn_velocity_m0_7d
+  - model_derived_lnn_velocity_m1_1d
+  - model_derived_lnn_velocity_m1_30d
+  - model_derived_lnn_velocity_m1_7d
+  interpretation:
+    category: recommendation
+    description: Model-derived features (bandit, LNN)
+- name: tda_topology
+  columns:
+  - tda_global_h0_entropy
+  - tda_global_h0_max_lifetime
+  - tda_global_h0_mean_birth
+  - tda_global_h0_mean_death
+  - tda_global_h0_mean_lifetime
+  - tda_global_h0_num_features
+  - tda_global_h0_std_lifetime
+  - tda_global_h0_total_persistence
+  - tda_global_h1_entropy
+  - tda_global_h1_max_lifetime
+  - tda_global_h1_mean_birth
+  - tda_global_h1_mean_death
+  - tda_global_h1_mean_lifetime
+  - tda_global_h1_num_features
+  - tda_global_h1_std_lifetime
+  - tda_global_h1_total_persistence
+  - tda_local_h0_entropy
+  - tda_local_h0_max_lifetime
+  - tda_local_h0_mean_birth
+  - tda_local_h0_mean_death
+  - tda_local_h0_mean_lifetime
+  - tda_local_h0_num_features
+  - tda_local_h0_std_lifetime
+  - tda_local_h0_total_persistence
+  - tda_local_h1_entropy
+  - tda_local_h1_max_lifetime
+  - tda_local_h1_mean_birth
+  - tda_local_h1_mean_death
+  - tda_local_h1_mean_lifetime
+  - tda_local_h1_num_features
+  - tda_local_h1_std_lifetime
+  - tda_local_h1_total_persistence
+  interpretation:
+    category: topology
+    description: TDA topological features
+- name: graph_structure
+  columns:
+  - graph_collab_d0
+  - graph_collab_d1
+  - graph_collab_d10
+  - graph_collab_d11
+  - graph_collab_d12
+  - graph_collab_d13
+  - graph_collab_d14
+  - graph_collab_d15
+  - graph_collab_d16
+  - graph_collab_d17
+  - graph_collab_d18
+  - graph_collab_d19
+  - graph_collab_d2
+  - graph_collab_d20
+  - graph_collab_d21
+  - graph_collab_d22
+  - graph_collab_d23
+  - graph_collab_d24
+  - graph_collab_d25
+  - graph_collab_d26
+  - graph_collab_d27
+  - graph_collab_d28
+  - graph_collab_d29
+  - graph_collab_d3
+  - graph_collab_d30
+  - graph_collab_d31
+  - graph_collab_d32
+  - graph_collab_d33
+  - graph_collab_d34
+  - graph_collab_d35
+  - graph_collab_d36
+  - graph_collab_d37
+  - graph_collab_d38
+  - graph_collab_d39
+  - graph_collab_d4
+  - graph_collab_d40
+  - graph_collab_d41
+  - graph_collab_d42
+  - graph_collab_d43
+  - graph_collab_d44
+  - graph_collab_d45
+  - graph_collab_d46
+  - graph_collab_d47
+  - graph_collab_d48
+  - graph_collab_d49
+  - graph_collab_d5
+  - graph_collab_d50
+  - graph_collab_d51
+  - graph_collab_d52
+  - graph_collab_d53
+  - graph_collab_d54
+  - graph_collab_d55
+  - graph_collab_d56
+  - graph_collab_d57
+  - graph_collab_d58
+  - graph_collab_d59
+  - graph_collab_d6
+  - graph_collab_d60
+  - graph_collab_d61
+  - graph_collab_d62
+  - graph_collab_d63
+  - graph_collab_d7
+  - graph_collab_d8
+  - graph_collab_d9
+  - graph_collab_depth
+  - graph_collab_norm
+  interpretation:
+    category: topology
+    description: Graph embedding features
+- name: mamba_temporal
+  columns:
+  - mamba_temporal_d0
+  - mamba_temporal_d1
+  - mamba_temporal_d10
+  - mamba_temporal_d11
+  - mamba_temporal_d12
+  - mamba_temporal_d13
+  - mamba_temporal_d14
+  - mamba_temporal_d15
+  - mamba_temporal_d16
+  - mamba_temporal_d17
+  - mamba_temporal_d18
+  - mamba_temporal_d19
+  - mamba_temporal_d2
+  - mamba_temporal_d20
+  - mamba_temporal_d21
+  - mamba_temporal_d22
+  - mamba_temporal_d23
+  - mamba_temporal_d24
+  - mamba_temporal_d25
+  - mamba_temporal_d26
+  - mamba_temporal_d27
+  - mamba_temporal_d28
+  - mamba_temporal_d29
+  - mamba_temporal_d3
+  - mamba_temporal_d30
+  - mamba_temporal_d31
+  - mamba_temporal_d32
+  - mamba_temporal_d33
+  - mamba_temporal_d34
+  - mamba_temporal_d35
+  - mamba_temporal_d36
+  - mamba_temporal_d37
+  - mamba_temporal_d38
+  - mamba_temporal_d39
+  - mamba_temporal_d4
+  - mamba_temporal_d40
+  - mamba_temporal_d41
+  - mamba_temporal_d42
+  - mamba_temporal_d43
+  - mamba_temporal_d44
+  - mamba_temporal_d45
+  - mamba_temporal_d46
+  - mamba_temporal_d47
+  - mamba_temporal_d48
+  - mamba_temporal_d49
+  - mamba_temporal_d5
+  - mamba_temporal_d6
+  - mamba_temporal_d7
+  - mamba_temporal_d8
+  - mamba_temporal_d9
+  interpretation:
+    category: behavior
+    description: Mamba temporal sequence features
+- name: merchant_hierarchy
+  columns:
+  - merchant_hierarchy_brand_svd_0
+  - merchant_hierarchy_brand_svd_1
+  - merchant_hierarchy_brand_svd_2
+  - merchant_hierarchy_brand_svd_3
+  - merchant_hierarchy_brand_svd_4
+  - merchant_hierarchy_brand_svd_5
+  - merchant_hierarchy_brand_svd_6
+  - merchant_hierarchy_brand_svd_7
+  - merchant_hierarchy_l1_depth
+  - merchant_hierarchy_l1_poincare_angle
+  - merchant_hierarchy_l1_poincare_r
+  - merchant_hierarchy_l1_poincare_x
+  - merchant_hierarchy_l1_poincare_y
+  - merchant_hierarchy_l1l2_coherence
+  - merchant_hierarchy_l2_depth
+  - merchant_hierarchy_l2_poincare_angle
+  - merchant_hierarchy_l2_poincare_r
+  - merchant_hierarchy_l2_poincare_x
+  - merchant_hierarchy_l2_poincare_y
+  - merchant_hierarchy_merchant_count
+  - merchant_hierarchy_merchant_loyalty
+  - merchant_hierarchy_merchant_recency
+  - merchant_hierarchy_merchant_spend_gini
+  - merchant_hierarchy_spread_q0
+  - merchant_hierarchy_spread_q1
+  - merchant_hierarchy_spread_q2
+  - merchant_hierarchy_spread_q3
+  interpretation:
+    category: consumption
+    description: Merchant hierarchy embeddings
+- name: product_hierarchy
+  columns:
+  - product_hierarchy_d0
+  - product_hierarchy_d1
+  - product_hierarchy_d10
+  - product_hierarchy_d11
+  - product_hierarchy_d12
+  - product_hierarchy_d13
+  - product_hierarchy_d14
+  - product_hierarchy_d15
+  - product_hierarchy_d16
+  - product_hierarchy_d17
+  - product_hierarchy_d18
+  - product_hierarchy_d19
+  - product_hierarchy_d2
+  - product_hierarchy_d20
+  - product_hierarchy_d21
+  - product_hierarchy_d22
+  - product_hierarchy_d23
+  - product_hierarchy_d24
+  - product_hierarchy_d25
+  - product_hierarchy_d26
+  - product_hierarchy_d27
+  - product_hierarchy_d28
+  - product_hierarchy_d29
+  - product_hierarchy_d3
+  - product_hierarchy_d30
+  - product_hierarchy_d31
+  - product_hierarchy_d4
+  - product_hierarchy_d5
+  - product_hierarchy_d6
+  - product_hierarchy_d7
+  - product_hierarchy_d8
+  - product_hierarchy_d9
+  - product_hierarchy_depth
+  - product_hierarchy_norm
+  interpretation:
+    category: product_holding
+    description: Product hierarchy embeddings
+- name: label_derived
+  columns:
+  - label_engagement_score
+  - label_income_tier
+  - label_mcc_diversity_trend_l1_idx
+  - label_next_mcc_l1_idx
+  - label_spend_level
+  - label_tenure_stage
+  - label_top_mcc_shift_l1_idx
+  interpretation:
+    category: engagement
+    description: Label-derived features from Phase 0
+- name: stability
+  columns:
+  - synth_stability
+  interpretation:
+    category: stability
+    description: Financial stability indicators

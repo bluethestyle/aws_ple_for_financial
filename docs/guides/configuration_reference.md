@@ -417,11 +417,28 @@ scorer:
 
   # Advanced: 4-stage composite (FD-TVS)
   fd_tvs:
-    task_weights:                     # REQUIRED. Same as weighted_sum
+    task_weights:                     # REQUIRED. Base task weights (same as weighted_sum)
       ctr: 0.25
       cvr: 0.35
       nba: 0.25
       ltv: 0.15
+
+    # Dynamic task-level weights (AWS design improvement over on-prem product-level weights)
+    segment_task_weights:             # Per-segment multipliers applied on top of task_weights
+      high_value:                     # Customer segment name
+        nba: 1.5                      # Task name: multiplier (clipped to 1.0–1.5)
+        ltv: 1.3
+      transitory_income:
+        ltv: 0.8                      # Downweight long-horizon tasks for volatile income
+    dynamic_weight_rules:             # Behavior-based boosting rules (feature > threshold → task boost)
+      - feature: mcc_diversity_trend  # Feature name (after normalization)
+        threshold: 0.7                # Trigger threshold
+        task: nba                     # Task to boost
+        multiplier: 1.3               # Boost factor (clipped to 1.0–1.5)
+      - feature: churn_signal
+        threshold: 0.6
+        task: ctr
+        multiplier: 1.2
 
     # Stage 2: contextual modifier
     modifier_map:                     # context.modifier_segment -> multiplier
@@ -560,7 +577,7 @@ reason:
 llm_provider:
   backend: dummy                      # "bedrock" | "openai" | "dummy"
   bedrock:
-    model_id: anthropic.claude-3-haiku-20240307-v1:0
+    model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0   # cross-region inference profile
     region: ap-northeast-2
     max_tokens: 512
     temperature: 0.0
@@ -994,22 +1011,22 @@ Declares model assignments per pipeline stage. Each key is a role; the value is 
 
 ```yaml
 models:
-  reason_generation: claude-sonnet  # L2a reason rewrite (Bedrock native)
-  reason_critique:   claude-sonnet  # Self-critique of generated reasons
-  factuality_check:  claude-haiku   # Factuality check (fast and low-cost)
-  agent_dialog:      claude-sonnet  # Inter-agent dialog/negotiation
-  agent_consensus:   claude-sonnet  # Multi-agent consensus (x agents count)
+  reason_generation: us.anthropic.claude-sonnet-4-5-20251101-v1:0  # L2a reason rewrite + critique (Bedrock cross-region profile)
+  reason_critique:   us.anthropic.claude-sonnet-4-5-20251101-v1:0  # Self-critique (generator <= critic model principle)
+  factuality_check:  us.anthropic.claude-haiku-4-5-20251001-v1:0   # Factuality check (fast and low-cost)
+  agent_dialog:      us.anthropic.claude-sonnet-4-5-20251101-v1:0  # Ops/Audit inter-agent dialog/negotiation
+  agent_consensus:   us.anthropic.claude-sonnet-4-5-20251101-v1:0  # Multi-agent consensus (x agents count)
   deep_audit:        claude-opus    # Deep audit (quarterly, high-cost)
   embeddings:        titan-embed-v2 # AWS Titan Embeddings V2
 ```
 
 | Role | Model | Notes |
 |---|---|---|
-| `reason_generation` | Claude Sonnet | L2a reason rewrite — Bedrock native, Korean-capable |
-| `reason_critique` | Claude Sonnet | Self-critique using the same model |
-| `factuality_check` | Claude Haiku | Low-latency/low-cost factuality check |
-| `agent_dialog` | Claude Sonnet | Inter-agent negotiation dialog |
-| `agent_consensus` | Claude Sonnet | Consensus voting (parallel x 3 by default) |
+| `reason_generation` | Claude Sonnet 4.6 | L2a reason rewrite — Bedrock cross-region profile, Korean-capable |
+| `reason_critique` | Claude Sonnet 4.6 | Self-critique; same model as generator (generator ≤ critic principle) |
+| `factuality_check` | Claude Haiku 4.5 | Low-latency/low-cost factuality check |
+| `agent_dialog` | Claude Sonnet 4.6 | Ops/Audit inter-agent negotiation dialog |
+| `agent_consensus` | Claude Sonnet 4.6 | Consensus voting (parallel x 3 by default) |
 | `deep_audit` | Claude Opus | High-cost -- only runs when `apply_to` conditions are met |
 | `embeddings` | Titan Embeddings V2 | AWS Bedrock native embeddings |
 

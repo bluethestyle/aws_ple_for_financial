@@ -21,7 +21,7 @@ import logging
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, List, Optional, Type
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type
 
 import numpy as np
 
@@ -300,13 +300,23 @@ class FDTVSScorer(AbstractScorer):
     def __init__(self, config: Dict[str, Any]) -> None:
         super().__init__(config)
 
-        # Stage 1
+        # Stage 1 — base task weights (fallback)
         self.task_weights: Dict[str, float] = config.get("task_weights", {})
         if not self.task_weights:
             raise ValueError(
-                "FDTVSScorer: 'task_weights' must be provided and non-empty. "
-                "Example: {\"ctr\": 0.30, \"cvr\": 0.40, \"nba\": 0.20, \"ltv\": 0.10}"
+                "FDTVSScorer: 'task_weights' must be provided and non-empty."
             )
+
+        # Dynamic per-segment task weight overrides (on-prem pattern)
+        # {segment_id: {task_name: weight_multiplier (1.0~1.5)}}
+        self.segment_task_weights: Dict[str, Dict[str, float]] = config.get(
+            "segment_task_weights", {},
+        )
+
+        # Behavior-based dynamic weight adjustments
+        self.dynamic_weight_rules: List[Dict[str, Any]] = config.get(
+            "dynamic_weight_rules", [],
+        )
 
         # Stage 2
         self.modifier_map: Dict[str, float] = config.get("modifier_map", {
@@ -334,15 +344,51 @@ class FDTVSScorer(AbstractScorer):
 
     # -- stages -------------------------------------------------------
 
-    def _stage1_task_score(self, predictions: Dict[str, float]) -> float:
-        """Weighted sum of task predictions."""
+    def _compute_dynamic_weights(
+        self, context: Dict[str, Any],
+    ) -> Dict[str, float]:
+        """Compute per-task weights dynamically from segment + behavior.
+
+        Priority: dynamic_weight_rules > segment_task_weights > base task_weights.
+        Multipliers are clipped to [1.0, 1.5] per on-prem pattern.
+        """
+        weights = dict(self.task_weights)
+
+        # Layer 1: segment-based overrides
+        segment = context.get("modifier_segment", "")
+        seg_overrides = self.segment_task_weights.get(segment, {})
+        for task, mult in seg_overrides.items():
+            if task in weights:
+                weights[task] = weights[task] * min(max(mult, 1.0), 1.5)
+
+        # Layer 2: behavior-based dynamic rules
+        for rule in self.dynamic_weight_rules:
+            feature = rule.get("feature", "")
+            threshold = rule.get("threshold", 0)
+            target_task = rule.get("task", "")
+            boost = rule.get("boost", 1.0)
+
+            feat_val = context.get(feature, 0)
+            if feat_val > threshold and target_task in weights:
+                weights[target_task] = weights[target_task] * min(max(boost, 1.0), 1.5)
+
+        return weights
+
+    def _stage1_task_score(
+        self, predictions: Dict[str, float], context: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[float, Dict[str, float]]:
+        """Weighted sum using dynamic per-customer task weights.
+
+        Returns (score, effective_weights) for auditability.
+        """
+        weights = self._compute_dynamic_weights(context or {})
         s = 0.0
         w_total = 0.0
-        for task, weight in self.task_weights.items():
+        for task, weight in weights.items():
             if task in predictions:
                 s += weight * predictions[task]
                 w_total += weight
-        return s / w_total if w_total > 0 else 0.0
+        return (s / w_total if w_total > 0 else 0.0), weights
 
     def _stage2_modifier(self, context: Dict[str, Any]) -> float:
         """Look up modifier from context signal (e.g. customer segment)."""
@@ -395,7 +441,7 @@ class FDTVSScorer(AbstractScorer):
     ) -> ScoringResult:
         ctx = context or {}
 
-        s_task = self._stage1_task_score(predictions)
+        s_task, eff_weights = self._stage1_task_score(predictions, ctx)
         w_mod = self._stage2_modifier(ctx)
         v_vel = self._stage3_velocity(ctx)
         r_pen = self._stage4_risk_penalty(ctx)
@@ -423,5 +469,8 @@ class FDTVSScorer(AbstractScorer):
                 "risk_penalty": r_pen,
                 "fatigue_factor": f_fat,
                 "engagement_boost": e_boost,
+            },
+            metadata={
+                "effective_weights": eff_weights,
             },
         )

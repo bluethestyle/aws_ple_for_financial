@@ -131,19 +131,24 @@ class BedrockProvider(AbstractLLMProvider):
         client = self._get_client()
         max_tokens = kwargs.get("max_tokens", self.max_tokens)
         temperature = kwargs.get("temperature", self.temperature)
+        system = kwargs.get("system", "")
 
         # Anthropic Messages API format for Bedrock
-        body = json.dumps({
+        body_dict: Dict[str, Any] = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": max_tokens,
             "temperature": temperature,
             "messages": [{"role": "user", "content": prompt}],
-        })
+        }
+        if system:
+            body_dict["system"] = system
+        body = json.dumps(body_dict)
 
         response = client.invoke_model(
             modelId=self.model_id,
             body=body,
             contentType="application/json",
+            accept="application/json",
         )
         response_body = json.loads(response["body"].read())
 
@@ -363,6 +368,7 @@ class SolarProvider(AbstractLLMProvider):
             modelId=self.model_id,
             body=body,
             contentType="application/json",
+            accept="application/json",
         )
         response_body = json.loads(response["body"].read())
 

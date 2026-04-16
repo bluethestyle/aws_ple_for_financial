@@ -296,6 +296,9 @@ Customers whose income is predominantly transitory receive lower
 confidence weights for long-horizon product recommendations,
 preventing the system from recommending products that assume
 stable cash flow to customers with volatile income patterns.
+Beyond income-stability weighting, FD-TVS applies _dynamic task-level weights_ during scoring.
+Base task weights are read from config; these are multiplied by segment-based dynamic multipliers (clipped to 1.0--1.5) and behavior-based rules (e.g., a spike in a specific feature boosts the weight of the correlated task).
+Both on-premises and AWS deployments share this task-level dynamic weighting design, with the AWS version additionally supporting cloud-native config management via `scoring.segment_task_weights` and `scoring.dynamic_weight_rules`.
 
 *Temperature $T = 1$ for tree-based students.*
 The original distillation formulation @hinton2015 raises
@@ -655,7 +658,7 @@ Customer-facing recommendation reasons require natural, professional Korean text
 
 #list(tight: true,
   [*On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.],
-  [*Cloud (AWS)*: L2a rewriting uses Bedrock Claude Sonnet --- natural Korean generation with Bedrock-native availability (no Marketplace onboarding required). L2b self-critique also uses Claude Sonnet (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku.],
+  [*Cloud (AWS)*: L2a rewriting uses Bedrock Claude Sonnet 4.6 --- natural Korean generation with Bedrock-native availability (no Marketplace onboarding required). L2b self-critique also uses Claude Sonnet 4.6 (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku 4.5. Ops/Audit agents use Claude Sonnet 4.6. All invocations use cross-region inference profiles (`us.anthropic.*`).],
 )
 Bedrock ensures that input/output data is never transmitted to model providers (Anthropic) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet, ensuring that financial customer data never leaves the AWS Region (ap-northeast-2) --- structurally satisfying the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
 
@@ -668,7 +671,7 @@ llm_provider:
 
 The three serving layers of reason generation map to Bedrock invocation as follows:
 - *L1 (synchronous)*: Template-based, ~1ms latency, always available. No Bedrock call; the TemplateEngine generates deterministic Korean from InterpretationRegistry reverse-mappings. This is the guaranteed fallback for all customers.
-- *L2a (async)*: Bedrock Claude Haiku rewrites the L1 template into richer, more natural Korean. Submitted via SQS; result cached in DynamoDB. Processing priority is determined by context richness (data availability), not customer tier, satisfying the equal-explanation obligation (금소법 §19).
+- *L2a (async)*: Bedrock Claude Sonnet 4.6 rewrites the L1 template into richer, more natural Korean. Submitted via SQS; result cached in DynamoDB. Processing priority is determined by context richness (data availability), not customer tier, satisfying the equal-explanation obligation (금소법 §19).
 - *L2b (async)*: Bedrock validates L2a output for PII leakage, hallucination, and regulatory compliance before promotion. Human review is applied to a 5% sampling for quality assurance.
 
 The Bedrock infrastructure is shared between reason generation and operational agents (Section 5); time-slot separation resolves quota contention.
@@ -687,7 +690,7 @@ A rule-based engine extracts Korean facts from feature values --- deterministica
 
 These facts are extracted at Phase 0 batch time, stored in the context vector store,
 and injected into the L2a prompt as a "Customer Facts" section at serving time.
-The L2a model (Claude Sonnet on AWS; Exaone 3.5 on-premises) then generates reasons *with customer understanding*, not just raw feature values.
+The L2a model (Claude Sonnet 4.6 on AWS; Exaone 3.5 on-premises) then generates reasons *with customer understanding*, not just raw feature values.
 
 Rules are defined in a YAML configuration file
 (15 categories covering portfolio composition, interests, risk tolerance, lifecycle, etc.)
@@ -699,7 +702,7 @@ Recommendation reasons are served via a 3-layer asynchronous architecture:
 
 + *L1 (Template)*: returned immediately on customer request. No LLM call. The template engine generates deterministic Korean reasons based on LGBM SHAP top-K feature business reverse-mappings. Features pass through the interpretation registry's 5-level cascade (SHAP direction → L3 → L2 → L1 → reverse-mapping layer) to produce enriched 3-tuples `(feature_name, shap_value, Korean_interpretation)`.
 
-+ *L2a (LLM Rewrite)*: submitted asynchronously via SQS. Bedrock Claude Sonnet (AWS) or Exaone 3.5 (on-premises) refines L1 reasons into natural Korean. Results are cached in DynamoDB for subsequent requests.
++ *L2a (LLM Rewrite)*: submitted asynchronously via SQS. Bedrock Claude Sonnet 4.6 (AWS) or Exaone 3.5 (on-premises) refines L1 reasons into natural Korean. Results are cached in DynamoDB for subsequent requests.
   *All customers receive the L1 template equally*, and L2a processing order is determined by *context richness* (feature availability, consultation history) rather than customer tier --- complying with Korean Financial Consumer Protection Act Art.19 (equal explanation obligation) and Personal Information Protection Act Art.37-2(2) (right to explanation).
   Context richness classification: rich (abundant features + history) → moderate (partial features) → sparse (cold-start; excluded from L2a, L1 template only). This reflects that *data availability* determines LLM output quality, not a service-quality differential by customer segment.#footnote[
   An earlier prototype set L2a priority based on customer segment (VIP), but
@@ -711,7 +714,7 @@ Recommendation reasons are served via a 3-layer asynchronous architecture:
 
 + *L2b (Quality Validation)*: applies a 5-stage safety gate to L2a output --- (1) prompt sanitizer, (2) PII detection (Korean resident registration number, card numbers, etc.), (3) self-check layer (compliance + injection + factuality), (4) grounding verification (number cross-check), (5) 5% human review sampling. Pass promotes to L2b; failure falls back to L1.
 
-Caching uses a dual backend (in-memory + DynamoDB) with composite key `customer_id + product_id + task_name` and TTL-based auto-expiry. Of 941K customers, L2a targets (~5% sample, ~47K items) are processed by 5 parallel Sonnet workers in ~8 minutes at ~\$0.21 cost (47K × 500 input + 200 output tokens at Sonnet pricing).
+Caching uses a dual backend (in-memory + DynamoDB) with composite key `customer_id + product_id + task_name` and TTL-based auto-expiry. Of 941K customers, L2a targets (~5% sample, ~47K items) are processed by 5 parallel Sonnet 4.6 workers in ~8 minutes at ~\$0.21 cost (47K × 500 input + 200 output tokens at Sonnet 4.6 pricing).
 
 // TODO: Cache hit rate analysis
 
@@ -838,9 +841,9 @@ ensuring that the AuditAgent's input is a tamper-evident, time-ordered record of
     [*Principle*], [*Rationale*],
     [Batch-only, never real-time], [No serving path dependency; agents run asynchronously after DAG completion],
     [Per-task optimal model assignment], [#list(tight: true,
-      [Reason generation: Claude Sonnet (AWS) / Exaone 3.5 (on-premises)],
-      [Agent dialog/consensus: Claude Sonnet (contextual reasoning)],
-      [Judgment: Claude Haiku (low cost)],
+      [Reason generation: Claude Sonnet 4.6 (AWS) / Exaone 3.5 (on-premises)],
+      [Agent dialog/consensus: Claude Sonnet 4.6 (contextual reasoning, Ops/Audit agents included)],
+      [Factuality judgment: Claude Haiku 4.5 (low cost)],
       [Embeddings: Titan V2],
       [On-prem: Exaone 3.5 (reasons) + Qwen 2.5 14B Q4 (consensus)],
     )],
@@ -867,9 +870,9 @@ Unlike serving agents, which require Korean-language fluency for customer-facing
   [*On-premises (air-gapped)*: Exaone 3.5 7.8B (Korean reason generation) + Qwen 2.5 14B Q4 (agent consensus). Sequential loading on RTX 4070 12GB VRAM.],
   [*Cloud (AWS)*: per-task optimal models are assigned.
     #list(tight: true,
-      [Claude Sonnet --- Korean L2a reason generation/critique (Exaone 3.5 for on-premises)],
-      [Claude Sonnet --- agent dialog, 3-agent consensus],
-      [Claude Haiku --- self-check layer factuality judgment],
+      [Claude Sonnet 4.6 (inference profile: `us.anthropic.claude-sonnet-4-5-20251101-v1:0`) --- Korean L2a reason rewrite + self-critique (Exaone 3.5 for on-premises)],
+      [Claude Sonnet 4.6 --- ops/audit agent dialog, 3-agent consensus],
+      [Claude Haiku 4.5 (inference profile: `us.anthropic.claude-haiku-4-5-20251001-v1:0`) --- self-check layer factuality judgment],
       [Claude Opus --- quarterly deep audit],
       [Titan Embeddings V2 --- vectorization],
     )
