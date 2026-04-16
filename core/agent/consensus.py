@@ -325,8 +325,10 @@ class ConsensusArbiter:
                 "note": "Round 1에서 확정된 마이너리티 — 삭제 불가",
             }
 
+        # majority: 다수 의견이 최종 판정, minority_report에 소수 의견 기록
+        # 2/3이면 majority, 소수 1명의 의견이 minority_report
         return ConsensusResult(
-            consensus_type="majority" if len(minority_votes) < len(votes) // 2 else "minority",
+            consensus_type="majority",
             final_verdict=majority_verdict,
             votes=votes,
             minority_report=minority_report,
