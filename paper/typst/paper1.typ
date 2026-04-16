@@ -134,7 +134,7 @@ This perspective aligns with a broader shift in both academia and regulation.
 Pearl's _Ladder of Causation_ @pearl2018book distinguishes three levels:
 association, intervention, and counterfactuals.
 Most recommendation systems operate at level 1 (association);
-our architecture aims for levels 1--2 by incorporating structural causal reasoning.
+our architecture operates primarily at level 1 (association), with the Causal expert approaching level 2 (intervention) for tasks where its gate weight is dominant.
 Regulatory frameworks --- the EU AI Act, Korea's FSS guidelines and AI Basic Act ---
 increasingly demand this shift toward structurally transparent explanations
 (detailed regulatory analysis in Section 2.4).
@@ -704,7 +704,7 @@ The resulting per-expert input dimensions are:
   caption: [Per-expert input dimensions after FeatureRouter. Total feature space: 349D (Phase 0 v3/v4).],
 ) <tab:feature-router>
 
-The sum of per-expert dimensions (703D) exceeds 349D because several feature groups
+The sum of per-expert dimensions (754D) exceeds 349D because several feature groups
 are shared across multiple experts where complementary inductive biases
 benefit from the same signal (e.g., state features are useful to both DeepFM
 for interaction modeling and Causal for DAG structure inference).
@@ -728,6 +728,14 @@ We implement both gate types for empirical comparison:
   [*Softmax*: $w_k = "softmax"(W dot h)_k$ --- competitive, sum-to-one.],
   [*Sigmoid*: $w_k = sigma(bold(w)_k dot h) slash sum_j sigma(bold(w)_j dot h)$ --- independent evaluation, normalized.],
 )
+
+#block(
+  fill: luma(240),
+  inset: 6pt,
+  radius: 3pt,
+)[
+  *Note:* Our sigmoid variant includes post-hoc normalization for comparability with softmax. Nguyen et al.'s theoretical analysis applies to unnormalized sigmoid; the normalized variant used here partially reintroduces competition through the denominator.
+]
 
 The sigmoid variant evaluates each expert's relevance independently
 before normalization, allowing multiple experts to receive high weight simultaneously.
@@ -1041,7 +1049,7 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
     align: (left, left, right, right, right),
     stroke: 0.5pt,
     [*Tier*], [*Labels*], [$f_"obs"$], [$f_"noise"$], [*XGB AUC*],
-    [Easy], [segment], [determ.], [n/a], [0.95--1.0],
+    [Easy], [segment#footnote[segment\_prediction uses a 4-class customer lifecycle label derived from behavioral clustering, not a deterministic feature transformation. The high XGBoost ceiling reflects strong feature-label correlation but the label requires non-trivial multi-feature interaction to predict, unlike the removed deterministic labels (income\_tier, tenure\_stage).]], [determ.], [n/a], [0.95--1.0],
     [Core], [churn_signal], [0.04], [0.68], [0.58--0.65],
     [Hard], [will_acquire\_\*], [0.03], [0.72], [0.50--0.56],
     [V.Hard], [next_mcc, top_mcc_shift], [0.02], [0.78], [0.50--0.51],
@@ -1260,6 +1268,8 @@ The CGC gate produces interpretable routing weights that enable direct attributi
 
 Gate weights from the CGC extraction layers provide per-task expert utilization profiles. Tasks with low entropy ratio (e.g., top_mcc_shift at 0.347) concentrate on 1--2 experts, providing clear attribution: the recommendation is driven primarily by the dominant expert's feature group. Tasks with high entropy (e.g., will_acquire_payments at 0.882) leverage diverse experts, requiring multi-factor explanation. This entropy-based explainability directly maps to the Financial DNA task groups and enables the rule-based fallback (Layer 3) to select appropriate explanation templates per task.
 
+_Detailed per-task gate weight profiles and dominant expert assignments are provided in the Gate Entropy Analysis (RQ6) below, which jointly addresses both routing collapse and task-expert specialization._
+
 == Gate Entropy Analysis (RQ6: Does routing collapse occur?)
 
 Beyond function space collapse (prevented structurally by heterogeneous experts),
@@ -1409,6 +1419,8 @@ reveals a systematic decoupling between validation loss
 and discriminative metrics that has practical implications
 for best-model selection in heterogeneous MTL.
 
+#emph[Note: This 30-epoch diagnostic run is separate from the 10-epoch ablation results reported in Tables 8--9. It was conducted to analyze convergence dynamics and does not affect the reported ablation numbers.]
+
 *Observation: metrics peak at epoch 10, not epoch 30.*
 Validation loss decreases monotonically across all 30 epochs
 (32.11 $arrow$ 22.68, $-$29.4\%),
@@ -1523,7 +1535,7 @@ a cautionary lesson for MTL practitioners.
 
 A particularly instructive failure: a configuration bug caused `use_ple=false`
 to collapse the 7-expert basket into a single MLP,
-making all 24 ablation scenarios produce identical AUC (0.913).
+making all 24 ablation scenarios produce identical AUC (0.913).#footnote[The 0.913 AUC reflects an earlier benchmark version (v4) with different data distributions; current benchmark v12 produces AUC in the 0.67 range.]
 This was only discovered through systematic result comparison ---
 reinforcing the principle that ablation results must be verified
 against expected variation before drawing conclusions.
@@ -1734,7 +1746,7 @@ Full configuration files are available in the accompanying repository.
 
 #heading(numbering: none, level: 3)[B. Ablation Scenario Definitions]
 
-The 24 ablation scenarios are organized into two phases:
+The 27 ablation scenarios (18 joint feature+expert + 9 structure cross) are organized into two phases:
 
 *Phase 1 --- Feature + Expert Joint Ablation (18 scenarios):*
 Baseline (DeepFM only with base features), DeepFM with all features,
@@ -1757,9 +1769,9 @@ The synthetic benchmark uses a four-layer generative model:
 Seed=42 ensures reproducibility.
 Full generation code is available in the accompanying repository.
 
-#heading(numbering: none, level: 3)[D. FP32 Training Decision]
+#heading(numbering: none, level: 3)[D. AMP FP16 NaN Diagnosis and GradScaler Tuning]
 
-Heterogeneous experts with on-prem-aligned activation functions (ODE-based LNN, linear HGCN output, Softplus TDA weights) produce wider intermediate value ranges than homogeneous MLPs. Under AMP (FP16), this causes GradScaler overflow that cascades into NaN loss --- observed consistently from epoch 2 in PLE configurations despite conservative GradScaler settings (init\_scale=1024, max\_scale=4096). FP32 training eliminates this entirely with zero NaN batches across all 20-epoch runs, at the cost of approximately 1.5× slower training. This trade-off preserves the mathematical semantics of each expert's inductive bias, which is the core design principle of the heterogeneous architecture.
+Heterogeneous experts with on-prem-aligned activation functions (ODE-based LNN, linear HGCN output, Softplus TDA weights) produce wider intermediate value ranges than homogeneous MLPs. Under AMP (FP16), this initially caused GradScaler overflow that cascaded into NaN loss --- observed from epoch 2 in PLE configurations with default GradScaler settings. All reported experiments use AMP FP16 training, which provides approximately 2× throughput on the T4/RTX GPU. The NaN issues were resolved by tuning three GradScaler parameters: `init_scale=1024` (lower initial scale reduces overflow at startup), `growth_interval=2000` (slower scale growth prevents rapid re-escalation after overflow events), and `max_scale=4096` (hard ceiling prevents runaway scaling for wide-range expert activations). Additionally, per-task log-variance parameters in the uncertainty weighting head are clamped to $[-5, 5]$ to prevent Softplus overflow from propagating through the loss. With these mitigations, zero NaN batches are observed across all ablation runs.
 
 #heading(numbering: none, level: 3)[E. Structural Isomorphism Verification]
 

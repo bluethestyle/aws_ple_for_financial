@@ -122,7 +122,7 @@ We propose a full-chain solution from prediction to persuasion:
 
 + *Regulatory Compliance Architecture*: Explicit mapping of system components to Korean FSS guidelines, EU AI Act articles, and the Korean AI Basic Act.
 
-+ *Human Evaluation Protocol*: Systematic evaluation of recommendation reason quality by domain experts.
++ *Human Evaluation Protocol*: A systematic protocol designed for post-deployment expert evaluation, with automated compliance validation reported in this paper as an interim measure.
 
 // ============================================================
 = Related Work
@@ -373,6 +373,8 @@ Each layer is organized by the Financial DNA task groups:
   caption: [Three-layer serving fallback architecture. Each layer activates when the preceding layer is unavailable or degraded.],
 ) <tab:fallback-layers>
 
+At serving time, Layers 1 and 2 both produce LGBM predictions via the same Lambda inference path; the distinction is in training methodology (soft-label distillation vs. hard-label direct), not in serving architecture.
+
 Layer 3 rules are aligned with the Financial DNA task group taxonomy
 and grounded in domain-validated heuristics:
 
@@ -408,7 +410,7 @@ Customer request → Lambda Handler
 
 Key integration properties:
 - `FallbackRouter` auto-routes each task to its appropriate layer based on availability and metric thresholds; the caller is unaware of which layer served the prediction.
-- Calibrated probabilities (Platt scaling) are applied on Layer 1/2 outputs for probability-critical tasks (`churn_signal`, `product_stability`, `cross_sell_count`) where raw LGBM probabilities are systematically biased.
+- Calibrated probabilities (Platt scaling) are applied on Layer 1/2 outputs for probability-critical binary classification tasks (`churn_signal`) where raw LGBM probabilities are systematically biased. Regression tasks (`product_stability`, `cross_sell_count`) are routed to SKIP (Layer 3 rule engine) and do not receive Platt scaling.
 - For Layer 3, `contributing_features` from rule firings are injected directly into the reason pipeline. This enables interpretable reasons even when no model is available, using the same 3-agent interface as Layer 1/2.
 - All three layers produce an identical response schema --- prediction, probability, contributing features, reason text, audit token --- ensuring the API contract is transparent to callers regardless of which layer served the request.
 
@@ -487,7 +489,7 @@ This avoids conflating metrics with incompatible semantics across task types.
     [mcc\_diversity\_trend (MAE)], [R²=0.031], [0.025], [PASS], [R² < 0.05 → DIRECT],
     [cross\_sell\_count (R²)], [0.008], [—], [—], [R² < floor → SKIP (L3)],
   ),
-  caption: [Distillation results per task.\ Binary tasks: teacher AUC, student AUC, AUC gap, and prediction agreement (student vs.\ teacher); student AUC computed as Teacher − Gap.\ Multiclass tasks: teacher F1-macro with adaptive threshold gate; tasks below 2/K random baseline are routed to direct hard-label training.\ Regression tasks: MAE/RMSE gap between teacher and student predictions.],
+  caption: [Distillation results per task.\ Binary tasks: teacher AUC, student AUC, AUC gap, and prediction agreement (student vs.\ teacher); student AUC computed as Teacher − Gap.\ Multiclass tasks: teacher F1-macro with adaptive threshold gate; tasks below 2/K random baseline are routed to direct hard-label training.\ Regression tasks: MAE/RMSE gap between teacher and student predictions.\ For DIRECT-routed tasks, the Student column shows the hard-label trained LGBM result. Where Student \> Teacher (e.g., nba\_primary), the LGBM student trained on hard labels outperforms the teacher, validating the DIRECT routing decision.],
 ) <tab:distill-results>
 
 // ============================================================
@@ -634,7 +636,7 @@ Grounding constraints:
       _SelfChecker verdict: pass_
     ]
   ],
-  caption: [Actual Lambda production output for task top\_mcc\_shift (customer 10). L1 template reason generated in 0.1ms; L2a Bedrock Claude Sonnet rewrite cached at 6ms on repeat. [Output in Korean; see Section 7.3 for English translation of L2a example.]],
+  caption: [Actual Lambda production output for task top\_mcc\_shift (customer 10). L1 template reason generated in 0.1ms; L2a Bedrock Claude Sonnet rewrite cached at 6ms on repeat. [Output in Korean; see the translated example in the figure caption above.]],
 ) <fig:reason-example>
 
 === Agent 3: Safety Gate
@@ -1316,7 +1318,7 @@ satisfying both SR 11-7 expectations and EU AI Act Art. 9 risk management requir
 
 == Distillation Experiments
 
-Binary tasks achieved AUC gaps of 0.018--0.036 (mean 2.6 percentage points), with ranking correlation above 0.96 across all 7 tasks. The primary failure mode was calibration gap (0.08--0.10), addressed by post-hoc Platt scaling for probability-critical tasks. Three multiclass tasks (nba_primary, segment_prediction, next_mcc) fell below the 2× random teacher threshold and were routed to direct hard-label training. Three regression tasks used Huber-loss LGBM students with MAE gaps under 0.02 for product_stability and mcc_diversity_trend.
+Binary tasks achieved AUC gaps of 0.018--0.036 (mean 2.6 percentage points), with ranking correlation above 0.96 across all 7 tasks. The primary failure mode was calibration gap (0.08--0.10), addressed by post-hoc Platt scaling for probability-critical tasks. Three multiclass tasks (nba_primary, segment_prediction, next_mcc) fell below the 2× random teacher threshold and were routed to direct hard-label training. Two regression tasks (mcc_diversity_trend, cross_sell_count) achieved MAE gaps under 0.02. The third (product_stability) was routed to SKIP due to borderline teacher R².
 
 == Reason Generation Quality
 
@@ -1416,7 +1418,7 @@ First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the 
     [Human review sample rate], [Fraction of L2a outputs reviewed by humans], [5%],
     [Fallback rate to L1], [Configurable threshold; triggered on gate failure], [configurable],
   ),
-  caption: [Safety Gate automated metrics. Precision/recall evaluation pending live deployment with labeled samples.],
+  caption: [Safety Gate automated metrics. Precision/recall evaluation pending live deployment with labeled samples. The Safety Gate applies a 5-stage validation pipeline (Section 4.3); of these, 4 stages map to distinct regulatory compliance categories reported in this table.],
 ) <tab:safety-eval>
 
 == Serving Performance
