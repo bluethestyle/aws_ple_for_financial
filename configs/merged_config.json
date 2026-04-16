@@ -1617,5 +1617,78 @@
         128
       ]
     }
+  },
+  "scorer": {
+    "fd_tvs": {
+      "task_weights": {
+        "churn_signal": 0.15,
+        "top_mcc_shift": 0.05,
+        "nba_primary": 0.15,
+        "segment_prediction": 0.05,
+        "next_mcc": 0.05,
+        "product_stability": 0.1,
+        "cross_sell_count": 0.1,
+        "mcc_diversity_trend": 0.05,
+        "will_acquire_deposits": 0.08,
+        "will_acquire_investments": 0.07,
+        "will_acquire_accounts": 0.05,
+        "will_acquire_lending": 0.05,
+        "will_acquire_payments": 0.05
+      },
+      "modifier_map": {
+        "01-TOP": 1.3,
+        "02-PARTICULARES": 1.0,
+        "03-UNIVERSITARIO": 0.8,
+        "UNKNOWN": 0.7
+      },
+      "segment_task_weights": {
+        "01-TOP": {
+          "will_acquire_investments": 1.4,
+          "product_stability": 1.3,
+          "cross_sell_count": 1.2
+        },
+        "02-PARTICULARES": {
+          "will_acquire_deposits": 1.3,
+          "will_acquire_payments": 1.2,
+          "churn_signal": 1.2
+        },
+        "03-UNIVERSITARIO": {
+          "will_acquire_accounts": 1.4,
+          "will_acquire_payments": 1.3,
+          "top_mcc_shift": 1.2
+        },
+        "UNKNOWN": {
+          "churn_signal": 1.4,
+          "will_acquire_deposits": 1.2
+        }
+      },
+      "dynamic_weight_rules": [
+        {
+          "feature": "churn_prob",
+          "threshold": 0.5,
+          "task": "churn_signal",
+          "boost": 1.4
+        },
+        {
+          "feature": "income",
+          "threshold": 200000,
+          "task": "will_acquire_investments",
+          "boost": 1.3
+        },
+        {
+          "feature": "product_diversity",
+          "threshold": 0.3,
+          "task": "will_acquire_deposits",
+          "boost": 1.3
+        },
+        {
+          "feature": "engagement_score",
+          "threshold": 0.7,
+          "task": "will_acquire_investments",
+          "boost": 1.2
+        }
+      ],
+      "fatigue_base_decay": 0.85
+    }
   }
 }

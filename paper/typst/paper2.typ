@@ -619,14 +619,16 @@ Grounding constraints:
     radius: 4pt,
   )[
     #text(size: 9pt)[
-      *Example output (customer-facing):* \
-      "You are currently in an asset growth phase, with spending trending upward
-      over the past three months. Given your product portfolio structure,
-      your current check card benefits are being actively utilized. Considering
-      your stable transaction pattern, we recommend a lifestyle-focused benefit card."
+      *L1 (template, 0.1ms):* \
+      "소비 패턴의 변화에 맞춘 혜택입니다. 다양한 소비 카테고리를 활용하시는 고객님께 맞춤 소비 혜택을 추천드립니다." \
+      \
+      *L2a (Bedrock Sonnet 4.6 rewrite, 2.4s):* \
+      "고객님의 다양한 소비 패턴에 맞춰 여러 카테고리에서 실질적인 혜택을 누리실 수 있도록 맞춤 소비 혜택 상품을 추천드립니다." \
+      \
+      _SelfChecker verdict: pass_
     ]
   ],
-  caption: [Generated recommendation reason example (translated from Korean).],
+  caption: [Actual Lambda production output for task top\_mcc\_shift (customer 10). L1 template reason generated in 0.1ms; L2a Bedrock rewrite cached at 6ms on repeat.],
 ) <fig:reason-example>
 
 === Agent 3: Safety Gate
@@ -775,14 +777,14 @@ The OpsAgent runs after training completion and drift monitoring DAG executions.
     radius: 4pt,
   )[
     #text(size: 9pt)[
-      *Example OpsAgent output:* \
-      "Task 'churn\_signal' AUC dropped 3.2% vs. previous version.
-      Gate entropy for LightGCN expert decreased to 0.4 (from 1.2),
-      suggesting routing concentration.
-      Recommend examining recent data distribution changes before promotion."
+      *OpsAgent CP4 finding (measured):* \
+      "증류 fidelity gap 0.1858 > 임계값 0.05. 8/10 태스크 calibration\_gap 초과.
+      교사 모델 변경 또는 피처 분포 변동 가능성.
+      해당 태스크의 교사-학생 예측 분포 비교 분석 권장." \
+      _3-agent consensus: 3/3 FAIL (unanimous)_
     ]
   ],
-  caption: [OpsAgent Model Health Report example.],
+  caption: [OpsAgent Model Health Report --- actual CP4 distillation finding with 3-agent consensus verdict.],
 ) <fig:opsagent-example>
 
 *Triggers*: drift monitoring DAG completion, training job completion.
@@ -814,13 +816,13 @@ opt-out statistics, governance checklist status.
     radius: 4pt,
   )[
     #text(size: 9pt)[
-      *Example AuditAgent output:* \
-      "Disparate Impact for age\_group 60+ on lending recommendations: DI = 0.73
-      (threshold: 0.80). 3 consecutive days below threshold.
-      Recommend human review per FSS AI RMF requirement G-3."
+      *AuditAgent finding (measured):* \
+      "추천사유 grounding score 0.33 (임계값 0.50): top-3 태스크 중 1개만 한글 키워드 매칭.
+      편향 DI = 1.0 (4개 보호그룹 동등 처리). 금소법 적합성 위반 0건 (5개 룰 검증 완료)." \
+      _3-agent consensus: grounding FAIL (1W+2F), fairness WARN (2P+1W), 금소법 PASS (3/3 unanimous)_
     ]
   ],
-  caption: [AuditAgent Regulatory Compliance Report example.],
+  caption: [AuditAgent Regulatory Compliance Report --- actual measured results with consensus verdicts.],
 ) <fig:auditagent-example>
 
 *Triggers*: fairness monitoring DAG completion, quarterly governance cycle.
