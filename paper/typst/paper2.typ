@@ -169,7 +169,7 @@ requiring explainability, fairness monitoring, and audit trails.
 The EU AI Act @euaiact2024 classifies financial credit/recommendation as high-risk AI,
 mandating transparency (Art. 13), human oversight (Art. 14), and accuracy (Art. 15).
 The EBA @eba2025ml calls for "interpretable" models in internal risk assessments.
-Korea's AI Basic Act @koreaaiact2024 (passed December 2024, promulgated January 2025) adds domestic high-impact AI classification.
+Korea's AI Basic Act @koreaaiact2024 (passed December 2024, promulgated January 2025, effective January 22, 2026) adds domestic high-impact AI classification.
 
 Pearl @pearl2009causality argues that true explanation requires causal understanding,
 not mere statistical association --- a position increasingly echoed by financial regulators
@@ -325,12 +325,18 @@ should a neural student architecture be adopted in the future,
 temperature scaling can be re-introduced at that point.
 
 === Adaptive Distillation Strategy
+<adaptive-strategy>
 
 Not all tasks benefit equally from distillation.
+_Note: The companion paper (Paper 1) describes the PLE teacher architecture and ablation study; the three-way DISTILL/DIRECT/SKIP routing logic introduced here is unique to this paper and is not described in Paper 1._
 When the teacher's performance on a task falls below approximately twice the random baseline
 (binary: AUC $<$ 0.60; multiclass: F1-macro $< 2\/K$ for $K$ classes;
 regression: R² $<$ 0.05),
 soft labels carry insufficient inter-class information to guide student learning.
+Note: R² is used exclusively as a _gate threshold_ to detect near-zero teacher signal
+on regression tasks; the companion paper reports MAE as the primary regression metric
+for distillation quality gaps, and this paper follows the same convention
+(see Table 2, regression rows: MAE gap is the student evaluation metric).
 In such cases, the pipeline automatically falls back to training the LGBM student
 directly on hard labels.
 
@@ -622,13 +628,13 @@ Grounding constraints:
       *L1 (template, 0.1ms):* \
       "소비 패턴의 변화에 맞춘 혜택입니다. 다양한 소비 카테고리를 활용하시는 고객님께 맞춤 소비 혜택을 추천드립니다." \
       \
-      *L2a (Bedrock Sonnet 4.6 rewrite, 2.4s):* \
+      *L2a (Bedrock Claude Sonnet rewrite, 2.4s):* \
       "고객님의 다양한 소비 패턴에 맞춰 여러 카테고리에서 실질적인 혜택을 누리실 수 있도록 맞춤 소비 혜택 상품을 추천드립니다." \
       \
       _SelfChecker verdict: pass_
     ]
   ],
-  caption: [Actual Lambda production output for task top\_mcc\_shift (customer 10). L1 template reason generated in 0.1ms; L2a Bedrock rewrite cached at 6ms on repeat.],
+  caption: [Actual Lambda production output for task top\_mcc\_shift (customer 10). L1 template reason generated in 0.1ms; L2a Bedrock Claude Sonnet rewrite cached at 6ms on repeat. [Output in Korean; see Section 7.3 for English translation of L2a example.]],
 ) <fig:reason-example>
 
 === Agent 3: Safety Gate
@@ -661,7 +667,7 @@ Customer-facing recommendation reasons require natural, professional Korean text
 
 #list(tight: true,
   [*On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.],
-  [*Cloud (AWS)*: L2a rewriting uses Bedrock Claude Sonnet 4.6 --- natural Korean generation with Bedrock-native availability (no Marketplace onboarding required). L2b self-critique also uses Claude Sonnet 4.6 (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku 4.5. Ops/Audit agents use Claude Sonnet 4.6. All invocations use cross-region inference profiles (`us.anthropic.*`).],
+  [*Cloud (AWS)*: L2a rewriting uses Bedrock Claude Sonnet --- natural Korean generation with Bedrock-native availability (no Marketplace onboarding required). L2b self-critique also uses Claude Sonnet (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku. Ops/Audit agents use Claude Sonnet. All invocations use cross-region inference profiles (`us.anthropic.*`).],
 )
 Bedrock ensures that input/output data is never transmitted to model providers (Anthropic) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet, ensuring that financial customer data never leaves the AWS Region (ap-northeast-2) --- structurally satisfying the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
 
@@ -674,7 +680,7 @@ llm_provider:
 
 The three serving layers of reason generation map to Bedrock invocation as follows:
 - *L1 (synchronous)*: Template-based, ~1ms latency, always available. No Bedrock call; the TemplateEngine generates deterministic Korean from InterpretationRegistry reverse-mappings. This is the guaranteed fallback for all customers.
-- *L2a (on-demand)*: When a customer clicks for detail, a synchronous Bedrock Claude Sonnet 4.6 call rewrites the L1 template into richer, more natural Korean (first call ~2.4s); the result is cached in DynamoDB so subsequent requests return instantly (~6ms cache hit). Processing priority is determined by context richness (data availability), not customer tier, satisfying the equal-explanation obligation (금소법 §19).
+- *L2a (on-demand)*: When a customer clicks for detail, a synchronous Bedrock Claude Sonnet call rewrites the L1 template into richer, more natural Korean (first call ~2.4s); the result is cached in DynamoDB so subsequent requests return instantly (~6ms cache hit). Processing priority is determined by context richness (data availability), not customer tier, satisfying the equal-explanation obligation (금소법 §19).
 - *L2b (async)*: Bedrock validates L2a output for PII leakage, hallucination, and regulatory compliance before promotion. Human review is applied to a 5% sampling for quality assurance.
 
 The Bedrock infrastructure is shared between reason generation and operational agents (Section 5); time-slot separation resolves quota contention.
@@ -693,7 +699,7 @@ A rule-based engine extracts Korean facts from feature values --- deterministica
 
 These facts are extracted at serving time via config-driven rules (15 categories)
 and injected into the L2a prompt as a "Customer Facts" section.
-The L2a model (Claude Sonnet 4.6 on AWS; Exaone 3.5 on-premises) then generates reasons *with customer understanding*, not just raw feature values.
+The L2a model (Claude Sonnet on AWS; Exaone 3.5 on-premises) then generates reasons *with customer understanding*, not just raw feature values.
 
 Rules are defined in a YAML configuration file
 (15 categories covering portfolio composition, interests, risk tolerance, lifecycle, etc.)
@@ -705,7 +711,7 @@ Recommendation reasons are served via a 3-layer asynchronous architecture:
 
 + *L1 (Template)*: returned immediately on customer request. No LLM call. The template engine generates deterministic Korean reasons based on LGBM SHAP top-K feature business reverse-mappings. Features pass through the interpretation registry's 5-level cascade (SHAP direction → L3 → L2 → L1 → reverse-mapping layer) to produce enriched 3-tuples `(feature_name, shap_value, Korean_interpretation)`.
 
-+ *L2a (on-demand with caching)*: When a customer clicks for product detail, a synchronous Bedrock Claude Sonnet 4.6 call (AWS) or Exaone 3.5 (on-premises) refines the L1 reason into richer natural Korean. The first call takes ~2.4s (Bedrock Sonnet); the result is cached in DynamoDB so the next request for the same customer×product returns at ~6ms. This on-demand pattern replaces an earlier SQS-based asynchronous design --- it provides an immediate response on click rather than requiring the customer to wait for a background queue, and caching makes repeat access instant.
++ *L2a (on-demand with caching)*: When a customer clicks for product detail, a synchronous Bedrock Claude Sonnet call (AWS) or Exaone 3.5 (on-premises) refines the L1 reason into richer natural Korean. The first call takes ~2.4s (Bedrock Sonnet); the result is cached in DynamoDB so the next request for the same customer×product returns at ~6ms. This on-demand pattern replaces an earlier SQS-based asynchronous design --- it provides an immediate response on click rather than requiring the customer to wait for a background queue, and caching makes repeat access instant.
   *All customers receive the L1 template equally*, and L2a invocations are triggered by *customer-initiated detail requests* rather than customer tier --- complying with Korean Financial Consumer Protection Act Art.19 (equal explanation obligation) and Personal Information Protection Act Art.37-2(2) (right to explanation).
   Context richness classification: rich (abundant features + history) → moderate (partial features) → sparse (cold-start; excluded from L2a, L1 template only). This reflects that *data availability* determines LLM output quality, not a service-quality differential by customer segment.#footnote[
   An earlier prototype set L2a priority based on customer segment (VIP), but
@@ -717,7 +723,7 @@ Recommendation reasons are served via a 3-layer asynchronous architecture:
 
 + *L2b (Quality Validation)*: applies a 5-stage safety gate to L2a output --- (1) prompt sanitizer, (2) PII detection (Korean resident registration number, card numbers, etc.), (3) self-check layer (compliance + injection + factuality), (4) grounding verification (number cross-check), (5) 5% human review sampling. Pass promotes to L2b; failure falls back to L1.
 
-Caching uses a dual backend (in-memory + DynamoDB) with composite key `customer_id + product_id + task_name` and TTL-based auto-expiry. Of 941K customers, L2a targets (~5% sample, ~47K items) are processed by 5 parallel Sonnet 4.6 workers in ~8 minutes at ~\$0.21 cost (47K × 500 input + 200 output tokens at Sonnet 4.6 pricing).
+Caching uses a dual backend (in-memory + DynamoDB) with composite key `customer_id + product_id + task_name` and TTL-based auto-expiry. Of 941K customers, L2a targets (~5% sample, ~47K items) are processed by 5 parallel Claude Sonnet workers in ~8 minutes at ~\$0.21 cost (47K × 500 input + 200 output tokens at Claude Sonnet pricing).
 
 // TODO: Cache hit rate analysis
 
@@ -784,7 +790,7 @@ The OpsAgent runs after training completion and drift monitoring DAG executions.
       _3-agent consensus: 3/3 FAIL (unanimous)_
     ]
   ],
-  caption: [OpsAgent Model Health Report --- actual CP4 distillation finding with 3-agent consensus verdict.],
+  caption: [OpsAgent Model Health Report --- actual CP4 distillation finding with 3-agent consensus verdict. [Report text translated from Korean: "Distillation fidelity gap 0.1858 \> threshold 0.05. 8/10 tasks exceeded calibration\_gap. Possible teacher model change or feature distribution shift. Recommend comparing teacher-student prediction distributions for affected tasks."]],
 ) <fig:opsagent-example>
 
 *Triggers*: drift monitoring DAG completion, training job completion.
@@ -822,7 +828,7 @@ opt-out statistics, governance checklist status.
       _3-agent consensus: grounding FAIL (1W+2F), fairness WARN (2P+1W), 금소법 PASS (3/3 unanimous)_
     ]
   ],
-  caption: [AuditAgent Regulatory Compliance Report --- actual measured results with consensus verdicts.],
+  caption: [AuditAgent Regulatory Compliance Report --- actual measured results with consensus verdicts. [Report text translated from Korean: "Recommendation reason grounding score 0.33 (threshold 0.50): only 1 of top-3 tasks had Korean keyword match. Bias DI = 1.0 (4 protected groups treated equally). Financial Consumer Protection Act suitability violations: 0 (5 rules verified)."]],
 ) <fig:auditagent-example>
 
 *Triggers*: fairness monitoring DAG completion, quarterly governance cycle.
@@ -844,9 +850,9 @@ ensuring that the AuditAgent's input is a tamper-evident, time-ordered record of
     [*Principle*], [*Rationale*],
     [Batch-only, never real-time], [No serving path dependency; agents run asynchronously after DAG completion],
     [Per-task optimal model assignment], [#list(tight: true,
-      [Reason generation: Claude Sonnet 4.6 (AWS) / Exaone 3.5 (on-premises)],
-      [Agent dialog/consensus: Claude Sonnet 4.6 (contextual reasoning, Ops/Audit agents included)],
-      [Factuality judgment: Claude Haiku 4.5 (low cost)],
+      [Reason generation: Claude Sonnet (AWS) / Exaone 3.5 (on-premises)],
+      [Agent dialog/consensus: Claude Sonnet (contextual reasoning, Ops/Audit agents included)],
+      [Factuality judgment: Claude Haiku (low cost)],
       [Embeddings: Titan V2],
       [On-prem: Exaone 3.5 (reasons) + Qwen 2.5 14B Q4 (consensus)],
     )],
@@ -873,9 +879,9 @@ Unlike serving agents, which require Korean-language fluency for customer-facing
   [*On-premises (air-gapped)*: Exaone 3.5 7.8B (Korean reason generation) + Qwen 2.5 14B Q4 (agent consensus). Sequential loading on RTX 4070 12GB VRAM.],
   [*Cloud (AWS)*: per-task optimal models are assigned.
     #list(tight: true,
-      [Claude Sonnet 4.6 (inference profile: `us.anthropic.claude-sonnet-4-5-20251101-v1:0`) --- Korean L2a reason rewrite + self-critique (Exaone 3.5 for on-premises)],
-      [Claude Sonnet 4.6 --- ops/audit agent dialog, 3-agent consensus],
-      [Claude Haiku 4.5 (inference profile: `us.anthropic.claude-haiku-4-5-20251001-v1:0`) --- self-check layer factuality judgment],
+      [Claude Sonnet (cross-region inference profile) --- Korean L2a reason rewrite + self-critique (Exaone 3.5 for on-premises)],
+      [Claude Sonnet --- ops/audit agent dialog, 3-agent consensus],
+      [Claude Haiku (cross-region inference profile) --- self-check layer factuality judgment],
       [Claude Opus --- quarterly deep audit],
       [Titan Embeddings V2 --- vectorization],
     )
@@ -1080,9 +1086,9 @@ The GDPR/금소법 compliance obligations listed above are enforced through a pi
 
 All checks operate with graceful degradation: if the compliance service is temporarily unavailable, a warning is logged and the recommendation proceeds, ensuring that a transient infrastructure failure does not create a customer-facing outage.
 
-== Korean AI Basic Act (passed 2024.12, effective 2026.1)
+== Korean AI Basic Act (passed 2024.12, promulgated 2025.01, effective 2026.01.22)
 
-Korea's AI Basic Act (passed by the National Assembly December 2024, promulgated January 2025, effective January 2026) @koreaaiact2024 introduces a domestic
+Korea's AI Basic Act (passed by the National Assembly December 2024, promulgated January 2025, effective January 22, 2026) @koreaaiact2024 introduces a domestic
 high-risk AI classification framework.
 Financial product recommendation falls within the high-risk category,
 requiring impact assessment, transparency obligations, and human oversight.
@@ -1371,7 +1377,7 @@ TemplateEngine before L2a Bedrock rewrite.
     [will\_acquire\_investments], [고객님의 재무 목표에 부합할 수 있습니다. 현재 금융 라이프사이클 단계에 적합한 투자 상품입니다.],
     [churn\_signal], [고객님의 소중한 거래 관계를 유지하고자 합니다. 고객님의 이용 패턴을 분석하여 고객 유지 프로그램을(를) 추천드립니다.],
   ),
-  caption: [L1 template reason examples from production Lambda (ple-predict). These verbatim outputs feed into the L2a Bedrock rewrite pipeline. Note the template artifact "(를)" in rows 1 and 3 --- this is precisely the type of defect that L2a corrects.],
+  caption: [L1 template reason examples from production Lambda (ple-predict). These verbatim outputs (in Korean) feed into the L2a Bedrock rewrite pipeline. Note the template artifact "(를)" in rows 1 and 3 --- this is precisely the type of defect that L2a corrects. [Translations: Row 1: "Benefits tailored to your changing spending patterns. We recommend a customized spending benefit product for customers actively using diverse spending categories." Row 2: "This may align with your financial goals. We recommend an investment product suitable for your current financial lifecycle stage." Row 3: "We aim to maintain your valued transaction relationship. We recommend a customer retention program based on analysis of your usage patterns."]],
 ) <tab:l1-reasons>
 
 === L2a Bedrock Rewrite Example
@@ -1391,7 +1397,8 @@ Below is the measured before/after pair for the `top_mcc_shift` task:
 )
 
 The L2a rewrite eliminates the template artifact "(를)", merges the two-sentence structure
-into a single coherent utterance, and preserves the grounding signal (소비 패턴, 카테고리, 혜택).
+into a single coherent utterance, and preserves the grounding signal (소비 패턴 [spending patterns], 카테고리 [categories], 혜택 [benefits]).
+[L2a output translated: "We recommend a customized spending benefit product so that you can enjoy practical benefits across multiple categories in line with your diverse spending patterns."]
 First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the same
 (task, feature-signature) pair retrieve the cached result from DynamoDB in 6ms.
 

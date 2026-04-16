@@ -1132,8 +1132,10 @@ but a structural requirement for multi-faceted persuasion.
 Expert contribution analysis (@tab:joint-ablation) reveals three patterns.
 All scenarios use PLE softmax gating with adaTT disabled.
 
-*Individual expert contributions are marginal on synthetic data.*
-The full 7-expert model (AUC 0.6724) improves only +0.0006 over DeepFM alone (0.6718).
+*Individual expert contributions show limited differentiation on aggregate AUC with synthetic data.*
+The full 7-expert model (AUC 0.6724) improves only +0.0006 over DeepFM alone (0.6718);
+task-type-specific contributions (e.g., multiclass NDCG, regression MAE) require per-metric analysis
+and are expected to diverge on production data with genuine behavioral patterns.
 In the bottom-up ablation, LightGCN provides the largest AUC gain (+0.0015 over DeepFM baseline),
 while in the top-down ablation, no single expert removal causes AUC to drop below the DeepFM-only level.
 This confirms that the synthetic benchmark's formula-based feature--label relationships
@@ -1183,9 +1185,9 @@ batch size 5632, and AMP enabled.
     [Sigmoid + adaTT], [0.6541], [0.6998], [0.6762], [0.1992], [0.9721],
     [Softmax + adaTT], [0.6549], [0.7022], [0.6780], [0.1993], [0.9709],
     table.cell(colspan: 6, align: left, [_GradSurgery gradient-level projection†_]),
-    [SB + GradSurgery], [0.6704], [0.6963], [0.6860], [0.1986], [0.9614],
-    [Softmax + GradSurgery], [0.6726], [0.6918], [0.6830], [*0.2027*], [0.9588],
-    [Sigmoid + GradSurgery], [0.6721], [0.6888], [0.6811], [0.2020], [0.9603],
+    [SB + GradSurgery (exp.)], [0.6704], [0.6963], [0.6860], [0.1986], [0.9614],
+    [Softmax + GradSurgery (exp.)], [0.6726], [0.6918], [0.6830], [*0.2027*], [0.9588],
+    [Sigmoid + GradSurgery (exp.)], [0.6721], [0.6888], [0.6811], [0.2020], [0.9603],
   ),
   caption: [Structure ablation on 13-task benchmark (7 binary + 3 multiclass + 3 regression). Avg AUC = binary tasks only; NDCG\@3 = nba\_primary (7-class product recommendation); Avg F1m = multiclass tasks; Avg MAE = regression tasks. Bold = best per metric within gate comparison. †GradSurgery scenarios use batch size 4096 (vs.~5632) due to `retain_graph` VRAM overhead.],
 ) <tab:structure-ablation>
