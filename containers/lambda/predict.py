@@ -341,6 +341,87 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     exc_info=True,
                 )
 
+    # --- Recommendation Reason Generation (3-agent pipeline) ---
+    reasons: Dict[str, Any] = {}
+    try:
+        reason_cfg = _CACHE.get("_reason_config")
+        if reason_cfg is None:
+            # Read pre-built JSON config (converted from YAML at package time)
+            _local_cfg = os.path.join(os.path.dirname(__file__), "configs", "merged_config.json")
+            try:
+                with open(_local_cfg, encoding="utf-8") as _cf:
+                    reason_cfg = json.load(_cf)
+            except Exception:
+                reason_cfg = {}
+            _CACHE["_reason_config"] = reason_cfg
+
+        # Agent 1: FactExtractor
+        fact_extractor = _CACHE.get("_fact_extractor")
+        if fact_extractor is None:
+            try:
+                from core.recommendation.reason.fact_extractor import FactExtractor
+                fe_path = reason_cfg.get("reason", {}).get("fact_extractor", {}).get(
+                    "config_path", "configs/financial/fact_extraction.yaml",
+                )
+                # Resolve relative to Lambda package root
+                if not os.path.isabs(fe_path):
+                    fe_path = os.path.join(os.path.dirname(__file__), fe_path)
+                fact_extractor = FactExtractor(fe_path)
+                _CACHE["_fact_extractor"] = fact_extractor
+            except Exception:
+                _CACHE["_fact_extractor"] = False
+
+        # Agent 2: TemplateEngine
+        template_engine = _CACHE.get("_template_engine")
+        if template_engine is None:
+            try:
+                from core.recommendation.reason.template_engine import TemplateEngine
+                template_engine = TemplateEngine(reason_cfg)
+                _CACHE["_template_engine"] = template_engine
+            except Exception:
+                _CACHE["_template_engine"] = False
+
+        # Generate reasons for top-3 tasks
+        if template_engine and template_engine is not False:
+            import numpy as _np
+            sorted_tasks = sorted(
+                [(t, v) for t, v in predictions.items() if isinstance(v, (int, float))],
+                key=lambda x: -x[1],
+            )[:3]
+
+            facts = []
+            if fact_extractor and fact_extractor is not False:
+                facts = fact_extractor.extract(features)
+
+            for task_name, _ in sorted_tasks:
+                task_type = _get_task_type(task_name, tasks_meta)
+                # Get LGBM gain top features for this task
+                booster = models.get(task_name)
+                ig_top = []
+                if booster is not None:
+                    gains = booster.feature_importance(importance_type="gain")
+                    feat_names = booster.feature_name()
+                    top_idx = _np.argsort(gains)[::-1][:5]
+                    ig_top = [(feat_names[i], float(gains[i])) for i in top_idx]
+
+                reason_result = template_engine.generate_reason(
+                    customer_id=user_id,
+                    item_id=task_name,
+                    ig_top_features=ig_top,
+                    segment="WARMSTART",
+                    task_type=task_type,
+                    task_name=task_name,
+                )
+                reason_texts = [r.get("text", "") for r in reason_result.get("reasons", [])]
+                reasons[task_name] = {
+                    "l1_reasons": reason_texts,
+                    "facts": facts,
+                    "generation_method": "template_l1",
+                }
+    except Exception as _reason_exc:
+        logger.warning("Reason generation failed (non-fatal)", exc_info=True)
+        reasons["_error"] = str(_reason_exc)
+
     elapsed = round((time.perf_counter() - t0) * 1000.0, 2)
 
     result: Dict[str, Any] = {
@@ -348,6 +429,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "version": version,
         "variant": variant_name,
         "predictions": predictions,
+        "reasons": reasons,
         "elapsed_ms": elapsed,
     }
     if layer_used_per_task:
