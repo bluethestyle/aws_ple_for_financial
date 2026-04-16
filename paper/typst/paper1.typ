@@ -1607,7 +1607,7 @@ introducing latency and cost trade-offs (detailed in companion paper).
 
 == Ethics and Data Statement
 
-All experiments in this paper use *fully synthetic benchmark data* generated via Gaussian Copula with a fixed random seed (seed=42). No real customer data is included or was used in any reported experiment. The benchmark data generator and all configuration files are publicly available in the repository. The system is designed for deployment on low-risk check card products only; investment and insurance recommendations are explicitly excluded from the operational scope (see companion paper, Section 6.3).
+All experiments in this version use *fully synthetic benchmark data* generated via Gaussian Copula with a fixed random seed (seed=42). No real customer data is included in this version. Validation on production data is planned for a subsequent revision. The benchmark data generator and all configuration files are publicly available in the repository. The system is designed for deployment on low-risk check card products only; investment and insurance recommendations are explicitly excluded from the operational scope (see companion paper, Section 6.3).
 
 == Future Work: Scaling Considerations
 

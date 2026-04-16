@@ -1620,9 +1620,9 @@ contribution to both predictive performance and explanation quality.
 
 == Ethics and Data Statement
 
-All experiments in this paper use *synthetic benchmark data* (1M customers generated
+All experiments in this version use *synthetic benchmark data* (1M customers generated
 via Gaussian Copula + latent variable variance budget with fixed seed).
-No real customer data is included or was used in any reported experiment.
+No real customer data is included in this version. Validation on production data is planned for a subsequent revision.
 The production system design targets low-risk check card products only;
 investment and insurance product recommendations are explicitly excluded
 from the deployment scope (Section 6.3).
