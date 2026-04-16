@@ -691,12 +691,7 @@ Customer-facing recommendation reasons require natural, professional Korean text
 )
 Bedrock ensures that input/output data is never transmitted to model providers (Anthropic) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet, ensuring that financial customer data never leaves the AWS Region (ap-northeast-2) --- structurally satisfying the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
 
-The backend is config-driven, allowing the deployment environment to be switched without code changes:
-
-```yaml
-llm_provider:
-  backend: bedrock  # or openai / gemini / local / dummy
-```
+The LLM backend is config-driven, allowing the deployment environment (Bedrock, local open-source, or mock) to be switched without code changes.
 
 The three serving layers of reason generation map to Bedrock invocation as follows:
 - *L1 (synchronous)*: Template-based, ~1ms latency, always available. No Bedrock call; the TemplateEngine generates deterministic Korean from InterpretationRegistry reverse-mappings. This is the guaranteed fallback for all customers.
