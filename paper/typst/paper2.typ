@@ -1376,10 +1376,10 @@ TemplateEngine before L2a Bedrock rewrite.
     stroke: 0.5pt,
     [*Task*], [*L1 Template Reason*],
     [top\_mcc\_shift], [소비 패턴의 변화에 맞춘 혜택입니다. 다양한 소비 카테고리를 활용하시는 고객님께 맞춤 소비 혜택을(를) 추천드립니다.],
-    [will\_acquire\_investments], [고객님의 재무 목표에 부합할 수 있습니다. 현재 금융 라이프사이클 단계에 적합한 투자 상품입니다.],
+    [will\_acquire\_investments#super[†]], [고객님의 재무 목표에 부합할 수 있습니다. 현재 금융 라이프사이클 단계에 적합한 투자 상품입니다.],
     [churn\_signal], [고객님의 소중한 거래 관계를 유지하고자 합니다. 고객님의 이용 패턴을 분석하여 고객 유지 프로그램을(를) 추천드립니다.],
   ),
-  caption: [L1 template reason examples from production Lambda (ple-predict). These verbatim outputs (in Korean) feed into the L2a Bedrock rewrite pipeline. Note the template artifact "(를)" in rows 1 and 3 --- this is precisely the type of defect that L2a corrects. [Translations: Row 1: "Benefits tailored to your changing spending patterns. We recommend a customized spending benefit product for customers actively using diverse spending categories." Row 2: "This may align with your financial goals. We recommend an investment product suitable for your current financial lifecycle stage." Row 3: "We aim to maintain your valued transaction relationship. We recommend a customer retention program based on analysis of your usage patterns."]],
+  caption: [L1 template reason examples from production Lambda (ple-predict). These verbatim outputs (in Korean) feed into the L2a Bedrock rewrite pipeline. Note the template artifact "(를)" in rows 1 and 3 --- this is precisely the type of defect that L2a corrects. †`will_acquire_investments` is a benchmark-only task; operational deployment is restricted to low-risk check card products (see Section 6.3). [Translations: Row 1: "Benefits tailored to your changing spending patterns." Row 2: "This may align with your financial goals (benchmark only)." Row 3: "We aim to maintain your valued transaction relationship."]],
 ) <tab:l1-reasons>
 
 === L2a Bedrock Rewrite Example
@@ -1602,6 +1602,18 @@ contribution to both predictive performance and explanation quality.
 - Multi-lingual reason generation (Korean, English, Chinese).
 - Automated regulatory update pipeline (regulation change → compliance check update).
 - Fine-tuned domain-specific small LLM to replace general-purpose API.
+
+== Ethics and Data Statement
+
+All experiments in this paper use *synthetic benchmark data* (1M customers generated
+via Gaussian Copula + latent variable variance budget with fixed seed).
+No real customer data is included or was used in any reported experiment.
+The production system design targets low-risk check card products only;
+investment and insurance product recommendations are explicitly excluded
+from the deployment scope (Section 6.3).
+The system is designed to comply with Korean FSS AI guidelines,
+the EU AI Act, and the Korean AI Basic Act,
+with automated fairness monitoring across 5 protected attributes.
 
 // ============================================================
 = Conclusion

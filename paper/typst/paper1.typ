@@ -644,9 +644,16 @@ in financial customer understanding that no other expert type addresses:
   LNN @hasani2021 adapts its time constants to irregular intervals;
   Transformer captures short-range attention patterns.
 
-- *Causal* @zheng2018notears: The NOTEARS continuous DAG constraint
-  ($"tr"(e^(W circle.tiny W)) - d = 0$) learns causal direction between features,
-  enabling "A causes B" explanations rather than "A correlates with B" @pearl2009causality.
+- *Causal* @zheng2018notears: A learnable adjacency matrix $W in RR^(d times d)$
+  (where $d$ = 32 compressed feature dimensions) encodes causal direction between features.
+  During training, the NOTEARS acyclicity constraint
+  ($"tr"(e^(W circle.tiny W)) - d = 0$, Taylor-approximated to 10th order)
+  is added as a regularization loss, guiding $W$ toward a DAG structure.
+  At inference time, the learned $W$ is frozen and applied as
+  $hat(z) = z + z dot.c (W circle.tiny W)$,
+  injecting discovered causal structure into the representation
+  without re-running the optimization.
+  This enables "A causes B" explanations rather than "A correlates with B" @pearl2009causality.
 
 - *LightGCN* @he2020lightgcn: Collaborative filtering via neighborhood aggregation
   on the customer-product bipartite graph. Stripped to essentials (no feature transform, no activation),
