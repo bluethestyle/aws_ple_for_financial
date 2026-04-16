@@ -68,8 +68,9 @@
   reason generation quality via automated compliance validation
   (L1 template coverage 100%, 13/13 tasks; compliance rules applied: suitability, consent, opt-out, profiling),
   and Safety Gate reliability (5 PII patterns, 4 regulatory check categories).
-  The system achieves sub-100ms serving latency on AWS Lambda
-  at a fraction of the cost of dedicated GPU inference servers.
+  The system achieves 120ms warm latency on AWS Lambda (L1 predict + 13 tasks)
+  at a fraction of the cost of dedicated GPU inference servers,
+  with cold start ~6s (S3 model download) and L2a cache hit at 6ms (DynamoDB).
 
   #v(0.3em)
   #text(weight: "bold")[Keywords:]
@@ -470,15 +471,15 @@ This avoids conflating metrics with incompatible semantics across task types.
     [will\_acquire\_lending (AUC)], [0.666], [0.640], [0.026], [81.2%],
     [top\_mcc\_shift (AUC)], [0.630], [0.594], [0.036], [99.9%],
     table.hline(stroke: 0.4pt),
-    table.cell(colspan: 5, align: left)[_Multiclass (threshold-routed → direct hard-label)_],
-    [nba\_primary (F1-macro, 7-cls)], [0.187], [—], [—], [F1 < 2/7 → DIRECT],
-    [segment\_prediction (F1-macro, 4-cls)], [0.403], [—], [—], [F1 < 2/4 → DIRECT],
-    [next\_mcc (F1-macro, 50-cls)], [0.012], [—], [—], [F1 < 2/50 → DIRECT],
+    table.cell(colspan: 5, align: left)[_Multiclass (threshold-routed)_],
+    [nba\_primary (F1-macro, 7-cls)], [0.187], [0.373], [0.186], [F1 < 2/7 → DIRECT],
+    [segment\_prediction (F1-macro, 4-cls)], [0.403], [0.376], [0.028], [F1 < 2/4 → DIRECT],
+    [next\_mcc (F1-macro, 50-cls)], [0.012], [—], [—], [F1 < floor → SKIP (L3)],
     table.hline(stroke: 0.4pt),
-    table.cell(colspan: 5, align: left)[_Regression (direct training)_],
-    [product\_stability (MAE)], [], [], [0.001], [PASS],
-    [mcc\_diversity\_trend (MAE)], [], [], [0.017], [PASS],
-    [cross\_sell\_count (RMSE)], [], [], [0.176], [—],
+    table.cell(colspan: 5, align: left)[_Regression (threshold-routed)_],
+    [product\_stability (R²)], [< floor], [—], [—], [R² < floor → SKIP (L3)],
+    [mcc\_diversity\_trend (MAE)], [R²=0.031], [0.025], [PASS], [R² < 0.05 → DIRECT],
+    [cross\_sell\_count (R²)], [0.008], [—], [—], [R² < floor → SKIP (L3)],
   ),
   caption: [Distillation results per task.\ Binary tasks: teacher AUC, student AUC, AUC gap, and prediction agreement (student vs.\ teacher); student AUC computed as Teacher − Gap.\ Multiclass tasks: teacher F1-macro with adaptive threshold gate; tasks below 2/K random baseline are routed to direct hard-label training.\ Regression tasks: MAE/RMSE gap between teacher and student predictions.],
 ) <tab:distill-results>
@@ -671,7 +672,7 @@ llm_provider:
 
 The three serving layers of reason generation map to Bedrock invocation as follows:
 - *L1 (synchronous)*: Template-based, ~1ms latency, always available. No Bedrock call; the TemplateEngine generates deterministic Korean from InterpretationRegistry reverse-mappings. This is the guaranteed fallback for all customers.
-- *L2a (async)*: Bedrock Claude Sonnet 4.6 rewrites the L1 template into richer, more natural Korean. Submitted via SQS; result cached in DynamoDB. Processing priority is determined by context richness (data availability), not customer tier, satisfying the equal-explanation obligation (금소법 §19).
+- *L2a (on-demand)*: When a customer clicks for detail, a synchronous Bedrock Claude Sonnet 4.6 call rewrites the L1 template into richer, more natural Korean (first call ~2.4s); the result is cached in DynamoDB so subsequent requests return instantly (~6ms cache hit). Processing priority is determined by context richness (data availability), not customer tier, satisfying the equal-explanation obligation (금소법 §19).
 - *L2b (async)*: Bedrock validates L2a output for PII leakage, hallucination, and regulatory compliance before promotion. Human review is applied to a 5% sampling for quality assurance.
 
 The Bedrock infrastructure is shared between reason generation and operational agents (Section 5); time-slot separation resolves quota contention.
@@ -702,8 +703,8 @@ Recommendation reasons are served via a 3-layer asynchronous architecture:
 
 + *L1 (Template)*: returned immediately on customer request. No LLM call. The template engine generates deterministic Korean reasons based on LGBM SHAP top-K feature business reverse-mappings. Features pass through the interpretation registry's 5-level cascade (SHAP direction → L3 → L2 → L1 → reverse-mapping layer) to produce enriched 3-tuples `(feature_name, shap_value, Korean_interpretation)`.
 
-+ *L2a (LLM Rewrite)*: submitted asynchronously via SQS. Bedrock Claude Sonnet 4.6 (AWS) or Exaone 3.5 (on-premises) refines L1 reasons into natural Korean. Results are cached in DynamoDB for subsequent requests.
-  *All customers receive the L1 template equally*, and L2a processing order is determined by *context richness* (feature availability, consultation history) rather than customer tier --- complying with Korean Financial Consumer Protection Act Art.19 (equal explanation obligation) and Personal Information Protection Act Art.37-2(2) (right to explanation).
++ *L2a (on-demand with caching)*: When a customer clicks for product detail, a synchronous Bedrock Claude Sonnet 4.6 call (AWS) or Exaone 3.5 (on-premises) refines the L1 reason into richer natural Korean. The first call takes ~2.4s (Bedrock Sonnet); the result is cached in DynamoDB so the next request for the same customer×product returns at ~6ms. This on-demand pattern replaces an earlier SQS-based asynchronous design --- it provides an immediate response on click rather than requiring the customer to wait for a background queue, and caching makes repeat access instant.
+  *All customers receive the L1 template equally*, and L2a invocations are triggered by *customer-initiated detail requests* rather than customer tier --- complying with Korean Financial Consumer Protection Act Art.19 (equal explanation obligation) and Personal Information Protection Act Art.37-2(2) (right to explanation).
   Context richness classification: rich (abundant features + history) → moderate (partial features) → sparse (cold-start; excluded from L2a, L1 template only). This reflects that *data availability* determines LLM output quality, not a service-quality differential by customer segment.#footnote[
   An earlier prototype set L2a priority based on customer segment (VIP), but
   was redesigned around context richness classification to comply with the
@@ -1318,13 +1319,13 @@ Human evaluation is planned for production deployment; automated compliance vali
     align: (left, left, right, left),
     stroke: 0.5pt,
     [*Component*], [*Latency*], [*Cost/1K req*], [*Notes*],
-    [LGBM inference], [< 10ms], [< \$0.02], [Lambda 128MB],
-    [SHAP attribution], [< 50ms], [< \$0.04], [Lambda 256MB],
-    [Reason generation], [< 200ms], [< \$0.08], [Cache hit: < 5ms; Lambda 512MB],
-    [Safety Gate], [< 50ms], [< \$0.04], [Rule-based + LLM; Lambda 256MB],
-    [*Total*], [< 300ms], [< \$0.10], [Cache hit: < 100ms],
+    [L1 predict + 13 tasks (warm)], [120ms], [< \$0.02], [Lambda; measured],
+    [L2a first call (Bedrock Sonnet)], [2.4s], [~\$0.01], [On-demand; cached thereafter],
+    [L2a cache hit], [6ms], [< \$0.001], [DynamoDB; measured],
+    [Cold start], [~6s], [—], [S3 model download; amortized],
+    [Vector search (1M rows)], [63ms], [< \$0.01], [DuckDB vss brute-force cosine],
   ),
-  caption: [Serving latency breakdown (Lambda serverless, no GPU).],
+  caption: [Serving latency breakdown (Lambda serverless, no GPU). Measured values on warm Lambda. Vector search used for cold-start\/new customer grounding via DuckDB vss on Lance format files.],
 ) <tab:serving>
 
 The entire teacher training and distillation cycle runs on SageMaker Spot instances,
@@ -1509,7 +1510,9 @@ may be more valuable than a high-AUC feature that generates no meaningful explan
 // TODO: Add key distillation and human eval numbers when available
 
 The system is designed for deployment on serverless infrastructure (AWS Lambda),
-achieving sub-100ms serving latency without dedicated GPU servers ---
+achieving 120ms warm latency (L1 predict + 13 tasks) without dedicated GPU servers ---
+with L2a on-demand Bedrock rewrite at first call (~2.4s, cached at 6ms thereafter)
+and cold start ~6s (S3 model download),
 matching the operational reality of financial institutions
 with limited ML engineering resources.
 
