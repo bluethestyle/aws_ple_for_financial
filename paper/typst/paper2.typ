@@ -913,7 +913,7 @@ in financial AI operations:
 
 + *Small-team MLOps enablement*: The architecture makes regulation-compliant operations feasible without a large dedicated MLOps team. The agents handle the formalized interpretation; humans contribute the judgment that regulations actually require.
 
-== Pipeline Part Classification and Inspection Checklist
+== Pipeline Inspection Checklist
 
 For systematic inspection, the pipeline is divided into six parts with 48 checklist items:
 P1 (Ingestion), P2 (Feature Engineering), P3 (Training/Distillation), P4 (Serving/Recommendation), P5 (Reason Generation), P6 (Monitoring/Governance).
@@ -1098,7 +1098,7 @@ The GDPR/FCPA compliance obligations listed above are enforced through a pipelin
 
 All checks operate with graceful degradation: if the compliance service is temporarily unavailable, a warning is logged and the recommendation proceeds, ensuring that a transient infrastructure failure does not create a customer-facing outage.
 
-== Korean AI Basic Act (passed 2024.12, promulgated 2025.01, effective 2026.01.22)
+== Korean AI Basic Act
 
 Korea's AI Basic Act (passed by the National Assembly December 2024, promulgated January 2025, effective January 22, 2026) @koreaaiact2024 introduces a domestic
 high-risk AI classification framework.
