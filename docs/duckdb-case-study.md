@@ -178,14 +178,12 @@ One SQL query. No Python loop. Runs on 941K rows in seconds.
 
 ---
 
-## Pattern 3: POSITIONAL JOIN for Zero-Copy Feature Merging
+## Pattern 3: POSITIONAL JOIN for pandas-free Feature Merging
 
 After feature generators (GMM clusters, TDA topology, HMM states, etc.)
 produce new columns, their outputs must be merged back into the main
-941K-row DataFrame. A naive `pd.concat([main_df, gen_df], axis=1)` creates
-a full in-memory copy of both DataFrames.
-
-DuckDB's `POSITIONAL JOIN` merges by row position without copying:
+941K-row DataFrame. DuckDB's `POSITIONAL JOIN` merges by row position,
+keeping the result in Arrow format without a pandas roundtrip:
 
 ```python
 con = duckdb.connect()
@@ -195,24 +193,28 @@ con.register("_gen", df_generated[new_cols].reset_index(drop=True))
 main_cols = ", ".join(f'_main."{c}"' for c in df_main.columns)
 gen_cols  = ", ".join(f'_gen."{c}"' for c in df_generated.columns)
 
-df = con.execute(
+# .arrow() — stays in Arrow, no pandas conversion
+merged = con.execute(
     f"SELECT {main_cols}, {gen_cols} FROM _main POSITIONAL JOIN _gen"
-).df()
+).arrow()
 ```
 
 The same pattern combines the 403-column feature matrix with the 13-column
-label matrix before DataLoader construction:
+label matrix before DataLoader construction, with `pa.Table.take(indices)`
+replacing `df.iloc[indices]` for train/val/test splits:
 
 ```python
-con.register("_feat", features)
-con.register("_lbl", labels)
-df_combined = con.execute(
+tbl = con.execute(
     f"SELECT {feat_cols}, {lbl_cols} FROM _feat POSITIONAL JOIN _lbl"
-).df()
+).arrow()
+train_tbl = tbl.take(train_indices)   # replaces df.iloc[train_idx]
 ```
 
-This is one of DuckDB's less-known features, and for ML pipelines where
-row alignment is guaranteed, it is a massive memory saver.
+**Why POSITIONAL JOIN, not `pd.concat`?** On 941K × 403 columns,
+POSITIONAL JOIN → `.arrow()` runs in 1.08s vs. pandas concat in 2.07s (1.9×).
+Memory consumption is similar — the advantage is **speed + pandas-free
+consistency**, not memory reduction. DuckDB's real memory win comes from
+aggregation/filtering (15 GB → 1 MB), not from merging.
 
 ---
 
@@ -555,8 +557,10 @@ types not yet ported to SQL, and for `<10K` row paths in unit tests.
    On AWS, the same memory reduction translates directly to smaller
    (cheaper) instance types — RAM is the most expensive SageMaker dimension.
 
-3. **POSITIONAL JOIN** is underrated for ML workflows where row alignment
-   is guaranteed. It replaces `pd.concat(axis=1)` without memory overhead.
+3. **POSITIONAL JOIN** keeps ML pipelines pandas-free. It replaces
+   `pd.concat(axis=1)` with 1.9× speedup and Arrow-native output,
+   maintaining consistency with the DuckDB-throughout philosophy.
+   Memory is similar — the win is speed + no pandas dependency.
 
 4. **Be honest about where pandas wins.** Full materialization is faster
    in pandas. Design your pipeline to minimize full materializations
