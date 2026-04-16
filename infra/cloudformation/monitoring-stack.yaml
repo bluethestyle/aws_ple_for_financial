@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  AIOps PLE Financial — Monitoring & Agent Infrastructure Stack
+  AIOps PLE Financial - Monitoring & Agent Infrastructure Stack
 
   Provisions:
     - EventBridge rules: OpsAgent (daily 09:00 KST), AuditAgent (daily 10:00 KST),
@@ -37,7 +37,7 @@ Parameters:
     Type: String
     Default: ""
     NoEcho: true
-    Description: "Slack incoming webhook URL (optional — leave empty to skip Slack integration)"
+    Description: "Slack incoming webhook URL (optional - leave empty to skip Slack integration)"
 
   BedrockModelId:
     Type: String
@@ -53,25 +53,25 @@ Parameters:
     Type: String
     Description: ARN of the SageMaker execution role (used for cross-service trust grants)
 
-  # Placeholder ARNs — actual Lambda deployment is a separate stack
+  # Placeholder ARNs - actual Lambda deployment is a separate stack
   OpsAgentLambdaArn:
     Type: String
-    Default: "arn:aws:lambda:ap-northeast-2:123456789012:function:ple-ops-agent"
+    Default: "arn:aws:lambda:ap-northeast-2:795833413857:function:ple-ops-agent"
     Description: "ARN of the OpsAgent Lambda function (deployed via separate stack)"
 
   AuditAgentLambdaArn:
     Type: String
-    Default: "arn:aws:lambda:ap-northeast-2:123456789012:function:ple-audit-agent"
+    Default: "arn:aws:lambda:ap-northeast-2:795833413857:function:ple-audit-agent"
     Description: "ARN of the AuditAgent Lambda function (deployed via separate stack)"
 
   HeartbeatLambdaArn:
     Type: String
-    Default: "arn:aws:lambda:ap-northeast-2:123456789012:function:ple-heartbeat"
+    Default: "arn:aws:lambda:ap-northeast-2:795833413857:function:ple-heartbeat"
     Description: "ARN of the Heartbeat Lambda function (deployed via separate stack)"
 
   ServingLambdaArn:
     Type: String
-    Default: "arn:aws:lambda:ap-northeast-2:123456789012:function:ple-predict"
+    Default: "arn:aws:lambda:ap-northeast-2:795833413857:function:ple-predict"
     Description: "ARN of the Serving (predict) Lambda function (deployed via serving stack)"
 
   LogRetentionDays:
@@ -122,13 +122,13 @@ Metadata:
 Resources:
 
   # =========================================================================
-  # KMS Key — shared encryption for SNS topics and DynamoDB tables
+  # KMS Key - shared encryption for SNS topics and DynamoDB tables
   # =========================================================================
 
   MonitoringKmsKey:
     Type: AWS::KMS::Key
     Properties:
-      Description: "PLE monitoring stack — SNS + DynamoDB encryption"
+      Description: "PLE monitoring stack - SNS + DynamoDB encryption"
       EnableKeyRotation: true
       KeyPolicy:
         Version: "2012-10-17"
@@ -334,7 +334,7 @@ Resources:
                 aws:SourceArn: !Sub "arn:aws:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:ple-*"
 
   # =========================================================================
-  # EventBridge Rules — Agent Scheduling
+  # EventBridge Rules - Agent Scheduling
   # =========================================================================
 
   # --- OpsAgent: daily at 09:00 KST = 00:00 UTC ---
@@ -342,7 +342,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub "ple-ops-agent-daily-${Environment}"
-      Description: "PLE OpsAgent: daily at 09:00 KST (00:00 UTC) — operational findings"
+      Description: "PLE OpsAgent: daily at 09:00 KST (00:00 UTC) - operational findings"
       ScheduleExpression: "cron(0 0 * * ? *)"
       State: !If [IsProd, ENABLED, DISABLED]
       Targets:
@@ -378,7 +378,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub "ple-audit-agent-daily-${Environment}"
-      Description: "PLE AuditAgent: daily at 10:00 KST (01:00 UTC) — bias & compliance audit"
+      Description: "PLE AuditAgent: daily at 10:00 KST (01:00 UTC) - bias & compliance audit"
       ScheduleExpression: "cron(0 1 * * ? *)"
       State: !If [IsProd, ENABLED, DISABLED]
       Targets:
@@ -415,7 +415,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub "ple-heartbeat-5min-${Environment}"
-      Description: "PLE HeartbeatScheduler: every 5 minutes — pipeline health check"
+      Description: "PLE HeartbeatScheduler: every 5 minutes - pipeline health check"
       ScheduleExpression: "rate(5 minutes)"
       State: !If [IsProd, ENABLED, DISABLED]
       Targets:
@@ -450,7 +450,7 @@ Resources:
   # CloudWatch Alarms
   # =========================================================================
 
-  # --- Lambda error rate > 5% for 5 min → OpsAlerts ---
+  # --- Lambda error rate > 5% for 5 min -> OpsAlerts ---
   AgentLambdaErrorRateAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -503,7 +503,7 @@ Resources:
         - Key: ManagedBy
           Value: cloudformation
 
-  # --- Lambda duration > 10s p99 → OpsAlerts ---
+  # --- Lambda duration > 10s p99 -> OpsAlerts ---
   AgentLambdaDurationAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -536,7 +536,7 @@ Resources:
         - Key: ManagedBy
           Value: cloudformation
 
-  # --- Heartbeat Lambda invocations = 0 for 15 min → HeartbeatAlerts ---
+  # --- Heartbeat Lambda invocations = 0 for 15 min -> HeartbeatAlerts ---
   HeartbeatMissingAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -570,14 +570,14 @@ Resources:
         - Key: ManagedBy
           Value: cloudformation
 
-  # --- Agent Lambda errors > 0 for 2 consecutive periods → OpsAlerts ---
+  # --- Agent Lambda errors > 0 for 2 consecutive periods -> OpsAlerts ---
   AgentLambdaConsecutiveErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "ple-agent-consecutive-errors-${Environment}"
       AlarmDescription: >
         Agent Lambda produced errors in 2 consecutive 5-minute periods.
-        Immediate investigation required — agent may be stuck or config is broken.
+        Immediate investigation required - agent may be stuck or config is broken.
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
@@ -603,14 +603,14 @@ Resources:
         - Key: ManagedBy
           Value: cloudformation
 
-  # --- AuditAgent errors > 0 for 2 consecutive periods → AuditAlerts ---
+  # --- AuditAgent errors > 0 for 2 consecutive periods -> AuditAlerts ---
   AuditAgentConsecutiveErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "ple-audit-agent-consecutive-errors-${Environment}"
       AlarmDescription: >
         AuditAgent Lambda produced errors in 2 consecutive 5-minute periods.
-        Compliance audit may have been skipped — investigate immediately.
+        Compliance audit may have been skipped - investigate immediately.
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
@@ -637,7 +637,7 @@ Resources:
           Value: cloudformation
 
   # =========================================================================
-  # DynamoDB Tables — Compliance
+  # DynamoDB Tables - Compliance
   # =========================================================================
 
   # --- Compliance audit trail ---
@@ -816,7 +816,7 @@ Resources:
           Value: compliance
 
   # =========================================================================
-  # DynamoDB Tables — ComplianceAuditStore (7 audit tables + reason_cache)
+  # DynamoDB Tables - ComplianceAuditStore (7 audit tables + reason_cache)
   # =========================================================================
   # Table names match TABLE_SUFFIXES in core/compliance/audit_store.py
   # prefix pattern: ple-audit-{suffix}
@@ -1300,14 +1300,14 @@ Resources:
           Value: cloudformation
 
   # =========================================================================
-  # SQS Queue — L2a Reason Rewrite (AsyncReasonOrchestrator)
+  # SQS Queue - L2a Reason Rewrite (AsyncReasonOrchestrator)
   # =========================================================================
 
   ReasonL2aQueue:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: !Sub "ple-reason-l2a-queue-${Environment}"
-      VisibilityTimeout: 300          # 5 min — matches max L2a LLM latency
+      VisibilityTimeout: 300          # 5 min - matches max L2a LLM latency
       MessageRetentionPeriod: 86400   # 1 day
       ReceiveMessageWaitTimeSeconds: 20  # long polling
       RedrivePolicy:
@@ -1337,7 +1337,7 @@ Resources:
           Value: cloudformation
 
   # =========================================================================
-  # S3 Bucket Policy — Audit Log Lifecycle + Encryption
+  # S3 Bucket Policy - Audit Log Lifecycle + Encryption
   # =========================================================================
 
   # Note: the S3 bucket itself is assumed to exist (created by the training
@@ -1405,8 +1405,8 @@ Resources:
   # using a pre-existing bucket (avoids bucket recreation on stack updates).
   #
   # Lifecycle rules:
-  #   - audit-logs/*  → Glacier after 90 days, Delete after 2555 days (7 years)
-  #   - outputs/*     → Standard-IA after 30 days, Glacier after 180 days
+  #   - audit-logs/*  -> Glacier after 90 days, Delete after 2555 days (7 years)
+  #   - outputs/*     -> Standard-IA after 30 days, Glacier after 180 days
 
   AuditLogLifecycleConfig:
     Type: AWS::S3::StorageLens
@@ -1478,7 +1478,7 @@ Resources:
           Value: cloudformation
 
   # =========================================================================
-  # CloudWatch Dashboard — operational overview
+  # CloudWatch Dashboard - operational overview
   # =========================================================================
 
   MonitoringDashboard:
@@ -1492,7 +1492,7 @@ Resources:
               "type": "alarm",
               "x": 0, "y": 0, "width": 24, "height": 4,
               "properties": {
-                "title": "PLE Monitoring — Active Alarms",
+                "title": "PLE Monitoring - Active Alarms",
                 "alarms": [
                   "${AgentLambdaErrorRateAlarm.AlarmArn}",
                   "${AgentLambdaDurationAlarm.AlarmArn}",
@@ -1536,7 +1536,7 @@ Resources:
         }
 
 # ---------------------------------------------------------------------------
-# Outputs — cross-stack references
+# Outputs - cross-stack references
 # ---------------------------------------------------------------------------
 
 Outputs:
@@ -1655,7 +1655,7 @@ Outputs:
     Export:
       Name: !Sub "ple-monitoring-dashboard-${Environment}"
 
-  # SQS Queue — L2a Reason Rewrite
+  # SQS Queue - L2a Reason Rewrite
   ReasonL2aQueueUrl:
     Description: "SQS queue URL for L2a async reason rewrite jobs (AsyncReasonOrchestrator)"
     Value: !Ref ReasonL2aQueue

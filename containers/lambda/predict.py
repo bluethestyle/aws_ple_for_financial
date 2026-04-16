@@ -257,29 +257,22 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     # --- Per-task inference ---
     predictions: Dict[str, Any] = {}
-    raw_feature_list = list(features.values())
-
     import numpy as np
 
     for task_name in tasks_to_score:
         booster = models[task_name]
-        sel = feat_meta.get(task_name, {})
-        indices = sel.get("indices", [])
 
-        if indices:
-            # Slice the full feature vector to selected indices
-            try:
-                selected = [raw_feature_list[i] for i in indices]
-            except IndexError:
-                logger.warning(
-                    "Feature index out of range for task=%s, "
-                    "feature_count=%d, max_index=%d",
-                    task_name, len(raw_feature_list),
-                    max(indices) if indices else -1,
-                )
-                selected = raw_feature_list
+        # Build feature vector in the exact column order the model was trained on
+        task_meta = feat_meta.get(task_name, {})
+        feature_columns = task_meta.get("feature_columns", [])
+        if not feature_columns:
+            # Fallback: use booster's feature names if available
+            feature_columns = booster.feature_name()
+
+        if feature_columns:
+            selected = [float(features.get(c, 0.0) or 0.0) for c in feature_columns]
         else:
-            selected = raw_feature_list
+            selected = list(features.values())
 
         X = np.array(selected, dtype=np.float32).reshape(1, -1)
         raw = booster.predict(X)  # shape: (1,) binary or (1, n_classes)
@@ -728,9 +721,9 @@ def _normalise(raw: Any, task_type: str) -> Any:
     import numpy as np
 
     if task_type == "binary":
-        # LGBM binary returns P(positive class)
         val = float(np.asarray(raw).ravel()[0]) if hasattr(raw, "__len__") else float(raw)
-        # LGBM predict returns probability directly (not logit) by default
+        # Custom objective LGBM outputs raw logits; apply sigmoid
+        val = 1.0 / (1.0 + np.exp(-val))
         return round(val, 6)
     elif task_type == "multiclass":
         arr = np.asarray(raw).ravel()

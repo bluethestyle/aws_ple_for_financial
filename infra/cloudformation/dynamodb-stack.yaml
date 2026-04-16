@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: PLE Financial - DynamoDB tables + SQS queue
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+
+Resources:
+  # --- Compliance Audit Tables (7) ---
+  AuditKillswitch:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ple-audit-killswitch
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  AuditConsent:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ple-audit-consent
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  AuditProfiling:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ple-audit-profiling
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  AuditOptout:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ple-audit-optout
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  AuditIncident:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ple-audit-incident
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  AuditDistillation:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ple-audit-distillation
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  AuditEmbedding:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ple-audit-embedding
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  # --- Reason Cache ---
+  ReasonCache:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: reason_cache
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # --- SQS Queue for L2a Async Reason ---
+  ReasonL2aQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: ple-reason-l2a-queue
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 86400
+
+Outputs:
+  AuditTablesCreated:
+    Value: "7 audit + 1 reason_cache"
+  ReasonQueueUrl:
+    Value: !GetAtt ReasonL2aQueue.QueueUrl
