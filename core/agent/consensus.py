@@ -287,7 +287,7 @@ class ConsensusArbiter:
         for v in votes:
             verdict_counts[v.verdict] = verdict_counts.get(v.verdict, 0) + 1
 
-        # FAIL always escalates regardless of consensus
+        # Rule 1: FAIL — 1명이라도 FAIL이면 무조건 FAIL 에스컬레이션
         if any(v.verdict == "FAIL" for v in votes):
             minority_votes = [v for v in votes if v.verdict != "FAIL"]
             minority_report = None
@@ -304,32 +304,37 @@ class ConsensusArbiter:
                 minority_report=minority_report,
             )
 
-        # Check for unanimous
-        if len(verdict_counts) == 1:
+        # Rule 2: PASS — 만장일치(3/3 PASS)만 통과
+        if len(verdict_counts) == 1 and votes[0].verdict == "PASS":
             return ConsensusResult(
                 consensus_type="consensus",
-                final_verdict=votes[0].verdict,
+                final_verdict="PASS",
                 votes=votes,
             )
 
-        # Majority (2/3)
+        # Rule 3: 만장일치 WARN
+        if len(verdict_counts) == 1 and votes[0].verdict == "WARN":
+            return ConsensusResult(
+                consensus_type="consensus",
+                final_verdict="WARN",
+                votes=votes,
+            )
+
+        # Rule 4: 의견 불일치 (2P+1W, 2W+1P 등) → WARN + minority_report
+        # PASS는 만장일치가 아니면 통과 불가, 보수적으로 WARN 처리
         majority_verdict = max(verdict_counts, key=verdict_counts.get)
         minority_votes = [v for v in votes if v.verdict != majority_verdict]
 
-        minority_report = None
-        if minority_votes:
-            minority_report = {
-                "dissenting_agents": [v.agent_id for v in minority_votes],
-                "dissenting_verdict": minority_votes[0].verdict,
-                "reasoning": minority_votes[0].reasoning,
-                "note": "Round 1에서 확정된 마이너리티 — 삭제 불가",
-            }
+        minority_report = {
+            "dissenting_agents": [v.agent_id for v in minority_votes],
+            "dissenting_verdict": minority_votes[0].verdict if minority_votes else "",
+            "reasoning": minority_votes[0].reasoning if minority_votes else "",
+            "note": "만장일치 미달 — 검토 필요",
+        }
 
-        # majority: 다수 의견이 최종 판정, minority_report에 소수 의견 기록
-        # 2/3이면 majority, 소수 1명의 의견이 minority_report
         return ConsensusResult(
             consensus_type="majority",
-            final_verdict=majority_verdict,
+            final_verdict="WARN",
             votes=votes,
             minority_report=minority_report,
         )
