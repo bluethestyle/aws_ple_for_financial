@@ -53,7 +53,7 @@ through training:
 ┌─────────────────────────────────────────────────────────────┐
 │  DATA GENERATION (scripts/generate_benchmark_data.py)       │
 │                                                             │
-│  numpy random     DuckDB SQL aggregation     Arrow → Parquet│
+│  numpy random     numpy vectorized agg       Arrow → Parquet│
 │  (raw matrices) → (synth_* features)       → (1.5 GB file) │
 └────────────────────────────┬────────────────────────────────┘
                              │
@@ -298,52 +298,23 @@ columnar operations.
 DuckDB is not just used for *processing* data — it is also used for
 *generating* it. The project includes a synthetic benchmark data generator
 (`scripts/generate_benchmark_data.py`) that produces 1M customers with
-realistic transaction sequences. DuckDB drives two critical stages.
+realistic transaction sequences. DuckDB drives the final stage of this pipeline.
 
-### Transaction Sequence Aggregation
+### How synth_* Features Are Actually Computed
 
 After generating raw transaction matrices (MCC codes, amounts, hours) per
-customer via numpy, the generator must compute aggregate features:
-`synth_monetary`, `synth_frequency`, `synth_recency_days`,
-`synth_unique_mcc`, time-of-day ratios, and more.
+customer via numpy, the aggregation is done entirely in numpy/Python — not in
+DuckDB SQL. All `synth_*` scalar features (`synth_monetary`, `synth_frequency`,
+`synth_recency_days`, `synth_unique_mcc`, time-of-day ratios, etc.) are computed
+using vectorized numpy operations directly on the raw matrices. The results are
+assembled into a PyArrow Table using `pa.table()`.
 
-The original Python-loop implementation required 20+ GB RAM and ~20 minutes
-for 1M customers. The DuckDB version registers numpy arrays as an Arrow table,
-then computes all aggregates in a single SQL pass:
+DuckDB is **not** used for `list_sum()`, `list_avg()`, or `list_distinct()`
+aggregation at this stage. The speedup (~40×) comes from vectorized numpy, not
+from DuckDB SQL aggregation.
 
-```python
-import duckdb
-import pyarrow as pa
-
-# Register per-customer transaction matrices as Arrow table
-table = pa.table({
-    "customer_id": customer_ids,
-    "total_txns": total_txns,
-    "mcc_sequence": mcc_lists,       # LIST column
-    "amount_sequence": amount_lists,  # LIST column
-    ...
-})
-
-con = duckdb.connect()
-con.register("_txn", table)
-
-# All synth_* features in one SQL query
-result = con.execute("""
-    SELECT
-        customer_id,
-        list_sum(amount_sequence) AS synth_monetary,
-        len(mcc_sequence) AS synth_frequency,
-        len(list_distinct(mcc_sequence)) AS synth_unique_mcc,
-        list_avg(amount_sequence) AS synth_avg_amount,
-        ...
-    FROM _txn
-""").arrow()
-```
-
-The DuckDB-based aggregation step alone reduced from ~20 minutes to ~30 seconds
-(**40× speedup**) with memory dropping from 20+ GB to ~8 GB.
-Full data generation (1M customers including all 6 persona types,
-transaction sequences, and label derivation) completes in ~13 minutes end-to-end.
+Full data generation (1M customers including all 6 persona types, transaction
+sequences, and label derivation) completes in ~13 minutes end-to-end.
 
 ### Parquet Output via Arrow
 
@@ -370,6 +341,111 @@ directions: **generation** (numpy → Arrow → Parquet) and **consumption**
 
 ---
 
+## Pattern 7: Sequence Densification
+
+`core/data/sequence_densifier.py` converts DuckDB LIST columns (produced by
+aggregation queries) into flat, fixed-length feature vectors for model input,
+using DuckDB-native operations throughout.
+
+For datasets small enough to process in a single pass, the result table is
+created directly:
+
+```sql
+CREATE OR REPLACE TABLE _densified_raw AS
+SELECT
+    passthrough_col,
+    COALESCE(list_element(seq_col, len(seq_col) - 179), 0.0)::FLOAT AS seq_001,
+    ...
+    COALESCE(list_element(seq_col, len(seq_col) - 0  ), 0.0)::FLOAT AS seq_180
+FROM raw_sequences
+```
+
+For large datasets (>500K rows by default), chunked processing uses
+`ROW_NUMBER() OVER ()` to number rows, then `INSERT INTO` to batch-assemble
+the result table:
+
+```sql
+-- Step 1: Add row numbers
+CREATE OR REPLACE TABLE _numbered AS
+SELECT *, ROW_NUMBER() OVER () AS _densify_rownum
+FROM raw_sequences;
+
+-- Step 2: First chunk creates the table
+CREATE OR REPLACE TABLE _densified AS
+SELECT ... FROM _numbered WHERE _densify_rownum > 0 AND _densify_rownum <= 500000;
+
+-- Step 3: Subsequent chunks append
+INSERT INTO _densified
+SELECT ... FROM _numbered WHERE _densify_rownum > 500000 AND _densify_rownum <= 1000000;
+```
+
+Schema introspection uses `DESCRIBE` to identify passthrough (non-LIST)
+columns automatically, without hard-coding column names:
+
+```python
+passthrough = conn.execute(
+    f"SELECT column_name FROM (DESCRIBE SELECT * FROM {table}) "
+    "WHERE column_type NOT LIKE 'LIST%'"
+).fetchall()
+```
+
+This pattern generalises to any LIST column schema without changes to Python code.
+
+---
+
+## Production Features in QueryEngine
+
+`core/data/query_engine.py` configures DuckDB as a production-grade engine with
+several settings not visible in the per-pattern examples above.
+
+**Resource limits** (config-driven via `query_engine.duckdb` in YAML):
+
+```python
+conn.execute(f"SET memory_limit='{memory_limit}'")  # default 4GB, env-overridable
+conn.execute(f"SET threads={threads}")               # default 4
+```
+
+**S3/httpfs for cloud data access** — when `s3_region` or credentials are
+configured, the engine installs `httpfs` and sets credentials so that
+`read_parquet('s3://bucket/...')` works identically to local paths:
+
+```python
+conn.execute("INSTALL httpfs; LOAD httpfs;")
+conn.execute(f"SET s3_region='{s3_region}'")
+```
+
+**Temp directory spillover** for datasets that exceed the memory limit:
+
+```python
+conn.execute(f"SET temp_directory='{temp_dir}'")
+```
+
+This means the same `QueryEngine` instance handles both local Parquet and S3
+Parquet without code changes — only the YAML config differs between
+on-premises and SageMaker runs.
+
+---
+
+## Schema Auto-Inspection in the Adapter
+
+`adapters/santander_adapter.py` uses `DESCRIBE SELECT *` throughout to detect
+column dtypes and build metadata automatically, rather than hard-coding column
+lists:
+
+```python
+# Detect all columns with their types
+col_meta = con.execute(
+    f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM {_TBL})"
+).fetchall()
+```
+
+This drives automatic routing of columns to normalizer stages (which columns
+are binary, which are continuous, which are LIST types) based on the actual
+schema of each loaded dataset — satisfying the config-driven requirement that
+no column names be hard-coded in Python.
+
+---
+
 ## Benchmarks
 
 Measured on the AWS benchmark synthetic dataset (941K × 403 columns,
@@ -388,7 +464,7 @@ Reproducible with `scripts/benchmark_duckdb_vs_pandas.py`.
 | Filter + aggregate (temporal split) | 18.7 s | 52.7 ms | **355×** |
 | 13-label derivation (full pipeline) | ~40 min | ~2 min | **~20×** |
 | Feature matrix POSITIONAL JOIN | ~4 s | ~0.3 s | **~14×** |
-| 1M-customer synth data generation | ~20 min | ~30 s | **~40×** |
+| 1M-customer synth data generation | ~20 min | ~30 s | **~40× (vectorized numpy, not DuckDB SQL)** |
 | Parquet full read (SELECT *) | 13.2 s | 176 s | **0.1× (pandas wins)** |
 | Column selection (50 of 403 cols) | 243 ms | 908 ms | **0.3× (pandas wins)** |
 
@@ -429,7 +505,8 @@ it is the difference between "the pipeline runs" and "the pipeline OOM-kills."
   matching rows.
 - **Synthetic data generation** — the original Python-loop implementation
   required 20+ GB RAM for transaction sequence aggregation alone.
-  DuckDB SQL aggregation reduced this to ~8 GB.
+  Vectorized numpy reduced this to ~8 GB; DuckDB handles the final Parquet write
+  via Arrow.
 - **On-premises air-gapped environment** — Hive for storage but no Spark
   or Impala for processing. If it does not fit on the workstation (128 GB RAM),
   it does not run. DuckDB made it fit.

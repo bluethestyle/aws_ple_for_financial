@@ -289,9 +289,13 @@ class PipelineRunner:
                     col_exprs.append(f'"{col}"')
 
             sql = f"SELECT {', '.join(col_exprs)} FROM _df_impute"
-            df = _con2.execute(sql).df()
+            # Keep as Arrow — avoid pandas materialisation until Stage 3 boundary.
+            _arrow_after_impute = _con2.execute(sql).arrow()
         finally:
             _con2.close()
+        # Arrow table carries the imputed data forward; pandas df is no longer used.
+        import pyarrow as _pa
+        df = _arrow_after_impute  # type: ignore[assignment]  # now a pyarrow.Table
 
         results["stage2_preprocessing"] = {
             "sentinel_values_replaced": sentinel_applied,
@@ -308,10 +312,23 @@ class PipelineRunner:
         stage_start = time.time()
         logger.info("[Stage 3] Feature engineering...")
 
-        feature_pipeline, df_generated = self._engineer_features(df, raw_data)
+        # _engineer_features expects a pandas DataFrame.  Convert from Arrow here —
+        # this is the single materialisation point for Stage 2 → Stage 3.
+        import pyarrow as _pa
+        if isinstance(df, _pa.Table):
+            df_for_eng = df.to_pandas()
+        else:
+            df_for_eng = df
+
+        feature_pipeline, df_generated = self._engineer_features(df_for_eng, raw_data)
         feature_schema = feature_pipeline.get_ple_input_metadata()
 
-        # Merge generated features into df
+        # Build / reuse Arrow table for the merge — avoids a second pandas round-trip.
+        _arrow_main: _pa.Table = (
+            df if isinstance(df, _pa.Table) else _pa.Table.from_pandas(df_for_eng)
+        )
+
+        # Merge generated features into main table
         if df_generated is not None and len(df_generated.columns) > 0:
             nonzero_ratio = (df_generated != 0).mean().mean()
             zero_cols = [c for c in df_generated.columns if (df_generated[c] == 0).all()]
@@ -320,26 +337,23 @@ class PipelineRunner:
             if zero_cols:
                 logger.warning("[Stage 3] All-zero generated columns: %s", zero_cols[:10])
 
-            # Only add columns that are truly new -- DuckDB positional join
-            new_cols = [c for c in df_generated.columns if c not in df.columns]
+            # Only add columns that are truly new — append via PyArrow append_column
+            # (no copy of the main table data, no DuckDB positional join needed).
+            existing_cols = set(_arrow_main.schema.names)
+            new_cols = [c for c in df_generated.columns if c not in existing_cols]
             if new_cols:
-                import duckdb as _ddb_stage3
-                _con3 = _ddb_stage3.connect()
-                try:
-                    _df_main = df.reset_index(drop=True)
-                    _df_gen = df_generated[new_cols].reset_index(drop=True)
-                    _con3.register("_main", _df_main)
-                    _con3.register("_gen", _df_gen)
-                    main_cols = ", ".join(f'_main."{c}"' for c in _df_main.columns)
-                    gen_cols = ", ".join(f'_gen."{c}"' for c in _df_gen.columns)
-                    sql = (
-                        f"SELECT {main_cols}, {gen_cols} "
-                        f"FROM _main POSITIONAL JOIN _gen"
+                _df_gen = df_generated[new_cols].reset_index(drop=True)
+                for _col in new_cols:
+                    _arrow_main = _arrow_main.append_column(
+                        _col,
+                        _pa.array(
+                            _df_gen[_col].to_numpy(dtype=float, na_value=float("nan"))
+                        ),
                     )
-                    df = _con3.execute(sql).df()
-                finally:
-                    _con3.close()
-                logger.info("[Stage 3] Merged %d generated features into main df", len(new_cols))
+                logger.info("[Stage 3] Merged %d generated features into main table", len(new_cols))
+
+        # Single pandas materialisation — downstream Stages 4–7 use pandas df.
+        df = _arrow_main.to_pandas()
 
         results["stage3_features"] = {
             "num_groups": len(feature_pipeline),
@@ -1463,12 +1477,12 @@ class PipelineRunner:
     ) -> Tuple[Any, Any]:
         """Build train and validation DataLoaders from Phase 0 artifacts."""
         import numpy as np
-        import pandas as pd
+        import pyarrow as pa
 
         stage_start = time.time()
         logger.info("[DataLoaders] Building DataLoaders...")
 
-        # DuckDB positional join instead of pd.concat on 941K rows
+        # DuckDB positional join → Arrow (pandas-free path)
         import duckdb as _ddb_dl
         _con_dl = _ddb_dl.connect()
         try:
@@ -1478,9 +1492,9 @@ class PipelineRunner:
             _con_dl.register("_lbl", _lbl_reset)
             _fcols = ", ".join(f'_feat."{c}"' for c in _feat_reset.columns)
             _lcols = ", ".join(f'_lbl."{c}"' for c in _lbl_reset.columns)
-            df_combined = _con_dl.execute(
+            tbl_combined: pa.Table = _con_dl.execute(
                 f"SELECT {_fcols}, {_lcols} FROM _feat POSITIONAL JOIN _lbl"
-            ).df()
+            ).arrow()
         finally:
             _con_dl.close()
 
@@ -1493,15 +1507,16 @@ class PipelineRunner:
             val_idx = split_indices["val"] + split_indices.get("test", [])
         else:
             # Fallback: random split
-            n = len(df_combined)
+            n = tbl_combined.num_rows
             n_train = int(n * self.config.data.train_split)
             rng = np.random.RandomState(self.config.training.seed)
             indices = rng.permutation(n)
             train_idx = indices[:n_train].tolist()
             val_idx = indices[n_train:].tolist()
 
-        train_df = df_combined.iloc[train_idx].reset_index(drop=True)
-        val_df = df_combined.iloc[val_idx].reset_index(drop=True)
+        # pa.Table.take() accepts integer index lists — Arrow-native, no pandas needed
+        train_df = tbl_combined.take(train_idx)
+        val_df = tbl_combined.take(val_idx)
 
         logger.info(
             "[DataLoaders] train=%d rows, val=%d rows",
@@ -2033,8 +2048,33 @@ class PipelineRunner:
 
         teacher = trainer.load_teacher(teacher_checkpoint)
 
-        import pandas as pd
-        merged = pd.concat([feature_df, label_df], axis=1)
+        try:
+            import duckdb as _ddb_dist
+            _con_dist = _ddb_dist.connect()
+            try:
+                _feat_reset = feature_df.reset_index(drop=True)
+                _lbl_reset = label_df.reset_index(drop=True)
+                _con_dist.register("_feat", _feat_reset)
+                _con_dist.register("_lbl", _lbl_reset)
+                _fcols = ", ".join(f'_feat."{c}"' for c in _feat_reset.columns)
+                _lcols = ", ".join(f'_lbl."{c}"' for c in _lbl_reset.columns)
+                # Use .arrow() instead of .df() — merged goes directly to
+                # build_ple_dataloader / PLEDataset which natively accepts PyArrow Tables.
+                merged = _con_dist.execute(
+                    f"SELECT {_fcols}, {_lcols} FROM _feat POSITIONAL JOIN _lbl"
+                ).arrow()
+                logger.info(
+                    "POSITIONAL JOIN: merged %d + %d cols → %d cols (distillation loader)",
+                    len(_feat_reset.columns), len(_lbl_reset.columns), merged.num_columns,
+                )
+            finally:
+                _con_dist.unregister("_feat")
+                _con_dist.unregister("_lbl")
+                _con_dist.close()
+        except Exception:
+            import pandas as _pd_dist
+            logger.warning("DuckDB POSITIONAL JOIN unavailable, falling back to pd.concat (distillation loader)")
+            merged = _pd_dist.concat([feature_df, label_df], axis=1)
         from ..data.dataloader import build_ple_dataloader, FeatureColumnSpec
         spec = FeatureColumnSpec(static_features=feature_columns)
         label_map = {t.name: t.label_col for t in task_specs}
@@ -2439,6 +2479,8 @@ class _GenericAdapter(DataAdapter):
             import duckdb as _ddb_generic
             _con_g = _ddb_generic.connect()
             try:
+                # NOTE: pandas required — initial materialization; caller uses pandas
+                # ops (sentinel replace, LabelEncoder, .select_dtypes, etc.) in Stages 2–6.
                 df = _con_g.execute(f"SELECT * FROM '{source}'").df()
             finally:
                 _con_g.close()
