@@ -224,24 +224,24 @@ enabling independent improvement of each component.
 
       node((1, 1.2), [*Threshold Gate* \ #text(size: 8pt)[AUC $>$ 0.60 / F1 $>$ 2/K / R² $>$ 0.05] \ #text(size: 8pt)[routes: DISTILL / DIRECT / SKIP]], width: 65mm, fill: gate-fill, name: <gate>),
 
-      node((0, 2.4), [*LGBM Student* \ #text(size: 8pt)[soft labels (7 tasks)] \ #text(size: 8pt)[CPU, daily inference]], width: 45mm, fill: student-fill, name: <distill>),
+      node((0.3, 2.4), [*LGBM Student* \ #text(size: 8pt)[soft labels (7 tasks)] \ #text(size: 8pt)[CPU, daily inference]], width: 45mm, fill: student-fill, name: <distill>),
 
       node((1.5, 2.4), [*LGBM Direct* \ #text(size: 8pt)[hard labels (3 tasks)] \ #text(size: 8pt)[teacher bypass]], width: 45mm, fill: student-fill, name: <direct>),
 
-      node((3, 2.4), [*Rule Engine* \ #text(size: 8pt)[Financial DNA heuristics] \ #text(size: 8pt)[(3 tasks)]], width: 45mm, fill: rule-fill, name: <rule>),
+      node((2.7, 2.4), [*Rule Engine* \ #text(size: 8pt)[Financial DNA heuristics] \ #text(size: 8pt)[(3 tasks)]], width: 45mm, fill: rule-fill, name: <rule>),
 
       node((1.5, 3.6), [*Lambda Serving* \ #text(size: 8pt)[GPU-free real-time inference] \ #text(size: 8pt)[3-layer fallback, LGBM gain features]], width: 55mm, shape: fletcher.shapes.pill, fill: gray-fill, name: <serve>),
 
       edge(<teacher>, <gate>, "->", label: [per-task perf.]),
-      edge(<gate>, <distill>, "->", label: [DISTILL]),
+      edge(<gate>, <distill>, "->", label: [DISTILL], label-pos: 0.35),
       edge(<gate>, <direct>, "->", label: [DIRECT]),
-      edge(<gate>, <rule>, "->", label: [SKIP]),
+      edge(<gate>, <rule>, "->", label: [SKIP], label-pos: 0.35),
       edge(<distill>, <serve>, "->"),
       edge(<direct>, <serve>, "->"),
       edge(<rule>, <serve>, "->"),
     )
   },
-  caption: [Teacher-student distillation architecture.\ Threshold gate routes each of 13 tasks to DISTILL (soft labels, 7 tasks), DIRECT (hard labels, 3 tasks), or SKIP (rule engine, 3 tasks) based on teacher quality. LGBM gain importance drives feature selection in the serving model.],
+  caption: [Teacher-student distillation architecture with threshold-gated three-way task routing.],
 ) <fig:distillation>
 
 The teacher model (PLE with 7 heterogeneous experts, 13 tasks, 349 features;
@@ -361,6 +361,8 @@ the system activates a rule-based fallback (Layer 3) grounded in established fin
 Each layer is organized by the Financial DNA task groups:
 
 #figure(
+  placement: top,
+  scope: "parent",
   table(
     columns: (auto, auto, auto, auto),
     align: (left, left, left, left),
@@ -489,7 +491,7 @@ This avoids conflating metrics with incompatible semantics across task types.
     [mcc\_diversity\_trend (MAE)], [R²=0.031], [0.025], [PASS], [R² < 0.05 → DIRECT],
     [cross\_sell\_count (R²)], [0.008], [—], [—], [R² < floor → SKIP (L3)],
   ),
-  caption: [Distillation results per task.\ Binary tasks: teacher AUC, student AUC, AUC gap, and prediction agreement (student vs.\ teacher); student AUC computed as Teacher − Gap.\ Multiclass tasks: teacher F1-macro with adaptive threshold gate; tasks below 2/K random baseline are routed to direct hard-label training.\ Regression tasks: MAE/RMSE gap between teacher and student predictions.\ For DIRECT-routed tasks, the Student column shows the hard-label trained LGBM result. Where Student \> Teacher (e.g., nba\_primary), the LGBM student trained on hard labels outperforms the teacher, validating the DIRECT routing decision.],
+  caption: [Distillation results per task. Binary tasks use AUC gap; multiclass tasks use F1-macro with adaptive threshold gate (2/K baseline); regression tasks use MAE gap. DIRECT-routed tasks show hard-label LGBM results; where Student > Teacher (e.g., nba\_primary), DIRECT routing is validated.],
 ) <tab:distill-results>
 
 // ============================================================
@@ -629,14 +631,16 @@ Grounding constraints:
     #text(size: 9pt)[
       *L1 (template, 0.1ms):* \
       "소비 패턴의 변화에 맞춘 혜택입니다. 다양한 소비 카테고리를 활용하시는 고객님께 맞춤 소비 혜택을 추천드립니다." \
+      #text(size: 8pt, style: "italic")[[EN: "Benefits tailored to your changing spending patterns. We recommend customized spending benefits for your diverse category usage."]] \
       \
       *L2a (Bedrock Claude Sonnet rewrite, 2.4s):* \
       "고객님의 다양한 소비 패턴에 맞춰 여러 카테고리에서 실질적인 혜택을 누리실 수 있도록 맞춤 소비 혜택 상품을 추천드립니다." \
+      #text(size: 8pt, style: "italic")[[EN: "We recommend a customized spending benefit product so you can enjoy practical benefits across multiple categories."]] \
       \
       _SelfChecker verdict: pass_
     ]
   ],
-  caption: [Actual Lambda production output for task top\_mcc\_shift (customer 10). L1 template reason generated in 0.1ms; L2a Bedrock Claude Sonnet rewrite cached at 6ms on repeat. [Output in Korean; see the translated example in the figure caption above.]],
+  caption: [Actual Lambda production output for task top\_mcc\_shift (customer 10). L1 template in 0.1ms; L2a Bedrock rewrite cached at 6ms. [Output in Korean; English translation: "Benefits tailored to your changing spending patterns." → "We recommend a customized spending benefit product across multiple categories."]],
 ) <fig:reason-example>
 
 === Agent 3: Safety Gate
@@ -789,6 +793,7 @@ The OpsAgent runs after training completion and drift monitoring DAG executions.
       "증류 fidelity gap 0.1858 > 임계값 0.05. 8/10 태스크 calibration\_gap 초과.
       교사 모델 변경 또는 피처 분포 변동 가능성.
       해당 태스크의 교사-학생 예측 분포 비교 분석 권장." \
+      #text(size: 8pt, style: "italic")[[EN: "Distillation fidelity gap 0.1858 > threshold 0.05. 8/10 tasks exceeded calibration gap. Possible teacher model change or feature distribution shift. Recommend comparing teacher-student prediction distributions for affected tasks."]] \
       _3-agent consensus: 3/3 FAIL (unanimous)_
     ]
   ],
@@ -827,7 +832,8 @@ opt-out statistics, governance checklist status.
       *AuditAgent finding (measured):* \
       "추천사유 grounding score 0.33 (임계값 0.50): top-3 태스크 중 1개만 한글 키워드 매칭.
       편향 DI = 1.0 (4개 보호그룹 동등 처리). 금소법 적합성 위반 0건 (5개 룰 검증 완료)." \
-      _3-agent consensus: grounding FAIL (1W+2F), fairness WARN (2P+1W), 금소법 PASS (3/3 unanimous)_
+      #text(size: 8pt, style: "italic")[[EN: "Grounding score 0.33 (threshold 0.50): only 1 of top-3 tasks had Korean keyword match. Bias DI = 1.0 (4 protected groups treated equally). Financial Consumer Protection Act violations: 0 (5 rules verified)."]] \
+      _3-agent consensus: grounding FAIL (1W+2F), fairness WARN (2P+1W), 금소법 (FCPA) PASS (3/3 unanimous)_
     ]
   ],
   caption: [AuditAgent Regulatory Compliance Report --- actual measured results with consensus verdicts. [Report text translated from Korean: "Recommendation reason grounding score 0.33 (threshold 0.50): only 1 of top-3 tasks had Korean keyword match. Bias DI = 1.0 (4 protected groups treated equally). Financial Consumer Protection Act suitability violations: 0 (5 rules verified)."]],
@@ -968,9 +974,9 @@ any FAIL vote yields FAIL verdict regardless of majority.
     [*AuditAgent Item*], [*Votes*], [*Verdict*], [*Minority*],
     [Reason grounding (score 0.33)], [1 WARN + 2 FAIL], [FAIL], [$alpha$ (less strict)],
     [Fairness DI = 1.0], [2 PASS + 1 WARN], [WARN], [$alpha$ (conservative)],
-    [금소법 compliance], [3/3 PASS], [PASS], [none (unanimous)],
+    [FCPA (금소법) compliance], [3/3 PASS], [PASS], [none (unanimous)],
   ),
-  caption: [AuditAgent 3-agent consensus results. Grounding score 0.33 triggers FAIL (only 1 of 3 sampled tasks had verifiable keyword match). Fairness DI = 1.0 is statistically ideal but $alpha$ flags small-sample caveat. 금소법 compliance is unanimous PASS --- 5 rules checked, 0 violations.],
+  caption: [AuditAgent 3-agent consensus results. Grounding score 0.33 triggers FAIL (1 of 3 sampled tasks). Fairness DI = 1.0 is ideal but $alpha$ flags small-sample caveat. Financial Consumer Protection Act (금소법) compliance: unanimous PASS, 5 rules, 0 violations.],
 ) <tab:audit-consensus>
 
 == Diagnostic Case Store
@@ -1357,9 +1363,9 @@ and L2a Bedrock rewrite pipeline, reporting four automated quality dimensions.
     [Readability], [Fluency score (no broken template markers)], [1.00],
     [Overall quality], [Weighted combination of grounding + readability + compliance], [0.74],
     [Bias DI], [Disparate Impact across all protected groups], [1.0 (no bias detected)],
-    [Domestic compliance], [Rules checked (금소법 suitability, consent, opt-out, profiling, disclosure)], [5 checked, 0 violations],
+    [Domestic compliance (FCPA)], [Rules checked (suitability, consent, opt-out, profiling, disclosure)], [5 checked, 0 violations],
   ),
-  caption: [AuditAgent automated reason quality assessment. Grounding score of 0.33 indicates that 1 out of 3 sampled tasks produced reasons with verifiable Korean keyword matches to contributing features. Readability of 1.00 confirms no template rendering failures.],
+  caption: [AuditAgent automated reason quality assessment. Grounding score 0.33 = 1/3 sampled tasks had verifiable keyword matches; readability 1.00 confirms no template rendering failures.],
 ) <tab:audit-quality>
 
 === L1 Template Reason Examples
@@ -1379,7 +1385,7 @@ TemplateEngine before L2a Bedrock rewrite.
     [will\_acquire\_investments#super[†]], [고객님의 재무 목표에 부합할 수 있습니다. 현재 금융 라이프사이클 단계에 적합한 투자 상품입니다.],
     [churn\_signal], [고객님의 소중한 거래 관계를 유지하고자 합니다. 고객님의 이용 패턴을 분석하여 고객 유지 프로그램을(를) 추천드립니다.],
   ),
-  caption: [L1 template reason examples from production Lambda (ple-predict). These verbatim outputs (in Korean) feed into the L2a Bedrock rewrite pipeline. Note the template artifact "(를)" in rows 1 and 3 --- this is precisely the type of defect that L2a corrects. †`will_acquire_investments` is a benchmark-only task; operational deployment is restricted to low-risk check card products (see Section 6.3). [Translations: Row 1: "Benefits tailored to your changing spending patterns." Row 2: "This may align with your financial goals (benchmark only)." Row 3: "We aim to maintain your valued transaction relationship."]],
+  caption: [L1 template reason examples from production Lambda (ple-predict), in Korean, before L2a rewrite. The artifact "(를)" in rows 1 and 3 is the type of defect L2a corrects. †Benchmark-only task; deployment restricted to low-risk products (Section 6.3). [Row 1: "Benefits tailored to your changing spending patterns." Row 2: "May align with your financial goals." Row 3: "We aim to maintain your valued transaction relationship."]],
 ) <tab:l1-reasons>
 
 === L2a Bedrock Rewrite Example
@@ -1392,9 +1398,11 @@ Below is the measured before/after pair for the `top_mcc_shift` task:
   inset: 8pt,
   radius: 4pt,
   [
-    *L1 (template):* 소비 패턴의 변화에 맞춘 혜택입니다. 다양한 소비 카테고리를 활용하시는 고객님께 맞춤 소비 혜택을(를) 추천드립니다.
+    *L1 (template):* 소비 패턴의 변화에 맞춘 혜택입니다. 다양한 소비 카테고리를 활용하시는 고객님께 맞춤 소비 혜택을(를) 추천드립니다. \
+    #text(size: 8pt, style: "italic")[[EN: "Benefits tailored to your changing spending patterns. We recommend customized spending benefits for your diverse category usage."]]
 
-    *L2a (Bedrock rewrite):* 고객님의 다양한 소비 패턴에 맞춰 여러 카테고리에서 실질적인 혜택을 누리실 수 있도록 맞춤 소비 혜택 상품을 추천드립니다.
+    *L2a (Bedrock rewrite):* 고객님의 다양한 소비 패턴에 맞춰 여러 카테고리에서 실질적인 혜택을 누리실 수 있도록 맞춤 소비 혜택 상품을 추천드립니다. \
+    #text(size: 8pt, style: "italic")[[EN: "We recommend a customized spending benefit product so you can enjoy practical benefits across multiple categories."]]
   ]
 )
 
@@ -1418,7 +1426,7 @@ First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the 
     [Human review sample rate], [Fraction of L2a outputs reviewed by humans], [5%],
     [Fallback rate to L1], [Configurable threshold; triggered on gate failure], [configurable],
   ),
-  caption: [Safety Gate automated metrics. Precision/recall evaluation pending live deployment with labeled samples. The Safety Gate applies a 5-stage validation pipeline (Section 4.3); of these, 4 stages map to distinct regulatory compliance categories reported in this table.],
+  caption: [Safety Gate automated metrics. Precision/recall evaluation pending live deployment; 4 of 5 validation stages map to regulatory categories (Section 4.3).],
 ) <tab:safety-eval>
 
 == Serving Performance
@@ -1436,7 +1444,7 @@ First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the 
     [Cold start], [~6s], [—], [S3 model download; amortized],
     [LanceDB case search], [< 100ms], [< \$0.01], [Cold-start grounding; past recommendation cases],
   ),
-  caption: [Serving latency breakdown (Lambda serverless, no GPU). Measured values on warm Lambda. LanceDB stores accumulated recommendation cases (LGBM top features + generated reasons); cold-start customers search similar past cases for grounding.],
+  caption: [Serving latency breakdown on warm Lambda (serverless, no GPU). LanceDB grounding uses accumulated recommendation cases per customer.],
 ) <tab:serving>
 
 Of the 13 tasks served by the production Lambda: 10 tasks are served by Layer 2 LGBM
@@ -1503,7 +1511,7 @@ is unnecessary --- and harmful --- for split-based learners.
 Selecting features by cumulative LGBM gain (95% threshold, 40--80 features per task)
 retains the features that the serving model actually uses,
 ensuring SHAP attributions at serving time remain meaningful.
-Features like `hmm_lifecycle_prob_growing` and `synth_monthly_spend`
+Features like the HMM lifecycle growth-probability feature and the synthetic monthly-spend aggregate
 carry high gain for lifecycle and engagement tasks respectively,
 and also provide the narrative anchors
 ("growth stage," "spending pattern") that ground LLM-generated explanations.
@@ -1623,12 +1631,13 @@ between model prediction and human persuasion in financial product recommendatio
 
 Four key contributions define this work:
 
-#list(tight: true,
-  [*Adaptive knowledge distillation with three-layer fallback*: teacher threshold gating routes each of 13 tasks to DISTILL (7), DIRECT (3), or SKIP (3) based on teacher quality, ensuring service continuity per SR 11-7 model risk management. LGBM gain-based feature selection aligns with the serving model perspective, replacing OOM-prone teacher IG attribution.],
-  [*3-agent recommendation reason generation pipeline* (Feature Selector → Reason Generator → Safety Gate) produces natural-language explanations grounded in business-mapped feature attributions, with role separation enabling independent improvement and audit logging.],
-  [*Two operational agents* (OpsAgent and AuditAgent) interpret monitoring and compliance outputs in natural language, eliminating dashboard fatigue and enabling regulation-compliant MLOps for small teams without dedicated MLOps staff --- extending the architecture to a 5-agent system (3 serving + 2 ops).],
-  [*Regulatory compliance embedded by design* --- Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act are explicitly mapped to system architecture components, with automated monitoring (drift, fairness, herding) and human-in-the-loop oversight at critical decision points.],
-)
++ *Adaptive knowledge distillation with three-layer fallback*: teacher threshold gating routes each of 13 tasks to DISTILL (7), DIRECT (3), or SKIP (3) based on teacher quality, ensuring service continuity per SR 11-7 model risk management. LGBM gain-based feature selection aligns with the serving model perspective, replacing OOM-prone teacher IG attribution.
+
++ *3-agent recommendation reason generation pipeline* (Feature Selector → Reason Generator → Safety Gate) produces natural-language explanations grounded in business-mapped feature attributions, with role separation enabling independent improvement and audit logging.
+
++ *Two operational agents* (OpsAgent and AuditAgent) interpret monitoring and compliance outputs in natural language, eliminating dashboard fatigue and enabling regulation-compliant MLOps for small teams without dedicated MLOps staff --- extending the architecture to a 5-agent system (3 serving + 2 ops).
+
++ *Regulatory compliance embedded by design* --- Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act are explicitly mapped to system architecture components, with automated monitoring (drift, fairness, herding) and human-in-the-loop oversight at critical decision points.
 
 The fundamental insight is that features serve a dual role in financial AI:
 they contribute to prediction _and_ to the explanation vocabulary
@@ -1749,6 +1758,8 @@ the following task-level rules activate. Each rule is grounded in established ma
 or financial domain practice, organized by Financial DNA task group.
 
 #figure(
+  placement: top,
+  scope: "parent",
   table(
     columns: (auto, auto, auto, auto, auto, auto),
     align: (left, left, left, left, left, left),

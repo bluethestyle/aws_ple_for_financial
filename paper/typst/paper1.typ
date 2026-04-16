@@ -65,7 +65,7 @@
   that replaces loss-level transfer with gradient-level conflict resolution,
   reducing the 156 task-pair problem to 3 task-type-group projections.
   However, GradSurgery shows no meaningful advantage over the PLE-only baseline
-  while requiring significantly more VRAM (due to `retain_graph`), and is not adopted for production.
+  while requiring significantly more VRAM (due to the retained computation graph), and is not adopted for production.
   Ablation results: PLE with softmax gating achieves the best NDCG\@3 (0.714)
   among gate variants, softmax outperforms sigmoid in the heterogeneous setting
   (reversing findings from homogeneous-task literature),
@@ -92,15 +92,12 @@
 
 Financial product recommendation differs fundamentally from e-commerce or content recommendation.
 The primary deliverable is not a probability score but a _reason that the customer can accept_.
-Three audiences must be persuaded:
-- *Customers*: "Why this product for me?" --- trust leads to conversion.
-- *Relationship managers*: "Why recommend this to this customer?" --- sales justification.
-- *Regulators* (Korean FSS @koreafsc2024, EU AI Act @euaiact2024): "Why was this decision made?" --- compliance obligation. Korea's AI Basic Act @koreaaiact2024 further classifies financial recommendation as potentially high-impact AI.
+Three audiences must be persuaded: customers ("Why this product for me?" --- trust leads to conversion), relationship managers ("Why recommend this to this customer?" --- sales justification), and regulators @koreafsc2024 @euaiact2024 ("Why was this decision made?" --- compliance obligation). Korea's AI Basic Act @koreaaiact2024 further classifies financial recommendation as potentially high-impact AI.
 
-Existing approaches fall short on this persuasion requirement:
-- *Single-task models* cannot jointly predict churn, product affinity, and customer lifetime value @caruana1997.
-- *Model ensembles* (N separate models) multiply management overhead and serving cost, and "MLP \#3 contributed 28%" provides no business meaning.
-- *Post-hoc explanations* (SHAP, LIME) are decoupled from model internals, computationally expensive at serving time, and demonstrably unstable under input perturbation @lundberg2017 @ribeiro2016 @salih2023.
+Existing approaches fall short on this persuasion requirement.
+Single-task models cannot jointly predict churn, product affinity, and customer lifetime value @caruana1997.
+Model ensembles (N separate models) multiply management overhead and serving cost, and "MLP \#3 contributed 28%" provides no business meaning.
+Post-hoc explanations (SHAP, LIME) are decoupled from model internals, computationally expensive at serving time, and demonstrably unstable under input perturbation @lundberg2017 @ribeiro2016 @salih2023.
 
 == Core Insight
 
@@ -143,7 +140,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Heterogeneous Shared Expert Basket with Structural Collapse Guarantee*: We replace PLE's homogeneous MLP experts with seven architecturally distinct experts (DeepFM, Mamba+LNN+Transformer, HGCN, PersLay, NOTEARS, LightGCN, Optimal Transport). Unlike prior "heterogeneous" MoE work that varies expert _size_ @mowst2024 or _modality_ @jamba2024, we vary the fundamental _inductive bias_, providing a structural guarantee against expert collapse --- a persistent failure mode in homogeneous MoE/PLE deployments @home2024.
 
-+ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via `feature_groups.yaml` `target_experts` field, group-level routing), not the full 349D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 27D--168D), reducing model parameters from 4.77M to ~2.8M while strengthening each expert's specialization.
++ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via expert routing declarations at the feature group level), not the full 349D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 27D--168D), reducing model parameters from 4.77M to ~2.8M while strengthening each expert's specialization.
 
 + *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), CGC gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
 
@@ -153,13 +150,13 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Gate Type Analysis for Heterogeneous MTL*: We demonstrate that softmax gating outperforms sigmoid in 13-task heterogeneous settings (7 binary + 3 multiclass + 3 regression), reversing the conventional preference from homogeneous-task literature @tang2020 @sigmoid_moe2024. The reversal is attributed to softmax's protective isolation of minority-type tasks from majority-type gradient corruption.
 
-+ *Loss-Level vs.~Gradient-Level Transfer*: We show that adaTT (loss-level transfer) degrades performance at 13-task scale due to 156 task-pair affinity estimation instability, and experiment with GradSurgery (gradient-level projection between 3 task-type groups) as an alternative that avoids adaTT's degradation but shows no additional gain and incurs VRAM overhead from `retain_graph`; GradSurgery is not adopted for production.
++ *Loss-Level vs.~Gradient-Level Transfer*: We show that adaTT (loss-level transfer) degrades performance at 13-task scale due to 156 task-pair affinity estimation instability, and experiment with GradSurgery (gradient-level projection between 3 task-type groups) as an alternative that avoids adaTT's degradation but shows no additional gain and incurs VRAM overhead from the retained computation graph; GradSurgery is not adopted for production.
 
-+ *Uncertainty Weighting Correction*: We identify and fix a subtle implementation gap where per-task `loss_weight` was silently ignored under uncertainty weighting --- yielding the single largest performance improvement ($+$0.018 NDCG\@3, $+$0.031 F1-macro), larger than any architectural change.
++ *Uncertainty Weighting Correction*: We identify and fix a subtle implementation gap where per-task loss weights were silently ignored under uncertainty weighting --- yielding the single largest performance improvement ($+$0.018 NDCG\@3, $+$0.031 F1-macro), larger than any architectural change.
 
 + *Comprehensive Ablation*: 9 structure scenarios $times$ 15 expert scenarios on a reproducible 1M-customer benchmark with Gaussian Copula + latent variable variance budget.
 
-+ *Config-driven Pipeline*: End-to-end system (feature engineering → training → distillation → serving) controlled by two YAML files, enabling deployment by teams with 1--2 ML engineers.
++ *Config-driven Pipeline*: End-to-end system (feature engineering → training → distillation → serving) controlled by two configuration files, enabling deployment by teams with 1--2 ML engineers.
 
 + *Reproducible Benchmark*: Synthetic data generation with variance budget @patki2016sdv for controlled AUC ceilings, validated against XGBoost baselines, with open-source code and fixed seeds.
 
@@ -445,7 +442,7 @@ Four principles guide the architecture:
 + *Flexible Extensibility*: New features, tasks, or experts are added via YAML configuration,
   not code changes. The system has been extended from 4 to 13 tasks without architectural modification.
 + *Unified Manageability*: The entire pipeline (feature engineering → training → distillation → serving → monitoring)
-  is controlled by two configuration files (`pipeline.yaml` and `feature_groups.yaml`),
+  is controlled by two configuration files,
   reducing operational overhead for teams with limited ML engineering resources.
 
 == Data Axis Classification
@@ -572,9 +569,9 @@ The complete data axis to expert to feature generator mapping is shown in @tab:m
       edge(<kd>, <serve>, "->"),
 
       // === adaTT: dashed arrows (optional, disabled by default) ===
-      edge(<tg1>, <tg2>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)]),
-      edge(<tg2>, <tg3>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)]),
-      edge(<tg3>, <tg4>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)]),
+      edge(<tg1>, <tg2>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)], label-anchor: "north", label-sep: 2pt),
+      edge(<tg2>, <tg3>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)], label-anchor: "north", label-sep: 2pt),
+      edge(<tg3>, <tg4>, "<->", stroke: (paint: accent, dash: "dashed", thickness: 0.8pt), label: text(size: 8pt, fill: accent)[adaTT (opt.)], label-anchor: "north", label-sep: 2pt),
 
 
     )
@@ -1100,7 +1097,7 @@ but a structural requirement for multi-faceted persuasion.
 - *Data*: 1M customers, 349 features (Phase 0 from benchmark\_v12), 13 tasks.
 - *Hardware*: NVIDIA RTX 4070 (12GB VRAM, 64GB RAM) local.
 - *Training*: 10 epochs, batch 5632, lr 0.0005, AMP (FP16), warmup 3 epochs (cosine annealing), no early stopping. adaTT scenarios use warmup=3 epochs, grad\_interval=10. GradSurgery scenarios use warmup=2 epochs, conflict\_threshold=0.0.
-- *Loss weighting*: Uncertainty weighting (Kendall et al.) with per-task `loss_weight` applied on top of learned precision --- matching the on-premise reference formula.
+- *Loss weighting*: Uncertainty weighting (Kendall et al.) with per-task loss weights applied on top of learned precision --- matching the on-premise reference formula.
 - *Metrics*: Metrics are chosen to match each task's production semantic.
   Binary classification uses AUC (threshold-independent and imbalance-robust).
   Classification multiclass (segment_prediction, 4 classes) uses F1-macro.
@@ -1111,6 +1108,9 @@ but a structural requirement for multi-faceted persuasion.
   because metrics have incompatible semantics across types.
 
 == Joint Feature + Expert Ablation (RQ1 + RQ2)
+
+Bottom-up ablation adds one expert (with its matched feature generator) to the DeepFM baseline; top-down ablation removes one expert from the full 7-expert model.
+Avg F1m covers segment\_prediction (F1-macro); nba\_primary and next\_mcc use NDCG\@3/Acc\@3 in per-task reporting.
 
 #figure(
   scope: "parent",
@@ -1141,7 +1141,7 @@ but a structural requirement for multi-faceted persuasion.
     [Full − Causal], [0.6724], [0.2010], [0.9617], [25.73],
     [Full − OT], [0.6721], [0.2020], [0.9591], [23.60],
   ),
-  caption: [Joint feature + expert ablation. Bottom-up adds one generator to DeepFM baseline; top-down removes one expert from the full 7-expert model. Avg F1m covers segment\_prediction (F1-macro); nba\_primary and next\_mcc use NDCG\@3/Acc\@3 in per-task reporting. Bold = best in group. †Marks anomalous F1-macro drop caused by segment\_prediction negative transfer.],
+  caption: [Joint feature + expert ablation results. Bold = best in group. †Anomalous F1-macro drop from segment\_prediction negative transfer.],
 ) <tab:joint-ablation>
 
 Expert contribution analysis (@tab:joint-ablation) reveals three patterns.
@@ -1176,9 +1176,10 @@ Nine structure variants are compared across three dimensions:
 gate type (shared-bottom / softmax / sigmoid),
 inter-task transfer (none / adaTT loss-level / GradSurgery gradient-level),
 and uncertainty weighting (all variants use the corrected implementation
-where per-task `loss_weight` is applied on top of learned precision).
+where per-task loss weight is applied on top of learned precision).
 All variants use the full 7 heterogeneous expert basket with 10 epochs,
 batch size 5632, and AMP enabled.
+Avg AUC covers binary tasks only; NDCG\@3 is reported for nba\_primary (7-class product recommendation); Avg F1m covers multiclass tasks; Avg MAE covers regression tasks.
 
 #figure(
   scope: "parent",
@@ -1204,7 +1205,7 @@ batch size 5632, and AMP enabled.
     [Softmax + GradSurgery (exp.)], [0.6726], [0.6918], [0.6830], [*0.2027*], [0.9588],
     [Sigmoid + GradSurgery (exp.)], [0.6721], [0.6888], [0.6811], [0.2020], [0.9603],
   ),
-  caption: [Structure ablation on 13-task benchmark (7 binary + 3 multiclass + 3 regression). Avg AUC = binary tasks only; NDCG\@3 = nba\_primary (7-class product recommendation); Avg F1m = multiclass tasks; Avg MAE = regression tasks. Bold = best per metric within gate comparison. †GradSurgery scenarios use batch size 4096 (vs.~5632) due to `retain_graph` VRAM overhead.],
+  caption: [Structure ablation across gate type and inter-task transfer variants. Bold = best per metric within gate comparison. †GradSurgery uses batch 4096 (vs.~5632) due to retain\_graph VRAM overhead.],
 ) <tab:structure-ablation>
 
 Three findings emerge from the structure ablation.
@@ -1232,7 +1233,7 @@ causes noisy transfer that acts as gradient noise.
 *Finding 3: Correcting uncertainty weighting yields larger gains than architecture changes.*
 The single largest performance improvement (+0.018 NDCG\@3, +0.031 F1-macro)
 came not from gate type or transfer mechanism, but from fixing a subtle
-implementation gap where per-task `loss_weight` was silently ignored
+implementation gap where per-task loss weights were silently ignored
 when uncertainty weighting was active.
 This finding underscores that _loss balancing correctness_ can dominate
 _architectural sophistication_ in heterogeneous MTL ---
@@ -1240,7 +1241,7 @@ a practical lesson often overlooked in architecture-focused papers.
 
 == Expert Contribution Analysis: Beneficial vs.\ Negative Transfer (RQ4)
 
-We assess each expert's contribution by examining how performance changes when it is individually removed from the full model (baseline AUC = 0.6724, joint\_full 10-epoch). Positive ΔAUC indicates the expert contributes negative transfer; negative ΔAUC indicates the expert is beneficial.
+We assess each expert's contribution by examining how performance changes when it is individually removed from the full model (baseline AUC = 0.6724, joint\_full 10-epoch). Positive ΔAUC indicates the expert contributes negative transfer; negative ΔAUC indicates the expert is beneficial. Magnitudes are small ($<$ 0.001) due to synthetic data limitations; genuine expert differentiation requires production data with real behavioral signals.
 
 #figure(
   table(
@@ -1258,7 +1259,7 @@ We assess each expert's contribution by examining how performance changes when i
     [−HGCN], [0.0000], [neutral],
     [−OT], [*−0.0004*], [marginal benefit],
   ),
-  caption: [Expert contribution analysis: ΔAUC relative to full 7-expert model (AUC = 0.6724). Values computed from @tab:joint-ablation top-down results. Magnitudes are small ($<$ 0.001) due to synthetic data limitations --- genuine expert differentiation requires production data with real behavioral signals.],
+  caption: [Expert contribution analysis: ΔAUC relative to full 7-expert model (AUC = 0.6724). Values from top-down ablation.],
 ) <tab:degradation>
 
 Expert ΔAUC magnitudes are uniformly small ($<$ 0.001), reflecting the synthetic benchmark's limited capacity to differentiate experts. No expert is clearly beneficial or harmful at this scale. This near-uniform result requires careful interpretation along three dimensions.
@@ -1298,6 +1299,8 @@ CGC layer gate weights show meaningful task-level specialization
 with entropy ratios ranging from 0.33 to 0.88 across the 13 tasks and 2 CGC layers.
 This confirms that routing collapse has not occurred:
 all tasks engage multiple experts, while distinct tasks show distinct routing patterns.
+Low-entropy tasks concentrate on 1--2 experts; high-entropy tasks draw broadly across the expert basket.
+CGC attention weights remain perfectly uniform across all tasks, indicating that expert selection operates at the extraction layer, not at the attention aggregation layer.
 
 #figure(
   table(
@@ -1315,12 +1318,7 @@ all tasks engage multiple experts, while distinct tasks show distinct routing pa
     [will_acquire_payments], [0.882], [0.688], [Diverse expert usage],
     [CGC Attention (all tasks)], [1.000], [1.000], [Uniform (undifferentiated)],
   ),
-  caption: [Per-task CGC gate entropy ratios ($H_t \/ log K$, higher = more uniform).
-    Low-entropy tasks concentrate on 1--2 experts;
-    high-entropy tasks draw broadly across the expert basket.
-    CGC attention weights remain perfectly uniform across all tasks,
-    indicating that expert selection operates at the extraction layer,
-    not at the attention aggregation layer.],
+  caption: [Per-task CGC gate entropy ratios ($H_t \/ log K$; higher = more uniform expert usage).],
 ) <tab:gate-entropy>
 
 The divergence between extraction-layer and attention-layer routing
@@ -1354,9 +1352,9 @@ The ablation experiments yield the following principal findings.
 *Loss balancing correctness dominates architecture choice.*
 The single largest performance improvement across all experiments came from
 correcting a subtle implementation gap in uncertainty weighting (Kendall et al.),
-where per-task `loss_weight` from the pipeline configuration was silently ignored.
-The corrected formula --- `loss_weight × (precision × L + log_var)` with
-`log_var` clamped to $[-4, 4]$ and precision clamped to $[10^(-3), 100]$ ---
+where per-task loss weights from the pipeline configuration were silently ignored.
+The corrected formula --- loss_weight × (precision × L + log_var) with
+log_var clamped to $[-4, 4]$ and precision clamped to $[10^(-3), 100]$ ---
 matches the on-premise reference implementation and yielded
 +0.018 NDCG\@3 and +0.031 F1-macro on the shared-bottom baseline alone.
 This underscores that in heterogeneous MTL with mixed loss types,
@@ -1402,7 +1400,7 @@ and the highest F1-macro (0.2027) and lowest MAE (0.9588) across all variants,
 while best NDCG\@3 (0.6918) is lower than softmax-alone (0.7144).
 Critically, GradSurgery does _not_ degrade performance ---
 unlike adaTT, which drops AUC by $-$0.019.
-However, the `retain_graph` overhead constrains batch size on 12GB GPUs,
+However, the retained computation graph overhead constrains batch size on 12GB GPUs,
 the NDCG gap suggests that gradient-level projection
 may not fully capture the ranking signal that PLE's representation-level
 gate routing provides, and GradSurgery shows no meaningful advantage
@@ -1540,8 +1538,8 @@ softmax reversed to outperform sigmoid on the primary ranking metric (NDCG\@3),
 demonstrating that *loss balancing bugs can masquerade as architectural findings* ---
 a cautionary lesson for MTL practitioners.
 
-A particularly instructive failure: a configuration bug caused `use_ple=false`
-to collapse the 7-expert basket into a single MLP,
+A particularly instructive failure: a configuration bug that disabled PLE
+collapsed the 7-expert basket into a single MLP,
 making all 24 ablation scenarios produce identical AUC (0.913).#footnote[The 0.913 AUC reflects an earlier benchmark version (v4) with different data distributions; current benchmark v12 produces AUC in the 0.67 range.]
 This was only discovered through systematic result comparison ---
 reinforcing the principle that ablation results must be verified
@@ -1580,30 +1578,33 @@ training pipeline, serving endpoint, and monitoring dashboard.
 
 == Limitations
 
-- *Synthetic benchmark only*:
-  All experiments use a 1M-customer synthetic benchmark with formula-based feature--label relationships.
-  While the benchmark controls difficulty via a variance budget mechanism
-  and validates against XGBoost AUC ceilings,
-  it cannot reproduce the complex cross-feature interactions
-  present in real financial customer data.
-  In particular, the formula-based label generation may understate
-  the benefit of expert specialization ---
-  real data where temporal patterns, graph structures, and causal pathways
-  carry genuinely different signals may amplify PLE's advantage over shared-bottom.
-  Validation on proprietary financial data is planned for a subsequent version
-  but is not included here due to regulatory data access constraints.
-- *adaTT evaluation at limited epoch budget*:
-  adaTT's degradation may be partly attributable to the 10-epoch training budget.
-  With 50+ epochs, affinity estimation may stabilize sufficiently for 156 task pairs.
-  However, the 10-epoch budget reflects practical constraints
-  (ablation throughput on a single GPU) and is sufficient
-  for convergence of non-transfer variants.
-- *Single-GPU training*:
-  The current implementation runs on a single GPU (RTX 4070, 12GB).
-  DDP support is architecturally designed but not yet experimentally validated.
-- *LLM dependency*:
-  Recommendation reason generation relies on LLM inference,
-  introducing latency and cost trade-offs (detailed in companion paper).
+*Synthetic benchmark only.*
+All experiments use a 1M-customer synthetic benchmark with formula-based feature--label relationships.
+While the benchmark controls difficulty via a variance budget mechanism
+and validates against XGBoost AUC ceilings,
+it cannot reproduce the complex cross-feature interactions
+present in real financial customer data.
+In particular, the formula-based label generation may understate
+the benefit of expert specialization ---
+real data where temporal patterns, graph structures, and causal pathways
+carry genuinely different signals may amplify PLE's advantage over shared-bottom.
+Validation on proprietary financial data is planned for a subsequent version
+but is not included here due to regulatory data access constraints.
+
+*adaTT evaluation at limited epoch budget.*
+adaTT's degradation may be partly attributable to the 10-epoch training budget.
+With 50+ epochs, affinity estimation may stabilize sufficiently for 156 task pairs.
+However, the 10-epoch budget reflects practical constraints
+(ablation throughput on a single GPU) and is sufficient
+for convergence of non-transfer variants.
+
+*Single-GPU training.*
+The current implementation runs on a single GPU (RTX 4070, 12GB).
+DDP support is architecturally designed but not yet experimentally validated.
+
+*LLM dependency.*
+Recommendation reason generation relies on LLM inference,
+introducing latency and cost trade-offs (detailed in companion paper).
 
 == Future Work: Scaling Considerations
 
@@ -1653,7 +1654,7 @@ reducing the $O(k^2)$ task-pair estimation problem to $O(1)$ type-group projecti
 GradSurgery avoids the degradation caused by loss-level transfer
 (F1-macro 0.203 vs.~adaTT's 0.199; MAE 0.959 vs.~0.971),
 but does not surpass PLE softmax alone on the primary ranking metric
-(NDCG\@3 0.692 vs.~0.714) and incurs significant VRAM overhead from `retain_graph`.
+(NDCG\@3 0.692 vs.~0.714) and incurs significant VRAM overhead from the retained computation graph.
 GradSurgery is therefore not adopted for production.
 The most effective configuration is therefore PLE softmax _without_ transfer mechanisms ---
 structural expert isolation through gating proves more robust
