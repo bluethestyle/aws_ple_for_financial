@@ -1251,6 +1251,7 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:GetItem
                   - dynamodb:Query
+                  - dynamodb:UpdateItem
                 Resource:
                   - !GetAtt ComplianceAuditTable.Arn
                   - !Sub "${ComplianceAuditTable.Arn}/index/*"
@@ -1258,14 +1259,21 @@ Resources:
                   - !Sub "${AiOptOutTable.Arn}/index/*"
                   - !GetAtt ConsentTable.Arn
                   - !Sub "${ConsentTable.Arn}/index/*"
+                  # Prediction audit log (champion-challenger analysis)
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/ple-prediction-log"
+                  # Distillation serving audit (tracks which tasks use student models)
+                  - !GetAtt AuditDistillationTable.Arn
 
-              # Bedrock: L2a explanations (post-prediction)
+              # Bedrock: L2a explanations (post-prediction, inference profiles)
               - Sid: BedrockExplainability
                 Effect: Allow
                 Action:
                   - bedrock:InvokeModel
                 Resource:
                   - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.*"
+                  # Inference profile IDs (global.* prefix) require wildcard resource
+                  - "*"
 
               # CloudWatch: publish inference latency / score metrics
               - Sid: CloudWatchPublishMetrics

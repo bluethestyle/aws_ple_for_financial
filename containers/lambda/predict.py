@@ -418,11 +418,83 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     "facts": facts,
                     "generation_method": "template_l1",
                 }
+
+            # --- Bedrock L2a Rewrite: top-1 task only ---
+            # Rewrites the top-scoring task's first L1 reason into natural Korean.
+            # Falls back to L1 text on any error (non-blocking).
+            if sorted_tasks:
+                top_task_name = sorted_tasks[0][0]
+                top_task_reasons = reasons.get(top_task_name, {})
+                l1_texts = top_task_reasons.get("l1_reasons", [])
+                l1_text = l1_texts[0] if l1_texts else ""
+
+                if l1_text:
+                    l2a_text = l1_text  # default fallback
+                    try:
+                        bedrock_cfg = (
+                            reason_cfg
+                            .get("reason", {})
+                            .get("llm_provider", {})
+                            .get("bedrock", {})
+                        )
+                        # model_id from config; fall back to inference profile
+                        model_cfg = (
+                            bedrock_cfg
+                            .get("models", {})
+                            .get("reason_generation", {})
+                        )
+                        model_id = model_cfg.get(
+                            "model_id",
+                            "global.anthropic.claude-sonnet-4-6",
+                        )
+                        bedrock_region = bedrock_cfg.get("region", REGION)
+                        max_tokens = model_cfg.get("max_tokens", 256)
+                        temperature = model_cfg.get("temperature", 0.3)
+
+                        from core.recommendation.reason.llm_provider import BedrockProvider
+                        _bedrock = BedrockProvider({
+                            "model_id": model_id,
+                            "region": bedrock_region,
+                            "max_tokens": max_tokens,
+                            "temperature": temperature,
+                        })
+                        _system_prompt = (
+                            "당신은 금융 상품 추천사유 작성자입니다. "
+                            "입력된 추천사유를 고객에게 전달할 자연스러운 한국어 1~2문장으로 "
+                            "다듬어 출력하세요. 분석, 검토, 마크다운, 제목, 목록 없이 "
+                            "오직 다듬어진 문장만 출력하세요."
+                        )
+                        l2a_text = _bedrock.generate(
+                            l1_text,
+                            system=_system_prompt,
+                        ).strip() or l1_text
+                        logger.info(
+                            "L2a Bedrock rewrite OK: task=%s model=%s",
+                            top_task_name, model_id,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "L2a Bedrock rewrite failed (non-fatal), using L1 text",
+                            exc_info=True,
+                        )
+
+                    reasons[top_task_name]["l2a_reason"] = l2a_text
+
     except Exception as _reason_exc:
         logger.warning("Reason generation failed (non-fatal)", exc_info=True)
         reasons["_error"] = str(_reason_exc)
 
     elapsed = round((time.perf_counter() - t0) * 1000.0, 2)
+
+    # Extract top-level l2a_reason for convenience (from top-scoring task)
+    sorted_scalar = sorted(
+        [(t, v) for t, v in predictions.items() if isinstance(v, (int, float))],
+        key=lambda x: -x[1],
+    )
+    top_l2a_reason = ""
+    if sorted_scalar:
+        _top_task = sorted_scalar[0][0]
+        top_l2a_reason = reasons.get(_top_task, {}).get("l2a_reason", "")
 
     result: Dict[str, Any] = {
         "user_id": user_id,
@@ -432,6 +504,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "reasons": reasons,
         "elapsed_ms": elapsed,
     }
+    if top_l2a_reason:
+        result["l2a_reason"] = top_l2a_reason
     if layer_used_per_task:
         result["layer_used_per_task"] = layer_used_per_task
     if calibrated_tasks:
@@ -464,8 +538,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # --- Async performance logging (best-effort) ---
     try:
         ctx_with_variant = {**ctx, "variant": variant_name}
-        _log_prediction(boto3, user_id, version, predictions, elapsed, ctx_with_variant)
-        _emit_metrics(boto3, version, predictions, elapsed, tasks_meta)
+        _log_prediction(
+            boto3, user_id, version, predictions, elapsed, ctx_with_variant,
+            reasons=reasons,
+            l2a_reason=top_l2a_reason,
+        )
+        _emit_metrics(
+            boto3, version, predictions, elapsed, tasks_meta,
+            layer_used_per_task=layer_used_per_task if layer_used_per_task else None,
+        )
     except Exception:
         logger.warning("Monitoring write failed (non-fatal)", exc_info=True)
 
@@ -835,16 +916,39 @@ def _log_prediction(
     predictions: Dict[str, Any],
     elapsed_ms: float,
     ctx: Dict[str, Any],
+    reasons: Optional[Dict[str, Any]] = None,
+    l2a_reason: str = "",
 ) -> None:
-    """Write prediction record to DynamoDB for Champion-Challenger analysis."""
+    """Write prediction record to DynamoDB for Champion-Challenger analysis.
+
+    Also writes to ple-audit-distillation when distillation metadata is present
+    in the version string (e.g. version contains 'distill').
+    """
     import uuid
     from datetime import datetime, timezone
 
     dynamodb = boto3.resource("dynamodb", region_name=REGION)
     table = dynamodb.Table(MONITOR_TABLE)
 
+    prediction_id = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat()
+    ttl_val = int(time.time()) + 90 * 86400  # 90-day TTL
+
+    # Build top-task reason summary for the audit record (non-PII text only)
+    top_reason_text = ""
+    if reasons:
+        sorted_scalar = sorted(
+            [(t, v) for t, v in predictions.items() if isinstance(v, (int, float))],
+            key=lambda x: -x[1],
+        )
+        if sorted_scalar:
+            top_task = sorted_scalar[0][0]
+            task_reasons = reasons.get(top_task, {})
+            l1_texts = task_reasons.get("l1_reasons", [])
+            top_reason_text = l2a_reason or (l1_texts[0] if l1_texts else "")
+
     record = {
-        "prediction_id": str(uuid.uuid4()),
+        "prediction_id": prediction_id,
         "user_id": user_id,
         "version": version,
         "variant": ctx.get("variant", "control"),
@@ -852,11 +956,39 @@ def _log_prediction(
         "elapsed_ms": str(round(elapsed_ms, 2)),
         "channel": ctx.get("channel", "unknown"),
         "segment": ctx.get("segment", "unknown"),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "ttl": int(time.time()) + 90 * 86400,  # 90-day TTL
+        "timestamp": now_iso,
+        "ttl": ttl_val,
     }
+    if top_reason_text:
+        record["top_reason"] = top_reason_text
+    if l2a_reason:
+        record["l2a_reason"] = l2a_reason
 
     table.put_item(Item=record)
+
+    # --- Distillation audit log (best-effort) ---
+    # Written when version metadata indicates distilled students are serving.
+    try:
+        distill_table_name = "ple-audit-distillation"
+        distill_table = dynamodb.Table(distill_table_name)
+        # Determine tasks served by distilled student (all tasks by default)
+        tasks_served = list(predictions.keys())
+        distill_record = {
+            "pk": f"predict#{prediction_id}",
+            "prediction_id": prediction_id,
+            "user_id": user_id,
+            "version": version,
+            "tasks_served": tasks_served,
+            "channel": ctx.get("channel", "unknown"),
+            "timestamp": now_iso,
+            "ttl": ttl_val,
+        }
+        if top_reason_text:
+            distill_record["top_reason"] = top_reason_text
+        distill_table.put_item(Item=distill_record)
+        logger.debug("Distillation audit written: prediction_id=%s", prediction_id)
+    except Exception:
+        logger.debug("Distillation audit write failed (non-fatal)", exc_info=True)
 
 
 def _emit_metrics(
@@ -865,6 +997,7 @@ def _emit_metrics(
     predictions: Dict[str, Any],
     elapsed_ms: float,
     tasks_meta: List[Dict[str, str]],
+    layer_used_per_task: Optional[Dict[str, int]] = None,
 ) -> None:
     """Emit per-task prediction scores and latency to CloudWatch."""
     cw = boto3.client("cloudwatch", region_name=REGION)
@@ -892,7 +1025,7 @@ def _emit_metrics(
             })
 
     # Layer usage metrics (3-layer fallback observability)
-    layer_used_map = result_meta.get("layer_used_per_task", {}) if result_meta else {}
+    layer_used_map = layer_used_per_task or {}
     for task_name, layer in layer_used_map.items():
         metric_data.append({
             "MetricName": "LayerUsed",
