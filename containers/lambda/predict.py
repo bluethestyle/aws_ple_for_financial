@@ -451,65 +451,112 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     "generation_method": "template_l1",
                 }
 
-            # --- Bedrock L2a Rewrite: top-1 task only ---
-            # Rewrites the top-scoring task's first L1 reason into natural Korean.
-            # Falls back to L1 text on any error (non-blocking).
+            # --- LanceDB: Retrieve similar customer context (coldstart/new customers) ---
+            # For customers with sparse history, find similar existing customers
+            # to ground the reason generation with relevant context.
+            similar_context = ""
+            is_sparse = (
+                len([v for v in features.values() if v and v != 0.0]) < 50
+                or features.get("is_cold", 0) == 1
+                or features.get("tenure_months", 999) < 3
+            )
+            if is_sparse:
+                try:
+                    _ctx_store = _CACHE.get("_context_store")
+                    if _ctx_store is None:
+                        from core.recommendation.reason.context_store import ContextVectorStore
+                        store_path = os.environ.get(
+                            "CONTEXT_STORE_PATH",
+                            reason_cfg.get("serving_prep", {}).get("context_store", {}).get(
+                                "store_path", "",
+                            ),
+                        )
+                        if store_path:
+                            _ctx_store = ContextVectorStore(store_path=store_path, backend="auto")
+                            _CACHE["_context_store"] = _ctx_store
+                        else:
+                            _CACHE["_context_store"] = False
+
+                    if _ctx_store and _ctx_store is not False:
+                        import numpy as _np2
+                        feat_vector = _np2.array(
+                            [float(features.get(c, 0.0) or 0.0) for c in sorted(features.keys())[:349]],
+                            dtype=_np2.float32,
+                        )
+                        neighbors = _ctx_store.search(feat_vector, k=3)
+                        if neighbors:
+                            similar_context = "; ".join(
+                                f"유사고객({n[0]}): {n[2].get('segment', '?')}"
+                                for n in neighbors
+                            )
+                            logger.info(
+                                "LanceDB grounding: %d similar customers for sparse user %s",
+                                len(neighbors), user_id,
+                            )
+                except Exception:
+                    logger.debug("LanceDB context retrieval failed (non-fatal)", exc_info=True)
+
+            # --- L2a Rewrite: async via SQS (non-blocking) ---
+            # Publish L2a rewrite request to SQS queue. A separate consumer Lambda
+            # calls Bedrock and writes the result to DynamoDB reason_cache.
+            # On subsequent requests, the cached L2a reason is returned instantly.
             if sorted_tasks:
                 top_task_name = sorted_tasks[0][0]
                 top_task_reasons = reasons.get(top_task_name, {})
                 l1_texts = top_task_reasons.get("l1_reasons", [])
                 l1_text = l1_texts[0] if l1_texts else ""
 
-                if l1_text:
-                    l2a_text = l1_text  # default fallback
+                # Check DynamoDB reason_cache first
+                l2a_cached = None
+                try:
+                    _ddb = _CACHE.get("_ddb_client")
+                    if _ddb is None:
+                        import boto3 as _b3
+                        _ddb = _b3.client("dynamodb", region_name=REGION)
+                        _CACHE["_ddb_client"] = _ddb
+                    cache_key = f"{user_id}:{top_task_name}"
+                    cache_resp = _ddb.get_item(
+                        TableName="reason_cache",
+                        Key={"pk": {"S": cache_key}},
+                    )
+                    if "Item" in cache_resp:
+                        l2a_cached = cache_resp["Item"].get("l2a_reason", {}).get("S", "")
+                except Exception:
+                    pass
+
+                if l2a_cached:
+                    reasons[top_task_name]["l2a_reason"] = l2a_cached
+                    reasons[top_task_name]["l2a_source"] = "cache"
+                    logger.info("L2a cache hit: user=%s task=%s", user_id, top_task_name)
+                elif l1_text:
+                    # Publish async L2a request to SQS
                     try:
-                        bedrock_cfg = (
-                            reason_cfg
-                            .get("llm_provider", {})
-                            .get("bedrock", {})
-                        )
-                        # model_id from config; fall back to inference profile
-                        model_cfg = (
-                            bedrock_cfg
-                            .get("models", {})
-                            .get("reason_generation", {})
-                        )
-                        model_id = model_cfg.get(
-                            "model_id",
-                            "global.anthropic.claude-sonnet-4-6",
-                        )
-                        bedrock_region = bedrock_cfg.get("region", REGION)
-                        max_tokens = model_cfg.get("max_tokens", 256)
-                        temperature = model_cfg.get("temperature", 0.3)
-
-                        from core.recommendation.reason.llm_provider import BedrockProvider
-                        _bedrock = BedrockProvider({
-                            "model_id": model_id,
-                            "region": bedrock_region,
-                            "max_tokens": max_tokens,
-                            "temperature": temperature,
-                        })
-                        _system_prompt = (
-                            "당신은 금융 상품 추천사유 작성자입니다. "
-                            "입력된 추천사유를 고객에게 전달할 자연스러운 한국어 1~2문장으로 "
-                            "다듬어 출력하세요. 분석, 검토, 마크다운, 제목, 목록 없이 "
-                            "오직 다듬어진 문장만 출력하세요."
-                        )
-                        l2a_text = _bedrock.generate(
-                            l1_text,
-                            system=_system_prompt,
-                        ).strip() or l1_text
-                        logger.info(
-                            "L2a Bedrock rewrite OK: task=%s model=%s",
-                            top_task_name, model_id,
-                        )
+                        sqs_url = os.environ.get("SQS_QUEUE_URL", "")
+                        if sqs_url:
+                            _sqs = _CACHE.get("_sqs_client")
+                            if _sqs is None:
+                                import boto3 as _b3
+                                _sqs = _b3.client("sqs", region_name=REGION)
+                                _CACHE["_sqs_client"] = _sqs
+                            facts_str = "; ".join(facts) if facts else ""
+                            msg_body = json.dumps({
+                                "user_id": user_id,
+                                "task_name": top_task_name,
+                                "l1_text": l1_text,
+                                "facts": facts_str,
+                                "similar_context": similar_context,
+                            }, ensure_ascii=False)
+                            _sqs.send_message(QueueUrl=sqs_url, MessageBody=msg_body)
+                            reasons[top_task_name]["l2a_status"] = "queued"
+                            logger.info("L2a SQS queued: user=%s task=%s", user_id, top_task_name)
+                        else:
+                            reasons[top_task_name]["l2a_status"] = "no_queue"
                     except Exception:
-                        logger.warning(
-                            "L2a Bedrock rewrite failed (non-fatal), using L1 text",
-                            exc_info=True,
-                        )
+                        logger.debug("L2a SQS publish failed (non-fatal)", exc_info=True)
+                        reasons[top_task_name]["l2a_status"] = "queue_failed"
 
-                    reasons[top_task_name]["l2a_reason"] = l2a_text
+                if similar_context:
+                    reasons[top_task_name]["similar_customers"] = similar_context
 
     except Exception as _reason_exc:
         logger.warning("Reason generation failed (non-fatal)", exc_info=True)
