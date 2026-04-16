@@ -55,7 +55,7 @@
   We present a multi-stage pipeline that bridges the gap between model prediction and human persuasion:
   (1) adaptive knowledge distillation from a heterogeneous-expert PLE teacher to per-task LGBM students,
   with three-layer fallback (distill / direct hard-label / rule-based) and teacher threshold gating
-  that ensures service continuity when teacher quality varies across tasks, enabling GPU-free CPU inference;
+  that ensures service continuity when teacher quality varies across tasks, enabling CPU-only inference;
   (2) a multi-agent recommendation reason generation pipeline where three specialized serving agents
   (Feature Selector, Reason Generator, Safety Gate) collaboratively produce natural-language explanations
   grounded in business-mapped feature attributions;
@@ -64,17 +64,18 @@
   for small teams without dedicated MLOps staff;
   (4) regulatory compliance by design, with built-in drift monitoring, fairness auditing,
   and governance reporting aligned to Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act.
-  We evaluate distillation quality (AUC gap < 3.6% across 7 binary tasks, mean 2.6 pp),
+  We evaluate distillation quality (AUC gap $<$ 3.6 percentage points across 7 binary tasks, mean 2.6 pp),
   reason generation quality via automated compliance validation
-  (L1 template coverage 100%, 13/13 tasks; compliance rules applied: suitability, consent, opt-out, profiling),
+  (L1 template coverage 100%, 13/13 tasks; compliance rules applied: suitability, consent, opt-out, profiling, disclosure),
   and Safety Gate reliability (5 PII patterns, 4 regulatory check categories).
+  The system targets low-risk products (check cards, deposits); investment and insurance recommendations are excluded from the deployment scope.
   The system achieves 120ms warm latency on AWS Lambda (L1 predict + 13 tasks)
   at a fraction of the cost of dedicated GPU inference servers,
   with cold start ~6s (S3 model download) and L2a cache hit at 6ms (DynamoDB).
 
   #v(0.3em)
   #text(weight: "bold")[Keywords:]
-  Recommendation explanation, Knowledge distillation, LLM agents,
+  Recommendation reason generation, Knowledge distillation, LLM agents,
   Regulatory compliance, Financial AI, EU AI Act
 ]
 
@@ -102,7 +103,7 @@ Existing explanation approaches are insufficient:
 
 We propose a full-chain solution from prediction to persuasion:
 
-+ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 349 features; organized by the companion paper's reductionist two-axis framework of Financial DNA $times$ Data Modality) is distilled into per-task LGBM students via adaptive threshold gating that routes each task to DISTILL (soft labels), DIRECT (hard labels), or SKIP (rule engine) based on teacher quality assessment. The teacher employs softmax CGC gates, which the companion paper's ablation finds superior to sigmoid gating in heterogeneous task settings --- softmax's competitive expert selection protects minority-type tasks (multiclass, regression) from gradient corruption by majority-type tasks (binary). This enables GPU-free serving while a three-layer fallback guarantees service continuity under any model failure scenario.
++ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 349 features; see companion paper for architecture and ablation) is distilled into per-task LGBM students via adaptive threshold gating that routes each task to DISTILL (soft labels), DIRECT (hard labels), or SKIP (rule engine) based on teacher quality assessment. This enables CPU-only serving while a three-layer fallback guarantees service continuity under any model failure scenario.
 
 + *Multi-Agent Reason Generation*: Three specialized LLM agents collaborate in a pipeline --- Feature Selector chooses explanation-worthy features, Reason Generator produces natural-language narratives, and Safety Gate validates regulatory compliance.
 
@@ -116,7 +117,7 @@ We propose a full-chain solution from prediction to persuasion:
 
 + *3-Agent Reason Generation Pipeline*: Role-separated agents (selection → generation → safety) with independent improvement and audit logging.
 
-+ *Safety Gate for Financial Compliance*: Automated checking for hallucination, inappropriate investment advice, and regulatory violations (Financial Consumer Protection Act (금소법, FCPA), Suitability Principle).
++ *Safety Gate for Financial Compliance*: Automated checking for hallucination, inappropriate investment advice, and regulatory violations (Korean Financial Consumer Protection Act (금소법, hereafter KKFCPA), Suitability Principle).
 
 + *5-Agent Architecture (3 Serving + 2 Ops)*: Beyond the 3 serving agents, two operational agents (OpsAgent, AuditAgent) interpret monitoring and compliance outputs in natural language, enabling small-team MLOps without dedicated MLOps staff.
 
@@ -349,13 +350,16 @@ while the monitoring dashboard flags tasks requiring teacher improvement.
 
 In our benchmark experiments, 7 binary tasks exceeded the AUC threshold (0.63--0.72)
 and were successfully distilled (AUC gap 2--3 percentage points).
-Three multiclass tasks (nba\_primary, segment\_prediction, next\_mcc)
-fell below the F1 threshold and were routed to direct hard-label training.
-Three regression tasks were borderline (R² 0.01--0.04) and also used direct training.
+Two multiclass tasks (nba\_primary, segment\_prediction)
+fell below the F1 threshold and were routed to direct hard-label training;
+the third (next\_mcc, 50-class) fell below floor and was routed to SKIP (Layer 3 rule engine).
+One regression task (mcc\_diversity\_trend) was borderline (R² 0.031) and used direct training;
+the remaining two (product\_stability, cross\_sell\_count) fell below floor (R² $<$ 0.01)
+and were routed to SKIP (Layer 3).
 
 === Three-Layer Fallback Architecture
 
-The adaptive strategy above constitutes Layer 2 of a broader service continuity architecture.
+The adaptive routing strategy determines whether each task is served by Layer 1 (distillation), Layer 2 (direct hard-label training), or Layer 3 (rule engine) in the broader fallback architecture.
 If _both_ teacher distillation and direct LGBM training degrade beyond acceptable thresholds,
 the system activates a rule-based fallback (Layer 3) grounded in established financial marketing theory.
 Each layer is organized by the Financial DNA task groups:
@@ -473,11 +477,10 @@ These distributions make the distillation gaps below genuinely informative.
 Teacher-student fidelity metrics are reported per task type,
 chosen to match each task's production semantic.
 Binary classification tasks use AUC gap (threshold-independent and imbalance-robust).
-Classification multiclass (segment_prediction, 4 classes) uses F1-macro gap.
-Recommendation multiclass (nba_primary with 7 product groups, next_mcc with top-50 merchant categories)
-uses NDCG\@K gap and top-K accuracy gap @jarvelin2002ndcg,
-reflecting standard recommendation system evaluation practice.
-Regression tasks use MAE gap.
+Multiclass tasks use F1-macro as the _routing metric_ (threshold gate decision);
+NDCG\@K and top-K accuracy @jarvelin2002ndcg are reported separately for recommendation-type
+multiclass tasks (nba_primary, next_mcc) in per-task analysis.
+Regression tasks use R² as the _routing metric_ and MAE gap as the _evaluation metric_.
 This avoids conflating metrics with incompatible semantics across task types.
 
 #figure(placement: top, scope: "parent",
@@ -504,10 +507,10 @@ This avoids conflating metrics with incompatible semantics across task types.
     table.hline(stroke: 0.4pt),
     table.cell(colspan: 5, align: left)[_Regression (threshold-routed)_],
     [product\_stability (R²)], [< floor], [—], [—], [R² < floor → SKIP (L3)],
-    [mcc\_diversity\_trend (MAE)], [R²=0.031], [0.025], [PASS], [R² < 0.05 → DIRECT],
+    [mcc\_diversity\_trend (MAE)], [R²=0.031], [MAE 0.025], [—], [R² < 0.05 → DIRECT],
     [cross\_sell\_count (R²)], [0.008], [—], [—], [R² < floor → SKIP (L3)],
   ),
-  caption: [Distillation results per task. Binary tasks use AUC gap; multiclass tasks use F1-macro with adaptive threshold gate (2/K baseline); regression tasks use MAE gap. DIRECT-routed tasks show hard-label LGBM results; where Student > Teacher (e.g., nba\_primary), DIRECT routing is validated.],
+  caption: [Distillation results per task. Binary tasks use AUC gap (evaluation metric). Multiclass tasks use F1-macro as the _routing_ metric (threshold: $2\/K$); NDCG\@K is reported separately in per-task analysis. Regression tasks use R² as the _routing_ metric and MAE as the _evaluation_ metric. DIRECT-routed tasks show hard-label LGBM results; SKIP-routed tasks are served by the Layer 3 rule engine.],
 ) <tab:distill-results>
 
 // ============================================================
@@ -549,15 +552,17 @@ This registry serves dual purposes:
 (1) grounding material for the Reason Generator agent, and
 (2) audit trail showing which features influenced each recommendation.
 
-The interpretation registry interprets features into Korean via a 5-level cascade:
+The interpretation registry interprets features into Korean via a 5-level cascade (highest priority first):
 
 #list(tight: true,
-  [*Level SHAP* --- SHAP sign direction + task context],
+  [*Level SHAP* (highest) --- SHAP sign direction + task context],
   [*Level 3* --- feature×task manual overrides],
   [*Level 2* --- group×task],
   [*Level 1* --- group×task_group auto-generated],
-  [*Level RM* --- reverse-mapping layer glossary templates],
+  [*Level RM* (lowest) --- reverse-mapping layer glossary templates],
 )
+
+Each level is tried in order; the first match produces the interpretation.
 
 Only features unresolved by this cascade fall to raw fallback.
 The reverse-mapping layer is integrated as Level RM, so glossary value-substitution templates (e.g., "average \{value\} monthly transactions") operate as part of the cascade. All fallback text outputs are generated in Korean; English translations are shown throughout this paper. Korean originals are available in the public repository.
@@ -679,7 +684,7 @@ Implemented as `SelfChecker`, this agent validates the generated reason against:
 
 On failure: automatic fallback to template-based safe reason.
 All gate decisions are logged for audit trail.
-Upstream of the 3-agent pipeline, the constraint engine applies eligibility and suitability filters --- verifying customer context, usage patterns, and product-specific constraints --- so that no recommendation reaches the customer without passing a suitability check, as required by the Korean Financial Consumer Protection Act (금소법, FCPA) Article 19.
+Upstream of the 3-agent pipeline, the constraint engine applies eligibility and suitability filters --- verifying customer context, usage patterns, and product-specific constraints --- so that no recommendation reaches the customer without passing a suitability check, as required by the Korean Financial Consumer Protection Act (금소법, KKFCPA) Article 19.
 
 === Serving Model Selection
 
@@ -689,13 +694,13 @@ Customer-facing recommendation reasons require natural, professional Korean text
   [*On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.],
   [*Cloud (AWS)*: L2a rewriting uses Bedrock Claude Sonnet --- natural Korean generation with Bedrock-native availability (no Marketplace onboarding required). L2b self-critique also uses Claude Sonnet (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku. Ops/Audit agents use Claude Sonnet. All invocations use cross-region inference profiles (`us.anthropic.*`).],
 )
-Bedrock ensures that input/output data is never transmitted to model providers (Anthropic) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet, ensuring that financial customer data never leaves the AWS Region (ap-northeast-2) --- structurally satisfying the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
+Bedrock ensures that input/output data is never transmitted to model providers (Anthropic) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet. Cross-region inference profiles (e.g., `us.anthropic.*`) route requests to the geographically optimal endpoint while Bedrock guarantees that _customer data in the API payload_ is processed within the caller's contracted data boundary and is not persisted by the provider. Financial customer identifiers (account numbers, resident IDs) are stripped by `PIIEncryptor` before any data enters the LLM prompt, so the prompt contains only anonymized behavioral features. This layered approach --- PII stripping at the application boundary plus Bedrock's provider-side data isolation --- is designed to support the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
 
 The LLM backend is config-driven, allowing the deployment environment (Bedrock, local open-source, or mock) to be switched without code changes.
 
-The three serving layers of reason generation map to Bedrock invocation as follows:
+The reason generation pipeline uses its own tier nomenclature (L1/L2a/L2b), distinct from the serving fallback layers (Layer 1/2/3 in @tab:fallback-layers) which refer to model training methodology. The three reason generation tiers map to Bedrock invocation as follows:
 - *L1 (synchronous)*: Template-based, ~1ms latency, always available. No Bedrock call; the TemplateEngine generates deterministic Korean from InterpretationRegistry reverse-mappings. This is the guaranteed fallback for all customers.
-- *L2a (on-demand)*: When a customer clicks for detail, a synchronous Bedrock Claude Sonnet call rewrites the L1 template into richer, more natural Korean (first call ~2.4s); the result is cached in DynamoDB so subsequent requests return instantly (~6ms cache hit). Processing priority is determined by context richness (data availability), not customer tier, satisfying the equal-explanation obligation (FCPA §19).
+- *L2a (on-demand)*: When a customer clicks for detail, a synchronous Bedrock Claude Sonnet call rewrites the L1 template into richer, more natural Korean (first call ~2.4s); the result is cached in DynamoDB so subsequent requests return instantly (~6ms cache hit). Processing priority is determined by context richness (data availability), not customer tier, satisfying the equal-explanation obligation (KFCPA §19).
 - *L2b (async)*: Bedrock validates L2a output for PII leakage, hallucination, and regulatory compliance before promotion. Human review is applied to a 5% sampling for quality assurance.
 
 The Bedrock infrastructure is shared between reason generation and operational agents (Section 5); time-slot separation resolves quota contention.
@@ -749,9 +754,9 @@ Two modules enforce this at the serving boundary:
 
 - *`PIIEncryptor` (inbound)*: scans feature input vectors for PII patterns (resident registration numbers, card numbers, account numbers) before inference. Detected PII fields are hashed in-place using HMAC-SHA256 with a per-customer salt, so model inference operates on anonymized values. Controlled via `SECURITY_FEATURE_SCAN=true` environment variable.
 
-- *`PromptSanitizer` (outbound)*: scrubs PII from generated recommendation reason text before it is returned to the customer interface. Additionally, `PromptSanitizer` classifies prompt sensitivity into three tiers --- HIGH (contains financial identifiers or account-level data), MEDIUM (contains behavioral patterns), LOW (generic recommendation context) --- and routes accordingly: HIGH prompts are sent exclusively to Amazon Bedrock (data stays within the AWS region), MEDIUM to Gemini, LOW to any available provider. Controlled via `SECURITY_PII_SCRUB=true` environment variable.
+- *`PromptSanitizer` (outbound)*: scrubs PII from generated recommendation reason text before it is returned to the customer interface. Additionally, `PromptSanitizer` classifies prompt sensitivity into three tiers --- HIGH (contains financial identifiers or account-level data), MEDIUM (contains behavioral patterns), LOW (generic recommendation context) --- and routes accordingly: HIGH prompts are sent exclusively to Amazon Bedrock (data stays within the AWS region), MEDIUM and LOW may be routed to alternative providers (e.g., Gemini) only after PII has been stripped and the prompt contains no customer-identifiable information. This tiered routing applies to _prompt context_, not to raw customer data, which never leaves the Bedrock boundary. Controlled via `SECURITY_PII_SCRUB=true` environment variable.
 
-This two-layer boundary ensures that neither raw PII nor LLM-generated outputs that contain PII can escape the serving perimeter, satisfying the data minimization principle of GDPR and Korean PIPA.
+This two-layer boundary ensures that neither raw PII nor LLM-generated outputs that contain PII can escape the serving perimeter, designed to align with the data minimization principle of GDPR and Korean PIPA.
 
 // ============================================================
 = Operational Agent Pipeline
@@ -837,7 +842,7 @@ opt-out statistics, governance checklist status.
     #text(size: 9pt)[
       *AuditAgent finding (measured):* \
       "Recommendation reason grounding score 0.33 (threshold 0.50): only 1 of top-3 tasks had keyword match. Bias DI = 1.0 (4 protected groups treated equally). Financial Consumer Protection Act (금소법) violations: 0 (5 rules verified)." \
-      _3-agent consensus: grounding FAIL (1W+2F), fairness WARN (2P+1W), FCPA PASS (3/3 unanimous)_
+      _3-agent consensus: grounding FAIL (1W+2F), fairness WARN (2P+1W), KFCPA PASS (3/3 unanimous)_
     ]
   ],
   caption: [AuditAgent Regulatory Compliance Report --- actual measured results with consensus verdicts. Report generated in Korean; English translation shown above.],
@@ -978,9 +983,9 @@ any FAIL vote yields FAIL verdict regardless of majority.
     [*AuditAgent Item*], [*Votes*], [*Verdict*], [*Minority*],
     [Reason grounding (score 0.33)], [1 WARN + 2 FAIL], [FAIL], [$alpha$ (less strict)],
     [Fairness DI = 1.0], [2 PASS + 1 WARN], [WARN], [$alpha$ (conservative)],
-    [FCPA compliance], [3/3 PASS], [PASS], [none (unanimous)],
+    [KFCPA compliance], [3/3 PASS], [PASS], [none (unanimous)],
   ),
-  caption: [AuditAgent 3-agent consensus results. Grounding score 0.33 triggers FAIL (1 of 3 sampled tasks). Fairness DI = 1.0 is ideal but $alpha$ flags small-sample caveat. Financial Consumer Protection Act (금소법, FCPA) compliance: unanimous PASS, 5 rules, 0 violations.],
+  caption: [AuditAgent 3-agent consensus results. Grounding score 0.33 triggers FAIL (1 of 3 sampled tasks). Fairness DI = 1.0 is ideal but $alpha$ flags small-sample caveat. Financial Consumer Protection Act (금소법, KKFCPA) compliance: unanimous PASS, 5 rules, 0 violations.],
 ) <tab:audit-consensus>
 
 == Diagnostic Case Store
@@ -1064,7 +1069,7 @@ enabling operators to discuss the impact assessment interactively.
 
 == EU AI Act Mapping
 
-@tab:euai-mapping maps the core EU AI Act provisions to system compliance mechanisms. Financial recommendation systems are classified as high-risk AI under Annex III Section 5, requiring compliance with Title III Chapter 2 obligations.
+@tab:euai-mapping maps the core EU AI Act provisions to system compliance mechanisms. This paper treats financial recommendation as high-risk AI for compliance-mapping purposes, consistent with Annex III Section 5(b) (creditworthiness assessment and credit scoring), requiring compliance with Title III Chapter 2 obligations.
 
 #figure(placement: top, scope: "parent",
   table(
@@ -1084,19 +1089,19 @@ enabling operators to discuss the impact assessment interactively.
 
 === Compliance Pipeline Implementation
 
-The GDPR/FCPA compliance obligations listed above are enforced through a pipeline of four modules connected to the Lambda handler and `RecommendationService`:
+The GDPR/KFCPA compliance obligations listed above are enforced through a pipeline of four modules connected to the Lambda handler and `RecommendationService`:
 
 - *`ConsentManager`*: verifies that the customer has granted AI recommendation consent before any prediction is executed. Absence of consent short-circuits the pipeline and returns a compliant blocked response without logging feature data.
 
 - *`AIDecisionOptOut`*: implements GDPR Article 22 and Korean Personal Information Protection Act (PIPA) right to refuse AI profiling. When a customer's opt-out flag is set, the handler returns a blocked response immediately, before any model inference occurs.
 
-- *`RegulatoryComplianceChecker`*: runs FCPA §17 suitability assessment before the recommendation is generated. Product risk level is compared against the customer's registered risk tolerance; unsuitable recommendations are blocked with an audit record rather than silently filtered.
+- *`RegulatoryComplianceChecker`*: runs KFCPA §17 suitability assessment before the recommendation is generated. Product risk level is compared against the customer's registered risk tolerance; unsuitable recommendations are blocked with an audit record rather than silently filtered.
 
 - *`ProfilingRightsManager`*: handles data access and deletion requests under GDPR Articles 15 and 17, providing a single entry point for data-subject rights requests that propagates to the feature store and audit tables.
 
 - *`ComplianceAuditStore`*: logs every prediction with the executing task list, serving layers activated, elapsed time, and compliance check outcomes. The log is appended in real time and is the source of truth for audit trail integrity checks performed by the AuditAgent.
 
-All checks operate with graceful degradation: if the compliance service is temporarily unavailable, a warning is logged and the recommendation proceeds, ensuring that a transient infrastructure failure does not create a customer-facing outage.
+All checks operate with graceful degradation: if the compliance service is temporarily unavailable, a warning is logged, the recommendation is restricted to pre-approved low-risk products only (check cards, demand deposits), and the incident is escalated for human review within the next monitoring cycle. This compensating control ensures that a transient infrastructure failure does not create a customer-facing outage while limiting exposure to products that do not require suitability assessment.
 
 == Korean AI Basic Act
 
@@ -1328,7 +1333,7 @@ satisfying both SR 11-7 expectations and EU AI Act Art. 9 risk management requir
 
 == Distillation Experiments
 
-Binary tasks achieved AUC gaps of 0.018--0.036 (mean 2.6 percentage points), with ranking correlation above 0.96 across all 7 tasks. The primary failure mode was calibration gap (0.08--0.10), addressed by post-hoc Platt scaling for probability-critical tasks. Three multiclass tasks (nba_primary, segment_prediction, next_mcc) fell below the 2× random teacher threshold and were routed to direct hard-label training. Two regression tasks (mcc_diversity_trend, cross_sell_count) achieved MAE gaps under 0.02. The third (product_stability) was routed to SKIP due to borderline teacher R².
+Binary tasks achieved AUC gaps of 0.018--0.036 (mean 2.6 percentage points), with ranking correlation above 0.96 across all 7 tasks. The primary failure mode was calibration gap (0.08--0.10), addressed by post-hoc Platt scaling for probability-critical tasks. Two multiclass tasks (nba_primary, segment_prediction) fell below the 2× random teacher threshold and were routed to direct hard-label training; next_mcc (50-class) was routed to SKIP (Layer 3 rule engine). One regression task (mcc_diversity_trend) achieved an MAE gap of 0.025 via direct training. The other two (product_stability, cross_sell_count) were routed to SKIP due to near-zero teacher R².
 
 == Reason Generation Quality
 
@@ -1367,7 +1372,7 @@ and L2a Bedrock rewrite pipeline, reporting four automated quality dimensions.
     [Readability], [Fluency score (no broken template markers)], [1.00],
     [Overall quality], [Weighted combination of grounding + readability + compliance], [0.74],
     [Bias DI], [Disparate Impact across all protected groups], [1.0 (no bias detected)],
-    [Domestic compliance (FCPA)], [Rules checked (suitability, consent, opt-out, profiling, disclosure)], [5 checked, 0 violations],
+    [Domestic compliance (KFCPA)], [Rules checked (suitability, consent, opt-out, profiling, disclosure)], [5 checked, 0 violations],
   ),
   caption: [AuditAgent automated reason quality assessment. Grounding score 0.33 = 1/3 sampled tasks had verifiable keyword matches; readability 1.00 confirms no template rendering failures.],
 ) <tab:audit-quality>
@@ -1415,6 +1420,8 @@ First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the 
 (task, feature-signature) pair retrieve the cached result from DynamoDB in 6ms.
 
 == Safety Gate Evaluation
+
+@tab:safety-eval reports the Safety Gate's automated validation metrics, measuring PII detection coverage, regulatory check breadth, and human review sampling rate. These metrics characterize the gate's _coverage_; precision/recall evaluation is pending live deployment with production traffic.
 
 #figure(placement: top, scope: "parent",
   table(
@@ -1469,7 +1476,7 @@ _checklist compliance_, _audit trail integrity_, and _fairness metrics_.
 
 *Checklist compliance.*
 The system implements 14 regulatory requirements mapped from
-the Korean Financial Consumer Protection Act (금소법, FCPA) Articles 17--19,
+the Korean Financial Consumer Protection Act (금소법, KKFCPA) Articles 17--19,
 EU AI Act Articles 13--14, and FSS AI Guidelines.
 Key items include: suitability assessment before recommendation (Art. 19),
 AI-generated content disclosure (Art. 17),
@@ -1501,8 +1508,9 @@ Three findings emerge from the end-to-end pipeline evaluation.
 
 *Finding 1: Tree-based distillation works without temperature scaling.*
 Contrary to the standard Hinton distillation recipe ($T = 3$--$20$),
-LGBM students trained with $T = 1$ achieve lower JSD and calibration gap
-than those trained with $T = 5$.
+we observed during development that LGBM students trained with $T = 1$ achieve lower JSD and calibration gap
+than those trained with $T = 5$ (the detailed $T$ comparison is not reported in the experiments section
+as it was conducted during hyperparameter selection; the design rationale is described in Section 3.1).
 This is consistent with the Soft GBM analysis @softgbm2020:
 tree models learn from the absolute values and ordering of soft labels,
 not from gradient flow through tail probabilities.
@@ -1520,17 +1528,18 @@ and also provide the narrative anchors
 
 *Finding 3: The Safety Gate is essential, not optional.*
 Template-based fallback without LLM validation
-produces grammatically correct but occasionally misleading reasons
+produces structurally grounded but sometimes less fluent reasons (e.g., Korean particle artifacts like "(를)" as shown in @tab:l1-reasons) and occasionally misleading content
 (e.g., citing features not actually influential for the customer).
 The Safety Gate catches these by cross-referencing generated text
 against the actual LGBM SHAP attribution vector, reducing hallucination-like errors.
 
 *Finding 4: Adaptive distillation routing as MRM safeguard.*
-The teacher threshold gate prevented 6 tasks from receiving low-quality distillation,
-redirecting them to direct hard-label training.
-Three multiclass tasks (nba\_primary 7-class, segment\_prediction 4-class, next\_mcc 50-class)
-failed the F1-macro $\geq 2/K$ threshold,
-and three regression tasks were borderline (R² 0.01--0.04).
+The teacher threshold gate prevented 6 tasks from receiving low-quality distillation:
+3 were redirected to direct hard-label training (DIRECT) and 3 to the rule engine (SKIP).
+Two multiclass tasks (nba\_primary 7-class, segment\_prediction 4-class)
+and one regression task (mcc\_diversity\_trend) were routed to DIRECT;
+one multiclass task (next\_mcc 50-class) and two regression tasks
+(product\_stability, cross\_sell\_count) fell below floor and were routed to SKIP (Layer 3).
 This automatic quality triage aligns with SR 11-7 principles:
 model outputs are monitored, and degraded components are isolated
 without disrupting service.
@@ -1562,13 +1571,13 @@ than any amount of architectural sophistication applied to shallow statistical s
 
 The architecture provides two complementary mechanisms for encoding causal relationships between tasks:
 
-*Logit transfer* encodes _known_ causal pathways that domain experts design explicitly.
+*Logit transfer* (described in the companion paper, Section 3.7) encodes _known_ causal pathways that domain experts design explicitly.
 For example, churn signal → product stability (customers who churn show declining product engagement)
 and next MCC category → NBA primary (consumption patterns predict product affinity).
 These are _codified domain knowledge_ --- the system encodes relationships
 that practitioners already understand.
 
-*The Causal expert (NOTEARS DAG)* discovers _unknown_ causal pathways from data.
+*The Causal expert (NOTEARS DAG)* (companion paper, Section 3.4) discovers _unknown_ causal pathways from data.
 By learning a directed acyclic graph over the feature space,
 it can identify relationships that practitioners have not anticipated ---
 for instance, that a specific channel usage pattern causes increased overseas transactions,
@@ -1774,7 +1783,7 @@ or financial domain practice, organized by Financial DNA task group.
     [Lifecycle], [nba_primary], [Product adjacency +1 step], [Kotler 5A journey], [Gap in product ladder], [GMM cluster, LightGCN, \ economics PIH],
     [Lifecycle], [segment_prediction], [Balance x Frequency x Products], [CLV tiered model (Pareto)], [Segment re-classification], [GMM cluster ID,\ HMM behavior, TDA global],
     [Lifecycle], [will_acquire_deposits], [Surplus ratio > 30% + no term deposit], [Lifecycle savings stage], [Idle cash detected], [economics PIH, HMM journey, GMM cluster],
-    [Lifecycle], [will_acquire_investments], [Suitability grade >= product risk], [Suitability (FCPA Art.17)], [Risk-matched opportunity], [causal NOTEARS,\ HGCN hyperbolic, economics],
+    [Lifecycle], [will_acquire_investments], [Suitability grade >= product risk], [Suitability (KFCPA Art.17)], [Risk-matched opportunity], [causal NOTEARS,\ HGCN hyperbolic, economics],
     [Lifecycle], [will_acquire_accounts], [Salary pattern + non-primary], [SOW expansion (PwC)], [Primary bank conversion], [LightGCN, Mamba temporal, txn_behavior],
     [Lifecycle], [will_acquire_lending], [Credit grade 1--4 + DTI < 40%], [Credit scoring + suitability], [Refinance opportunity], [causal NOTEARS, economics PIH, HMM lifecycle],
     [Lifecycle], [will_acquire_payments], [Top MCC + single card holder], [Habitual buying (Kotler)], [Spending-card mismatch], [merchant_hierarchy,\ TDA local, Mamba temporal],
@@ -1783,7 +1792,7 @@ or financial domain practice, organized by Financial DNA task group.
     [Consumption], [next_mcc], [MCC frequency Top-K + seasonality], [Habitual buying behavior], [Pattern continuation], [Mamba temporal, merchant_hierarchy, TDA local],
     [Consumption], [mcc_diversity_trend], [PIH transitory income signal], [Friedman PIH (1957)], [Income shock detected], [economics PIH, TDA global, GMM],
   )},
-  caption: [Layer 3 rule-based fallback rules per task. All rules subject to FCPA Article 17 suitability constraint.],
+  caption: [Layer 3 rule-based fallback rules per task. All rules subject to KFCPA Article 17 suitability constraint.],
 ) <tab:fallback-rules>
 
 All 13 rules share a common regulatory floor: the customer's risk tolerance grade

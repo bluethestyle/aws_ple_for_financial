@@ -56,21 +56,22 @@
   share a common basket with a FeatureRouter assigning each expert its designated feature groups,
   providing a structural guarantee against expert collapse and inherent explainability
   through business-interpretable gate weights.
-  *Second*, through ablation on a 13-task benchmark (7 binary + 3 multiclass + 3 regression, 1M customers),
-  we discover that _loss-level_ inter-task transfer (adaTT) degrades performance
-  in this heterogeneous setting due to 156 task-pair affinity estimation instability,
-  while the single largest improvement comes from correcting a subtle uncertainty-weighting
+  *Second*, ablation on a 13-task benchmark (7 binary + 3 multiclass + 3 regression, 1M customers)
+  shows that _loss-level_ inter-task transfer (adaTT) degrades performance
+  in this heterogeneous setting because of instability in estimating 156 task-pair affinities.
+  The single largest improvement instead comes from correcting a subtle uncertainty-weighting
   implementation gap where per-task loss weights were silently ignored.
   *Third*, we experiment with _GradSurgery_, a task-type gradient projection method
   that replaces loss-level transfer with gradient-level conflict resolution,
   reducing the 156 task-pair problem to 3 task-type-group projections.
   However, GradSurgery shows no meaningful advantage over the PLE-only baseline
   while requiring significantly more VRAM (due to the retained computation graph), and is not adopted for production.
-  Ablation results: PLE with softmax gating achieves the best NDCG\@3 (0.714)
-  among gate variants, softmax outperforms sigmoid in the heterogeneous setting
-  (reversing findings from homogeneous-task literature),
-  and GradSurgery maintains baseline performance (AUC 0.673, F1-macro 0.203)
-  compared to adaTT's degradation of $-$0.019 AUC.
+  In the ablation study, PLE with softmax gating achieves the best NDCG\@3 (0.714)
+  among gate variants.
+  Softmax also outperforms sigmoid in this heterogeneous setting,
+  reversing findings from the homogeneous-task literature.
+  GradSurgery maintains baseline performance (AUC 0.673, F1-macro 0.203),
+  whereas adaTT degrades AUC by $-$0.019.
   The operational motivation --- consolidating 13 individual models into a single MTL model
   for unified training, serving, and monitoring --- is validated:
   the shared-bottom baseline already exceeds per-task XGBoost ceilings,
@@ -101,7 +102,7 @@ Post-hoc explanations (SHAP, LIME) are decoupled from model internals, computati
 
 == Core Insight
 
-Conventional recommendation models function as "black-box shakers" --- features go in, probabilities come out, with only statistical correlations as justification.
+Conventional recommendation models function as black-box score generators --- features go in, probabilities come out, with only statistical correlations as justification.
 As Pearl @pearl2009causality argues, there is a fundamental gap between
 _seeing_ (association) and _understanding_ (causation).
 Humans are not persuaded by correlations; they require _causal narratives_ @pearl2018book.
@@ -112,7 +113,7 @@ then the gating mechanism itself becomes an explanation:
 "This recommendation is driven primarily by your spending trend (Temporal, 35%)
 and product category fit (HGCN, 28%)."
 
-This is the founding design principle of our architecture.
+This principle motivates the architecture proposed in this work.
 
 The key realization is that financial recommendation is not about a single prediction
 ("will this customer buy?") but about *understanding a customer as a whole person*
@@ -142,7 +143,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via expert routing declarations at the feature group level), not the full 349D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 27D--168D), reducing model parameters from 4.77M to ~2.8M while strengthening each expert's specialization.
 
-+ *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), CGC gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
++ *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), Customized Gate Control (CGC) gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
 
 + *Multi-disciplinary Feature Engineering*: Features derived from eleven academic disciplines --- including unconventional applications of chemical kinetics (spending activation rate), epidemic modeling (product adoption diffusion), criminological Routine Activity Theory (transaction regularity), and wave interference (spending periodicity) --- serve dual roles as learning signals and recommendation context that is reverse-mapped to business language for customer-facing explanations.
 
@@ -197,7 +198,7 @@ Existing mitigations operate post-hoc:
 Gram-Schmidt orthogonalization to force diverse expert representations,
 expert normalization to align output distributions,
 and load-balancing losses to distribute routing.
-These are engineering patches on a structural problem ---
+These methods mitigate the symptom but do not eliminate the structural source of the problem ---
 homogeneous experts have no inherent reason to specialize differently
 because their only source of diversity is random initialization.
 
@@ -244,9 +245,9 @@ softmax's competitive isolation better protects minority-type tasks ---
 a reversal of the homogeneous-task finding.
 
 Our work provides a *structural guarantee* against expert collapse:
-a DeepFM expert cannot converge to the same function as an HGCN expert
-regardless of training dynamics, because their architectures
-encode fundamentally different mathematical operations.
+a DeepFM expert is far less likely to converge to the same functional behavior as an HGCN expert,
+because the two architectures encode fundamentally different inductive biases
+and mathematical operations.
 
 == Explainability in Recommendation
 
@@ -305,16 +306,10 @@ each capturing a fundamentally different aspect of customer identity:
     [Engagement], [What do they _do_?], [next\_mcc #linebreak() mcc\_diversity\_trend #linebreak() top\_mcc\_shift],
     [Lifecycle], [Where _are_ they?], [churn\_signal #linebreak() segment\_prediction],
     [Value], [How much are they _worth_?], [cross\_sell\_count #linebreak() product\_stability],
-    [Consumption], [What _will_ they buy?], [will\_acquire\_\* (5) #linebreak() nba\_primary],
+    [Consumption], [What _will_ they buy?], [will\_acquire\_\* (5) #linebreak() nba\_primary#footnote[`nba_primary` targets _product groups_ (7 classes: no NBA, savings/guarantee, checking, deposits, investments, credit loans, debits), not individual product indices. This redesign from 25 individual-product classes achieves better class balance and enables ranking-based evaluation via NDCG\@K.]],
   ),
   caption: [Financial DNA decomposition (Axis 1). Four tasks removed in early development (income tier, tenure stage, spend level, engagement score) were deterministic feature transformations.],
 ) <tab:dna-axis>
-
-*nba_primary target design.* `nba_primary` targets _product groups_ (7 classes), not individual product indices.
-The 7 classes are: 0 = no NBA, 1 = savings/guarantee, 2 = checking accounts, 3 = deposits, 4 = investments, 5 = credit loans, 6 = debits.
-This redesign (from 25 individual-product classes) achieves better class balance and enables meaningful ranking-based evaluation.
-The original 25-way classification had a long-tail distribution in which rare products dominated macro-F1,
-making standard F1-macro unreliable; NDCG\@K is appropriate for the group-level ranking objective.
 
 *Axis 2: What form does the information take? (Data Modality)*
 
@@ -357,13 +352,11 @@ that our ablation demonstrates.
 
 The architecture emerged from severe real-world constraints
 at a Korean public financial institution.
-A team of three --- one data scientist serving as PM,
-with GARP Financial Risk Manager (FRM) certification
-and a career spanning credit/market risk analysis, regulatory compliance,
-MyData licensing, big data platform construction and operations,
-data science projects, and recommendation system management,
+A team of three --- one data scientist serving as PM
 plus two engineers --- needed to replace a legacy ALS-based collaborative filtering system
 with a next-generation recommendation model.
+The PM's background in financial risk (GARP FRM), regulatory compliance,
+and recommendation system management informed the architectural direction.
 
 The constraints were formidable:
 no dedicated ML infrastructure budget,
@@ -448,7 +441,7 @@ Four principles guide the architecture:
 Financial customer data exhibits inherently multi-modal structure.
 We classify data along multiple axes, each mapped to an optimal feature generator and expert:
 
-The complete data axis to expert to feature generator mapping is shown in @tab:modality-axis.
+The complete data-axis-to-expert-to-feature-generator mapping is shown in @tab:modality-axis.
 
 #text(size: 8.5pt, fill: gray)[
   _Note_: Short-term, Long-term, and Disrupted series map to the three sub-components
@@ -648,8 +641,7 @@ in financial customer understanding that no other expert type addresses:
   This enables "A causes B" explanations rather than "A correlates with B" @pearl2009causality.
 
 - *LightGCN* @he2020lightgcn: Collaborative filtering via neighborhood aggregation
-  on the customer-product bipartite graph. Stripped to essentials (no feature transform, no activation),
-  which outperforms more complex GCN variants for recommendation.
+  on the customer-product bipartite graph. This expert is stripped to its essentials --- no feature transformation and no activation --- which has been shown to outperform more complex GCN variants for recommendation.
 
 - *Optimal Transport* @cuturi2013: Sinkhorn-regularized Wasserstein distance
   measures distributional shift between customer spending profiles and segment prototypes,
@@ -672,7 +664,7 @@ despite the smaller parameter budget.
 
 === FeatureRouter: Heterogeneous Input × Heterogeneous Architecture
 
-FeatureRouter is now active, implementing a stronger form of expert specialization:
+FeatureRouter implements a stronger form of expert specialization:
 not only does each expert use a *different architecture* (heterogeneous basket),
 but each also receives a *different subset of input features* (heterogeneous input).
 This "heterogeneous architecture × heterogeneous input" design maximizes
@@ -774,7 +766,7 @@ performance on different task groups.
 
 A distinguishing aspect of this work is the systematic application of
 methodologies from diverse academic disciplines to financial customer behavior.
-Now that the expert basket has been introduced, the rationale becomes clear:
+With the expert basket in place, the rationale for the feature design becomes clear:
 each discipline's features are designed to feed a _specific expert_
 whose inductive bias can best exploit that signal type.
 Rather than relying solely on standard statistical features
@@ -859,7 +851,7 @@ The four task groups --- Engagement, Lifecycle, Value, Consumption --- and their
 adaTT enforces differentiated transfer: strong intra-group transfer (same DNA perspective)
 and weaker inter-group transfer (different perspectives, minimizing negative transfer).
 
-*Loss-level transfer.* A notable departure from the original adaTT @li2023,
+*Loss-level transfer.* In a notable departure from the original adaTT @li2023,
 which transfers at the representation level, our implementation operates at the _loss level_:
 
 $ cal(L)_i^("adaTT") = cal(L)_i + lambda sum_(j eq.not i) w_(i arrow.r j) dot cal(L)_j $ <eq:adatt>
@@ -903,8 +895,8 @@ that reflect the natural sequence of customer experience:
   caption: [Logit transfer relationships reflecting natural customer experience flow.],
 ) <tab:logit-transfer>
 
-These transfers connect DNA groups (@tab:dna-axis): engagement→consumption (intra-Engagement/Consumption axis),
-lifecycle→consumption (churn→nba_primary, inter-group), reflecting the natural sequence of customer experience.
+These transfers connect the task groups defined in @tab:dna-axis: engagement→consumption (inter-group: Engagement to Consumption)
+and lifecycle→consumption (inter-group: churn→nba_primary), reflecting the natural sequence of customer experience.
 The transfer directions are not learned from data but specified based on
 domain knowledge of the customer journey.
 This is a deliberate design choice: while the _strength_ of transfer
@@ -1056,16 +1048,8 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
   caption: [Variance budget per label tier. XGB AUC ceiling validates difficulty control.],
 ) <tab:variance-budget>
 
-The benchmark underwent several iterations.
-v2 used uniform-random MCC codes and fixed transaction amounts across personas,
-producing near-random labels for MCC-dependent tasks.
-v3 introduced persona-weighted MCC distributions (4--5× boost) with temporal stickiness (30%),
-persona-dependent transaction amounts, and quantile-based spend_level boundaries,
-improving MCC task signal but still yielding near-uniform label distributions for acquisition tasks.
-v4 sharpened persona MCC preferences (8--12× boost), increased temporal stickiness to 60%,
-raised per-product acquisition rates (8--12%), and widened the top_mcc_shift detection window
-to 30 transactions.
-v12 (reported here) introduces Financial DNA axis-aligned situation variables --- each customer receives
+The benchmark underwent several iterations (v2 through v4; see Appendix F for version history).
+The final version, v12 (reported here), introduces Financial DNA axis-aligned situation variables --- each customer receives
 an independent situation per DNA axis (engagement: steady/surging/declining/volatile;
 lifecycle: stable/growing/consolidating/transitioning;
 value: stable/ascending/descending/shock;
@@ -1093,13 +1077,13 @@ but a structural requirement for multi-faceted persuasion.
 - *Hardware*: NVIDIA RTX 4070 (12GB VRAM, 64GB RAM) local.
 - *Training*: 10 epochs, batch 5632, lr 0.0005, AMP (FP16), warmup 3 epochs (cosine annealing), no early stopping. adaTT scenarios use warmup=3 epochs, grad\_interval=10. GradSurgery scenarios use warmup=2 epochs, conflict\_threshold=0.0.
 - *Loss weighting*: Uncertainty weighting (Kendall et al.) with per-task loss weights applied on top of learned precision --- matching the on-premise reference formula.
-- *Metrics*: Metrics are chosen to match each task's production semantic.
+- *Metrics*: Selected to match each task's production semantics.
   Binary classification uses AUC (threshold-independent and imbalance-robust).
-  Classification multiclass (segment_prediction, 4 classes) uses F1-macro.
-  Recommendation multiclass (nba_primary with 7 product groups, next_mcc with top-50 merchant categories)
-  uses NDCG\@K and top-K accuracy @jarvelin2002ndcg, reflecting standard recommendation system evaluation practice.
+  Multiclass classification (segment_prediction, 4 classes) uses F1-macro.
+  Multiclass recommendation (nba_primary with 7 product groups, next_mcc with top-50 merchant categories)
+  uses NDCG\@K and top-K accuracy @jarvelin2002ndcg, following standard recommendation evaluation practice.
   Regression uses MAE.
-  Metrics are reported per task type; a global average across all 13 tasks is avoided
+  All metrics are reported per task type; a global average across all 13 tasks is avoided
   because metrics have incompatible semantics across types.
 
 == Joint Feature + Expert Ablation (RQ1 + RQ2)
@@ -1124,13 +1108,13 @@ Avg F1m covers segment\_prediction (F1-macro); nba\_primary and next\_mcc use ND
     table.cell(colspan: 5, align: left, [_Bottom-up: DeepFM + single expert (sorted by AUC desc)_]),
     [DeepFM + LightGCN], [*0.6733*], [0.2000], [0.9598], [25.75],
     [DeepFM + HGCN], [0.6725], [0.1980], [*0.9577*], [25.74],
-    [DeepFM + TDA], [0.6723], [0.2025], [0.9603], [25.72],
+    [DeepFM + PersLay (TDA)], [0.6723], [0.2025], [0.9603], [25.72],
     [DeepFM + Temporal], [0.6720], [0.2015], [0.9593], [25.70],
     [DeepFM + Causal], [0.6715], [0.1609†], [0.9587], [25.74],
     [DeepFM + OT], [0.6714], [0.1596†], [0.9591], [25.75],
     table.cell(colspan: 5, align: left, [_Top-down: Full minus one expert_]),
     [Full − LightGCN], [0.6727], [0.2016], [0.9594], [25.74],
-    [Full − TDA], [0.6726], [0.2012], [0.9582], [25.73],
+    [Full − PersLay], [0.6726], [0.2012], [0.9582], [25.73],
     [Full − Temporal], [0.6725], [0.2012], [0.9596], [25.71],
     [Full − HGCN], [0.6724], [0.2014], [*0.9586*], [25.72],
     [Full − Causal], [0.6724], [0.2010], [0.9617], [25.73],
@@ -1248,7 +1232,7 @@ We assess each expert's contribution by examining how performance changes when i
       [*Removed Expert*], [*ΔAUC*], [*Interpretation*],
     ),
     [−LightGCN], [+0.0003], [marginal negative transfer],
-    [−TDA], [+0.0002], [marginal negative transfer],
+    [−PersLay], [+0.0002], [marginal negative transfer],
     [−Temporal], [+0.0001], [negligible],
     [−Causal], [+0.0001], [negligible],
     [−HGCN], [0.0000], [neutral],
@@ -1259,11 +1243,11 @@ We assess each expert's contribution by examining how performance changes when i
 
 Expert ΔAUC magnitudes are uniformly small ($<$ 0.001), reflecting the synthetic benchmark's limited capacity to differentiate experts. No expert is clearly beneficial or harmful at this scale. This near-uniform result requires careful interpretation along three dimensions.
 
-*Synthetic data limitation.* The negative transfer from Temporal and TDA is attributable to the synthetic benchmark's data characteristics. Synthetic transaction sequences lack genuine temporal patterns --- MCC codes are generated from persona-weighted distributions with stickiness, but without real behavioral dynamics such as seasonality, life-event triggers, or spending regime changes. When an expert's inductive bias (temporal dynamics, topological persistence) has no matching signal in the data, it injects noise into the shared representation. In production data where genuine behavioral sequences carry predictive signal, these experts' contributions are expected to change substantially.
+*Synthetic data limitation.* The marginal negative transfer from LightGCN and PersLay (TDA) is attributable to the synthetic benchmark's data characteristics. Synthetic transaction sequences lack genuine collaborative signals and topological patterns --- MCC codes are generated from persona-weighted distributions with stickiness, but without real behavioral dynamics such as seasonality, life-event triggers, or spending regime changes. When an expert's inductive bias (graph collaborative filtering, topological persistence) has no matching signal in the data, it injects noise into the shared representation. In production data where genuine behavioral sequences carry predictive signal, these experts' contributions are expected to change substantially.
 
 *Single-metric blind spot.* Aggregate AUC averages across 7 binary tasks and does not capture contributions to multiclass ranking (NDCG\@3) or regression (MAE). An expert may reduce binary AUC while improving multiclass or regression performance --- effects invisible in the aggregate. Per-task-type analysis is required before concluding an expert is dispensable.
 
-*Diagnostic value of asymmetry.* The most important observation is not _which_ experts are harmful, but that the heterogeneous design _enables this diagnosis_. A homogeneous MLP expert pool would show uniform, undifferentiated degradation --- every expert would degrade similarly because they share the same inductive bias. The heterogeneous basket produces an _actionable diagnostic_: "Temporal is harmful in synthetic data; HGCN is structurally essential" is a statement that directly informs architecture decisions. This diagnostic capability is itself a contribution of the heterogeneous expert design, independent of whether any individual expert improves aggregate AUC.
+*Diagnostic value of asymmetry.* The most important observation is not _which_ experts are harmful, but that the heterogeneous design _enables this diagnosis_. A homogeneous MLP expert pool would show uniform, undifferentiated degradation --- every expert would degrade similarly because they share the same inductive bias. The heterogeneous basket produces an _actionable diagnostic_: "LightGCN shows marginal negative transfer on aggregate AUC; HGCN is essential for `nba_primary` ranking (NDCG\@3) even though its aggregate binary AUC effect is neutral" is a statement that directly informs architecture decisions. This diagnostic capability is itself a contribution of the heterogeneous expert design, independent of whether any individual expert improves aggregate AUC.
 
 == Explainability Analysis (RQ5)
 
@@ -1704,7 +1688,6 @@ hardware peripherals, mobile data connectivity, AWS SageMaker cloud training (Sp
 S3 storage, and operational expenses ---
 were borne entirely by the first author's personal funds.
 Development was conducted on a single desktop-grade GPU (NVIDIA RTX 4070, 12GB VRAM)
-in a repurposed, inadequately ventilated workspace
 with no dedicated ML infrastructure budget, no institutional network support,
 and no institutional cloud computing allocation.
 Data collection was constrained to a legacy HIVE environment
@@ -1799,6 +1782,15 @@ Epidemiology: $d I / d t = beta S I - gamma I$
 Adoption: $d A / d t = beta_("exposure") dot U dot A - gamma_("churn") dot A$
 where $U$ = unadopted customers, $A$ = adopted, $beta$ = contact/exposure rate.
 The compartmental dynamics are identical; only the variable names change.
+
+#heading(numbering: none, level: 3)[F. Benchmark Version History]
+
+The benchmark underwent four major iterations before converging on v12:
+
+- *v2*: Uniform-random MCC codes and fixed transaction amounts across personas, producing near-random labels for MCC-dependent tasks.
+- *v3*: Persona-weighted MCC distributions (4--5× boost) with temporal stickiness (30%), persona-dependent transaction amounts, and quantile-based spend\_level boundaries. Improved MCC task signal but still yielded near-uniform label distributions for acquisition tasks.
+- *v4*: Sharpened persona MCC preferences (8--12× boost), increased temporal stickiness to 60%, raised per-product acquisition rates (8--12%), and widened top\_mcc\_shift detection window to 30 transactions.
+- *v12* (reported): Financial DNA axis-aligned situation variables, 3rd--5th order continuous multiplicative label interactions with obs\_frac=0.15, producing meaningful class distributions for all 13 tasks.
 
 // ============================================================
 // References
