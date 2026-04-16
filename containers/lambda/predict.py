@@ -891,8 +891,10 @@ def _normalise(raw: Any, task_type: str) -> Any:
         return round(val, 6)
     elif task_type == "multiclass":
         arr = np.asarray(raw).ravel()
-        # Already probabilities from LGBM
-        return [round(float(x), 6) for x in arr]
+        # Custom objective outputs raw logits; apply softmax
+        exp_arr = np.exp(arr - arr.max())
+        probs = exp_arr / exp_arr.sum()
+        return [round(float(x), 6) for x in probs]
     else:
         # regression / ranking
         val = float(np.asarray(raw).ravel()[0]) if hasattr(raw, "__len__") else float(raw)
