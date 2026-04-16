@@ -458,9 +458,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     "generation_method": "template_l1",
                 }
 
-            # --- LanceDB: Similar customer search (coldstart/new) ---
-            # Native lancedb ANN search on S3-hosted Lance format.
-            # Only triggered for sparse/new customers.
+            # --- LanceDB: coldstart grounding from past recommendation cases ---
+            # LanceDB accumulates past recommendation cases (LGBM features + reasons).
+            # Coldstart customers search for similar past cases to ground L2a prompt.
             similar_context = ""
             is_sparse = (
                 len([v for v in features.values() if v and v != 0.0]) < 50
@@ -475,29 +475,23 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         if store_path:
                             import lancedb as _ldb
                             _db = _ldb.connect(store_path)
-                            _lance_tbl = _db.open_table("customer_context")
-                            _CACHE["_lancedb_table"] = _lance_tbl
-                            logger.info("LanceDB connected: %s", store_path)
+                            try:
+                                _lance_tbl = _db.open_table("recommendation_cases")
+                                _CACHE["_lancedb_table"] = _lance_tbl
+                            except Exception:
+                                _CACHE["_lancedb_table"] = False
+                                logger.info("LanceDB: no recommendation_cases table yet (empty on first run)")
                         else:
                             _CACHE["_lancedb_table"] = False
 
                     if _lance_tbl and _lance_tbl is not False:
-                        import numpy as _np2
-                        _feat_keys = sorted(features.keys())[:349]
-                        _qvec = [float(features.get(c, 0.0) or 0.0) for c in _feat_keys]
-                        _results = (
-                            _lance_tbl.search(_qvec)
-                            .limit(3)
-                            .to_list()
-                        )
+                        # Search by top feature values
+                        _qvec = [float(features.get(c, 0.0) or 0.0) for c in sorted(features.keys())[:35]]
+                        _results = _lance_tbl.search(_qvec).limit(3).to_list()
                         if _results:
                             similar_context = "; ".join(
-                                f"유사고객({r.get('customer_id','?')}): {r.get('segment','?')}"
+                                f"유사사례({r.get('customer_id','?')}): {r.get('reason_text','')[:30]}"
                                 for r in _results
-                            )
-                            logger.info(
-                                "LanceDB search: %d similar customers for user %s",
-                                len(_results), user_id,
                             )
                 except Exception:
                     logger.debug("LanceDB search failed (non-fatal)", exc_info=True)
@@ -579,6 +573,44 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if sorted_scalar:
         _top_task = sorted_scalar[0][0]
         top_l2a_reason = reasons.get(_top_task, {}).get("l2a_reason", "")
+
+    # --- Store recommendation case to LanceDB (accumulates over time) ---
+    # Each served recommendation becomes a searchable case for future coldstart grounding.
+    try:
+        store_path = os.environ.get("CONTEXT_STORE_PATH", "")
+        if store_path and reasons:
+            _top_reasons = []
+            _top_features_vec = []
+            for t_name, r_info in reasons.items():
+                if isinstance(r_info, dict) and r_info.get("l1_reasons"):
+                    _top_reasons.append(r_info["l1_reasons"][0])
+                    # Get feature values for this task's top gains
+                    booster = models.get(t_name)
+                    if booster:
+                        gains = booster.feature_importance(importance_type="gain")
+                        fnames = booster.feature_name()
+                        top5_idx = sorted(range(len(gains)), key=lambda i: -gains[i])[:5]
+                        for idx in top5_idx:
+                            _top_features_vec.append(float(features.get(fnames[idx], 0.0) or 0.0))
+
+            if _top_reasons and _top_features_vec:
+                import lancedb as _ldb
+                _case_db = _ldb.connect(store_path)
+                case_record = [{
+                    "customer_id": user_id,
+                    "segment": str(features.get("segment", "UNKNOWN")),
+                    "top_task": sorted_scalar[0][0] if sorted_scalar else "",
+                    "reason_text": _top_reasons[0][:200],
+                    "vector": _top_features_vec[:35],  # pad/truncate to fixed dim
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }]
+                try:
+                    _case_tbl = _case_db.open_table("recommendation_cases")
+                    _case_tbl.add(case_record)
+                except Exception:
+                    _case_db.create_table("recommendation_cases", case_record)
+    except Exception:
+        logger.debug("LanceDB case store write failed (non-fatal)", exc_info=True)
 
     result: Dict[str, Any] = {
         "user_id": user_id,
