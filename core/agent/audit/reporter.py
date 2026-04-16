@@ -61,14 +61,20 @@ class AuditReport:
 
 
 class AuditReporter:
-    """Generates structured audit reports.
+    """Generates structured audit reports with optional 3-agent consensus.
 
     Args:
         config: Reporter configuration.
+        consensus_arbiter: Optional ConsensusArbiter for multi-agent verdict.
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        consensus_arbiter: Optional[Any] = None,
+    ) -> None:
         self._config = config or {}
+        self._consensus = consensus_arbiter
 
     def generate(
         self,
@@ -96,10 +102,35 @@ class AuditReporter:
         # Build reason quality dashboard
         rq_dashboard = self._build_reason_dashboard(reason_quality or {})
 
+        # 3-agent consensus on focus areas (if arbiter available)
+        consensus_results = {}
+        if self._consensus and focus_areas:
+            for fa in focus_areas:
+                try:
+                    cr = self._consensus.evaluate(
+                        item_description=fa.description,
+                        measurements=fa.to_dict(),
+                        rule_engine_verdict=fa.priority,
+                    )
+                    consensus_results[fa.area_id] = {
+                        "verdict": cr.final_verdict,
+                        "type": cr.consensus_type,
+                        "minority_report": cr.minority_report,
+                    }
+                except Exception as _ce:
+                    logger.warning("Consensus failed for %s: %s", fa.area_id, _ce)
+
+        fa_dicts = []
+        for fa in focus_areas:
+            d = fa.to_dict()
+            if fa.area_id in consensus_results:
+                d["consensus"] = consensus_results[fa.area_id]
+            fa_dicts.append(d)
+
         return AuditReport(
             period=period,
             risk_level=risk_level,
-            focus_areas=[fa.to_dict() for fa in focus_areas],
+            focus_areas=fa_dicts,
             regulatory_summary=reg_summary,
             reason_quality_dashboard=rq_dashboard,
         )

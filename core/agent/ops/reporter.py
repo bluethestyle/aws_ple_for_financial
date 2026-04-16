@@ -61,14 +61,22 @@ class OpsReport:
 
 
 class OpsReporter:
-    """Generates structured ops reports.
+    """Generates structured ops reports with optional 3-agent consensus.
 
     Args:
         config: Reporter configuration.
+        consensus_arbiter: Optional ConsensusArbiter for multi-agent verdict.
+            When provided, non-GREEN checkpoints and CRITICAL/WARNING diagnoses
+            are evaluated via 3-agent consensus (unanimous PASS required).
     """
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        consensus_arbiter: Optional[Any] = None,
+    ) -> None:
         self._config = config or {}
+        self._consensus = consensus_arbiter
 
     def generate(
         self,
@@ -116,6 +124,22 @@ class OpsReporter:
                 "likely_cause": diag.likely_cause,
                 "suggested_action": diag.suggested_action,
             })
+
+        # 3-agent consensus on attention items (if arbiter available)
+        if self._consensus and attention:
+            for item in attention:
+                try:
+                    consensus_result = self._consensus.evaluate(
+                        item_description=item.get("finding", ""),
+                        measurements=item,
+                        rule_engine_verdict=item.get("severity", "WARNING"),
+                    )
+                    item["consensus_verdict"] = consensus_result.final_verdict
+                    item["consensus_type"] = consensus_result.consensus_type
+                    if consensus_result.minority_report:
+                        item["minority_report"] = consensus_result.minority_report
+                except Exception as _ce:
+                    logger.warning("Consensus failed for %s: %s", item.get("checkpoint"), _ce)
 
         # Sort: CRITICAL/FAIL first
         severity_order = {"CRITICAL": 0, "FAIL": 1, "WARNING": 2, "INFO": 3}
