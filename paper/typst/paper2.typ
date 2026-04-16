@@ -675,7 +675,7 @@ The backend is config-driven, allowing the deployment environment to be switched
 
 ```yaml
 llm_provider:
-  backend: bedrock  # or openai / gemini / solar / local / dummy
+  backend: bedrock  # or openai / gemini / local / dummy
 ```
 
 The three serving layers of reason generation map to Bedrock invocation as follows:
@@ -725,7 +725,7 @@ Recommendation reasons are served via a 3-layer asynchronous architecture:
 
 Caching uses a dual backend (in-memory + DynamoDB) with composite key `customer_id + product_id + task_name` and TTL-based auto-expiry. Of 941K customers, L2a targets (~5% sample, ~47K items) are processed by 5 parallel Claude Sonnet workers in ~8 minutes at ~\$0.21 cost (47K × 500 input + 200 output tokens at Claude Sonnet pricing).
 
-// TODO: Cache hit rate analysis
+// Cache hit rate analysis deferred to production deployment.
 
 === Serving Security
 
@@ -1438,7 +1438,7 @@ First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the 
 ) <tab:serving>
 
 Of the 13 tasks served by the production Lambda: 10 tasks are served by Layer 2 LGBM
-(3 tasks from distillation + 7 from direct hard-label training) and 3 tasks are served
+(7 tasks from distillation + 3 from direct hard-label training) and 3 tasks are served
 by the Layer 3 rule engine (next\_mcc, product\_stability, cross\_sell\_count).
 The DynamoDB audit trail records every prediction event:
 as of the measurement date the `ple-prediction-log` table holds 51 items
@@ -1624,7 +1624,7 @@ This reframes the traditional feature engineering calculus:
 a feature with marginal AUC contribution but rich business interpretability
 may be more valuable than a high-AUC feature that generates no meaningful explanation.
 
-// TODO: Add key distillation and human eval numbers when available
+// Human evaluation results will be added after production deployment.
 
 The system is designed for deployment on serverless infrastructure (AWS Lambda),
 achieving 120ms warm latency (L1 predict + 13 tasks) without dedicated GPU servers ---

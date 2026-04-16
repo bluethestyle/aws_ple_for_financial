@@ -172,7 +172,7 @@ methods deserve re-examination.
 == Gate Design: Softmax vs.\ Sigmoid
 
 Standard PLE and MMoE use *softmax* gates, enforcing competitive, sum-to-one
-expert selection. Nguyen et al. @nguyen2024 demonstrated that sigmoid gating
+expert selection. Nguyen et al. @sigmoid_moe2024 demonstrated that sigmoid gating
 --- allowing each expert to contribute independently without competition ---
 achieves higher sample efficiency by eliminating inter-expert competition.
 
@@ -332,7 +332,7 @@ loss balance that favors the majority task type.
 == Finding 2: Gate Selection Depends on Task Homogeneity <find2>
 
 Existing literature suggests that sigmoid gating outperforms softmax
-in PLE/MoE architectures @nguyen2024.
+in PLE/MoE architectures @sigmoid_moe2024.
 Our results show this holds only when tasks are homogeneous.
 With 13 heterogeneous tasks, softmax *consistently* outperforms sigmoid
 on ranking metrics:

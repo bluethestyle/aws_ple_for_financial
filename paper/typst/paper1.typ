@@ -65,7 +65,7 @@
   that replaces loss-level transfer with gradient-level conflict resolution,
   reducing the 156 task-pair problem to 3 task-type-group projections.
   However, GradSurgery shows no meaningful advantage over the PLE-only baseline
-  while requiring significantly more VRAM (due to \texttt{retain\_graph}), and is not adopted for production.
+  while requiring significantly more VRAM (due to `retain_graph`), and is not adopted for production.
   Ablation results: PLE with softmax gating achieves the best NDCG\@3 (0.714)
   among gate variants, softmax outperforms sigmoid in the heterogeneous setting
   (reversing findings from homogeneous-task literature),
