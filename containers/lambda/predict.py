@@ -170,6 +170,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "status": "ok",
             "version": _CACHE.get("version"),
             "models_loaded": list(_CACHE.get("models", {}).keys()),
+            "load_errors": _CACHE.get("_load_errors", {}),
+            "rule_engine": _CACHE.get("rule_engine") is not None and _CACHE.get("rule_engine") is not False,
+            "fallback_router": _CACHE.get("fallback_router") is not None,
             "agent_enabled": AGENT_ENABLED,
             "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
         }
@@ -252,15 +255,42 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     # --- Determine which tasks to score ---
     all_tasks = list(models.keys())
+    # Include rule-engine-only tasks when fallback router is available
+    fallback_router = _CACHE.get("fallback_router")
+    rule_engine = _CACHE.get("rule_engine")
+    if rule_engine:
+        # Include tasks defined in config but not in model registry (rule-engine-only)
+        reason_cfg = _CACHE.get("_reason_config")
+        if reason_cfg is None:
+            _local_cfg = os.path.join(os.path.dirname(__file__), "configs", "merged_config.json")
+            try:
+                with open(_local_cfg, encoding="utf-8") as _rcf:
+                    reason_cfg = json.load(_rcf)
+                _CACHE["_reason_config"] = reason_cfg
+            except Exception:
+                reason_cfg = {}
+        config_tasks = reason_cfg.get("tasks", [])
+        if isinstance(config_tasks, list) and config_tasks:
+            if isinstance(config_tasks[0], dict):
+                rule_task_names = [t.get("name", "") for t in config_tasks]
+            else:
+                rule_task_names = config_tasks
+        elif tasks_meta:
+            rule_task_names = [t["name"] for t in tasks_meta]
+        else:
+            rule_task_names = []
+        all_rule_tasks = [t for t in rule_task_names if t and t not in models]
+        all_tasks = list(models.keys()) + all_rule_tasks
     tasks_to_score = requested_tasks if requested_tasks else all_tasks
-    tasks_to_score = [t for t in tasks_to_score if t in models]
 
     # --- Per-task inference ---
     predictions: Dict[str, Any] = {}
     import numpy as np
 
     for task_name in tasks_to_score:
-        booster = models[task_name]
+        booster = models.get(task_name)
+        if booster is None:
+            continue  # Rule-engine-only task; handled by FallbackRouter below
 
         # Build feature vector in the exact column order the model was trained on
         task_meta = feat_meta.get(task_name, {})
@@ -292,7 +322,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if fallback_router is not None:
         routing = fallback_router.route_all(
             task_names=tasks_to_score,
-            lgbm_models={t: models[t] for t in tasks_to_score},
+            lgbm_models={t: models[t] for t in tasks_to_score if t in models},
             rule_engine=rule_engine,
         )
         for task_name, layer in routing.items():
@@ -564,6 +594,7 @@ def _ensure_loaded(s3) -> None:
         active_version = _read_promoted_version(s3)
     except Exception as e:
         logger.error("Cannot determine active model version: %s", e)
+        _CACHE.setdefault("_load_errors", {})["_promoted"] = str(e)
         return
 
     if _CACHE["version"] == active_version and _CACHE["models"]:
@@ -605,6 +636,7 @@ def _ensure_loaded(s3) -> None:
                 models[task_name] = booster
             except Exception as e:
                 logger.warning("Skipping task %s: %s", task_name, e)
+                _CACHE.setdefault("_load_errors", {})[task_name] = str(e)
                 continue
 
             # Feature selection metadata
@@ -756,35 +788,27 @@ def _read_promoted_version(s3) -> str:
 def _load_fallback_router(
     s3, bucket: str, version: str, tasks_meta: List[Dict[str, str]]
 ) -> Optional[Any]:
-    """Load FallbackRouter from pipeline config stored in S3.
+    """Load FallbackRouter using bundled config (fallback to S3).
 
-    Expects ``{version}/pipeline_config.json`` to exist alongside the model
-    artifacts.  Returns ``None`` if the config cannot be loaded or the
-    FallbackRouter import fails.
+    Returns ``None`` if import fails.
     """
     try:
-        config_key = f"models/artifacts/{version}/pipeline_config.json"
-        # Strip leading bucket path from REGISTRY_BASE prefix
-        _, base_prefix = _parse_s3_uri(REGISTRY_BASE.rstrip("/"))
-        config_key = f"{base_prefix.rstrip('/')}/{version}/pipeline_config.json"
+        _local_cfg = os.path.join(os.path.dirname(__file__), "configs", "merged_config.json")
+        if os.path.exists(_local_cfg):
+            with open(_local_cfg, encoding="utf-8") as f:
+                pipeline_cfg = json.load(f)
+        else:
+            _, base_prefix = _parse_s3_uri(REGISTRY_BASE.rstrip("/"))
+            config_key = f"{base_prefix.rstrip('/')}/{version}/pipeline_config.json"
+            obj = s3.get_object(Bucket=bucket, Key=config_key)
+            pipeline_cfg = json.loads(obj["Body"].read())
 
-        obj = s3.get_object(Bucket=bucket, Key=config_key)
-        pipeline_cfg = json.loads(obj["Body"].read())
-
-        # Inject tasks_meta so the router can look up task types
         pipeline_cfg.setdefault("tasks", tasks_meta)
 
         from core.recommendation.fallback_router import FallbackRouter
         router = FallbackRouter(pipeline_cfg)
         logger.info("FallbackRouter loaded for version %s", version)
         return router
-    except s3.exceptions.NoSuchKey:
-        logger.info(
-            "pipeline_config.json not found for version %s — "
-            "FallbackRouter disabled (LGBM-only mode)",
-            version,
-        )
-        return None
     except Exception:
         logger.warning(
             "Failed to load FallbackRouter for version %s",
@@ -795,26 +819,31 @@ def _load_fallback_router(
 
 
 def _load_rule_engine(s3, bucket: str, version: str) -> Optional[Any]:
-    """Load RuleBasedRecommender using the pipeline config from S3.
+    """Load RuleBasedRecommender using bundled config (fallback to S3).
 
-    Returns ``None`` if the config is absent or import fails.
+    Returns ``None`` if import fails.
     """
     try:
-        _, base_prefix = _parse_s3_uri(REGISTRY_BASE.rstrip("/"))
-        config_key = f"{base_prefix.rstrip('/')}/{version}/pipeline_config.json"
-
-        obj = s3.get_object(Bucket=bucket, Key=config_key)
-        pipeline_cfg = json.loads(obj["Body"].read())
+        # Try local bundled config first
+        _local_cfg = os.path.join(os.path.dirname(__file__), "configs", "merged_config.json")
+        if os.path.exists(_local_cfg):
+            with open(_local_cfg, encoding="utf-8") as f:
+                pipeline_cfg = json.load(f)
+        else:
+            _, base_prefix = _parse_s3_uri(REGISTRY_BASE.rstrip("/"))
+            config_key = f"{base_prefix.rstrip('/')}/{version}/pipeline_config.json"
+            obj = s3.get_object(Bucket=bucket, Key=config_key)
+            pipeline_cfg = json.loads(obj["Body"].read())
 
         from core.recommendation.rule_engine import RuleBasedRecommender
         engine = RuleBasedRecommender(pipeline_cfg)
         logger.info("RuleBasedRecommender loaded for version %s", version)
         return engine
-    except s3.exceptions.NoSuchKey:
-        logger.info(
-            "pipeline_config.json not found for version %s — "
-            "RuleBasedRecommender disabled",
+    except Exception:
+        logger.warning(
+            "RuleBasedRecommender load failed for version %s",
             version,
+            exc_info=True,
         )
         return None
     except Exception:
