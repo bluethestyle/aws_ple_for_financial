@@ -55,18 +55,38 @@ class OpsDiagnoser:
     Args:
         config: Diagnosis rule thresholds.
         history: Previous checkpoint results for trend analysis.
+        case_store: Optional DiagnosticCaseStore for similar past case lookup.
     """
 
     def __init__(
         self,
         config: Optional[Dict[str, Any]] = None,
         history: Optional[List[Dict[str, Any]]] = None,
+        case_store: Optional[Any] = None,
     ) -> None:
         self._config = config or {}
         self._history = history or []
+        self._case_store = case_store  # DiagnosticCaseStore | None
+
+    def _get_case_store(self) -> Optional[Any]:
+        """Lazy-init DiagnosticCaseStore if not provided at construction time."""
+        if self._case_store is None:
+            store_path = self._config.get("case_store_path", "")
+            if store_path:
+                try:
+                    from core.agent.case_store import DiagnosticCaseStore
+                    self._case_store = DiagnosticCaseStore(store_path=store_path)
+                except Exception as e:
+                    logger.warning("DiagnosticCaseStore init failed: %s", e)
+                    self._case_store = False  # sentinel: skip future attempts
+        obj = self._case_store
+        return obj if obj is not False else None
 
     def diagnose(self, checkpoints: List["CheckpointResult"]) -> List[Diagnosis]:
         """Run all correlation rules against checkpoint results.
+
+        Before applying correlation rules, searches DiagnosticCaseStore for
+        similar past cases so rule thresholds can be informed by history.
 
         Args:
             checkpoints: List of CheckpointResult from OpsCollector.
@@ -76,6 +96,39 @@ class OpsDiagnoser:
         """
         cp_map = {cp.checkpoint: cp for cp in checkpoints}
         diagnoses = []
+
+        # Search similar past cases from DiagnosticCaseStore (non-fatal)
+        try:
+            cs = self._get_case_store()
+            if cs is not None and cs.case_count > 0:
+                # Build a simple numeric query vector from checkpoint statuses
+                import numpy as _np
+                status_map = {"GREEN": 0.0, "YELLOW": 0.5, "RED": 1.0}
+                q_vec = _np.array(
+                    [status_map.get(cp.status, 0.0) for cp in checkpoints],
+                    dtype=_np.float32,
+                )
+                # Pad/truncate to embedding_dim
+                dim = cs._embedding_dim
+                if len(q_vec) < dim:
+                    q_vec = _np.pad(q_vec, (0, dim - len(q_vec)))
+                else:
+                    q_vec = q_vec[:dim]
+
+                similar = cs.search_similar(q_vec, k=3)
+                if similar:
+                    logger.info(
+                        "OpsDiagnoser: found %d similar past cases (top score=%.3f)",
+                        len(similar), similar[0][1],
+                    )
+                    for past_case, score in similar:
+                        logger.debug(
+                            "  similar case=%s (%.3f): %s",
+                            past_case.get("case_id", "?"), score,
+                            past_case.get("finding", "")[:80],
+                        )
+        except Exception:
+            logger.debug("DiagnosticCaseStore search failed (non-fatal)", exc_info=True)
 
         # Run each correlation rule
         rules = [

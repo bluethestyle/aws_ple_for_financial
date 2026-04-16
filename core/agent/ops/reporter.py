@@ -68,15 +68,33 @@ class OpsReporter:
         consensus_arbiter: Optional ConsensusArbiter for multi-agent verdict.
             When provided, non-GREEN checkpoints and CRITICAL/WARNING diagnoses
             are evaluated via 3-agent consensus (unanimous PASS required).
+        case_store: Optional DiagnosticCaseStore instance. When provided,
+            attention items are saved as diagnostic cases after report generation.
     """
 
     def __init__(
         self,
         config: Optional[Dict[str, Any]] = None,
         consensus_arbiter: Optional[Any] = None,
+        case_store: Optional[Any] = None,
     ) -> None:
         self._config = config or {}
         self._consensus = consensus_arbiter
+        self._case_store = case_store  # DiagnosticCaseStore | None
+
+    def _get_case_store(self) -> Optional[Any]:
+        """Lazy-init DiagnosticCaseStore if not provided at construction time."""
+        if self._case_store is None:
+            store_path = self._config.get("case_store_path", "")
+            if store_path:
+                try:
+                    from core.agent.case_store import DiagnosticCaseStore
+                    self._case_store = DiagnosticCaseStore(store_path=store_path)
+                except Exception as e:
+                    logger.warning("DiagnosticCaseStore init failed: %s", e)
+                    self._case_store = False  # sentinel: skip future attempts
+        obj = self._case_store
+        return obj if obj is not False else None
 
     def generate(
         self,
@@ -158,13 +176,37 @@ class OpsReporter:
                 summary["error"] = cp.error
             all_cps[cp.checkpoint] = summary
 
-        return OpsReport(
+        report = OpsReport(
             period=period,
             status=overall,
             attention_required=attention,
             all_checkpoints=all_cps,
             diagnoses=[d.to_dict() for d in diagnoses],
         )
+
+        # Save attention items as diagnostic cases (non-fatal)
+        try:
+            cs = self._get_case_store()
+            if cs is not None and attention:
+                for item in attention:
+                    case = {
+                        "agent": "OpsAgent",
+                        "pipeline_part": item.get("checkpoint", ""),
+                        "check_item": item.get("checkpoint", ""),
+                        "verdict": item.get("severity", "WARNING"),
+                        "severity": item.get("severity", "WARNING"),
+                        "finding": item.get("finding", ""),
+                        "likely_cause": item.get("likely_cause", ""),
+                        "suggested_action": item.get("suggested_action", ""),
+                        "metrics": {},
+                        "consensus_type": item.get("consensus_type", "none"),
+                    }
+                    cs.save_case(case)
+                logger.debug("DiagnosticCaseStore: saved %d ops attention items", len(attention))
+        except Exception:
+            logger.debug("DiagnosticCaseStore save failed (non-fatal)", exc_info=True)
+
+        return report
 
     def _summarize_anomalies(self, cp: "CheckpointResult") -> str:
         """Generate a finding summary from checkpoint anomalies."""

@@ -66,15 +66,50 @@ class AuditReporter:
     Args:
         config: Reporter configuration.
         consensus_arbiter: Optional ConsensusArbiter for multi-agent verdict.
+        case_store: Optional DiagnosticCaseStore for saving/searching audit cases.
+        temporal_fact_store: Optional TemporalFactStore for recording audit events
+            with valid_from timestamps and querying temporal trends.
     """
 
     def __init__(
         self,
         config: Optional[Dict[str, Any]] = None,
         consensus_arbiter: Optional[Any] = None,
+        case_store: Optional[Any] = None,
+        temporal_fact_store: Optional[Any] = None,
     ) -> None:
         self._config = config or {}
         self._consensus = consensus_arbiter
+        self._case_store = case_store              # DiagnosticCaseStore | None
+        self._temporal_fact_store = temporal_fact_store  # TemporalFactStore | None
+
+    def _get_case_store(self) -> Optional[Any]:
+        """Lazy-init DiagnosticCaseStore if not provided at construction time."""
+        if self._case_store is None:
+            store_path = self._config.get("case_store_path", "")
+            if store_path:
+                try:
+                    from core.agent.case_store import DiagnosticCaseStore
+                    self._case_store = DiagnosticCaseStore(store_path=store_path)
+                except Exception as e:
+                    logger.warning("DiagnosticCaseStore init failed: %s", e)
+                    self._case_store = False
+        obj = self._case_store
+        return obj if obj is not False else None
+
+    def _get_temporal_fact_store(self) -> Optional[Any]:
+        """Lazy-init TemporalFactStore if not provided at construction time."""
+        if self._temporal_fact_store is None:
+            store_path = self._config.get("temporal_fact_store_path", "")
+            if store_path:
+                try:
+                    from core.agent.temporal_fact_store import TemporalFactStore
+                    self._temporal_fact_store = TemporalFactStore(store_path=store_path)
+                except Exception as e:
+                    logger.warning("TemporalFactStore init failed: %s", e)
+                    self._temporal_fact_store = False
+        obj = self._temporal_fact_store
+        return obj if obj is not False else None
 
     def generate(
         self,
@@ -120,6 +155,29 @@ class AuditReporter:
                 except Exception as _ce:
                     logger.warning("Consensus failed for %s: %s", fa.area_id, _ce)
 
+        # Search similar past audit cases for context (non-fatal)
+        try:
+            cs = self._get_case_store()
+            if cs is not None and cs.case_count > 0 and focus_areas:
+                import numpy as _np
+                # Query vector: encode priority as numeric (HIGH=1, MEDIUM=0.5, LOW=0)
+                priority_map = {"HIGH": 1.0, "MEDIUM": 0.5, "LOW": 0.0}
+                q_vals = [priority_map.get(fa.priority, 0.0) for fa in focus_areas]
+                dim = cs._embedding_dim
+                q_arr = _np.array(q_vals, dtype=_np.float32)
+                if len(q_arr) < dim:
+                    q_arr = _np.pad(q_arr, (0, dim - len(q_arr)))
+                else:
+                    q_arr = q_arr[:dim]
+                similar = cs.search_similar(q_arr, k=3, pipeline_part=None)
+                if similar:
+                    logger.info(
+                        "AuditReporter: found %d similar past audit cases (top score=%.3f)",
+                        len(similar), similar[0][1],
+                    )
+        except Exception:
+            logger.debug("DiagnosticCaseStore audit search failed (non-fatal)", exc_info=True)
+
         fa_dicts = []
         for fa in focus_areas:
             d = fa.to_dict()
@@ -127,13 +185,63 @@ class AuditReporter:
                 d["consensus"] = consensus_results[fa.area_id]
             fa_dicts.append(d)
 
-        return AuditReport(
+        report = AuditReport(
             period=period,
             risk_level=risk_level,
             focus_areas=fa_dicts,
             regulatory_summary=reg_summary,
             reason_quality_dashboard=rq_dashboard,
         )
+
+        # Save audit findings as diagnostic cases (non-fatal)
+        try:
+            cs = self._get_case_store()
+            if cs is not None and fa_dicts:
+                for fa_d in fa_dicts:
+                    case = {
+                        "agent": "AuditAgent",
+                        "pipeline_part": fa_d.get("area_id", ""),
+                        "check_item": fa_d.get("area_id", ""),
+                        "verdict": fa_d.get("priority", "LOW"),
+                        "severity": fa_d.get("priority", "LOW"),
+                        "finding": fa_d.get("description", ""),
+                        "likely_cause": "",
+                        "suggested_action": "",
+                        "metrics": {},
+                        "consensus_type": fa_d.get("consensus", {}).get("type", "none"),
+                    }
+                    cs.save_case(case)
+                logger.debug("DiagnosticCaseStore: saved %d audit focus areas", len(fa_dicts))
+        except Exception:
+            logger.debug("DiagnosticCaseStore audit save failed (non-fatal)", exc_info=True)
+
+        # Record audit event in TemporalFactStore for trend analysis (non-fatal)
+        try:
+            tfs = self._get_temporal_fact_store()
+            if tfs is not None:
+                tfs.save_fact({
+                    "entity_type": "audit_report",
+                    "entity_id": f"audit_{period}",
+                    "attribute": "risk_level",
+                    "value": risk_level,
+                    "source": "AuditAgent",
+                })
+                # Record each focus area as a temporal fact
+                for fa_d in fa_dicts:
+                    tfs.save_fact({
+                        "entity_type": "audit_focus_area",
+                        "entity_id": fa_d.get("area_id", "unknown"),
+                        "attribute": "priority",
+                        "value": fa_d.get("priority", "LOW"),
+                        "source": "AuditAgent",
+                    })
+                logger.debug(
+                    "TemporalFactStore: recorded audit event + %d focus areas", len(fa_dicts),
+                )
+        except Exception:
+            logger.debug("TemporalFactStore audit record failed (non-fatal)", exc_info=True)
+
+        return report
 
     def _determine_risk_level(self, focus_areas: List["FocusArea"]) -> str:
         if any(fa.priority == "HIGH" for fa in focus_areas):

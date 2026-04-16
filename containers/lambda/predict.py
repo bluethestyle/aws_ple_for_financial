@@ -77,6 +77,39 @@ def _get_pii_encryptor():
     return obj if obj is not False else None
 
 
+def _get_fdtvs_scorer(reason_cfg: Dict[str, Any]) -> Optional[Any]:
+    """Return a cached FDTVSScorer instance, or None if unavailable / not configured."""
+    if _CACHE.get("_fdtvs_scorer") is None:
+        scorer_cfg = reason_cfg.get("scorer", {})
+        if not scorer_cfg.get("fd_tvs", {}).get("task_weights"):
+            # No task_weights configured — skip silently
+            _CACHE["_fdtvs_scorer"] = False
+        else:
+            try:
+                from core.recommendation.scorer import FDTVSScorer
+                _CACHE["_fdtvs_scorer"] = FDTVSScorer(scorer_cfg.get("fd_tvs", {}))
+                logger.info("FDTVSScorer initialised")
+            except Exception as e:
+                logger.warning("FDTVSScorer unavailable: %s", e)
+                _CACHE["_fdtvs_scorer"] = False
+    obj = _CACHE.get("_fdtvs_scorer")
+    return obj if obj is not False else None
+
+
+def _get_self_checker(reason_cfg: Dict[str, Any]) -> Optional[Any]:
+    """Return a cached SelfChecker instance, or None if unavailable."""
+    if _CACHE.get("_self_checker") is None:
+        try:
+            from core.recommendation.reason.self_checker import SelfChecker
+            _CACHE["_self_checker"] = SelfChecker(reason_cfg)
+            logger.info("SelfChecker initialised")
+        except Exception as e:
+            logger.warning("SelfChecker unavailable: %s", e)
+            _CACHE["_self_checker"] = False
+    obj = _CACHE.get("_self_checker")
+    return obj if obj is not False else None
+
+
 # Env-var flags (set in Lambda config / CDK)
 _SECURITY_PII_SCRUB = os.environ.get("SECURITY_PII_SCRUB", "true").lower() == "true"
 _SECURITY_FEATURE_SCAN = os.environ.get("SECURITY_FEATURE_SCAN", "true").lower() == "true"
@@ -97,6 +130,9 @@ _CACHE: Dict[str, Any] = {
     # Security components (lazy-initialised on first use)
     "_prompt_sanitizer": None,   # PromptSanitizer | False
     "_pii_encryptor": None,      # PIIEncryptor | False
+    # Reason pipeline components (lazy-initialised on first use)
+    "_fdtvs_scorer": None,       # FDTVSScorer | False
+    "_self_checker": None,       # SelfChecker | False
 }
 
 # Variant model cache: variant_name -> {"version": str, "models": {task->Booster}, "features": {}}
@@ -378,6 +414,28 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     exc_info=True,
                 )
 
+    # --- FD-TVS Scorer: re-rank tasks before reason generation ---
+    # FDTVSScorer applies 4-stage composite scoring (segment × behavior × velocity
+    # × risk penalty) to determine which tasks to surface in reason generation.
+    # Scores are stored in a separate dict; predictions dict is unchanged.
+    fdtvs_scores: Dict[str, float] = {}
+    try:
+        _reason_cfg_for_scorer = _CACHE.get("_reason_config") or {}
+        _fdtvs = _get_fdtvs_scorer(_reason_cfg_for_scorer)
+        if _fdtvs is not None:
+            for _t, _v in predictions.items():
+                if isinstance(_v, (int, float)):
+                    _sr = _fdtvs.score(
+                        customer_id=user_id,
+                        item_id=_t,
+                        predictions={_t: float(_v)},
+                        context=ctx,
+                    )
+                    fdtvs_scores[_t] = _sr.score
+            logger.debug("FDTVSScorer: scored %d tasks", len(fdtvs_scores))
+    except Exception:
+        logger.warning("FDTVSScorer failed (non-fatal)", exc_info=True)
+
     # --- Recommendation Reason Generation (3-agent pipeline) ---
     reasons: Dict[str, Any] = {}
     try:
@@ -421,10 +479,14 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 _CACHE["_template_engine"] = False
 
         # Generate reasons for top-3 tasks
+        # Use FDTVSScorer re-ranked scores when available, else raw predictions
         if template_engine and template_engine is not False:
             import numpy as _np
+            _score_source = fdtvs_scores if fdtvs_scores else {
+                t: v for t, v in predictions.items() if isinstance(v, (int, float))
+            }
             sorted_tasks = sorted(
-                [(t, v) for t, v in predictions.items() if isinstance(v, (int, float))],
+                _score_source.items(),
                 key=lambda x: -x[1],
             )[:3]
 
@@ -457,6 +519,27 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     "facts": facts,
                     "generation_method": "template_l1",
                 }
+
+                # SelfChecker: validate each L1 reason; drop rejected ones
+                try:
+                    _sc = _get_self_checker(reason_cfg)
+                    if _sc is not None and reason_texts:
+                        approved_texts = []
+                        for _rt in reason_texts:
+                            _cr = _sc.check(_rt)
+                            if _cr.verdict != "reject":
+                                approved_texts.append(_rt)
+                            else:
+                                logger.debug(
+                                    "SelfChecker rejected L1 reason for task=%s: %s",
+                                    task_name, _cr.feedback,
+                                )
+                        reasons[task_name]["l1_reasons"] = approved_texts
+                        reasons[task_name]["self_check_verdict"] = (
+                            "pass" if approved_texts else "all_rejected"
+                        )
+                except Exception:
+                    logger.debug("SelfChecker L1 failed (non-fatal)", exc_info=True)
 
             # --- LanceDB: coldstart grounding from past recommendation cases ---
             # LanceDB accumulates past recommendation cases (LGBM features + reasons).
@@ -626,6 +709,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         result["layer_used_per_task"] = layer_used_per_task
     if calibrated_tasks:
         result["calibrated_tasks"] = calibrated_tasks
+    if fdtvs_scores:
+        result["fdtvs_scores"] = fdtvs_scores
 
     # ---- Security: scrub PII from outbound response (fail-closed for PII) ----
     if _SECURITY_PII_SCRUB:
@@ -770,6 +855,23 @@ def _handle_reason_request(event: Dict[str, Any], t0: float) -> Dict[str, Any]:
         result = json.loads(response["body"].read())
         l2a_text = result.get("content", [{}])[0].get("text", "").strip()
 
+        # SelfChecker: validate L2a before caching; fall back to L1 if rejected
+        l2a_source = "bedrock"
+        if l2a_text:
+            try:
+                _sc = _get_self_checker(reason_cfg)
+                if _sc is not None:
+                    _cr = _sc.check(l2a_text)
+                    if _cr.verdict == "reject":
+                        logger.warning(
+                            "SelfChecker rejected L2a for user=%s task=%s: %s",
+                            user_id, task_name, _cr.feedback,
+                        )
+                        l2a_text = l1_text  # fall back to L1
+                        l2a_source = "bedrock_rejected_fallback_l1"
+            except Exception:
+                logger.debug("SelfChecker L2a failed (non-fatal)", exc_info=True)
+
         # Cache the result
         if l2a_text:
             ttl = int(time.time()) + 24 * 3600
@@ -790,7 +892,7 @@ def _handle_reason_request(event: Dict[str, Any], t0: float) -> Dict[str, Any]:
             "user_id": user_id,
             "task_name": task_name,
             "l2a_reason": l2a_text or l1_text,
-            "source": "bedrock",
+            "source": l2a_source,
             "model_id": model_id,
             "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
         }
