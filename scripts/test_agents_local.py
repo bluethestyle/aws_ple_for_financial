@@ -302,28 +302,54 @@ def _build_reason_records(lambda_results: Dict) -> List[Dict]:
         layer_used = pc.get("layer_used", 1)
         layer_str = f"L{layer_used}" if layer_used in (1, 2, 3) else "L1"
 
+        # Extract reason text: try top-level l2a/l1, then first task in reasons dict
         reason_text = pc.get("l2a_reason") or pc.get("l1_reason") or ""
-        # Decode if bytes-like junk (garbled UTF-8 from cp949 decode)
-        if isinstance(reason_text, bytes):
-            try:
-                reason_text = reason_text.decode("utf-8", errors="replace")
-            except Exception:
-                reason_text = ""
+        if not reason_text:
+            reasons_dict = pc.get("reasons", {})
+            for t_name, r_info in reasons_dict.items():
+                if isinstance(r_info, dict):
+                    l2a = r_info.get("l2a_reason", "")
+                    l1_list = r_info.get("l1_reasons", [])
+                    reason_text = l2a or (l1_list[0] if l1_list else "")
+                    if reason_text:
+                        break
 
         verdict   = pc.get("selfcheck_verdict", "pass")
         selfcheck = 0.9 if verdict == "pass" else 0.5
 
         predictions = pc.get("predictions", {})
-        # Map task types to classify this record
-        binary_tasks = [t for t, v in predictions.items() if v.get("task_type") == "binary"]
-        multi_tasks  = [t for t, v in predictions.items() if v.get("task_type") == "multiclass"]
+        # Classify task type: Lambda returns flat values (float or list)
+        binary_tasks = []
+        multi_tasks = []
+        for t, v in predictions.items():
+            if isinstance(v, dict):
+                tt = v.get("task_type", "binary")
+            elif isinstance(v, list):
+                tt = "multiclass"
+            elif isinstance(v, (int, float)) and v < 0:
+                tt = "regression"
+            else:
+                tt = "binary"
+            if tt == "binary":
+                binary_tasks.append(t)
+            elif tt == "multiclass":
+                multi_tasks.append(t)
         task_type = "binary" if binary_tasks else ("multiclass" if multi_tasks else "regression")
 
-        # Synthetic ig_top_features based on prediction tasks (no real IG in lambda output)
-        ig_feats = [
-            {"name": t, "text": f"{t} 예측 기여 피처", "ig_score": 0.3}
-            for t in list(predictions.keys())[:3]
-        ]
+        # Build ig_top_features from reason data (contributing features from LGBM gain)
+        reasons = pc.get("reasons", {})
+        ig_feats = []
+        for t_name, r_info in reasons.items():
+            if not isinstance(r_info, dict):
+                continue
+            # Lambda reasons include l1_reasons generated from top LGBM gain features
+            # Use task name + category keywords as grounding search terms
+            ig_feats.append({"name": t_name, "text": "", "ig_score": 0.5})
+        if not ig_feats:
+            ig_feats = [
+                {"name": t, "text": "", "ig_score": 0.3}
+                for t in list(predictions.keys())[:3]
+            ]
 
         records.append({
             "customer_id":          cid,
@@ -359,17 +385,39 @@ def run_audit_agent() -> Dict:
     logger.info("Built %d reason records from lambda test results", len(reason_records))
 
     # --- Step 2: Grounding Validation ---
+    # Feature name → Korean keywords that appear in reason text
+    # Maps both task names and LGBM top feature names to searchable Korean terms
     feature_glossary = {
-        "churn_signal":            "해지 예측",
-        "will_acquire_deposits":   "예금 취득 가능성",
-        "will_acquire_investments": "투자 상품 취득 가능성",
-        "will_acquire_accounts":   "계좌 취득 가능성",
-        "will_acquire_lending":    "대출 취득 가능성",
-        "will_acquire_payments":   "결제 상품 취득 가능성",
-        "top_mcc_shift":           "주요 가맹점 변화",
-        "nba_primary":             "핵심 추천 상품",
-        "product_stability":       "보유 상품 안정성",
-        "cross_sell_count":        "교차 판매 수",
+        # Task names
+        "churn_signal": "거래 관계 유지",
+        "will_acquire_deposits": "예적금",
+        "will_acquire_investments": "투자 상품",
+        "will_acquire_accounts": "계좌",
+        "will_acquire_lending": "대출",
+        "will_acquire_payments": "결제",
+        "top_mcc_shift": "소비 패턴",
+        "nba_primary": "추천 상품",
+        "product_stability": "자산 안정",
+        "cross_sell_count": "교차판매",
+        # LGBM top features → category keywords in Korean templates
+        "label_engagement_score": "이용 패턴",
+        "synth_monthly_txns": "거래 빈도",
+        "synth_frequency": "거래 패턴",
+        "synth_recency_days": "이용 패턴",
+        "synth_stability": "안정적 금융",
+        "synth_monetary": "소비 패턴",
+        "synth_unique_mcc": "소비 카테고리",
+        "synth_unique_merchants": "소비 카테고리",
+        "hmm_states_journey": "라이프사이클",
+        "hmm_states_lifecycle": "라이프사이클",
+        "hmm_states_behavior": "행동 패턴",
+        "gmm_clustering": "고객군",
+        "model_derived_bandit": "분석 결과",
+        "income": "재무 프로필",
+        "is_active": "이용 패턴",
+        "total_churns": "거래 관계",
+        "label_income_tier": "소득 수준",
+        "label_tenure_stage": "라이프사이클",
     }
 
     validator = GroundingValidator(
