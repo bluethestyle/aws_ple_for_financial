@@ -55,7 +55,8 @@ _INCLUDE_DIRS = [
 
 # Individual top-level config files (not inside a sub-directory)
 _INCLUDE_CONFIG_FILES = [
-    "configs/pipeline.yaml",     # common pipeline config
+    "configs/pipeline.yaml",         # common pipeline config
+    "configs/feature_groups.yaml",   # feature group definitions for TemplateEngine
 ]
 
 # Additional top-level files to include (relative to project root)
