@@ -986,8 +986,11 @@ SuperLocalMemory) were *selectively adopted* as incremental additions to existin
 *Adoption 1 --- Temporal Knowledge Graph (Zep/Graphiti)*:
 The temporal fact store uses a `(entity, attribute, value, valid_from, valid_to)` schema
 for audit evidence. Point-in-time queries like "What was customer A's state at 2026-03-15?"
-resolve as single filters. Shares the same LanceDB backend as the diagnostic case knowledge base ---
-zero new dependencies.
+resolve as single filters. All three stores --- recommendation cases (LGBM top features + generated reasons,
+accumulated per served request), diagnostic cases (OpsAgent inspection results), and temporal facts ---
+share the same LanceDB backend, achieving zero new dependencies. LanceDB's combined
+vector search + column filtering enables queries like "find similar customers as of date X"
+in a single call.
 
 *Adoption 2 --- Mathematical Decay (SuperLocalMemory)*:
 The diagnostic case knowledge base's similar case search now applies $exp(-"age"/tau)$ weighting
