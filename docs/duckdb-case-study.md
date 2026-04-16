@@ -463,7 +463,7 @@ Reproducible with `scripts/benchmark_duckdb_vs_pandas.py`.
 | Group-by aggregation (COUNT/SUM/AVG/STDDEV) | 17.8 s | 57.6 ms | **310×** |
 | Filter + aggregate (temporal split) | 18.7 s | 52.7 ms | **355×** |
 | 13-label derivation (full pipeline) | ~40 min | ~2 min | **~20×** |
-| Feature matrix POSITIONAL JOIN | ~4 s | ~0.3 s | **~14×** |
+| Feature matrix POSITIONAL JOIN (.arrow()) | 2.07 s | 1.08 s | **1.9×** |
 | 1M-customer synth data generation | ~20 min | ~30 s | **~40× (vectorized numpy, not DuckDB SQL)** |
 | Parquet full read (SELECT *) | 13.2 s | 176 s | **0.1× (pandas wins)** |
 | Column selection (50 of 403 cols) | 243 ms | 908 ms | **0.3× (pandas wins)** |
