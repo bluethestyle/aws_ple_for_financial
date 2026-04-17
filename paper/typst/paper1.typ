@@ -355,8 +355,11 @@ at a Korean public financial institution.
 A team of three --- one data scientist serving as PM
 plus two engineers --- needed to replace a legacy ALS-based collaborative filtering system
 with a next-generation recommendation model.
-The PM's background in financial risk (GARP FRM), regulatory compliance,
-and recommendation system management informed the architectural direction.
+The PM holds the GARP Financial Risk Manager (FRM) certification,
+with a career spanning credit and market risk analysis, regulatory compliance,
+MyData licensing, big data platform operations, data science projects,
+and recommendation system management --- a background that directly informed
+the architectural and compliance decisions described in this paper.
 
 The constraints were formidable:
 no dedicated ML infrastructure budget,
