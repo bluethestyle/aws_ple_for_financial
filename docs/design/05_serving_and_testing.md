@@ -200,6 +200,8 @@ class DynamoDBFeatureStore(AbstractFeatureStore):
 
 ## A/B 테스트
 
+> **게이트 구분**: 이 섹션의 A/B 테스트는 **온라인 게이트**(실 트래픽 기반)다. 학습 직후 champion/challenger 판정은 `scripts/submit_pipeline.py`의 **오프라인 게이트**(`ModelCompetition`)가 담당하며, 자세한 흐름은 [04_training_pipeline.md § Champion/Challenger 평가](./04_training_pipeline.md)를 참조. 오프라인 게이트를 통과한 신규 challenger에게 실 트래픽 일부를 나눠주는 단계가 이 문서의 A/B 테스트다.
+
 Lambda와 ECS 모두 API Gateway의 **스테이지 변수 + 가중 라우팅**으로 A/B 테스트를 지원합니다.
 
 ```yaml

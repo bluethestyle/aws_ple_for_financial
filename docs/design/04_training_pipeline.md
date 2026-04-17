@@ -631,29 +631,84 @@ resume 지원: 이미 완료된 stage는 skip하고 이어서 실행.
 
 > **Metric Aggregation 원칙 (2026-04-11)**: ablation 및 Champion/Challenger 비교에서 전 task 단일 평균을 사용하지 않는다. `avg_auc`는 binary task 전용, `avg_f1_macro`는 multiclass task 전용, `avg_mae`는 regression task 전용으로 분리 집계한다. 세 지표를 별도 열로 표시해야 metric semantics 충돌을 방지할 수 있다.
 
+### 승격 의사결정 흐름 (오프라인 게이트)
+
+증류가 끝난 신규 모델은 `scripts/submit_pipeline.py::_register_model`에서 다음 순서로 판정한다. 어떤 결과라도 `core.monitoring.audit_logger.AuditLogger.log_model_promotion`을 통해 HMAC 서명 + hash chain이 연결된 감사 로그에 기록된다 (SR 11-7 MRM).
+
 ```
-현재 모델 (Champion) vs. 새 모델 (Challenger)
+Distillation 완료
     ↓
-┌─────────────────────────────────────────┐
-│ 평가 기준                                │
-│                                         │
-│ 1. 주요 메트릭 (태스크 유형별 분리 집계)   │
-│    - Binary avg_auc > champion - 0.01   │
-│    - Regression avg_mae < champion + 5% │
-│    - Multiclass avg_f1_macro > champion │
-│                                         │
-│ 2. 추론 성능                             │
-│    - Latency p99 < 100ms               │
-│    - Throughput > 1000 req/s            │
-│                                         │
-│ 3. 안정성                                │
-│    - 테스트셋 분포 PSI < 0.1             │
-│    - 예측 분포 변화 < 10%                │
-│                                         │
-│ → 모두 통과: 자동 등록                    │
-│ → 하나라도 실패: 알림 → 수동 검토         │
-└─────────────────────────────────────────┘
+ModelRegistry.package(version=…)   ← 항상 등록
+    ↓
+┌──────────────────────────────────────────────┐
+│ ① --force-promote 플래그가 있는가?            │
+│     yes → 현 champion 강등 + 신규 promote     │
+│           (decision="force_promote", 수동)    │
+└──────────────────────────────────────────────┘
+    ↓ no
+┌──────────────────────────────────────────────┐
+│ ② 현재 champion이 등록되어 있는가?             │
+│     no  → 신규 promote (bootstrap)           │
+│           (decision="bootstrap")             │
+└──────────────────────────────────────────────┘
+    ↓ yes
+┌──────────────────────────────────────────────┐
+│ ③ fidelity_summary.failed > 0?               │
+│     yes → register only (decision="reject",  │
+│           reason="N fidelity failures")      │
+└──────────────────────────────────────────────┘
+    ↓ no
+┌──────────────────────────────────────────────┐
+│ ④ ModelCompetition.evaluate(champ, chall)    │
+│    - 주요 metric 개선 ≥ min_improvement(0.5%) │
+│    - 보조 metric 하락 ≤ max_degradation(2%)   │
+│    - paired bootstrap 유의성 (선택)           │
+│                                              │
+│  promotion_approved=True                     │
+│     → 신규 promote (decision="promote")      │
+│  promotion_approved=False                    │
+│     → register only (decision="reject")      │
+└──────────────────────────────────────────────┘
 ```
+
+**Decision matrix 요약**
+
+| 조건 | 결과 | audit decision |
+|---|---|---|
+| `--force-promote` | 항상 승격 (수동 override) | `force_promote` |
+| champion 없음 | bootstrap 승격 | `bootstrap` |
+| fidelity 실패 ≥ 1건 | 등록만 (안전 floor) | `reject` |
+| Competition 승인 | 자동 승격 | `promote` |
+| Competition 거부 | 등록만 (승격 안 함) | `reject` |
+
+**Safety floor**: fidelity gate는 ModelCompetition과 독립적으로 동작한다. 학습 metric이 champion보다 좋더라도 student↔teacher fidelity가 실패한 버전은 자동 승격 대상에서 제외된다. `--force-promote`로만 강제 가능.
+
+**감사 로그 구조**
+
+모든 승격 판정은 다음 형식으로 S3 WORM (또는 local fallback)에 추가된다:
+
+```json
+{
+  "operation": "model_promotion:promote",
+  "user": "system",
+  "status": "SUCCESS",
+  "metadata": {
+    "champion_version": "v.20260415.170000",
+    "challenger_version": "v.20260417.101600",
+    "decision": "promote",
+    "reason": "Challenger improves primary metric 'avg_auc' by 0.012 (>= 0.005)…",
+    "comparison": {"avg_auc": {"champion": 0.80, "challenger": 0.812, "delta": 0.012}},
+    "significance": {"bootstrap_pvalue": 0.018, "is_significant": true},
+    "trigger": "auto"
+  },
+  "prev_hash": "…",
+  "hmac": "…"
+}
+```
+
+### 온라인 게이트 (향후 확장)
+
+DynamoDB prediction log가 충분히 누적되면 `core.serving.model_monitor.ModelMonitor.evaluate_champion_challenger`를 사용한 **태스크별 온라인 재평가**를 추가할 수 있다. 오프라인 게이트가 학습 metric을 기반으로 "승격 자격"을 정하고, 온라인 게이트는 실제 트래픽에서 "유지 자격"을 검증한다. 현재는 뼈대만 존재하고 orchestrator에는 연결되지 않은 상태.
 
 ---
 

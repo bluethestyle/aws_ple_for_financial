@@ -296,6 +296,41 @@ class AuditLogger:
             status="SUCCESS",
         )
 
+    def log_model_promotion(
+        self,
+        champion_version: Optional[str],
+        challenger_version: str,
+        decision: str,
+        reason: str,
+        comparison: Optional[Dict[str, Any]] = None,
+        significance: Optional[Dict[str, Any]] = None,
+        trigger: str = "auto",
+        user: str = "system",
+    ) -> Optional[Dict[str, Any]]:
+        """Log a Champion-Challenger promotion decision.
+
+        decision: one of ``"bootstrap"`` (no prior champion, promote directly),
+        ``"promote"`` (challenger approved), ``"reject"`` (challenger kept out),
+        ``"force_promote"`` (operator override).
+        """
+        operation = f"model_promotion:{decision}"
+        status = "SUCCESS" if decision != "reject" else "REJECTED"
+        return self.log_operation(
+            operation=operation,
+            user=user,
+            status=status,
+            metadata={
+                "champion_version": champion_version,
+                "challenger_version": challenger_version,
+                "decision": decision,
+                "reason": reason,
+                "comparison": comparison or {},
+                "significance": significance or {},
+                "trigger": trigger,
+                "operation_type": "model_promotion",
+            },
+        )
+
     # ------------------------------------------------------------------
     # Chain verification
     # ------------------------------------------------------------------

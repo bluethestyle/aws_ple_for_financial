@@ -41,6 +41,18 @@
 - **피처 범주 맵은 feature_groups.yaml에서 자동 빌드**한다. `FEATURE_GROUP_COLUMN_PREFIXES` 같은 하드코딩 딕셔너리를 코드에 넣지 않는다. Phase 0 완료 후 feature_schema.json에 기록된 group→column 매핑을 읽는다.
 - **FD-TVS 태스크 가중치는 동적(세그먼트 × 행동)**이어야 한다. `scoring.segment_task_weights`(세그먼트 기반 승수, 1.0~1.5 클리핑)와 `scoring.dynamic_weight_rules`(피처 임계값 기반 부스팅)를 반드시 config-driven으로 관리한다. 온프레미스의 상품 단위 가중치 방식을 태스크 단위로 개선한 설계이다.
 
+### 1.10 Champion-Challenger 승격 원칙 (2026-04-17)
+- **submit_pipeline은 항상 registry.package() 등록을 수행**한다. 학습/증류가 완료되고 fidelity가 실패해도 등록은 유지하여 추후 원인 분석이 가능하도록 한다.
+- **승격 판정은 `scripts/submit_pipeline.py::_decide_promotion`의 단일 관문을 통과한다.** 외부 경로로 `registry.promote()`를 호출해서는 안 된다.
+- **판정 순서 (단락 평가)**:
+  1. `--force-promote` → 무조건 승격 (운영자 override, trigger="manual")
+  2. champion 없음 → bootstrap 승격
+  3. fidelity_summary.failed > 0 → reject (안전 floor, Competition 생략)
+  4. `ModelCompetition.evaluate()` → promotion_approved 기반 promote/reject
+- **오프라인 게이트만 자동**이다. 온라인 게이트(`ModelMonitor.evaluate_champion_challenger`)는 실 트래픽 누적 후 수동/스케줄 트리거로 실행하며, orchestrator에 자동 연결하지 않는다.
+- **모든 판정은 `AuditLogger.log_model_promotion`으로 HMAC 서명 + hash chain 감사 로그에 기록**한다. promote/reject/bootstrap/force_promote 모두 동일하게 기록되어야 하며, 로깅 실패가 승격 자체를 차단하지 않도록 best-effort로 호출한다 (SR 11-7 MRM).
+- **`ModelCompetition`의 default metric 설정**(primary=avg_auc, min_improvement=0.5%, max_degradation=2%, significance_level=0.05)은 코드에 하드코딩되어 있지만, 프로덕션 도입 시 pipeline.yaml `serving.competition.*` 섹션으로 이관 예정. 임의 수정 금지.
+
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:
   1. **Phase 0 출력 검증**: feature_stats.json에서 zero-variance 컬럼, NaN 비율, 생성된 피처 컬럼 수 확인

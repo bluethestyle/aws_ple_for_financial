@@ -77,6 +77,14 @@ def parse_args():
         "--dry-run", action="store_true",
         help="Print what would be submitted without actually running",
     )
+    parser.add_argument(
+        "--force-promote", action="store_true",
+        help=(
+            "Promote the new model to champion unconditionally, bypassing the "
+            "Champion-Challenger offline competition gate. Use for bootstrap "
+            "or emergency rollback."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -237,7 +245,10 @@ def _run_full(config, args, s3_base, ts, wait):
         logger.info("[DRY RUN] ModelRegistry.package(version=%s)", version)
         logger.info("[DRY RUN] artifacts: %s/artifacts/%s/", s3_base, version)
     elif wait:
-        _register_model(config, s3_base, version, model_uri, student_uri)
+        _register_model(
+            config, s3_base, version, model_uri, student_uri,
+            force_promote=args.force_promote,
+        )
 
     logger.info("=" * 60)
     logger.info("Pipeline complete!")
@@ -342,11 +353,186 @@ def _submit_distillation_job(config, features_uri, model_uri, s3_base, ts, wait)
     logger.info("Output: %s", output_uri)
 
 
-def _register_model(config, s3_base, version, teacher_uri, student_uri):
+def _audit_promotion(**kwargs) -> None:
+    """Best-effort audit log for a promotion decision.
+
+    Failures are swallowed — promotion must not be blocked by audit
+    logging.  The underlying AuditLogger already writes to a local
+    fallback when S3 is unavailable.
+    """
+    try:
+        from core.monitoring.audit_logger import AuditLogger
+        AuditLogger().log_model_promotion(**kwargs)
+    except Exception as exc:
+        logger.warning("Audit log for promotion failed (non-fatal): %s", exc)
+
+
+def _decide_promotion(
+    registry,
+    new_version: str,
+    new_metrics: dict,
+    fidelity_summary: dict,
+    force_promote: bool,
+    aws_region: str,
+) -> None:
+    """Run the Champion-Challenger offline gate and act on its verdict.
+
+    See :func:`_register_model` for the decision matrix.  Every outcome
+    is recorded to the immutable audit log via
+    :class:`core.monitoring.audit_logger.AuditLogger`.
+    """
+    champion_version = registry.get_promoted()
+
+    # Force-promote: operator override. No comparison, no veto.
+    if force_promote:
+        registry.promote(new_version)
+        logger.info(
+            "Model %s force-promoted to champion (previous=%s)",
+            new_version, champion_version or "<none>",
+        )
+        _audit_promotion(
+            champion_version=champion_version,
+            challenger_version=new_version,
+            decision="force_promote",
+            reason="Operator override via --force-promote",
+            trigger="manual",
+        )
+        return
+
+    # Bootstrap: first model, nothing to compete against.
+    if champion_version is None:
+        registry.promote(new_version)
+        logger.info("Model %s bootstrap-promoted (no prior champion)", new_version)
+        _audit_promotion(
+            champion_version=None,
+            challenger_version=new_version,
+            decision="bootstrap",
+            reason="No prior champion in registry",
+            trigger="auto",
+        )
+        return
+
+    # Safety floor: a challenger that fails fidelity must not be promoted,
+    # even if its training metrics beat the champion.  This preserves the
+    # teacher-student fidelity guarantee regardless of Competition verdict.
+    fidelity_failed = int(fidelity_summary.get("failed", 0))
+    if fidelity_failed > 0:
+        logger.warning(
+            "Model %s registered but NOT eligible for promotion: "
+            "%d fidelity failures",
+            new_version, fidelity_failed,
+        )
+        _audit_promotion(
+            champion_version=champion_version,
+            challenger_version=new_version,
+            decision="reject",
+            reason=f"{fidelity_failed} fidelity failures",
+            trigger="auto",
+        )
+        return
+
+    # Offline Champion-Challenger competition on recorded training metrics.
+    from core.evaluation.model_competition import (
+        ModelCandidate,
+        ModelCompetition,
+    )
+
+    champion_manifest = None
+    for v in registry.list_versions():
+        if v.version == champion_version:
+            champion_manifest = v
+            break
+
+    if champion_manifest is None:
+        # Shouldn't happen — get_promoted returned this version — but guard
+        # rather than crash the whole pipeline.
+        logger.warning(
+            "Champion %s manifest not found; registering challenger without promotion",
+            champion_version,
+        )
+        _audit_promotion(
+            champion_version=champion_version,
+            challenger_version=new_version,
+            decision="reject",
+            reason=f"Champion manifest {champion_version} not loadable",
+            trigger="auto",
+        )
+        return
+
+    champion_candidate = ModelCandidate(
+        model_id=champion_version,
+        model_uri="",
+        model_type="ple_teacher",
+        version=champion_version,
+        trained_at=champion_manifest.created_at,
+        metrics=dict(champion_manifest.teacher_metrics or {}),
+    )
+    challenger_candidate = ModelCandidate(
+        model_id=new_version,
+        model_uri="",
+        model_type="ple_teacher",
+        version=new_version,
+        trained_at=datetime.now().isoformat(),
+        metrics=dict(new_metrics or {}),
+    )
+
+    competition = ModelCompetition()
+    result = competition.evaluate(champion_candidate, challenger_candidate)
+
+    if result.promotion_approved:
+        registry.promote(new_version)
+        logger.info(
+            "Model %s promoted to champion (previous=%s): %s",
+            new_version, champion_version, result.decision_reason,
+        )
+        _audit_promotion(
+            champion_version=champion_version,
+            challenger_version=new_version,
+            decision="promote",
+            reason=result.decision_reason,
+            comparison=result.comparison,
+            significance=result.significance,
+            trigger="auto",
+        )
+    else:
+        logger.info(
+            "Model %s registered (not promoted): %s",
+            new_version, result.decision_reason,
+        )
+        _audit_promotion(
+            champion_version=champion_version,
+            challenger_version=new_version,
+            decision="reject",
+            reason=result.decision_reason,
+            comparison=result.comparison,
+            significance=result.significance,
+            trigger="auto",
+        )
+
+
+def _register_model(
+    config,
+    s3_base,
+    version,
+    teacher_uri,
+    student_uri,
+    force_promote: bool = False,
+):
     """Repackage SageMaker Job outputs into ModelRegistry versioned structure.
 
     Reads raw artifacts from SageMaker output paths, restructures into
-    the registry format, and optionally promotes the new version.
+    the registry format, and runs the Champion-Challenger offline gate
+    before promoting.
+
+    Promotion logic:
+      - ``force_promote=True``                  -> always promote (operator override).
+      - No current champion                     -> bootstrap promote.
+      - ``ModelCompetition.evaluate()`` approves -> promote.
+      - Otherwise                               -> register only (``promoted=False``).
+
+    Every decision is written to the immutable audit log
+    (:class:`core.monitoring.audit_logger.AuditLogger`) so that later
+    reviewers can reconstruct why a version did or did not become champion.
     """
     from core.serving.model_registry import ModelRegistry
 
@@ -444,16 +630,15 @@ def _register_model(config, s3_base, version, teacher_uri, student_uri):
             version, len(students), model_version.promoted,
         )
 
-        # Auto-promote if all fidelity checks passed (or no checks yet)
-        fidelity = model_version.fidelity_summary
-        if not fidelity.get("failed", 0):
-            registry.promote(version)
-            logger.info("Model %s auto-promoted to champion", version)
-        else:
-            logger.warning(
-                "Model %s NOT promoted: %d fidelity failures",
-                version, fidelity.get("failed", 0),
-            )
+        # --- Champion-Challenger gate --------------------------------------
+        _decide_promotion(
+            registry=registry,
+            new_version=version,
+            new_metrics=training_metrics or {},
+            fidelity_summary=model_version.fidelity_summary,
+            force_promote=force_promote,
+            aws_region=config.aws.region,
+        )
 
     finally:
         import shutil

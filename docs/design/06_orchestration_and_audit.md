@@ -86,9 +86,14 @@ EventBridge (스케줄 또는 S3 이벤트 트리거)
 │        ↓ 체크포인트 → S3  (파일 패턴 고정, epoch 카운트 수정)        │
 │   [Phase 2: Task Head]                                         │
 │        ↓ 최종 모델 → S3                                         │
-│   [평가: Champion/Challenger]                                   │
-│        ├── 합격 → [Model Registry 등록]                          │
-│        └── 불합격 → [알림] → 종료                                 │
+│   [Model Registry 등록 (항상 수행)]                              │
+│        ↓                                                        │
+│   [오프라인 Champion/Challenger Gate]                           │
+│     · ModelCompetition.evaluate (paired bootstrap + min_impr)   │
+│     · fidelity failed > 0 → reject floor                        │
+│     · audit log (HMAC + chain) 매 판정마다 기록                  │
+│        ├── bootstrap / promote / force_promote → promoted=True  │
+│        └── reject → promoted=False (등록만 유지)                 │
 │                                                                 │
 │   스크립트:                                                      │
 │   · run_sagemaker_teacher.py  — 3-시나리오 Spot 병렬 학습 제출    │
@@ -141,18 +146,24 @@ EventBridge (스케줄 또는 S3 이벤트 트리거)
     "Evaluate": {
       "Type": "Task",
       "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
-      "Next": "ChampionChallenger"
+      "Next": "RegisterModel"
     },
-    "ChampionChallenger": {
+    "RegisterModel": {
+      "Comment": "submit_pipeline._register_model: always registers, then runs the offline Champion-Challenger gate (ModelCompetition) to decide whether promoted=True. The decision (bootstrap/promote/reject/force_promote) is recorded by AuditLogger.log_model_promotion.",
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:...:register-and-evaluate",
+      "Next": "CheckPromotion"
+    },
+    "CheckPromotion": {
       "Type": "Choice",
       "Choices": [{
-        "Variable": "$.evaluation.passed",
-        "BooleanEquals": true,
-        "Next": "RegisterModel"
+        "Variable": "$.promotion.decision",
+        "StringEquals": "reject",
+        "Next": "NotifyReview"
       }],
-      "Default": "NotifyReview"
+      "Default": "SucceedPromoted"
     },
-    "RegisterModel": {"Type": "Succeed"},
+    "SucceedPromoted": {"Type": "Succeed"},
     "NotifyFailure": {
       "Type": "Task",
       "Resource": "arn:aws:states:::sns:publish",
@@ -242,7 +253,8 @@ Features v1.0 (S3)
     ▼
 Model v1.0 (S3)
     │ 평가: AUC=0.85, MAE=0.12
-    │ 비교: Champion v0.9 (AUC=0.83) → 승격
+    │ 비교: Champion v0.9 (AUC=0.83) — ModelCompetition.evaluate() → promote
+    │ 감사: AuditLogger.log_model_promotion (HMAC+chain, decision="promote")
     ▼
 Serving (ECS, image sha256: ef12...)
     │ A/B: 10% traffic → 메트릭 양호 → 100%

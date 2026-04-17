@@ -9,8 +9,31 @@ import logging
 from typing import Any, Dict, Set
 
 import numpy as np
+from sklearn.base import BaseEstimator, ClassifierMixin
 
 logger = logging.getLogger("distill-entry")
+
+
+class _LGBMProbWrapper(BaseEstimator, ClassifierMixin):
+    """Wrap a trained LGBM model for sklearn calibration.
+
+    Custom-objective LGBM outputs raw logits, so we apply sigmoid
+    before returning probabilities. Defined at module level so that
+    joblib/pickle can serialise the fitted CalibratedClassifierCV.
+    """
+
+    def __init__(self, lgbm_model: Any = None) -> None:
+        self.lgbm_model = lgbm_model
+        self.classes_ = np.array([0, 1])
+        self.is_fitted_ = True
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> "_LGBMProbWrapper":
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        raw = self.lgbm_model.predict(X)
+        prob = 1.0 / (1.0 + np.exp(-raw))
+        return np.column_stack([1 - prob, prob])
 
 
 def calibrate_students(
@@ -34,7 +57,6 @@ def calibrate_students(
         Tasks not in the return dict were skipped or failed calibration.
     """
     from sklearn.calibration import CalibratedClassifierCV
-    from sklearn.base import BaseEstimator, ClassifierMixin
 
     _calib_cfg = distillation_cfg.get("calibration", {})
     _calib_tasks: Set[str] = set(_calib_cfg.get("tasks", []))
@@ -44,26 +66,6 @@ def calibrate_students(
 
     if not (_calib_cfg.get("enabled", False) and _calib_tasks):
         return calibrated_models
-
-    class _LGBMProbWrapper(BaseEstimator, ClassifierMixin):
-        """Wrap a trained LGBM model for sklearn calibration.
-
-        Custom-objective LGBM outputs raw logits, so we apply sigmoid
-        before returning probabilities.
-        """
-
-        def __init__(self, lgbm_model: Any) -> None:
-            self.lgbm_model = lgbm_model
-            self.classes_ = np.array([0, 1])
-            self.is_fitted_ = True  # mark as pre-fitted for sklearn
-
-        def fit(self, X: np.ndarray, y: np.ndarray) -> "_LGBMProbWrapper":
-            return self
-
-        def predict_proba(self, X: np.ndarray) -> np.ndarray:
-            raw = self.lgbm_model.predict(X)
-            prob = 1.0 / (1.0 + np.exp(-raw))  # sigmoid on raw logits
-            return np.column_stack([1 - prob, prob])
 
     n_total = len(features)
     calib_start = int(n_total * 0.8)
