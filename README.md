@@ -151,6 +151,91 @@ If you use this work, please cite the preprints:
 }
 ```
 
+## Advanced Claude Code Usage Patterns
+
+This repository is also a working reference for non-trivial Claude Code workflows. What follows are the patterns we actually relied on day-to-day across ~3.5 months and 240+ source files. Each pattern links to the concrete artifact in this repo so it can be inspected rather than taken on trust.
+
+### 1. CLAUDE.md as project-wide context engineering
+
+[CLAUDE.md](CLAUDE.md) is not a README — it is a **binding ruleset** that every Claude Code session loads automatically. Six hardened sections, written as accumulated incident response:
+
+- **§1 Config-Driven principle** — forbids hardcoded column names, boundary values, scenario lists, AWS constants. Every parameter must be read from `configs/pipeline.yaml` + `configs/datasets/*.yaml` via `load_merged_config()`.
+- **§1.2 Separation of Concerns** — adapter / pipeline runner / config_builder / train.py each have a locked responsibility. "If a file exceeds 500 lines, the separation failed."
+- **§1.3 Data leakage prevention** — scaler must fit TRAIN only, temporal split requires `gap_days`, `LeakageValidator` must run pre-training.
+- **§1.7-1.10** — accumulated post-mortems (feature-group routing, metric aggregation, distillation thresholds, Champion-Challenger promotion). Each subsection starts with a date and a real incident.
+- **§4 Code review criteria** — compile check, interface contract check, hardcoding scan, separation check. A task is not "done" until all four pass.
+- **§6 Forbidden actions** — explicit kill list (SageMaker debugging, `--no-verify`, hardcoded dataset routing).
+
+Adding rules to CLAUDE.md **after** a failure, not before, is the working pattern. It compounds.
+
+### 2. Auto-memory for multi-month projects
+
+The project uses Claude Code's auto-memory system (`~/.claude/projects/<project>/memory/`) as a persistent collaboration log. Sample entries (22 memory files, maintained across sessions):
+
+- `feedback_no_hardcode_train.md` — "experiment parameters must be config-driven, no direct edits to train.py"
+- `feedback_config_driven_strict.md` — "scheduler HPs were getting hardcoded in train.py; YAML merge must include every section"
+- `feedback_dryrun_verify.md` — "dry-run must log actual HP values applied, not just confirm config loaded"
+- `project_task_reduction.md` — "18 → 13 task reduction; deterministic-leakage labels removed"
+- `feedback_gradsurgery.md` — "GradSurgery tested but NOT adopted; no improvement over adaTT-free PLE baseline, higher VRAM"
+- `feedback_windows_sleep.md` — "overnight training killed by Windows sleep; `SetThreadExecutionState` is mandatory"
+- `feedback_checkpoint_resume.md` — "filename pattern mismatch + epoch counting bug both fixed"
+
+Memory entries include a `**Why:**` line (the originating incident) and a `**How to apply:**` line (when the rule should kick in). This turns individual corrections into durable context that survives the conversation window.
+
+### 3. Parallel subagents for audit-style work
+
+When a task is inherently parallel — checking N files for the same issue, syncing two language versions of a paper, reconciling interface contracts across a split codebase — we dispatched multiple subagents in one turn and then ran a **validator subagent** on the combined output. CLAUDE.md §5 codifies this:
+
+> Parallel sub-agents run concurrently by default (one message, multiple Agent tool calls). After parallel work, a follow-up interface-contract validation agent MUST run to cross-check the results.
+
+Concrete example: syncing the Korean papers with the English v1 canonical state ([commit `9becbc0`](https://github.com/bluethestyle/aws_ple_for_financial/commit/9becbc0)) — two parallel agents filled 8 content gaps and fixed 11 broken tables, then a third agent verified table structure and cross-file references. Neither of the first two would have caught the other's misses.
+
+### 4. Plan mode for architecture-level decisions
+
+Non-trivial implementation decisions route through the `Plan` subagent before any code is written. The separation: Plan produces a step-by-step plan, identifies critical files, and surfaces architectural trade-offs — the main session reviews and then executes. This avoided several "Claude implemented the wrong thing efficiently" failure modes that occurred in early sessions when we skipped planning.
+
+### 5. Tests, failures, and explicit kill-lists
+
+- **§1.4 pre-flight check** before every SageMaker job submission (cost: $0.50+ per submission). Four gates: Phase 0 output validation, generator input validation, label distribution check, dry-run + 50K subsample test. "SageMaker is not a debugger" is a hard rule.
+- **§1.5 cost management** — profiler disabled, AMP mandatory, spot instance cap at 4 concurrent, `max_wait = max_run + 1h`. Each rule traces to a specific cost incident.
+- **§1.6 orchestration cost efficiency** — state-file-based job skip, S3 result check, budget guard, failed-job eviction, warm pool.
+
+### 6. Honest negative results documented in-repo
+
+Two non-adoptions are preserved in both the codebase and Paper 1:
+
+- **adaTT loss-level transfer** — degraded AUC by −0.019 in the 13-task heterogeneous setting (156 task-pair affinities cannot be estimated stably). Paper 1 §5 reports this as the headline *negative* finding. adaTT is still in the code for reproducibility; not used in production.
+- **GradSurgery gradient projection** — tested as a replacement, matched the PLE-only baseline in accuracy but required significantly more VRAM. Memory entry `feedback_gradsurgery.md` records the decision not to adopt.
+
+The pattern: when Claude proposes a fix that doesn't work, the fix stays in the ablation record (Paper 1 §5) and the decision is pinned to memory, so future sessions don't re-propose it.
+
+### 7. Claude as production component, not just dev partner
+
+Three points in the *running system* (not just development) use Claude via AWS Bedrock:
+
+- **3-agent serving pipeline** (Feature Selector / Reason Generator / Safety Gate) — Sonnet, independent voting consensus on AWS, 2-Round hybrid deliberation on on-prem.
+- **Safety Gate** — Sonnet validates every customer-facing reason against regulatory, suitability, hallucination, tone, and factuality criteria before the response leaves the Lambda handler.
+- **Reason Generator** — Sonnet rewrites template-level L1 reasons into natural financial-honorific Korean at L2a, with DynamoDB caching for 6 ms cache-hit latency.
+
+[Paper 2](https://doi.org/10.5281/zenodo.19622052) documents the full 5-agent architecture (3 serving + 2 ops/audit) with SR 11-7 model-risk-management mapping.
+
+### Reproducing the workflow
+
+| Artifact | What it shows |
+|----------|---------------|
+| [CLAUDE.md](CLAUDE.md) | Project ruleset loaded by every session |
+| [`docs/typst/en/ai_collaboration_guide_en.pdf`](docs/typst/en/ai_collaboration_guide_en.pdf) | Full methodology write-up (EN) |
+| [`docs/typst/en/development_story_en.pdf`](docs/typst/en/development_story_en.pdf) | Narrative of the 3.5-month build |
+| [`configs/pipeline.yaml`](configs/santander/pipeline.yaml) | The config that enforces §1.1 config-driven rule |
+| [Paper 1 §5 (Ablation)](paper/typst/paper1.pdf) | Honest record of adaTT/GradSurgery negative results |
+| [`core/agent/`](core/agent/) | Production agent pipeline code |
+
+### Scale note
+
+The patterns above are validated twice — in this public AWS benchmark codebase (240+ DuckDB source files, this repo) and independently in a separate on-premises codebase at a Korean financial institution (12M real customers, 734 production features, not public for regulatory reasons). CLAUDE.md, the memory system, parallel subagents, and the explicit negative-results discipline transferred cleanly between the two. The on-prem repo's Claude Code conversation history spans the same ~3.5 months but is retained privately under the institution's data governance policy.
+
+---
+
 ## Built with Claude Code
 
 Every line of this system — architecture design, 7-expert model, agentic reason generation pipeline, regulatory compliance modules, 260+ technical documents, and both Zenodo preprints — was built by a 3-person team using **[Claude Code](https://claude.com/claude-code) (Anthropic)** as the primary development partner on personal subscriptions.
