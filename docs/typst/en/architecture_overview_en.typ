@@ -1009,7 +1009,8 @@ The monitoring infrastructure is defined as a single CloudFormation stack, ensur
   [EventBridge Rules], [Schedule OpsAgent + AuditAgent Lambda; route SageMaker job events],
   [CloudWatch Alarms], [Drift threshold breach, Lambda error rate, serving latency P99],
   [SNS Topics], [Alert routing: WARN → Slack webhook, FAIL → PagerDuty + email],
-  [DynamoDB Tables], [DiagnosticCaseStore (audit history), PipelineState (job resume state)],
+  [DynamoDB Tables], [PipelineState (job resume state), reason_cache (L2a cache), audit log tables],
+  [LanceDB], [DiagnosticCaseStore (audit history) + TemporalFactStore + recommendation_cases (single shared instance)],
   [Lambda Functions], [OpsAgent, AuditAgent, FallbackRouter health check],
 )
 

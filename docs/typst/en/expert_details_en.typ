@@ -76,27 +76,12 @@
   inset: (x: 1em),
   stroke: (left: 2pt + luma(120)),
 )[
-  #text(weight: "bold")[Abstract.]
-  This document provides a detailed account of the selection rationale, mathematical foundations,
-  and financial domain application of the 7 heterogeneous experts used in the Progressive Layered
-  Extraction (PLE) architecture for financial product recommendation.
-  Each expert offers a unique mathematical perspective---feature interaction (DeepFM),
-  time-series decomposition (Temporal Ensemble), hierarchical structure (Hyperbolic GCN),
-  topological structure (PersLay/TDA), collaborative filtering (LightGCN),
-  causal inference (Causal/NOTEARS), and distributional matching (Optimal Transport)---and
-  no single expert can substitute for any other.
-  Additionally, this document covers the gradient-conflict resolution investigation across 13 tasks:
-  GradSurgery (PCGrad task-type projection) was tested as a gradient-level alternative to adaTT
-  but was not adopted --- it showed no meaningful advantage over the PLE-only baseline while
-  incurring significant VRAM overhead (retained computation graph). The production configuration
-  disables both adaTT and GradSurgery. The document also covers the ~349D
-  feature engineering framework (403D after Phase 0 log1p expansion) derived from 11 academic disciplines.
-  With FeatureRouter active, each expert receives a designated subset of the 403D tensor rather than the full input.
-
-  #v(0.3em)
-  #text(weight: "bold")[Keywords:]
-  Heterogeneous Experts, PLE, DeepFM, Mamba, Hyperbolic GCN,
-  Persistent Homology, NOTEARS, Optimal Transport, adaTT, Financial AI
+  #text(weight: "bold")[Scope.]
+  - 7 heterogeneous experts: DeepFM, Temporal Ensemble, Hyperbolic GCN, PersLay/TDA, LightGCN, Causal/NOTEARS, Optimal Transport.
+  - Per-expert mathematical background, input feature subset, uniform 64D output, financial-domain application.
+  - FeatureRouter: each expert receives a subset declared by `target_experts` in `feature_groups.yaml` (deepfm=168D, temporal=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, ot=127D).
+  - Task basket: 1 MLP expert (total 7 shared + 1 task).
+  - adaTT active on 13 tasks; GradSurgery was tested but not adopted (no gain + VRAM overhead).
 ]
 
 #v(1em)
@@ -213,9 +198,6 @@ while Deep MLP operates on the flattened $[B, 448]$.
 - Used as PLE's default lightweight Shared Expert. DCNv2Expert is an alternative for cases requiring higher-order interactions.
 - Since FM and Deep share embeddings, gradients flow simultaneously through both paths.
 - When applying FocalLoss, pre-activation logits must be passed (to prevent double-sigmoid).
-
-*Key References:*
-Guo et al. (IJCAI 2017), Rendle (ICDM 2010), Wang et al. (KDD 2017, WWW 2021).
 
 #pagebreak()
 
@@ -352,9 +334,6 @@ Mamba $arrow$ trends, PatchTST $arrow$ seasonality, LNN $arrow$ residuals.
 - The A matrix is initialized with HiPPO-style diagonal $[-1, -2, ..., -N]$ to implement multi-scale memory decay.
 - A gate collapse warning is triggered when gate entropy drops from $log_2(3) approx 1.585$ bits (uniform distribution) to $< 0.3$ bits, indicating one model is dominating.
 
-*Key References:*
-Gu & Dao (NeurIPS 2023), Hasani et al. (AAAI 2021), Nie et al. (ICLR 2023).
-
 #pagebreak()
 
 // ============================================================
@@ -471,9 +450,6 @@ LightGCN receives `product_hierarchy` (32D) + `graph_collaborative` (66D) + addi
   Embeddings stored as Parquet. Stage 2 (online) --- lookup + lightweight MLP adaptation.
   No graph propagation at inference --- single GPU VRAM friendly.
 - Co-visitation edge scale factor of 0.5 is applied to preserve the structural priority of taxonomy edges.
-
-*Key References:*
-He et al. (SIGIR 2020), Chami et al. (NeurIPS 2019), Nickel & Kiela (NeurIPS 2017).
 
 #pagebreak()
 
@@ -610,9 +586,6 @@ Short concat 128D + Long concat 192D + Global stats MLP 32D + Phase transition 1
 - Cold-start 4-stage progressive TDA: Day 0 (18D median) $arrow$ 7--30d (9D histogram) $arrow$ \<12m (24D H0,H1) $arrow$ 12m+ (36D full).
 - Time-stratified sampling: up to 1000 points per customer, stratified across $k$ time buckets to preserve temporal ordering.
 
-*Key References:*
-Carriere et al. (AISTATS 2020), Cohen-Steiner et al. (DCG 2007), Bauer (2021).
-
 #pagebreak()
 
 // ============================================================
@@ -680,9 +653,6 @@ $ cal(L)_"BPR" = -sum_((u, i^+, i^-)) log sigma(hat(y)_(u i^+) - hat(y)_(u i^-))
 - L2 regularization is applied only to initial embeddings, not to GCN outputs.
 - Separated as a _distinct_ expert from H-GCN to ensure independent gradient flows for Euclidean (CF) and hyperbolic (hierarchy) geometries.
 - LightGCN's domain is *product co-holding* (what products customers hold together) --- not MCC tree structure, which is H-GCN's domain.
-
-*Key References:*
-He et al. (SIGIR 2020), Rendle et al. (UAI 2009), Kipf & Welling (ICLR 2017).
 
 #pagebreak()
 
@@ -786,9 +756,6 @@ $ cal(L)_"DAG" = lambda_"acyclic" dot h(bold(W)) + lambda_"sparse" dot ||bold(W)
   enforces non-negative causal strength, unlike the sign-agnostic original.
 - Maintained as a _separate_ expert from OT Expert: the NOTEARS acyclicity constraint and
   Sinkhorn entropy regularization have completely different loss surface geometries.
-
-*Key References:*
-Zheng et al. (NeurIPS 2018), Bello et al. (ICML 2022).
 
 #pagebreak()
 
@@ -903,9 +870,6 @@ This provides directional information impossible with KL divergence or Euclidean
   OT extracts distance functions (metric) $W(mu, nu_k)$.
   The three experts extract _mathematically completely different_ structures; with FeatureRouter active,
   each operates on its own input subset (causal=161D, ot=127D, deepfm=168D, Phase 0 v3/v4) rather than the same full input.
-
-*Key References:*
-Cuturi (NeurIPS 2013), Kantorovich (1942).
 
 #pagebreak()
 
@@ -1065,10 +1029,6 @@ blocking clearly adversarial gradients.
 - `detect_negative_transfer()` API returns the list of adversarial tasks for each task
   (e.g., `{"churn_signal": ["will_acquire_lending", "nba_primary"]}`).
 
-*Key References:*
-Tang et al. (RecSys 2020), Yu et al. (NeurIPS 2020), Fifty et al. (ICML 2021),
-Chen et al. (ICML 2018), Navon et al. (ICML 2022).
-
 #pagebreak()
 
 // ============================================================
@@ -1209,59 +1169,12 @@ inter-expert complementarity (pattern/topology/temporal/relational/causal/distri
 
 #pagebreak()
 
-#heading(numbering: none)[References]
+= Further Reading
 
-#set text(size: 9pt)
-#set par(hanging-indent: 1.5em)
-
-Bauer, U. (2021). Ripser: efficient computation of Vietoris-Rips persistence barcodes. _Journal of Applied and Computational Topology_.
-
-Bello, K. et al. (2022). DAGMA: Learning DAGs via M-matrices and a Log-Determinant Acyclicity Characterization. _ICML_.
-
-Carriere, M. et al. (2020). PersLay: A Neural Network Layer for Persistence Diagrams. _AISTATS_.
-
-Chami, I. et al. (2019). Hyperbolic Graph Convolutional Neural Networks. _NeurIPS_.
-
-Chen, Z. et al. (2018). GradNorm: Gradient Normalization for Adaptive Loss Balancing in Deep Multitask Networks. _ICML_.
-
-Cohen-Steiner, D., Edelsbrunner, H., & Harer, J. (2007). Stability of Persistence Diagrams. _Discrete & Computational Geometry_.
-
-Cuturi, M. (2013). Sinkhorn Distances: Lightspeed Computation of Optimal Transport. _NeurIPS_.
-
-Dempster, A., Laird, N., & Rubin, D. (1977). Maximum Likelihood from Incomplete Data via the EM Algorithm. _JRSS-B_.
-
-Fifty, C. et al. (2021). Efficiently Identifying Task Groupings for Multi-Task Learning. _NeurIPS_.
-
-Friedman, M. (1957). _A Theory of the Consumption Function_. Princeton UP.
-
-Gu, A. & Dao, T. (2023). Mamba: Linear-Time Sequence Modeling with Selective State Spaces. _NeurIPS_.
-
-Guo, H. et al. (2017). DeepFM: A Factorization-Machine based Neural Network for CTR Prediction. _IJCAI_.
-
-Ha, D. et al. (2017). HyperNetworks. _ICLR_.
-
-Hall, R. (1978). Stochastic Implications of the Life Cycle-Permanent Income Hypothesis. _JPE_.
-
-Hasani, R. et al. (2021). Liquid Time-constant Networks. _AAAI_.
-
-He, X. et al. (2020). LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation. _SIGIR_.
-
-Navon, A. et al. (2022). Multi-Task Learning as a Bargaining Game. _ICML_.
-
-Nickel, M. & Kiela, D. (2017). Poincare Embeddings for Learning Hierarchical Representations. _NeurIPS_.
-
-Nie, Y. et al. (2023). A Time Series is Worth 64 Words: Long-term Forecasting with Transformers. _ICLR_.
-
-Rendle, S. (2010). Factorization Machines. _ICDM_.
-
-Rendle, S. et al. (2009). BPR: Bayesian Personalized Ranking from Implicit Feedback. _UAI_.
-
-Tang, H. et al. (2020). Progressive Layered Extraction: A Novel Multi-Task Learning Model for Personalized Recommendations. _RecSys_.
-
-Wang, R. et al. (2017). Deep & Cross Network for Ad Click Predictions. _KDD_.
-
-Wang, R. et al. (2021). DCN V2: Improved Deep & Cross Network. _WWW_.
-
-Yu, T. et al. (2020). Gradient Surgery for Multi-Task Learning. _NeurIPS_.
-
-Zheng, X. et al. (2018). DAGs with NO TEARS: Continuous Optimization for Structure Learning. _NeurIPS_.
+- *Feature interaction*: Guo et al. IJCAI 2017 (DeepFM); Rendle ICDM 2010 (FM); Wang et al. KDD 2017, WWW 2021 (Deep Cross v1/v2).
+- *Time series*: Gu & Dao NeurIPS 2023 (Mamba); Hasani et al. AAAI 2021 (LNN); Nie et al. ICLR 2023 (PatchTST).
+- *Graph*: He et al. SIGIR 2020 (LightGCN); Chami et al. NeurIPS 2019 (HGCN); Nickel & Kiela NeurIPS 2017 (Poincare).
+- *TDA / PersLay*: Carriere et al. AISTATS 2020; Cohen-Steiner et al. DCG 2007.
+- *Causal / NOTEARS / DAGMA*: Pearl 2009; Zheng et al. NeurIPS 2018; Bello et al. ICML 2022.
+- *OT / Sinkhorn*: Cuturi NeurIPS 2013; Villani 2009.
+- *MTL*: Kendall et al. CVPR 2018 (Uncertainty); Lin et al. ICCV 2017 (Focal); Yu et al. NeurIPS 2020 (PCGrad); Fifty et al. NeurIPS 2021.

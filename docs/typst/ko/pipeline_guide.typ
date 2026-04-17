@@ -367,7 +367,7 @@ PLE 2-Phase Training:
   - 7 shared experts: deepfm, temporal_ensemble, hgcn, perslay,
                       causal, lightgcn, optimal_transport
   - 1 task expert: mlp (태스크별)
-  - 13 tasks (4 groups): binary 7 / multiclass 3 / regression 3  (14→13: deterministic-leakage 태스크 제거)
+  - 13 tasks (4 groups): binary 7 / multiclass 3 / regression 3  (18→13: deterministic-leakage 태스크 5개 제거)
   - Uncertainty weighting (Kendall et al.)
   - AMP (Mixed Precision) 필수 활성화
 ```
@@ -620,8 +620,8 @@ python scripts/run_lgbm_feature_selection.py \
   inset: 6pt,
   fill: (x, y) => if y == 0 { anthropic-accent.lighten(88%) },
   [*단계*], [*구성*], [*비용/월*], [*지연*],
-  [1단계 (소규모)], [API Gateway → Lambda + 메모리 피처], [\~\$0--1], [\~5ms],
-  [2단계 (중규모)], [API Gateway → Lambda + DynamoDB], [\~\$100--400], [\~10ms],
+  [1단계 (소규모)], [API Gateway → Lambda Container Image + 메모리 피처], [\~\$0--1], [\~5ms],
+  [2단계 (중규모)], [API Gateway → Lambda Container Image + LanceDB(추천 케이스) + DynamoDB(L2a 캐시·audit)], [\~\$100--400], [\~10ms],
   [3단계 (대규모)], [ALB → ECS + Redis + RocksDB + LanceDB], [\~\$360], [\~5--8ms],
 )
 
@@ -647,7 +647,7 @@ aws lambda invoke \
 ```
 요청 (user_id, context)
   ↓
-① 피처 조회 (메모리 or DynamoDB)      ~0.01ms or ~5ms
+① 피처 조회 (메모리 or LanceDB)        ~0.01ms or ~5ms
   ↓
 ② 실시간 컨텍스트 결합                ~0.1ms
   ↓

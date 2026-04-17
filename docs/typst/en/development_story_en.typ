@@ -46,16 +46,15 @@
 )
 
 #set par(
-  justify: true,
-  leading: 0.8em,
-  first-line-indent: 1.2em,
-  spacing: 1.5em,
+  justify: false,
+  leading: 0.85em,
+  spacing: 1.1em,
 )
 
 // ── Heading styles ──
 #show heading.where(level: 1): it => {
   v(0.6cm)
-  set par(first-line-indent: 0pt)
+
   block(width: 100%)[
     #text(size: 20pt, fill: anthropic-text, weight: "bold")[#it.body]
     #v(4pt)
@@ -66,7 +65,7 @@
 
 #show heading.where(level: 2): it => {
   v(0.4cm)
-  set par(first-line-indent: 0pt)
+
   block[
     #text(size: 14pt, fill: anthropic-text, weight: "bold")[#it.body]
   ]
@@ -75,7 +74,7 @@
 
 #show heading.where(level: 3): it => {
   v(0.2cm)
-  set par(first-line-indent: 0pt)
+
   block[
     #text(size: 10pt, fill: anthropic-text, weight: "bold")[#it.body]
   ]
@@ -92,7 +91,7 @@
 }
 
 #let info-box(title, body) = {
-  set par(first-line-indent: 0pt)
+
   v(0.15cm)
   block(
     width: 100%,
@@ -107,7 +106,7 @@
 }
 
 #let quote-box(body) = {
-  set par(first-line-indent: 0pt)
+
   v(0.15cm)
   block(
     width: 100%,
@@ -167,7 +166,7 @@
     width: 70%,
     inset: (x: 1.5cm, y: 1cm),
   )[
-    #set par(first-line-indent: 0pt)
+
     #text(size: 10pt, fill: anthropic-text, style: "italic")[
       "AI writes the code,\ but design decisions remain with humans."
     ]
@@ -254,7 +253,7 @@ Had a large GPU cluster been available, this architecture would likely never hav
 
 == On-Premises System Scale
 
-The on-prem system was not a prototype but a production-scale system: 80+ Airflow DAGs, Champion-Challenger model competition, weekly automated retraining, 734D feature tensor, 16 simultaneous tasks (13 in the AWS benchmark version after removing 5 deterministic-leakage/redundant tasks), and 62 data table ingestion. Building a system of this scale with 3 people was itself a result of AI-augmented development.
+The on-prem system was not a prototype but a production-scale system: 80+ Airflow DAGs, Champion-Challenger model competition, weekly automated retraining, 734D feature tensor, 18 simultaneous tasks (13 in the AWS benchmark version after removing 5 deterministic-leakage/redundant tasks), and 62 data table ingestion. Building a system of this scale with 3 people was itself a result of AI-augmented development.
 
 == Project Objective
 
@@ -343,7 +342,6 @@ Maintaining consistency across 4 papers and 22 technical documents while making 
 
 Throughout the project, recurring patterns of AI collaboration emerged. These patterns were not deliberately designed but manifested naturally through actual work.
 
-#set par(first-line-indent: 0pt)
 #block(
   width: 100%,
   stroke: (left: 2pt + anthropic-accent),
@@ -357,11 +355,9 @@ Throughout the project, recurring patterns of AI collaboration emerged. These pa
   #strong[5. "Fail fast with AI"]: Bugs that would take days to find manually --- leakage, FP16 NaN, ablation filter failures --- were detected and fixed within minutes with AI agents. Fast failure led to fast learning. \
   #strong[6. "AI as thought partner, not code machine"]: The project's critical intellectual breakthroughs --- the structural isomorphism insight, the sigmoid gate hypothesis, identifying the expert collapse problem --- all emerged from human-AI dialogue.
 ]
-#set par(first-line-indent: 1.2em)
 
 #v(0.3cm)
 
-#set par(first-line-indent: 0pt)
 #{
   let header-cell(body) = table.cell(
     fill: anthropic-text,
@@ -389,7 +385,6 @@ Throughout the project, recurring patterns of AI collaboration emerged. These pa
     body-cell[E. Experimentation + Papers], body-cell[Claude Code Extension], body-cell[Real-time monitoring, literature research, 4 papers + 22 technical docs],
   )
 }
-#set par(first-line-indent: 1.2em)
 
 #section-break()
 
@@ -433,7 +428,6 @@ Data contamination renders model performance meaningless. Label leakage and sche
 
 Abnormally high performance (AUC = 1.0) was observed early in training, uncovering three leakage sources.
 
-#set par(first-line-indent: 0pt)
 #block(
   width: 100%,
   stroke: (left: 2pt + anthropic-accent),
@@ -444,7 +438,6 @@ Abnormally high performance (AUC = 1.0) was observed early in training, uncoveri
   • *File loading order*: Glob's alphabetical sorting loaded `ground_truth.parquet` instead of `benchmark.parquet`. Resolved by moving the file to a subdirectory. \
   • *Generator input contamination*: GMM and other generators used label columns as input. An auto-exclude mechanism for `label_cols` was added.
 ]
-#set par(first-line-indent: 1.2em)
 
 #v(0.1cm)
 A LeakageValidator was added as a mandatory pre-training step, and validation rules were documented in the CLAUDE.md guardrails to prevent recurrence.
@@ -618,7 +611,6 @@ The core philosophy of the PLE architecture — Mixture of Experts — was appli
 
 == System Built
 
-#set par(first-line-indent: 0pt)
 #block(
   width: 100%,
   inset: (x: 14pt, y: 12pt),
@@ -649,7 +641,6 @@ The core philosophy of the PLE architecture — Mixture of Experts — was appli
     ],
   )
 ]
-#set par(first-line-indent: 1.2em)
 
 == Documentation
 
@@ -948,7 +939,6 @@ was simple: why would a more sophisticated architecture produce worse recommenda
 The answer was in the loss computation. The on-prem uncertainty weighting
 implementation applies per-task `loss_weight` inside the uncertainty term:
 
-#set par(first-line-indent: 0pt)
 #block(
   width: 100%,
   stroke: (left: 2pt + anthropic-accent),
@@ -960,7 +950,6 @@ implementation applies per-task `loss_weight` inside the uncertainty term:
   #text(size: 10pt, fill: anthropic-muted, style: "italic")[AWS port (bug):]
   #text(size: 10pt)[`loss = precision * task_loss + log_var / 2`]
 ]
-#set par(first-line-indent: 1.2em)
 
 The AWS port had dropped `loss_weight` entirely and divided `log_var` by 2 as an
 ad-hoc scaling choice that did not appear in the original formulation. The result:

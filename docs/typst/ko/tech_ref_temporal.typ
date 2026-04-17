@@ -742,22 +742,9 @@ Concat: $[192 + 96 + 96 = 384"D"]$ $arrow.r$ Gate $arrow.r$ Weighted sum $arrow.
 - AMP (Mixed Precision) 활성화: g4dn T4 GPU에서 약 2배 속도 향상
 - 배치 크기: VRAM과 데이터 규모에 따라 조정 (대규모 데이터 4096 권장)
 
-=== 참고 문헌
+=== 추가 자료
 
-#set text(size: 9pt)
-
-#table(
-  columns: (2.5fr, 3.5fr, 1.5fr),
-  inset: 6pt,
-  stroke: 0.4pt + rgb("#e2e8f0"),
-  fill: (_, y) => if y == 0 { navy.lighten(88%) } else if calc.odd(y) { luma(252) },
-  table.header[*구성 요소*][*논문*][*발표*],
-  [Mamba SSM], [Gu & Dao, "Mamba: Linear-Time Sequence Modeling with Selective State Spaces"], [NeurIPS 2023],
-  [LNN], [Hasani et al., "Liquid Time-constant Networks"], [AAAI 2021],
-  [PatchTST], [Nie et al., "A Time Series is Worth 64 Words"], [ICLR 2023],
-  [Neural ODE], [Chen et al., "Neural Ordinary Differential Equations"], [NeurIPS 2018],
-  [S4 (SSM)], [Gu et al., "Efficiently Modeling Long Sequences with Structured State Spaces"], [ICLR 2022],
-  [HiPPO], [Gu et al., "HiPPO: Recurrent Memory with Optimal Polynomial Projections"], [NeurIPS 2020],
-  [ViT], [Dosovitskiy et al., "An Image is Worth 16x16 Words"], [ICLR 2021],
-  [CfC], [Hasani et al., "Closed-form Continuous-depth Models"], [Nature MI 2022],
-)
+- *Mamba / S4 / HiPPO*: Gu & Dao NeurIPS 2023; Gu et al. ICLR 2022; Gu et al. NeurIPS 2020.
+- *LNN / CfC*: Hasani et al. AAAI 2021; Hasani et al. Nature MI 2022.
+- *PatchTST / ViT*: Nie et al. ICLR 2023; Dosovitskiy et al. ICLR 2021.
+- *Neural ODE*: Chen et al. NeurIPS 2018.

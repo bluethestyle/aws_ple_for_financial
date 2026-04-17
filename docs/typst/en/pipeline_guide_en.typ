@@ -344,7 +344,7 @@ Key components:
   - 7 shared experts: deepfm, temporal_ensemble, hgcn, perslay,
                       causal, lightgcn, optimal_transport
   - 1 task expert: mlp (per task)
-  - 13 tasks (4 tiers): 7 binary / 3 multiclass / 3 regression  (14→13: deterministic-leakage tasks removed)
+  - 13 tasks (4 tiers): 7 binary / 3 multiclass / 3 regression  (18→13: 5 deterministic-leakage tasks removed)
   - Uncertainty weighting (Kendall et al.)
   - AMP (Mixed Precision) must be enabled
 ```
@@ -596,8 +596,8 @@ python scripts/run_ig_selection.py \
   inset: 6pt,
   fill: (x, y) => if y == 0 { anthropic-accent.lighten(88%) },
   [*Tier*], [*Configuration*], [*Cost/month*], [*Latency*],
-  [Tier 1 (Small)], [API Gateway -> Lambda + in-memory features], [\~\$0--1], [\~5ms],
-  [Tier 2 (Medium)], [API Gateway -> Lambda + DynamoDB], [\~\$100--400], [\~10ms],
+  [Tier 1 (Small)], [API Gateway -> Lambda Container Image + in-memory features], [\~\$0--1], [\~5ms],
+  [Tier 2 (Medium)], [API Gateway -> Lambda Container Image + LanceDB (recommendation cases) + DynamoDB (L2a cache / audit)], [\~\$100--400], [\~10ms],
   [Tier 3 (Large)], [ALB -> ECS + Redis + RocksDB + LanceDB], [\~\$360], [\~5--8ms],
 )
 
@@ -623,7 +623,7 @@ aws lambda invoke \
 ```
 Request (user_id, context)
   |
-(1) Feature lookup (memory or DynamoDB)      ~0.01ms or ~5ms
+(1) Feature lookup (memory or LanceDB)       ~0.01ms or ~5ms
   |
 (2) Real-time context combination            ~0.1ms
   |
