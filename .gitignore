@@ -63,11 +63,31 @@ Thumbs.db
 cdk.out/
 .cdk.staging/
 
-# Pytest
+# Pytest / testing / linting caches
 .pytest_cache/
 .coverage
 htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
 
 # Orchestrator state (crash recovery)
 .ablation_state.json
 outreach/
+
+# Typst compile / auxiliary artifacts
+*.pdf.bak
+typst-package/
+
+# Stray draft files at repository root
+# (place drafts in docs/design/ or paper/, not in repo root)
+/*.typ
+
+# Local backup / editor junk
+*.bak
+*~
+*.orig
+*.swo
+
+# Node (if ever added)
+node_modules/
