@@ -34,7 +34,8 @@
   #v(0.3em)
 
   #text(size: 9pt, style: "italic")[
-    #super[1]Independent Research
+    #super[1]Independent Research \
+    Corresponding author: Seonkyu Jeong (ORCID: #link("https://orcid.org/0009-0005-3291-9112")[0009-0005-3291-9112])
   ]
 
   #v(1em)
