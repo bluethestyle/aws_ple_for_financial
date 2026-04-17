@@ -49,7 +49,7 @@ AI 추천의 최종 산출물은 확률(0.73)이 아니라 **고객이 납득할
 ## 1. 논문 핵심 주장
 
 금융 상품 추천에서 PLE+adaTT 멀티태스크 아키텍처가:
-- 이종 전문가(TDA, HMM, Mamba, GNN, GMM 등) 각각이 실질적으로 기여한다 (ablation 증명)
+- 이종 전문가(TDA, HMM, Mamba, GNN, GMM 등은 feature-generator 방법론으로, 7개 정규 expert인 DeepFM / Temporal Ensemble / HGCN / PersLay / Causal / LightGCN / OT에 라우팅됨) 각각이 실질적으로 기여한다 (ablation 증명)
 - EU AI Act / 금감원 가이드라인을 충족하는 설명 가능한 추천이 가능하다
 - 학습 → 증류 → 설명 가능한 서빙까지 end-to-end 파이프라인을 제공한다
 - 불필요한 인프라 복잡성 없이 서버리스 아키텍처로 프로덕션 배포 가능하다
@@ -64,13 +64,13 @@ Phase 0: Data Ingestion + Feature Engineering (DuckDB/cuDF)
   ├── 3-stage Normalization: power-law → StandardScaler → raw copy
   └── Leakage Validation
 
-Phase 1-3: Ablation Study (48 scenarios)
-  ├── Feature Group Ablation (16): 각 피처 그룹 기여도
-  ├── Expert Ablation (16): 각 전문가 네트워크 기여도
-  └── Task × Structure Cross (16): PLE/adaTT 구조 효과
+Phase 1-3: Ablation Study (23 scenarios; 14 joint + 9 structure)
+  ├── Feature Group Ablation: 각 피처 그룹 기여도
+  ├── Expert Ablation: 각 전문가 네트워크 기여도
+  └── Task × Structure Cross: PLE/adaTT 구조 효과
 
 Phase 4: Knowledge Distillation
-  ├── PLE 14-task teacher → LGBM student
+  ├── PLE 13-task teacher → LGBM student
   ├── LGBM gain importance 피처 선택 (top-k features)
   └── Soft label distillation
 
@@ -103,7 +103,7 @@ Phase 5: Deployment
 - "예금→투자"보다 "예금→대출"이 더 먼 거리라는 관계가 자연스럽게 보존
 
 ### 모델 구조
-- **PLE (Progressive Layered Extraction)**: 14 tasks, 7 heterogeneous experts, **~2.8M params**
+- **PLE (Progressive Layered Extraction)**: 13 tasks, 7 heterogeneous experts, **~2.8M params**
 - **FeatureRouter**: feature_groups.yaml의 target_experts 설정에 따라 각 expert에 해당 피처 그룹만 라우팅
   - deepfm=109D, temporal_ensemble=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, optimal_transport=69D
   - 전체 316 피처 중 expert별로 귀납적 편향에 부합하는 부분집합만 수신 (config-driven)
@@ -113,7 +113,7 @@ Phase 5: Deployment
   - value: cross_sell_count, product_stability
   - consumption: will_acquire_* (5개), nba_primary
 - **Expert Basket**: deepfm, temporal_ensemble, hgcn, perslay, causal, lightgcn, optimal_transport
-- **Feature Groups**: 12 groups (4 base + 8 generated), 316 features total → FeatureRouter가 expert별 부분집합으로 분배
+- **Feature Groups**: 12 groups (4 base + 8 generated), 349 features total (Phase 0 v12) → FeatureRouter가 expert별 부분집합으로 분배
 
 ## 3. 아키텍처 기여 (Contribution)
 

@@ -51,7 +51,7 @@
 
 ### 검증 수치 (수정 후, benchmark v4 기준 — v12에서 has_nba는 nba_primary class 0으로 통합)
 ```
-XGBoost AUC (all 316 features):
+XGBoost AUC (all 349 features, Phase 0 v12):
   has_nba:      0.6081  # v4 기준; v12에서 nba_primary로 통합
   churn_signal: 0.6531
 
@@ -70,7 +70,7 @@ Per-group AUC (has_nba, v4 기준):
 ## 4. 데이터 스펙
 
 - 고객 수: 1,000,000
-- 컬럼 수: 106 (raw) → 316 (Phase 0 후 features)
+- 컬럼 수: 106 (raw) → 349 (Phase 0 v12 후 features)
 - 레이블: 13 tasks (benchmark v12; has_nba → nba_primary class 0 통합)
 - 파일 크기: ~1.1GB (raw), ~1.2GB (Phase 0 output)
 - 시퀀스: LIST 컬럼 (ragged tensor), 최대 12개월 × 30 거래

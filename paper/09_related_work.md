@@ -2,6 +2,10 @@
 
 This section surveys the literature most relevant to our system: a heterogeneous-expert PLE + adaTT architecture for multi-task financial product recommendation with inherent explainability, knowledge distillation to LGBM, and regulatory compliance.
 
+Our work is available as two open preprints on Zenodo:
+- Paper 1 (Heterogeneous Expert PLE): https://doi.org/10.5281/zenodo.19621884
+- Paper 2 (Agentic Reason Generation): https://doi.org/10.5281/zenodo.19622052
+
 ---
 
 ## 9.1 Multi-Task Learning for Recommendation Systems
@@ -42,7 +46,7 @@ Multi-task learning (MTL) has become the dominant paradigm for industrial recomm
 
 | Paper | Venue | Contribution | Relation to Our Work |
 |-------|-------|-------------|---------------------|
-| **ESMM** (Ma et al., 2018) | SIGIR 2018 | Entire-space modeling for CVR via CTR auxiliary task; eliminates sample selection bias | Our multi-task formulation similarly chains dependent tasks (click -> ownership -> cross-sell) but generalizes to 24 product tasks |
+| **ESMM** (Ma et al., 2018) | SIGIR 2018 | Entire-space modeling for CVR via CTR auxiliary task; eliminates sample selection bias | Our multi-task formulation similarly chains dependent tasks (click -> ownership -> cross-sell) but generalizes to 13 tasks |
 | **STAR** (Sheng et al., 2021) | CIKM 2021 | Star topology with shared center + domain-specific parameters for multi-domain CTR | Complementary to our approach; STAR addresses multi-domain while we address multi-task with heterogeneous experts |
 | **M3oE** (Zhang et al., 2024) | SIGIR 2024 | Multi-domain multi-task MoE with three disentangled expert modules and AutoML structure search | Most recent MoE-based MTL; uses homogeneous experts with structural search, whereas we use pre-defined heterogeneous expert types matched to data modalities |
 
@@ -249,7 +253,7 @@ The CFA Institute and regulatory bodies increasingly require that AI-driven fina
 
 - T.-Y. Lin, P. Goyal, R. Girshick, K. He, and P. Dollar, "Focal Loss for Dense Object Detection," in *Proc. ICCV*, 2017, pp. 2980--2988.
 
-**Our approach:** We combine Kendall uncertainty weighting (for inter-task balancing across 24 products) with Focal Loss (for intra-task class imbalance handling), configured entirely through pipeline.yaml.
+**Our approach:** We combine Kendall uncertainty weighting (for inter-task balancing across 13 tasks) with Focal Loss (for intra-task class imbalance handling), configured entirely through pipeline.yaml.
 
 ---
 
@@ -282,6 +286,6 @@ Recent comparative studies (2024-2025) evaluate SDV's Gaussian Copula, CTGAN, an
 | Deployment | GPU endpoint or batch | Knowledge distillation to LGBM + serverless Lambda |
 | Regulatory | Ad-hoc compliance | Built-in FSS/EU AI Act alignment with reason generation |
 | Benchmarking | Fixed datasets | Gaussian Copula + variance budget for controllable difficulty |
-| Financial Domain | Single-task or simple MTL | 24-task multi-product recommendation with temporal modeling |
+| Financial Domain | Single-task or simple MTL | 13-task multi-product recommendation with temporal modeling |
 
 Our work synthesizes advances across multi-task learning, mixture-of-experts, diverse neural architectures, explainable AI, knowledge distillation, and financial regulation into a unified, production-ready system. The key novelty lies not in any single component but in their principled integration: heterogeneous experts matched to data modalities, inherent explainability through architectural design rather than post-hoc approximation, and a complete pipeline from training to compliant serverless serving.

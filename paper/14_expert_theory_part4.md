@@ -1,5 +1,10 @@
 # Expert Theory Part 4: Distillation, Scoring, Grounding, and Recommendation Reason Generation
 
+> **Note**: This document uses on-premises dimensions (734D features, 16 tasks).
+> For the AWS v1 paper version (349D, 13 tasks), see the v1 Zenodo preprint
+> (DOI: 10.5281/zenodo.19621884) or the feature-router table in
+> paper/01_architecture_positioning.md.
+
 > Extracted from technical reference documents (v1.0, 2026-03-05) for Paper 2.
 > Covers the post-training pipeline: Knowledge Distillation, FD-TVS Scoring, Feature Grounding, Recommendation Reason Generation, and LLM Distillation (Gemini QLoRA).
 

@@ -272,6 +272,11 @@ feature_groups:
 | `hyperbolic_embedding` | Hyperbolic graph embeddings |
 | `multidisciplinary` | Cross-domain computational models |
 | `temporal_pattern` | Rolling-window aggregation features |
+| `mamba` | Mamba SSM-based temporal sequence features |
+| `gmm` | Gaussian Mixture Model cluster assignments |
+| `model_features` | Model-derived features (distillation outputs) |
+| `merchant_hierarchy` | MCC hierarchy + brand SVD features |
+| `graph` | Graph collaborative filtering features |
 
 ---
 
@@ -831,8 +836,8 @@ model:
                                       # per-expert subset — NOT the full 349D. The global input_dim
                                       # represents the total feature tensor fed to FeatureRouter,
                                       # which then slices per-expert views via feature_group_ranges.
-                                      # Per-expert dims: deepfm=109D, temporal_ensemble=129D,
-                                      # hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, ot=69D.
+                                      # Per-expert dims (canonical v1): deepfm=168D, temporal_ensemble=139D,
+                                      # hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, ot=127D.
   task_expert_output_dim: 32
 
   # Task definitions

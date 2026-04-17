@@ -383,13 +383,15 @@ consumption: [18,19,20,21,22,23] # interference 관점
 
 ### 5.1 개요
 
-`scripts/run_santander_ablation.py`가 6-Phase, **51 시나리오** ablation study를 오케스트레이션한다. 모든 시나리오는 config에서 동적 생성된다 (`ablation.feature_scenarios: auto`, `ablation.expert_scenarios: auto`).
+`scripts/run_santander_ablation.py`가 6-Phase, **23 시나리오** ablation study를 오케스트레이션한다 (14 joint feature+expert + 9 structure). 모든 시나리오는 config에서 동적 생성된다 (`ablation.feature_scenarios: auto`, `ablation.expert_scenarios: auto`).
+
+**Note**: The v1 paper reports on the 23-scenario slice used for the canonical results (14 joint feature+expert + 9 structure cross variants on the fixed 13-task configuration). The 4-dimension × 9-structure grid (36 cells) is the full experimental design space; the 9-structure cross is evaluated at the `tasks_13` row.
 
 ```
 Phase 0   데이터 준비          Processing Job (Stage 1-6)
 Phase 1   Feature Group Ablation   16 시나리오 (full + base_only + 7 bottom-up + 7 top-down)
 Phase 2   Expert Ablation         16 시나리오 (deepfm baseline + 7 bottom-up + 7 top-down + mlp_only)
-Phase 3   Task x Structure Cross   4 tiers x 9 structures = 36 시나리오 (구조 확장: GradSurgery 추가)
+Phase 3   Task x Structure Cross   4 tiers x 9 structures = 36 시나리오 (구조 확장; v1 paper: tasks_13 행 9개만 보고)
 Phase 4   Best Config Teacher + Distillation
 Phase 5   Analysis + HTML Report
 ```
@@ -479,11 +481,13 @@ DeepFM을 기준선으로 한 bottom-up + top-down 설계:
 | `ple_full_adatt` | true | sigmoid | true | false | sigmoid + adaTT — 전 설정에서 성능 하락 |
 | `ple_softmax_adatt` | true | softmax | true | false | softmax + adaTT |
 | `shared_bottom_adatt` | false | — | true | false | adaTT only — neutral (SB에서는 무해) |
-| `ple_softmax_gs` | true | softmax | false | true | softmax + GradSurgery — **핵심 가설** |
-| `shared_bottom_gs` | false | — | false | true | GradSurgery only |
-| `ple_sigmoid_gs` | true | sigmoid | false | true | sigmoid + GradSurgery |
+| `ple_softmax_gs` | true | softmax | false | true | softmax + GradSurgery — **실험 완료, 미채택** |
+| `shared_bottom_gs` | false | — | false | true | GradSurgery only — **실험 완료, 미채택** |
+| `ple_sigmoid_gs` | true | sigmoid | false | true | sigmoid + GradSurgery — **실험 완료, 미채택** |
 
 **핵심 질문**: "태스크를 추가할수록 성능이 향상되는가?" + "GradSurgery가 태스크 간 gradient 충돌을 완화하는가?" + "PLE gate 방식이 GradSurgery 효과에 영향을 주는가?"
+
+**Status update**: GradSurgery experiment completed. Result: no meaningful improvement over PLE-only baseline; VRAM overhead prevented adoption. Retained in codebase as reproducible experiment only.
 
 #### 완료된 시나리오 주요 발견 (2026-04-13 기준)
 
@@ -494,7 +498,9 @@ DeepFM을 기준선으로 한 bottom-up + top-down 설계:
 | **Uncertainty weighting 수정 효과** | 아키텍처 변경보다 loss weighting 수정이 더 큰 성능 개선. 구조 선택 전 loss 안정화가 선행되어야 함 |
 | **PLE + adaTT 충돌** | PLE가 expert 수준에서 태스크를 분리하고, adaTT가 loss 수준에서 재혼합 → 두 메커니즘이 서로 상충. SB+adaTT는 neutral이지만 PLE+adaTT는 negative → adaTT 자체의 문제가 아니라 PLE와의 충돌 |
 
-#### GradSurgery 설계 근거
+#### GradSurgery 설계 근거 (실험 완료 — 미채택)
+
+**Status update**: GradSurgery experiment completed. Result: no meaningful improvement over PLE-only baseline; VRAM overhead prevented adoption. Retained in codebase as reproducible experiment only.
 
 GradSurgery는 두 독립 축(semantic grouping vs. technical grouping)을 분리 적용한다는 점이 핵심이다:
 
@@ -760,7 +766,7 @@ top_k:
 
 ### 9.6 향후 과제
 
-1. **GradSurgery Ablation**: Phase 3 구조 확장 (9 structures) — ple_softmax_gs / shared_bottom_gs / ple_sigmoid_gs 진행 중 (2026-04-13~)
+1. **GradSurgery Ablation**: Phase 3 구조 확장 (9 structures) — ple_softmax_gs / shared_bottom_gs / ple_sigmoid_gs **실험 완료 (2026-04-15); 미채택** — PLE-only 대비 개선 없음, VRAM 부하로 production 미적용
 2. **Serving Pipeline**: Stage C (CPE, Agentic Orchestrator, Vector Store) 구현
 3. **Real-time Inference**: SageMaker Endpoint + Lambda 파이프라인
 4. **A/B Testing**: SageMaker Experiments 기반 온라인 평가

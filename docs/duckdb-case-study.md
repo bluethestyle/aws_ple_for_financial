@@ -20,7 +20,7 @@ This project is the AWS cloud extension of an on-premises financial
 recommendation system running inside a Korean public financial institution.
 
 **On-premises production scale**: 12 million customers, 734 features,
-16 prediction tasks, 7 heterogeneous expert networks (PLE architecture).
+16 prediction tasks (production on-prem version; the public v1 paper uses 13 tasks after deterministic-label removal), 7 heterogeneous expert networks (PLE architecture).
 The environment has Hive for data lake storage but no Spark or Impala.
 All post-Hive processing — feature engineering, label derivation,
 normalization, model input construction — runs on a single workstation
@@ -494,7 +494,7 @@ tensor construction boundary.
 This is why DuckDB matters for this project. On the on-premises workstation
 with 128 GB RAM, *every pandas operation* that touches the full dataset
 (12M × 734) consumes far more than the 15 GB shown here at 1M scale.
-With 16 label derivations, feature merging, normalization,
+With 13 label derivations (v1 paper; 16 on-prem), feature merging, normalization,
 and tensor construction happening sequentially, pandas peak memory
 leaves no headroom for PyTorch training that follows immediately after.
 

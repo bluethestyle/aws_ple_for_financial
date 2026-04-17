@@ -47,8 +47,8 @@ learning -- where improving one task degrades another.
                      CGC Gating (softmax)   CGC Gating (softmax)
                      (Task A)               (Task B)    <-- softmax outperforms sigmoid in heterogeneous MTL
                              |                  |
-                     GradSurgery Projection      <-- gradient-level task-type transfer (replaces adaTT)
-                     (3 task-type groups)        <-- adaTT degrades at 13-task scale (156-pair instability)
+                     GradSurgery Projection      <-- tested, not adopted in production (see §GradSurgery)
+                     (3 task-type groups)        <-- adaTT is canonical loss-level transfer; GradSurgery showed no improvement
                              |                  |
                      Task Tower A      Task Tower B        <-- task-specific MLPs
                      [128 -> 64]       [128 -> 64]
@@ -65,7 +65,7 @@ learning -- where improving one task degrades another.
 | `build_ple_config()` | `core/model/config_builder.py` | Single source of truth for PLEConfig assembly — train.py calls only this function |
 | `PLEModel` | `core/model/ple/model.py` | Main model class |
 | `CGCLayer` | `core/model/ple/gating.py` | Customized Gate Control (softmax gate) |
-| `GradSurgery` | `core/model/ple/grad_surgery.py` | Gradient-level task-type projection — replaces adaTT at 13-task scale |
+| `GradSurgery` | `core/model/ple/grad_surgery.py` | Alternative to adaTT; tested but not adopted (see §GradSurgery or Paper 1 §5.4) |
 | `AdaTT` | `core/model/ple/adatt.py` | Adaptive Task Transfer (disabled at 13-task scale; 156-pair instability) |
 | `FeatureRouter` | `core/model/ple/feature_router.py` | Expert input routing — **active**, auto-built from `feature_groups.yaml` `target_experts`; routes heterogeneous input dims per expert |
 | `ExpertRegistry` | `core/model/experts/registry.py` | Expert plugin system |
@@ -185,10 +185,16 @@ model:
 
 ## GradSurgery
 
-GradSurgery replaces adaTT as the recommended gradient-level transfer method at
-13-task scale. Instead of estimating all 156 pair-wise affinities, it groups
-tasks into 3 task-type buckets (binary / multiclass / regression) and projects
-conflicting gradients between these groups using PCGrad-style cosine projection.
+> **Status: Tested but not adopted in production.** Results shown below
+> are from the ablation study; production deployment uses PLE softmax
+> without GradSurgery or adaTT.
+
+GradSurgery was evaluated as an alternative to adaTT at 13-task scale. Instead
+of estimating all 156 pair-wise affinities, it groups tasks into 3 task-type
+buckets (binary / multiclass / regression) and projects conflicting gradients
+between these groups using PCGrad-style cosine projection. The experiment showed
+no meaningful AUC/F1 improvement over the PLE-only baseline while incurring
+significant VRAM overhead due to the retained computation graph.
 
 ### Advantages over adaTT
 
@@ -204,16 +210,16 @@ conflicting gradients between these groups using PCGrad-style cosine projection.
 ```yaml
 model:
   grad_surgery:
-    enabled: true
+    enabled: false         # experiment flag — false in production (not adopted)
     task_type_groups:
       binary:   [churn_signal, will_acquire_deposits, will_acquire_investments,
                  will_acquire_accounts, will_acquire_lending, will_acquire_payments,
                  top_mcc_shift]
       multiclass: [nba_primary, segment_prediction, next_mcc]
       regression: [product_stability, cross_sell_count, mcc_diversity_trend]
-    projection_strength: 1.0   # 1.0 = full PCGrad projection
+    projection_strength: 1.0   # 1.0 = full PCGrad projection (ablation reproduction only)
 
-  # adaTT disabled in production
+  # adaTT also disabled in production
   adatt:
     enabled: false
 ```

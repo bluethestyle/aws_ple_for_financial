@@ -299,12 +299,18 @@ class AdaptiveTaskTransfer(nn.Module):
 
 ---
 
-## GradSurgery (Gradient-Level Conflict Resolution)
+## GradSurgery (Gradient-Level Conflict Resolution) — 실험 완료, 미채택
 
 `core/model/ple/grad_surgery.py`
 
-adaTT의 loss-level 전이를 gradient-level projection으로 대체한다.
-13-task 스케일에서 156 task pair를 3개 task-type 그룹으로 집계하여 노이즈를 억제한다.
+**Status: Tested but not adopted in production.** GradSurgery was
+implemented as an alternative to adaTT at 13-task scale, but showed
+no meaningful AUC/F1 improvement over the PLE-only baseline while
+incurring significant VRAM overhead due to the retained computation
+graph. Production configuration disables both adaTT and GradSurgery.
+
+adaTT의 loss-level 전이를 gradient-level projection으로 대체하는 설계였다.
+13-task 스케일에서 156 task pair를 3개 task-type 그룹으로 집계하여 노이즈를 억제하는 접근이었으나, 실험 결과 미채택.
 
 ### 설계 원리
 
@@ -339,8 +345,8 @@ def project_conflicting(g_a: Tensor, g_b: Tensor) -> Tensor:
 
 ```yaml
 grad_surgery:
-  enabled: true
-  grad_interval: 10      # adaTT와 동일 주기로 fair 비교
+  enabled: false         # 실험 전용 플래그 — production에서는 false (미채택)
+  grad_interval: 10      # adaTT와 동일 주기로 fair 비교 (ablation 재현용)
   task_type_groups: true # false면 태스크 개별 충돌 감지 (156 pairs)
 ```
 

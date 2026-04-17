@@ -11,7 +11,7 @@
 - 문제: 금융 추천은 성능뿐 아니라 설명 가능성/규제 준수가 필수. 기존 모델은 사후적 설명(SHAP/LIME)에 의존.
 - 제안: 이종 전문가 PLE+adaTT — 7가지 다른 inductive bias를 가진 expert를 shared basket에 배치. gate weight 자체가 비즈니스 해석 가능한 설명을 생성.
 - 방법: 다학제 피처(위상수학, 쌍곡기하학, 경제학 등) + 금융 DNA 기반 태스크 그룹 + LGBM 증류 + 추천사유 생성
-- 결과: 48개 ablation 시나리오에서 각 expert/feature group의 독립적 기여 증명. graceful degradation 확인. 금감원/EU AI Act 요건 충족.
+- 결과: 23개 ablation 시나리오(14 joint + 9 structure)에서 각 expert/feature group의 독립적 기여 증명. graceful degradation 확인. 금감원/EU AI Act 요건 충족.
 - 의의: 학습→증류→서빙→설명까지 end-to-end 파이프라인. 소규모 팀(3명)+AI 에이전트로 구축.
 
 ---
@@ -216,7 +216,7 @@
 
 ### A. Feature Groups Configuration (재현성)
 ### B. 10 Generators Technical Details
-### C. Full Ablation Results (all 54 scenarios)
+### C. Full Ablation Results (all 23 scenarios)
 ### D. Regulatory Compliance Mapping (detailed)
 ### E. Synthetic Data Generation Algorithm
 ### F. AI-Augmented Development Methodology

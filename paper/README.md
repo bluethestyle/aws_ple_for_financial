@@ -4,10 +4,10 @@
 
 ## Final Papers (Typst → PDF)
 
-| Paper | EN | KO |
-|-------|----|----|
-| Paper 1: Heterogeneous Expert PLE Architecture | [paper1.pdf](typst/paper1.pdf) | [paper1_ko.pdf](typst/paper1_ko.pdf) |
-| Paper 2: Recommendation Reason & Ops/Audit Agents | [paper2.pdf](typst/paper2.pdf) | [paper2_ko.pdf](typst/paper2_ko.pdf) |
+| Paper | EN | KO | Zenodo DOI |
+|-------|----|----|-----------|
+| Paper 1: Heterogeneous Expert PLE Architecture | [paper1.pdf](typst/paper1.pdf) | [paper1_ko.pdf](typst/paper1_ko.pdf) | [10.5281/zenodo.19621884](https://doi.org/10.5281/zenodo.19621884) |
+| Paper 2: Recommendation Reason & Ops/Audit Agents | [paper2.pdf](typst/paper2.pdf) | [paper2_ko.pdf](typst/paper2_ko.pdf) | [10.5281/zenodo.19622052](https://doi.org/10.5281/zenodo.19622052) |
 
 ## Source Materials
 
@@ -18,6 +18,6 @@
 | 02 | [regulatory_compliance.md](02_regulatory_compliance.md) | 금감원 + EU AI Act 규제 매핑 |
 | 03 | [infrastructure_rationale.md](03_infrastructure_rationale.md) | SageMaker vs K8s, 금융사 현실, 비용 분석 |
 | 04 | [benchmark_data_design.md](04_benchmark_data_design.md) | 4-Layer 합성 데이터, variance budget, leakage 방지 |
-| 05 | [ablation_design.md](05_ablation_design.md) | Ablation 설계 (14 tasks, multi-phase) |
+| 05 | [ablation_design.md](05_ablation_design.md) | Ablation 설계 (13 tasks, multi-phase) |
 | 06 | [distillation_and_serving.md](06_distillation_and_serving.md) | LGBM 증류, 추천사유 생성, Lambda 서빙 |
 | 07 | [team_and_methodology.md](07_team_and_methodology.md) | 3인 팀 + AI 에이전트, 개발 방법론 |

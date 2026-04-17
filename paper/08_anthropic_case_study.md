@@ -10,7 +10,7 @@
 ### Anthropic 관점에서의 매력 포인트
 
 **1. 생산성 혁신 (Productivity)**
-- PM 1 + 팀원 2 → 14-task, 7-expert, 48-scenario ablation 시스템 구축
+- PM 1 + 팀원 2 → 13-task, 7-expert, 23-scenario ablation 시스템 구축
 - Claude Opus: 아키텍처 설계, 기술 검증, 복잡한 버그 진단
 - Claude Sonnet: 코드 구현, 리팩토링, 병렬 작업
 - Cursor + Claude Code Extension + Teams: 도구별 특화 활용
@@ -52,7 +52,7 @@ Before:
   - ML 운영 인력 부족, 새 모델 도입 엄두 못 냄
 
 After (Claude 활용):
-  - 18-task 멀티태스크 추천, 구조적 설명 가능
+  - 13-task 멀티태스크 추천, 구조적 설명 가능
   - 금감원/EU AI Act 대응 자동화
   - 3명이 전체 시스템 구축 및 운영
 ```

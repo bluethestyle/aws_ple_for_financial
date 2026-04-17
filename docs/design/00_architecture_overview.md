@@ -350,7 +350,7 @@ Phase 0 Generator는 cuDF primary → pandas fallback 패턴을 따른다.
 
 ## Santander 4-Dimension Ablation Framework
 
-`scripts/run_santander_ablation.py`가 6-Phase 48 시나리오 ablation을 오케스��레이션한다. 모든 시나리오는 config에서 동적 생성된다 (bottom-up + top-down 학계 표준 설계):
+`scripts/run_santander_ablation.py`가 6-Phase **23 시나리오** ablation을 오케스트레이션한다 (14 joint feature+expert + 9 structure). 모든 시나리오는 config에서 동적 생성된다 (bottom-up + top-down 학계 표준 설계):
 
 | Phase | 내용 | Job 수 |
 |-------|------|--------|
@@ -368,6 +368,8 @@ Phase 0 Generator는 cuDF primary → pandas fallback 패턴을 따른다.
 4. **PLE-adaTT Structure** — Loss weighting, PLE depth, adaTT strength
 
 Docker-based ablation runner가 SageMaker local mode를 지원한다 (`containers/training/Dockerfile`).
+
+> **Note**: The v1 paper reports on the **23-scenario slice** used for canonical results: 14 joint (feature+expert) scenarios evaluated at the fixed 13-task configuration, plus 9 structure variants at the `tasks_13` row. The 4-dimension × 9-structure grid (36 cells) represents the full experimental design space; the paper's structure portion evaluates only the `tasks_13` row of that grid.
 
 ---
 
@@ -477,7 +479,7 @@ class DataAdapter(ABC):
 | Logit Transfer | 3-method dispatch (output_concat/hidden_concat/residual) | 태스크 관계별 최적 방법 |
 | 서빙 | FD-TVS scoring + DNA modifier + constraint engine | 규제 준수 추천 |
 | 해석 가능성 | 3-stage (A: 분석, B: 사유생성, C: 서빙) | 감사 가능한 추천 |
-| Ablation | 4-Dimension (Feature/Expert/Task/Structure) × 48 scenarios | 체계적 실험 (bottom-up + top-down) |
+| Ablation | 4-Dimension (Feature/Expert/Task/Structure) × 23 scenarios | 체계적 실험 (bottom-up + top-down; v1 paper canonical slice) |
 
 ---
 

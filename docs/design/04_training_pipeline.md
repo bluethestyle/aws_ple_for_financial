@@ -241,10 +241,10 @@ Task Towers (13개 출력)
 │ ※ Bug fix (2026-04-13): 이전 구현은 uncertainty    │
 │   weighting 활성 시 task별 loss_weight를 무시했다.  │
 │   수정 후: loss_weight * (precision * L + log_var) │
-│   형태로 적용하며, log_var는 [-10, 10] clamp.       │
+│   형태로 적용하며, log_var는 [-4, 4] clamp.         │
 │   이것이 ablation에서 가장 큰 단일 개선이었다.       │
 ├──────────────────────────────────────────────────┤
-│ GradSurgery (conflict-aware gradient projection)   │
+│ GradSurgery (tested, not adopted — 실험 전용)       │
 │                                                    │
 │ - backward() 직후, optimizer.step() 직전에 동작    │
 │ - retain_graph=True는 grad_interval=10 step마다만  │
@@ -347,7 +347,7 @@ LGBM Students (CPU, per-task)
 
 ### 개요 — Santander 4-Dimension Ablation
 
-`scripts/run_santander_ablation.py`가 6-Phase, 48 시나리오 ablation을 오케스트레이션한다. 모든 시나리오는 `configs/pipeline.yaml` (공통) + `configs/datasets/santander.yaml` (Santander 특화) + `configs/santander/feature_groups.yaml`에서 동적 생성된다 (하드코딩 없음).
+`scripts/run_santander_ablation.py`가 23 시나리오 ablation (14 joint + 9 structure; v1 paper canonical)을 오케스트레이션한다. 모든 시나리오는 `configs/pipeline.yaml` (공통) + `configs/datasets/santander.yaml` (Santander 특화) + `configs/santander/feature_groups.yaml`에서 동적 생성된다 (하드코딩 없음).
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -805,10 +805,10 @@ ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
 | Loss 함수 | 코드 내 하드코딩 | **build_loss() + focal_alpha calibrated** | positive rate 반영 |
 | Loss 가중치 | 불확실성 (미활성화) | **Uncertainty weighting 활성화** | 자동 밸런싱 |
 | 모델 구조 | PLE + adaTT | **+ 7 heterogeneous experts + Evidential + SAE + AMP FP32 loss** | 불확실성 + 해석 가능성 |
-| Expert 입력 차원 | 전체 피처 브로드캐스트 | **FeatureRouter 활성화 — Expert별 이종 입력 차원** (deepfm=109D, temporal=129D, hgcn=34D, perslay=32D, causal=103D, lightgcn=66D, ot=69D; 파라미터 4.77M→~2.8M 감소) | 불필요한 피처 제거로 Expert 전문성 강화 |
+| Expert 입력 차원 | 전체 피처 브로드캐스트 | **FeatureRouter 활성화 — Expert별 이종 입력 차원** (deepfm=168D, temporal=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, ot=127D; 파라미터 4.77M→~2.8M 감소) | 불필요한 피처 제거로 Expert 전문성 강화 |
 | Logit Transfer | 단일 방법 | **3-method dispatch (5 edges)** | 관계 유형별 최적화 |
 | 해석 가능성 | 없음 | **3-stage (A:분석, B:사유, C:서빙)** | 감사 가능한 추천 |
 | 증류 | distillation.py 단일 | **config 기반 + fidelity gate** | 품질 보증 |
-| Ablation | 없음 | **4-Dimension × 48 scenarios** (bottom-up + top-down) | 체계적 실험, Docker local mode |
+| Ablation | 없음 | **4-Dimension × 23 scenarios** (14 joint + 9 structure; v1 paper canonical) | 체계적 실험, Docker local mode |
 | 파이프라인 추적 | 없음 | **pipeline_state.json + resume** | 재현성, 장애 복구 |
 | 재현성 | 느슨 (코드+데이터 별도) | YAML config + S3 + temporal split | 완전 재현 |

@@ -8,45 +8,29 @@
 - PLE+adaTT 구조 자체의 효과 분리
 - 논문 모형 검증 문서의 핵심 근거
 
-## 2. 48 Scenarios (3 Phases)
+## 2. 23 Scenarios (14 joint + 9 structure)
 
-### Phase 1: Feature Group Ablation (16 scenarios)
+### Joint Ablation (14 scenarios)
 
-**Baseline:**
+**Feature Group Ablation (bottom-up & top-down):**
 - full: 모든 피처 그룹 사용
 - base_only: demographics + product_holdings만 (base features)
-
-**Bottom-up (base + one group):**
 - base+tda, base+hmm, base+mamba, base+graph
 - base+hierarchy, base+gmm, base+model_derived
 → 각 그룹의 독립적 기여도 측정
-
-**Top-down (full minus one group):**
-- full-tda, full-hmm, full-mamba, full-graph
-- full-hierarchy, full-gmm, full-model_derived
+- full-tda, full-hmm, full-mamba, full-graph, full-model_derived
 → 각 그룹의 marginal contribution 측정 (다른 그룹 존재 하에서)
 
-### Phase 2: Expert Ablation (16 scenarios)
+### Structure Ablation (9 scenarios)
 
-**Bottom-up (deepfm + one expert):**
+**Expert basket + structural variants:**
+- full_basket (all 7 experts): DeepFM, Temporal Ensemble, HGCN, PersLay, Causal, LightGCN, OT
 - deepfm_only, deepfm+temporal, deepfm+hgcn, deepfm+perslay
 - deepfm+causal, deepfm+lightgcn, deepfm+ot
-
-**Full basket + Top-down:**
-- full_basket (all 7 experts)
-- full-deepfm, full-temporal, full-hgcn, full-perslay
-- full-causal, full-lightgcn, full-ot
 - mlp_only (minimal baseline)
+- shared_bottom (no PLE/adaTT)
 
-> **주의 (FeatureRouter):** FeatureRouter 활성화로 각 expert의 입력 차원이 균일하지 않다. Expert ablation 시나리오의 파라미터 수는 uniform 316D 기준이 아니라 라우팅된 실제 입력 차원 기준으로 산출된다 (예: hgcn은 34D hierarchy 전용, perslay는 32D TDA 전용). Full basket 전체 모델 파라미터는 ~2.8M이며, expert 제거 시 해당 expert의 전용 파라미터가 제거된다.
-
-### Phase 3: Task × Structure Cross Ablation (16 scenarios)
-
-**4 Task Tiers × 4 Structures:**
-- tasks_4 / tasks_8 / tasks_12 / tasks_14 (all)
-- shared_bottom / ple_only / adatt_only / full (PLE + adaTT)
-
-→ "태스크 수 증가 시 PLE/adaTT 구조가 얼마나 도움되는가" 측정
+> **주의 (FeatureRouter):** FeatureRouter 활성화로 각 expert의 입력 차원이 균일하지 않다. Expert ablation 시나리오의 파라미터 수는 uniform 349D 기준이 아니라 라우팅된 실제 입력 차원 기준으로 산출된다 (예: hgcn은 34D hierarchy 전용, perslay는 32D TDA 전용). Full basket 전체 모델 파라미터는 ~2.8M이며, expert 제거 시 해당 expert의 전용 파라미터가 제거된다.
 
 ## 3. 학습 설정
 
@@ -62,8 +46,8 @@ training_defaults:
   drop_last: true
 ```
 
-- 데이터: 1M customers, 316 features (전체 피처 공간), 13 tasks
-- **FeatureRouter 활성화**: 각 expert는 전체 316D가 아닌 지정된 피처 그룹만 수신
+- 데이터: 1M customers, 349 features (Phase 0 v12 전체 피처 공간), 13 tasks
+- **FeatureRouter 활성화**: 각 expert는 전체 349D가 아닌 지정된 피처 그룹만 수신
   - deepfm=109D, temporal_ensemble=129D, causal=103D, optimal_transport=69D
   - lightgcn=66D, hgcn=34D, perslay=32D
   - 모델 파라미터: 4.77M → ~2.8M (감소)

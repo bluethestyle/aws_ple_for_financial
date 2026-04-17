@@ -1,5 +1,10 @@
 # Expert Selection Rationale
 
+> **Note**: This document uses on-premises dimensions (734D features, 16 tasks).
+> For the AWS v1 paper version (349D, 13 tasks), see the v1 Zenodo preprint
+> (DOI: 10.5281/zenodo.19621884) or the feature-router table in
+> paper/01_architecture_positioning.md.
+
 Each expert in the PLE architecture was chosen to address a specific gap that no other component covers. This document extracts the "why this expert" justification from the technical reference documents.
 
 ---
