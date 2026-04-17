@@ -1468,7 +1468,7 @@ matters far more than pushing it higher.
 The heterogeneous expert design directly supports this _defensive_ posture:
 expert contribution diagnostics (ablation reveals which inductive biases are beneficial vs.\ harmful per data regime),
 drift detection triggering automatic retraining,
-and the champion-challenger gate requiring manual approval before deployment.
+and the champion-challenger gate (offline `ModelCompetition` significance test with a fidelity safety floor and an operator `--force-promote` override, every decision written to an HMAC-signed audit chain) that governs whether a newly trained model may replace the current production champion.
 The architecture prioritizes _not getting worse_ over _getting better_ ---
 a perspective that aligns with financial regulators' emphasis
 on model risk management and operational resilience.

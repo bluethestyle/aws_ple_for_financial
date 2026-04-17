@@ -1104,11 +1104,11 @@ enabling operators to discuss the impact assessment interactively.
     [*FSS Requirement*], [*System Component*], [*Verification*],
     [Explainability], [Gate weights + 3-agent reason], [Per-recommendation audit log],
     [Fairness], [Fairness monitor (DI/SPD/EOD)], [Weekly automated report],
-    [Model validation], [Champion-Challenger], [Pre-deployment comparison],
+    [Model validation], [Champion-Challenger (offline + online)], [Pre-deployment metric gate + post-deployment traffic gate],
     [Monitoring], [Drift detector (PSI)], [Continuous, 3-day trigger],
     [Audit trail], [HMAC hash-chain logs], [Immutable, 7 audit tables],
     [Fallback], [Template reason + kill switch], [Instant manual override],
-    [Model risk mgmt], [Champion-challenger manager], [Independent validation, manual approval],
+    [Model risk mgmt], [Offline `ModelCompetition` gate + `--force-promote` override], [Auto-promote on significance; audited decision on every registration],
     [Customer suitability], [Constraint engine + eligibility filters], [Pre-recommendation suitability check],
   ),
   caption: [Korean FSS guideline compliance mapping.],
@@ -1237,7 +1237,7 @@ explainable recommendations" becomes compatible with regulation.
 Regulatory bodies (Korean FSS, EU AI Act Art. 14) require human oversight.
 The system implements this at multiple levels:
 - *Reason sampling review*: Periodic human review of generated reasons.
-- *Model replacement approval*: Champion-Challenger results require human sign-off.
+- *Model replacement approval*: Offline Champion-Challenger gate auto-promotes on statistically significant improvement; operator sign-off via `--force-promote` for bootstrap or rollback. Every decision is recorded to an HMAC-signed, hash-chained audit log.
 - *Incident escalation*: Automated anomaly detection triggers human investigation.
 - *Fairness review*: Periodic human audit of fairness metrics.
 
@@ -1359,14 +1359,29 @@ at the granularity required by Article 10(2)(f).
 The system implements an SR 11-7 aligned five-stage MRM lifecycle:
 _develop_ (teacher training + student distillation),
 _validate_ (independent metric evaluation on held-out data),
-_approve_ (manual sign-off gate; automatic promotion disabled by default),
+_approve_ (two-stage gate, see below),
 _monitor_ (continuous PSI-based drift detection), and
 _retrain_ (automatic re-distillation when drift exceeds threshold).
-The champion-challenger manager orchestrates champion-challenger evaluation:
-when a newly distilled student is produced, it is compared against the
-current production champion on all target metrics.
-Promotion requires explicit human approval ---
-the system will never silently replace a production model.
+The _approve_ stage is implemented as a two-gate pipeline.
+The *offline gate* (`ModelCompetition.evaluate`) runs immediately after
+distillation: it compares the newly registered challenger against the
+current champion's recorded metrics, requiring the primary metric to
+improve by at least `min_improvement` (default 0.5%) with no secondary
+metric degrading by more than `max_degradation` (default 2%), and
+optionally a paired-bootstrap significance test.
+A safety floor rejects any challenger with outstanding fidelity failures
+regardless of its training metrics.
+A `--force-promote` operator override is available for bootstrap and
+emergency rollback scenarios. Every decision --- `bootstrap`, `promote`,
+`reject`, or `force_promote` --- is recorded by
+`AuditLogger.log_model_promotion` to an HMAC-signed, hash-chained
+S3 WORM log, producing a non-repudiable audit trail of who promoted
+what and why.
+The *online gate* (`ModelMonitor.evaluate_champion_challenger`) is
+invoked after a challenger has accumulated sufficient DynamoDB
+prediction records to apply a two-proportion z-test on realized
+traffic; this gate is scaffolded but not yet scheduler-wired, and
+activates once real traffic volume justifies the comparison.
 When the drift detector fires on consecutive monitoring windows
 (configurable threshold, default 3 consecutive days),
 the retrain stage is triggered automatically,
