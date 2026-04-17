@@ -6,6 +6,12 @@
 
 **Repository**: [github.com/bluethestyle/aws_ple_for_financial](https://github.com/bluethestyle/aws_ple_for_financial)
 
+**Accompanying preprints** (Zenodo, permanent DOI, CC BY 4.0):
+- [Paper 1 — Heterogeneous Expert PLE Architecture](https://doi.org/10.5281/zenodo.19621884)
+- [Paper 2 — Agentic Reason Generation & Compliance](https://doi.org/10.5281/zenodo.19622052)
+
+Both papers cite Raasveldt & Mühleisen (SIGMOD 2019) and describe DuckDB as the data backbone of the pipeline.
+
 ---
 
 ## The Problem
@@ -573,4 +579,21 @@ types not yet ported to SQL, and for `<10K` row paths in unit tests.
 ---
 
 *Built with DuckDB 1.2, Python 3.11, PyTorch 2.x. Full source at
-[github.com/bluethestyle/aws_ple_for_financial](https://github.com/bluethestyle/aws_ple_for_financial).*
+[github.com/bluethestyle/aws_ple_for_financial](https://github.com/bluethestyle/aws_ple_for_financial).
+Accompanying preprints [10.5281/zenodo.19621884](https://doi.org/10.5281/zenodo.19621884),
+[10.5281/zenodo.19622052](https://doi.org/10.5281/zenodo.19622052) (CC BY 4.0).*
+
+## Citation
+
+If this case study or the patterns described here are useful in your work:
+
+```bibtex
+@misc{jeong2026duckdb_ml_pipeline,
+  author       = {Jeong, Seonkyu and Sim, Euncheol and Kim, Youngchan},
+  title        = {{DuckDB as the Data Engine for an ML Training Pipeline:
+                   A Financial Recommendation Case Study}},
+  year         = {2026},
+  howpublished = {\url{https://github.com/bluethestyle/aws_ple_for_financial/blob/main/docs/duckdb-case-study.md}},
+  note         = {Accompanying preprints: \href{https://doi.org/10.5281/zenodo.19621884}{10.5281/zenodo.19621884}, \href{https://doi.org/10.5281/zenodo.19622052}{10.5281/zenodo.19622052}}
+}
+```
