@@ -1,10 +1,12 @@
 # Heterogeneous Expert PLE for Financial Product Recommendation
 
+**English** · [한국어](README_ko.md)
+
 [![Paper 1 DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19621884.svg)](https://doi.org/10.5281/zenodo.19621884)
 [![Paper 2 DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19622052.svg)](https://doi.org/10.5281/zenodo.19622052)
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC_BY_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
-
-**금융 상품 추천 시스템** -- 고객에게 "왜 이 상품인지" 설명할 수 있는 AI
+[![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-8B5CF6)](https://claude.com/claude-code)
+[![DuckDB](https://img.shields.io/badge/Data_Engine-DuckDB-FFF000)](https://duckdb.org/)
 
 > A recommendation system that doesn't just predict what customers will buy —
 > it explains *why*, in language that customers, bankers, and regulators understand.
@@ -149,17 +151,29 @@ If you use this work, please cite the preprints:
 }
 ```
 
-## AI-Augmented Development
+## Built with Claude Code
 
-This system was built by a team of 3 (1 data scientist PM + 2 engineers) with no dedicated ML infrastructure budget, on a single consumer GPU (RTX 4070, 12GB).
+Every line of this system — architecture design, 7-expert model, agentic reason generation pipeline, regulatory compliance modules, 260+ technical documents, and both Zenodo preprints — was built by a 3-person team using **[Claude Code](https://claude.com/claude-code) (Anthropic)** as the primary development partner on personal subscriptions.
 
-| Tool | Role | Share |
-|------|------|-------|
-| Claude Code (Opus/Sonnet) | Architecture design, code implementation, debugging, documentation | ~90% |
+**The constraint**: no institutional funding, no dedicated ML infrastructure, a single consumer GPU (RTX 4070, 12GB VRAM), evenings and weekends only. **The result**: a 13-task multi-task learning system with regulatory-grade audit infrastructure, open-sourced with two Zenodo preprints.
+
+| Tool | Role in this project | Share |
+|------|----------------------|-------|
+| **Claude Opus** | Architecture design, cross-disciplinary reasoning (topology ↔ finance, chemical kinetics ↔ spending dynamics), complex debugging, paper writing | — |
+| **Claude Sonnet** | Parallel code implementation across the team, per-task ablation coding, 3-agent serving pipeline (Feature Selector / Reason Generator / Safety Gate), 2-agent ops pipeline (OpsAgent / AuditAgent), bilingual documentation | — |
+| Claude (Opus + Sonnet combined) | Total share | **~90%** |
 | Gemini | Brainstorming, concept exploration, literature review | ~5% |
 | Cursor | Real-time editing, GitHub integration | ~5% |
 
-Our AI collaboration methodology: [AI Collaboration Guide (PDF)](docs/typst/en/ai_collaboration_guide_en.pdf)
+**Production uses of Claude in the running system** (not just during development):
+
+- **5-agent architecture on AWS Bedrock** (Sonnet): 3 customer-facing serving agents + 2 ops/audit agents, with 3-agent independent-voting consensus (AWS) or 2-Round hybrid deliberation (on-prem).
+- **Safety Gate**: Sonnet validates every customer-facing reason against regulatory, suitability, hallucination, tone, and factuality criteria before the response leaves the Lambda handler.
+- **Reason Generator**: Sonnet rewrites template-level L1 reasons into natural financial-honorific Korean at L2a, with output cached in DynamoDB for cache-hit 6 ms latency.
+
+**Our methodology**: [AI Collaboration Guide (PDF, EN)](docs/typst/en/ai_collaboration_guide_en.pdf) · [Development Story (PDF, EN)](docs/typst/en/development_story_en.pdf) — full documentation of how a 3-person team with no institutional support collaborated with Claude across architecture, implementation, testing, and paper writing.
+
+If you are from Anthropic and this project is of interest for a customer story, blog post, or conversation, please reach out to the corresponding author (ORCID: [0009-0005-3291-9112](https://orcid.org/0009-0005-3291-9112)).
 
 ---
 
