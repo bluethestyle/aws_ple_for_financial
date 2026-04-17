@@ -146,27 +146,18 @@
 )
 
 // ============================================================
-// Abstract
+// Scope
 // ============================================================
 #block(
   width: 100%,
   inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
   stroke: (left: 2pt + anthropic-accent),
 )[
-  #text(weight: "bold")[Abstract.]
-  본 문서는 PLE 기반 금융 추천 시스템의 7개 Shared Expert 중 Causal Expert와
-  Optimal Transport (OT) Expert의 이론적 배경, 수학적 구조, 구현 상세를 기술한다.
-  Causal Expert는 Pearl의 구조적 인과 모형(SCM)과 NOTEARS 연속 비순환성 제약을
-  결합하여 피처 간 인과 관계를 학습하며, OT Expert는 Sinkhorn 엔트로피 정규화
-  최적 수송을 통해 고객과 프로토타입 분포 간 Wasserstein 거리를 계산한다.
-  두 Expert는 동일한 정규화 피처를 입력받으나, 각각 비대칭 인과 방향성과
-  분포적 기하학이라는 근본적으로 다른 수학적 구조를 추출한다.
-  FP16 혼합 정밀도 환경에서의 수치 안정성 이슈와 해결 경험도 포함한다.
-
-  #v(0.3em)
-  #text(weight: "bold")[Keywords:]
-  Causal Inference, NOTEARS, SCM, Optimal Transport, Sinkhorn,
-  Wasserstein Distance, DAG, PLE, Financial Recommendation
+  #text(weight: "bold")[범위(Scope).]
+  - Causal Expert: Pearl SCM + NOTEARS 연속 비순환성 제약으로 피처 간 인과 DAG 학습
+  - OT Expert: Sinkhorn 엔트로피 정규화 최적 수송 → 고객↔프로토타입 Wasserstein 거리
+  - 공유 입력: 동일한 정규화 피처, 서로 다른 수학적 추출(인과 방향성 vs 분포 기하학)
+  - FP16 혼합 정밀도에서의 수치 안정성 이슈와 대응
 ]
 
 #v(1em)
@@ -750,15 +741,10 @@ Sinkhorn의 10회 반복은 unrolled gradient를 사용한다. 반복 횟수가 
 )
 
 
-== 참고 문헌
+== 추가 자료
 
 #set text(size: 9pt)
 
-+ Zheng, X., Aragam, B., Ravikumar, P., & Xing, E. P. (2018). DAGs with NO TEARS: Continuous optimization for structure learning. _NeurIPS 2018_.
-+ Cuturi, M. (2013). Sinkhorn distances: Lightspeed computation of optimal transport. _NeurIPS 2013_.
-+ Pearl, J. (2009). _Causality: Models, reasoning, and inference_ (2nd ed.). Cambridge University Press.
-+ Bello, K., Aragam, B., & Ravikumar, P. (2022). DAGMA: Learning DAGs via M-matrices and a log-determinant acyclicity characterization. _ICML 2022_.
-+ Kantorovich, L. V. (1942). On the translocation of masses. _Doklady Akademii Nauk_, 37(7-8).
-+ Villani, C. (2009). _Optimal transport: Old and new_. Springer.
-+ Rubin, D. B. (1974). Estimating causal effects of treatments in randomized and nonrandomized studies. _Journal of Educational Psychology_, 66(5).
-+ Sinkhorn, R. (1964). A relationship between arbitrary positive matrices and doubly stochastic matrices. _Annals of Mathematical Statistics_, 35(2).
+- *NOTEARS / DAGMA*: Zheng et al. NeurIPS 2018; Bello et al. ICML 2022.
+- *Sinkhorn OT*: Cuturi NeurIPS 2013; Sinkhorn 1964; Villani 2009 (_Optimal Transport: Old and New_).
+- *인과 추론 기초*: Pearl 2009 (_Causality_, 2판); Rubin 1974.

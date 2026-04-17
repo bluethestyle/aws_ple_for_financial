@@ -1085,47 +1085,14 @@ The `_log` copies of power-law columns (generated in Stage 1) are preserved *wit
 
 
 // =====================================================================
-//  Appendix: References
+//  Further reading (per generator family)
 // =====================================================================
-= References
+= Further Reading
 
-== Economics
-- Friedman, M. (1957). _A Theory of the Consumption Function_. Princeton UP.
-- Hall, R. (1978). Stochastic Implications of the Life Cycle-PIH. _JPE_.
-- Hodrick, R. & Prescott, E. (1997). Postwar U.S. Business Cycles. _JMCB_.
-- Kalman, R. (1960). A New Approach to Linear Filtering. _J. Basic Engineering_.
-- Kahneman, D. & Tversky, A. (1979). Prospect Theory. _Econometrica_.
-
-== Multidisciplinary
-- Arrhenius, S. (1889). Reaction rates of sucrose inversion.
-- Kermack, W. & McKendrick, A. (1927). Mathematical Theory of Epidemics. _Proc. Royal Society_.
-- Cohen, L. & Felson, M. (1979). Routine Activity Approach. _ASR_.
-- Barabasi, A.-L. (2005). The origin of bursts and heavy tails. _Nature_.
-- Shannon, C. (1948). A Mathematical Theory of Communication. _Bell System Technical Journal_.
-- Kullback, S. & Leibler, R. (1951). On Information and Sufficiency.
-
-== TDA
-- Carlsson, G. (2009). Topology and Data. _Bulletin of the AMS_.
-- Edelsbrunner, H., Letscher, D. & Zomorodian, A. (2002). Topological Persistence and Simplification.
-- Cohen-Steiner, D., Edelsbrunner, H. & Harer, J. (2007). Stability of Persistence Diagrams. _DCG_.
-- Carriere, M. et al. (2020). PersLay. _AISTATS_.
-
-== HMM
-- Baum, L. & Petrie, T. (1966). Statistical Inference for Probabilistic Functions of Finite State Markov Chains. _AMS_.
-- Rabiner, L. (1989). A Tutorial on HMM. _Proc. IEEE_.
-- Dempster, A., Laird, N. & Rubin, D. (1977). Maximum Likelihood from Incomplete Data via EM. _JRSS-B_.
-
-== GMM
-- Pearson, K. (1894). Contributions to the Mathematical Theory of Evolution. _Phil. Trans. Royal Society A_.
-- Schwarz, G. (1978). Estimating the Dimension of a Model. _Annals of Statistics_.
-- Bishop, C. (2006). _Pattern Recognition and Machine Learning_, Ch. 9.
-
-== Time Series / Mamba
-- Gu, A. & Dao, T. (2023). Mamba: Linear-Time Sequence Modeling with Selective State Spaces.
-- Cooley, J. & Tukey, J. (1965). An Algorithm for the Machine Calculation of Complex Fourier Series. _Math. Comp._
-
-== Graph
-- He, X. et al. (2020). LightGCN: Simplifying and Powering GCN for Recommendation. _SIGIR_.
-- Chami, I. et al. (2019). Hyperbolic Graph Convolutional Neural Networks. _NeurIPS_.
-- Nickel, M. & Kiela, D. (2017). Poincare Embeddings for Learning Hierarchical Representations. _NeurIPS_.
-- Rendle, S. et al. (2009). BPR: Bayesian Personalized Ranking from Implicit Feedback. _UAI_.
+- *Economics generators*: Friedman 1957 (_Consumption Function_); Hall 1978 (PIH); Hodrick & Prescott 1997; Kalman 1960; Kahneman & Tversky 1979 (Prospect Theory).
+- *Multidisciplinary*: Arrhenius 1889 (reaction rates); Kermack & McKendrick 1927 (SIR); Cohen & Felson 1979 (Routine Activity); Barabasi 2005 (burst heavy tails); Shannon 1948; Kullback & Leibler 1951.
+- *TDA / PersLay*: Carlsson 2009; Edelsbrunner et al. 2002; Cohen-Steiner et al. 2007; Carriere et al. AISTATS 2020 (PersLay).
+- *HMM*: Baum & Petrie 1966; Rabiner 1989; Dempster et al. 1977 (EM).
+- *GMM*: Pearson 1894; Schwarz 1978 (BIC); Bishop 2006 (_PRML_ Ch. 9).
+- *Time series / Mamba*: Gu & Dao 2023 (Mamba); Cooley & Tukey 1965 (FFT).
+- *Graph*: He et al. SIGIR 2020 (LightGCN); Chami et al. NeurIPS 2019 (HGCN); Nickel & Kiela NeurIPS 2017 (Poincare); Rendle et al. UAI 2009 (BPR).

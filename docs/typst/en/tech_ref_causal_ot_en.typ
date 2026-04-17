@@ -146,30 +146,18 @@
 )
 
 // ============================================================
-// Abstract
+// Scope
 // ============================================================
 #block(
   width: 100%,
   inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
   stroke: (left: 2pt + anthropic-accent),
 )[
-  #text(weight: "bold")[Abstract.]
-  This document describes the theoretical background, mathematical structure, and implementation
-  details of the Causal Expert and the Optimal Transport (OT) Expert — two of the seven Shared
-  Experts in the PLE-based financial recommendation system.
-  The Causal Expert combines Pearl's Structural Causal Model (SCM) with the NOTEARS continuous
-  acyclicity constraint to learn causal relationships among features, while the OT Expert computes
-  Wasserstein distances between customer distributions and prototype distributions via Sinkhorn
-  entropy-regularized optimal transport.
-  Both experts receive the same normalized features as input, yet extract fundamentally different
-  mathematical structures: asymmetric causal directionality and distributional geometry, respectively.
-  Numerical stability issues encountered under FP16 mixed-precision training and their resolutions
-  are also documented.
-
-  #v(0.3em)
-  #text(weight: "bold")[Keywords:]
-  Causal Inference, NOTEARS, SCM, Optimal Transport, Sinkhorn,
-  Wasserstein Distance, DAG, PLE, Financial Recommendation
+  #text(weight: "bold")[Scope.]
+  - Causal Expert: learns a causal DAG among features using Pearl SCM + NOTEARS acyclicity constraint
+  - OT Expert: Sinkhorn entropy-regularized optimal transport → customer↔prototype Wasserstein distances
+  - Shared input: same normalized features, different mathematical extraction (causal direction vs. distributional geometry)
+  - Numerical-stability issues and mitigations under FP16 mixed-precision training
 ]
 
 #v(1em)
@@ -841,15 +829,10 @@ clipping (`gradient_clip_norm: 5.0`) should be used in conjunction.
 )
 
 
-== References
+== Further Reading
 
 #set text(size: 9pt)
 
-+ Zheng, X., Aragam, B., Ravikumar, P., & Xing, E. P. (2018). DAGs with NO TEARS: Continuous optimization for structure learning. _NeurIPS 2018_.
-+ Cuturi, M. (2013). Sinkhorn distances: Lightspeed computation of optimal transport. _NeurIPS 2013_.
-+ Pearl, J. (2009). _Causality: Models, reasoning, and inference_ (2nd ed.). Cambridge University Press.
-+ Bello, K., Aragam, B., & Ravikumar, P. (2022). DAGMA: Learning DAGs via M-matrices and a log-determinant acyclicity characterization. _ICML 2022_.
-+ Kantorovich, L. V. (1942). On the translocation of masses. _Doklady Akademii Nauk_, 37(7-8).
-+ Villani, C. (2009). _Optimal transport: Old and new_. Springer.
-+ Rubin, D. B. (1974). Estimating causal effects of treatments in randomized and nonrandomized studies. _Journal of Educational Psychology_, 66(5).
-+ Sinkhorn, R. (1964). A relationship between arbitrary positive matrices and doubly stochastic matrices. _Annals of Mathematical Statistics_, 35(2).
+- *NOTEARS / DAGMA*: Zheng et al. NeurIPS 2018; Bello et al. ICML 2022.
+- *Sinkhorn OT*: Cuturi NeurIPS 2013; Sinkhorn 1964; Villani 2009 (_Optimal Transport: Old and New_).
+- *Causal inference foundations*: Pearl 2009 (_Causality_, 2nd ed.); Rubin 1974.

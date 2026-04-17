@@ -907,22 +907,13 @@ Characteristics of a healthy affinity matrix:
 
 
 // =====================================================================
-//  References
+//  Further reading
 // =====================================================================
 
-= References
+= Further Reading
 
-+ Caruana, R. (1997). Multitask Learning. _Machine Learning_, 28(1).
-+ Ma, J. et al. (2018). Modeling Task Relationships in Multi-Task Learning with Multi-Gate Mixture-of-Experts. _KDD_.
-+ Tang, H. et al. (2020). Progressive Layered Extraction (PLE): A Novel MTL Model for Personalized Recommendations. _RecSys_.
-+ Kendall, A., Gal, Y. & Cipolla, R. (2018). Multi-Task Learning Using Uncertainty to Weigh Losses. _CVPR_.
-+ Lin, T.-Y. et al. (2017). Focal Loss for Dense Object Detection. _ICCV_.
-+ Yu, T. et al. (2020). Gradient Surgery for Multi-Task Learning (PCGrad). _NeurIPS_.
-+ Chen, Z. et al. (2018). GradNorm: Gradient Normalization for Adaptive Loss Balancing. _ICML_.
-+ Fifty, C. et al. (2021). Efficiently Identifying Task Groupings for Multi-Task Learning. _NeurIPS_.
-+ Navon, A. et al. (2022). Multi-Task Learning as a Bargaining Game (Nash-MTL). _ICML_.
-+ Liu, B. et al. (2021). Conflict-Averse Gradient Descent for Multi-Task Learning (CAGrad). _NeurIPS_.
-+ Ha, D. et al. (2017). HyperNetworks. _ICLR_.
-+ Vaswani, A. et al. (2017). Attention Is All You Need. _NeurIPS_.
-+ Jacobs, R. et al. (1991). Adaptive Mixtures of Local Experts. _Neural Computation_.
-+ Fedus, W. et al. (2022). Switch Transformers: Scaling to Trillion Parameter Models. _JMLR_.
+- *MTL foundations*: Caruana 1997; Ma et al. KDD 2018 (MMoE); Tang et al. RecSys 2020 (PLE); Jacobs et al. 1991 (Adaptive Mixtures).
+- *Loss weighting*: Kendall et al. CVPR 2018 (Uncertainty); Lin et al. ICCV 2017 (Focal); Chen et al. ICML 2018 (GradNorm).
+- *Gradient-level MTL*: Yu et al. NeurIPS 2020 (PCGrad); Liu et al. NeurIPS 2021 (CAGrad); Navon et al. ICML 2022 (Nash-MTL).
+- *Task grouping / routing*: Fifty et al. NeurIPS 2021; Ha et al. ICLR 2017 (HyperNetworks); Fedus et al. JMLR 2022 (Switch Transformer).
+- *Attention*: Vaswani et al. NeurIPS 2017.

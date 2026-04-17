@@ -153,25 +153,13 @@
   inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
   stroke: (left: 2pt + anthropic-accent),
 )[
-  #text(weight: "bold")[Abstract.]
-  This document describes the theoretical background, mathematical structure, and
-  implementation details of the pipeline for distilling knowledge from the PLE-adaTT
-  Teacher model into a LightGBM Student, the FD-TVS 4-Stage composite scoring engine,
-  feature reverse mapping via 734D grounding, the 2-Layer recommendation reason
-  generation architecture, the Safety Gate, and the serving infrastructure.
-  Topics covered include dark knowledge transfer via Temperature Scaling ($T = 5$),
-  LGBM gain importance-based feature selection (~403D $arrow$ ~140D), LGBM custom objectives,
-  the multiplicative combination structure of the FD-TVS master formula,
-  2-tier reason generation with L1 Template + L2 LLM, 3-Agent Self-Critique,
-  the Safety Gate for compliance with the Financial Consumer Protection Act and AI Basic Act,
-  and the end-to-end flow through ONNX + Triton serving.
-
-  #v(0.3em)
-  #text(weight: "bold")[Keywords:]
-  Knowledge Distillation, Temperature Scaling, Dark Knowledge, LightGBM,
-  FD-TVS, Integrated Gradients, Feature Reverse Mapping, Grounding,
-  Recommendation Reason Generation, Self-Critique, Safety Gate,
-  ONNX, Triton Inference Server, Financial Regulation
+  #text(weight: "bold")[Scope.]
+  - Knowledge distillation: PLE Teacher → LGBM Student (Temperature Scaling, custom objective, calibration)
+  - Feature selection: LGBM gain importance, 403D → ~280D per task
+  - FD-TVS scoring: dynamic (segment × behavior) task weights
+  - Reason generation: L1 Template → L2a LLM rewrite → L2b 3-Agent review + SelfChecker
+  - Layer split: 7 distilled LGBM + 3 direct LGBM + 3 Layer-3 rule-based
+  - Serving: Lambda Container Image + LanceDB (recommendation cases) + DynamoDB (cache / audit)
 ]
 
 #v(1em)
@@ -200,10 +188,12 @@
 
 === Core Problem
 
-The PLE-adaTT Teacher model requires approximately 50M parameters and 20GB of VRAM,
-with an inference latency of roughly 50ms per batch of 1,024 samples. For daily batch
-inference over millions of customers, GPU costs alone can reach thousands of dollars per
-month, and the real-time recommendation SLA of 10ms cannot be met.
+The PLE Teacher model used in the AWS Santander benchmark has approximately
+2.6M parameters and is trained on g4dn.xlarge (8GB T4 VRAM) with an inference
+latency of roughly 50ms per batch of 1,024 samples on GPU. To eliminate the cost
+of running a GPU instance continuously for daily batch inference over millions of
+customers, and to meet the real-time recommendation SLA (under 10ms) on
+CPU-only Lambda, we distill the teacher into a LightGBM student.
 
 === Solution Strategy
 
@@ -220,8 +210,8 @@ The Student achieves approximately 5ms per 1K batch on an 8GB RAM CPU, deliverin
   stroke: 0.4pt + luma(200),
   [*Property*], [*PLE Teacher*], [*LGBM Student*],
   [Model Architecture], [PLE-adaTT + Cluster Head], [LightGBM (per-task independent)],
-  [Parameters], [$tilde$50M], [$tilde$300--500 trees/task],
-  [Memory], [20GB VRAM (GPU)], [$tilde$8GB RAM (CPU)],
+  [Parameters], [$tilde$2.6M (AWS Santander)], [$tilde$500 trees/task],
+  [Memory], [$tilde$8GB VRAM (g4dn.xlarge GPU)], [$tilde$1GB RAM (Lambda CPU)],
   [Inference Speed], [$tilde$50ms / 1K batch], [$tilde$5ms / 1K batch],
   [Feature Dimensionality], [734D (design) / ~349D raw / 403D post-Phase-0 (impl.)], [200D (after IG selection, design basis)],
   [Training Data], [Raw features + labels], [Raw features + Hard Labels + Soft Labels],
@@ -593,7 +583,7 @@ L1 reason generation runs a deterministic 4-stage agent pipeline --- zero LLM ca
 + *FactExtractor:* extracts customer-level narrative facts from feature values via YAML-configured Python expressions (e.g., "deposit-focused portfolio", "risk-averse tendency"). Sandboxed, fully deterministic.
 + *InterpretationRegistry:* maps IG attribution top-5 features to financial language via pre-registered 3-tuple enrichments (feature → display_name, direction, explanation). Falls back to `ReverseMapper` (Level RM) if no entry found.
 + *TemplateEngine:* selects template variant via $"hash"("customer"_"id" : "category") mod 5$ and injects FactExtractor output + IG interpretations.
-+ *SelfChecker:* rule-based compliance gate --- verifies no prohibited patterns (comparative claims, guaranteed return statements, etc.) before the reason is released.
++ *SelfChecker:* 3-stage verification gate --- (1) compliance: rule match against prohibited patterns (comparative claims, guaranteed-return statements, etc.), (2) injection: prompt-injection pattern detection, (3) factuality: LLM-based factual consistency check. Only reasons passing all three stages are released.
 
 *Regulatory basis:* Article 19 of the Financial Consumer Protection Act requires equal
 duty of explanation for all customers.
