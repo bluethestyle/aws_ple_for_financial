@@ -15,8 +15,8 @@
   numbering: "1",
 )
 
-#set text(font: ("Noto Serif KR", "New Computer Modern"), size: 10pt)
-#set par(justify: true, leading: 0.6em)
+#set text(font: ("Pretendard", "New Computer Modern"), size: 10.5pt)
+#set par(justify: true, leading: 0.85em)
 #set heading(numbering: "1.1")
 
 // Title
