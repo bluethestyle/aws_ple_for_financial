@@ -79,6 +79,9 @@ outreach/
 *.pdf.bak
 typst-package/
 
+# Print edition scaffold (personal-use commemorative prints, not part of research artifact)
+paper/typst/print/
+
 # Stray draft files at repository root
 # (place drafts in docs/design/ or paper/, not in repo root)
 /*.typ
