@@ -925,17 +925,31 @@ print(df[['TrialName', 'auc_roc', 'val_loss']].head(20))
 "
 ```
 
-== Champion/Challenger 평가
+== Champion/Challenger 평가 (오프라인 게이트)
+
+`scripts/submit_pipeline.py::_decide_promotion`이 아래 순서로 자동 판정하며, 모든 결과는 `AuditLogger.log_model_promotion`(HMAC + hash chain)으로 S3 WORM 감사 로그에 기록됩니다.
 
 ```
-평가 기준:
-  1. Binary: AUC-ROC > champion - 0.01
-  2. Regression: MAE < champion + 5%
-  3. Multiclass: F1-macro > champion
-  4. Latency p99 < 100ms
-  5. PSI < 0.1
-→ 모두 통과: 자동 등록 | 하나라도 실패: 수동 검토
+① --force-promote 플래그 존재?       → promote (operator override)
+② 현 champion 없음?                  → promote (bootstrap)
+③ fidelity_summary.failed > 0?       → reject (safety floor)
+④ ModelCompetition.evaluate():
+   - primary metric 개선 ≥ 0.5%
+   - secondary metric 하락 ≤ 2%
+   - (선택) paired bootstrap 유의성
+   승인                              → promote
+   거부                              → register only (promoted=False)
 ```
+
+| 조건 | 결과 | audit decision |
+|---|---|---|
+| `--force-promote` | 항상 승격 (수동 override) | `force_promote` |
+| champion 없음 | bootstrap 승격 | `bootstrap` |
+| fidelity 실패 ≥ 1건 | 등록만 (안전 floor) | `reject` |
+| Competition 승인 | 자동 승격 | `promote` |
+| Competition 거부 | 등록만 (승격 안 함) | `reject` |
+
+온라인 게이트(`ModelMonitor.evaluate_champion_challenger`, DynamoDB prediction log 기반 two-proportion z-test)는 실 트래픽 누적 후 별도 스케줄 트리거로 활성화 예정.
 
 // =============================================================================
 = 문제 해결 (FAQ)

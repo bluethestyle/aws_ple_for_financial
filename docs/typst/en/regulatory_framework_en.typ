@@ -1207,7 +1207,7 @@ Full-lifecycle model governance aligned with *SR 11-7* (Federal Reserve/OCC), *E
   [PerformanceMonitor], [Task AUC below Yellow threshold], [Alert → retrain evaluation],
 )
 
-After retraining completes, `dag_champion_challenger` is invoked automatically: the new model becomes the challenger and must pass the validation gate described above before promotion.
+After retraining completes, the newly trained model is registered via `ModelRegistry.package`. The offline Champion-Challenger gate (`ModelCompetition.evaluate` with a fidelity safety floor) then auto-decides promotion: it is approved iff the primary metric improves by `min_improvement` (default 0.5%), no secondary metric degrades beyond `max_degradation` (default 2%), and no fidelity failures remain. Every decision — `bootstrap`, `promote`, `reject`, or `force_promote` — is written by `AuditLogger.log_model_promotion` to an HMAC-signed, hash-chained S3 WORM log. `--force-promote` is reserved for operator override (bootstrap or emergency rollback).
 
 === Emergency Response (Kill Switch)
 
@@ -1362,7 +1362,7 @@ While exhaustive review is infeasible, recommendation rationale outputs are peri
 
 === 2. Model Replacement Approval
 
-Champion-Challenger comparison results are confirmed and approved by humans. Even for auto-replacement, a report including replacement rationale, performance comparison, and fairness metrics is generated, with post-review by the operations team.
+The offline Champion-Challenger gate (`ModelCompetition.evaluate`) auto-promotes on statistically significant improvement; bootstrap and emergency rollback are handled via the `--force-promote` operator override. Every decision (`bootstrap` / `promote` / `reject` / `force_promote`) is written by `AuditLogger.log_model_promotion` to an HMAC-signed, hash-chained S3 WORM audit log. A report including replacement rationale, performance comparison, and fairness metrics is generated alongside each promotion, and the operations team performs post-review against the audit chain.
 
 === 3. Incident Escalation
 

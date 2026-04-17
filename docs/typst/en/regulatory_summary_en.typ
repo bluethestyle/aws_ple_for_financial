@@ -353,8 +353,8 @@ A 5-stage model lifecycle integrating SR 11-7 (US Fed/OCC), NIST AI RMF, and FSS
 )
 ]
 
-#card(title: "Key Safeguard: Manual Approval Gate", accent: anthropic-accent)[
-  Stage 3 approval is *always performed by humans*. An automatically generated report containing Champion-Challenger comparison results (performance, fairness, stability) is reviewed by the AI operations team, and the AI Risk Management Committee provides final approval. Automatic model replacement is *explicitly blocked* -- there is no pathway to production deployment without approval.
+#card(title: "Key Safeguard: Offline Champion-Challenger Gate + Audit Chain", accent: anthropic-accent)[
+  Stage 3 approval runs automatically through the `ModelCompetition.evaluate` offline gate: only challengers that improve the primary metric by at least `min_improvement` (default 0.5%) with no secondary metric degrading beyond `max_degradation` (default 2%) and no outstanding fidelity failures are promoted. Bootstrap and emergency rollback are handled through the `--force-promote` operator override. Every decision (`bootstrap` / `promote` / `reject` / `force_promote`) is written by `AuditLogger.log_model_promotion` to an HMAC-signed, hash-chained S3 WORM audit log, producing a non-repudiable record of who promoted what and why. The AI Risk Management Committee reviews the promotion outcome and the audit chain post-hoc.
 ]
 
 // ═══════════════════════════════════════════════════════════

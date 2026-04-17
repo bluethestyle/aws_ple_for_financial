@@ -899,17 +899,31 @@ print(df[['TrialName', 'auc_roc', 'val_loss']].head(20))
 "
 ```
 
-== Champion/Challenger Evaluation
+== Champion/Challenger Evaluation (Offline Gate)
+
+`scripts/submit_pipeline.py::_decide_promotion` auto-decides in this order, and every outcome is written by `AuditLogger.log_model_promotion` (HMAC + hash chain) to the S3 WORM audit log.
 
 ```
-Evaluation criteria:
-  1. Binary: AUC-ROC > champion - 0.01
-  2. Regression: MAE < champion + 5%
-  3. Multiclass: F1-macro > champion
-  4. Latency p99 < 100ms
-  5. PSI < 0.1
--> All pass: Auto-register | Any fail: Manual review
+(1) --force-promote flag present?   -> promote (operator override)
+(2) No current champion?             -> promote (bootstrap)
+(3) fidelity_summary.failed > 0?     -> reject (safety floor)
+(4) ModelCompetition.evaluate():
+    - primary metric improves >= 0.5%
+    - secondary metric degrades <= 2%
+    - (optional) paired bootstrap significance
+    approved                         -> promote
+    rejected                         -> register only (promoted=False)
 ```
+
+| Condition | Result | audit decision |
+|---|---|---|
+| `--force-promote` | Always promote (manual override) | `force_promote` |
+| No champion | Bootstrap promote | `bootstrap` |
+| fidelity failures >= 1 | Register only (safety floor) | `reject` |
+| Competition approves | Auto-promote | `promote` |
+| Competition rejects | Register only (no promotion) | `reject` |
+
+The online gate (`ModelMonitor.evaluate_champion_challenger`, two-proportion z-test on DynamoDB prediction logs) is reserved for post-accumulation evaluation and is scheduler-triggered separately.
 
 // =============================================================================
 = Troubleshooting (FAQ)

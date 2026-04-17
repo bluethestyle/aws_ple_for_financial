@@ -1160,7 +1160,7 @@ RTX 4070 (12GB VRAM)에서 순차 로딩으로 운용한다. 벤더 종속성이
 
 === 2. 모델 교체 승인
 
-Champion-Challenger 비교 결과를 사람이 확인한 후 승인합니다. 자동 교체 시에도 교체 사유·성능 비교·공정성 지표를 포함한 리포트가 생성되며, 운영팀이 사후 검토합니다.
+오프라인 Champion-Challenger 게이트(`ModelCompetition.evaluate`)가 통계적으로 유의한 개선이 있을 때 자동 승격을 결정하며, 부트스트랩 및 긴급 롤백은 `--force-promote` 운영자 오버라이드로 처리합니다. 모든 판정(`bootstrap` / `promote` / `reject` / `force_promote`)은 `AuditLogger.log_model_promotion`을 통해 HMAC 서명 + 해시 체인 연결된 S3 WORM 감사 로그에 기록되며, 교체 사유·성능 비교·공정성 지표를 포함한 리포트와 함께 운영팀이 사후 검토합니다.
 
 === 3. 인시던트 에스컬레이션
 
@@ -1287,7 +1287,7 @@ SR 11-7 Pillar 2가 요구하는 *독립적 모델 검증*을 Champion-Challenge
 #card(title: "드리프트 감지 → 재학습", accent: teal)[
   *DriftDetector (PSI)*: 피처/예측/라벨 분포 변화를 일간 측정\
   *ConsecutiveDriftTracker*: PSI 임계값 초과가 *3일 연속* 발생 시 재학습 트리거 발동\
-  *재학습 파이프라인*: dag\_monthly\_retrain → 신규 모델 학습 → dag\_champion\_challenger → 성능 비교 → 수동 승인
+  *재학습 파이프라인*: dag\_monthly\_retrain → 신규 모델 학습 → ModelRegistry 등록 → 오프라인 Champion-Challenger 게이트(ModelCompetition + fidelity floor) → HMAC 서명 감사 로그 기록 → promote/reject 자동 판정 (`--force-promote`는 운영자 override 전용)
 ]
 
 #card(title: "공정성 모니터링", accent: red-acc)[
@@ -1313,7 +1313,7 @@ SR 11-7 Pillar 2가 요구하는 *독립적 모델 검증*을 Champion-Challenge
 ]
 
 #text(size: 9pt)[
-*복구 절차*: 원인 분석 → 수정 모델 학습 → Champion-Challenger 검증 → 위원회 승인 → 재배포. 모든 비상 대응 이력은 감사 로그에 불변 기록되며, 금감원 보고 대상 여부가 자동 판정됩니다.
+*복구 절차*: 원인 분석 → 수정 모델 학습 → 오프라인 Champion-Challenger 게이트 자동 판정 → HMAC 서명 감사 로그 기록 → 위원회 사후 검토(긴급 롤백은 `--force-promote`로 즉시 적용 후 사후 검토) → 재배포. 모든 비상 대응 이력은 감사 로그에 불변 기록되며, 금감원 보고 대상 여부가 자동 판정됩니다.
 ]
 
 #pagebreak()
