@@ -482,7 +482,7 @@ Negative Transfer가 발생한다. 고정 타워 MTL의 세 가지 한계:
 adaTT는 이를 각각 *선택적 전이*, *gradient cosine similarity*, *3-Phase schedule*로 해결한다.
 
 #warn[스케일 한계 — 13-task에서 adaTT 성능 저하][
-  벤치마크 ablation에서 13개 태스크 규모에서 adaTT가 일관적으로 성능을 하락시키는 것이 관찰되었다 (PLE + adaTT 구조에서 특히 두드러짐). 원인: 표현 수준의 분리(PLE)가 손실 수준의 재혼합(adaTT)에 의해 훼손되는 구조적 충돌. 이에 따라 *GradSurgery (PCGrad 기반 태스크-타입 투영)*가 adaTT를 대체하여 적용되었다. adaTT는 아키텍처 참조용으로 문서에 유지된다.
+  벤치마크 ablation에서 13개 태스크 규모에서 adaTT가 일관적으로 성능을 하락시키는 것이 관찰되었다 (PLE + adaTT 구조에서 특히 두드러짐). 원인: 표현 수준의 분리(PLE)가 손실 수준의 재혼합(adaTT)에 의해 훼손되는 구조적 충돌. adaTT의 대안으로 GradSurgery(PCGrad 기반 태스크-타입 투영)를 실험하였으나, PLE 단독 baseline 대비 의미 있는 개선이 없었고 retained computation graph로 인한 VRAM 오버헤드가 있어 *프로덕션에는 채택하지 않았다*. 최종 구성은 adaTT와 GradSurgery를 모두 비활성화한다. adaTT는 아키텍처 참조용으로 문서에 유지된다.
 ]
 
 == 3.2 Gradient Cosine Similarity

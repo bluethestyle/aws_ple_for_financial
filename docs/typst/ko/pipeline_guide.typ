@@ -441,7 +441,7 @@ python scripts/run_sagemaker_distillation.py \
   --teacher-checkpoint s3://aiops-ple-financial/checkpoints/best/
 ```
 
-== Ablation 실행 (4-Dimension, 48 시나리오)
+== Ablation 실행 (4-Dimension, 23 시나리오)
 
 === Ablation 구조
 
@@ -835,12 +835,12 @@ cold_start:
   distill: true            # 증류 대상 여부
 ```
 
-== task_groups 섹션 (GradSurgery / 태스크 유형 프로젝션)
+== task_groups 섹션 (GradSurgery / 태스크 유형 프로젝션 실험)
 
-_참고: adaTT는 13-task 규모에서 성능 저하. GradSurgery(PCGrad 태스크 유형 프로젝션)로 대체._
+_참고: adaTT는 13-task 규모에서 성능 저하. GradSurgery(PCGrad 태스크 유형 프로젝션)를 대안으로 실험하였으나 채택하지 않았다 --- PLE 단독 baseline 대비 의미 있는 개선이 없었고 VRAM 오버헤드가 발생했다. 최종 구성은 adaTT와 GradSurgery를 모두 비활성화한다._
 
 ```yaml
-# grad_surgery 섹션 (adaTT task_groups 대체)
+# grad_surgery 섹션 (adaTT task_groups 대안으로 실험; 프로덕션 미채택)
 grad_surgery:
   enabled: true
   task_type_groups:
@@ -1060,7 +1060,7 @@ grep "gradient.*norm.*exceed" output/training.log
   [*항목*], [*On-Demand*], [*Spot*],
   [g4dn.xlarge 시간당], [\$0.526], [\~\$0.16 (70% 절감)],
   [50 epochs (\~4시간)], [\$2.10], [\~\$0.64],
-  [48 시나리오 ablation], [\~\$100], [\~\$30],
+  [23 시나리오 ablation (14 joint + 9 structure cross)], [\~\$100], [\~\$30],
 )
 
 == 비용 확인 CLI

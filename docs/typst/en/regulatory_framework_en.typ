@@ -733,7 +733,7 @@ The regulatory compliance infrastructure is organized in 3 layers.
 #card(title: "PII Protection and LLM Security", accent: red-acc)[
   *PII Masking in Serving:* Customer PII (name, account number, resident registration number) is masked before entering the recommendation reason generation pipeline. Only anonymized tokens are passed to the LLM layer, structurally preventing PII leakage to external model providers.\
 
-  *PromptSanitizer for LLM Calls:* All prompts passed to Bedrock (Claude Haiku) are pre-processed by `PromptSanitizer`, which strips 8 injection patterns (4 Korean + 4 English) and validates prompt structure before the API call. This satisfies FSC Principle 7 (Security) and AI Basic Act Art. 34 (risk management).\
+  *PromptSanitizer for LLM Calls:* All prompts passed to Bedrock (Claude Haiku) are pre-processed by `PromptSanitizer`, which strips 8 injection patterns (4 Korean + 4 English) and validates prompt structure before the API call. This is architecturally consistent with FSC Principle 7 (Security) and AI Basic Act Art. 34 (risk management).\
 
   *Structural separation:* The compliance module (ConsentManager, AIOptOut, RegulatoryChecker, ProfilingRights) operates independently from the scoring and reason-generation path. Compliance checks are enforced as pre-flight gates --- a prediction is only served if all compliance conditions are satisfied.
 ]
@@ -1552,7 +1552,7 @@ All regulatory compliance components documented herein (FairnessMonitor, Herding
 
 A 3-agent consensus mechanism (Sonnet×3 independent voting) structurally mitigates hallucination, and minority reports preserve dissenting opinions. Diagnostic history accumulates in a LanceDB case store, serving as "continuous improvement evidence" for regulatory audits.
 
-Core design principle: *"AI analyzes, humans decide"* --- agents recommend only; final decisions are made by operators. This structurally satisfies EU AI Act Art.14 (human oversight), Korean FSS AI guidelines (human intervention), and AI Basic Act (kill switch).
+Core design principle: *"AI analyzes, humans decide"* --- agents recommend only; final decisions are made by operators. This is designed to align with EU AI Act Art.14 (human oversight), Korean FSS AI guidelines (human intervention), and AI Basic Act (kill switch).
 
 Detailed design: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)
 
@@ -1580,5 +1580,5 @@ LanceDB filters.
   [Query API], [`snapshot_at()`, `get_timeline()`, `expire_fact()`],
 )
 
-This satisfies EU AI Act Art.12 (record-keeping), Korean FSS AI guidelines
+This is designed to align with EU AI Act Art.12 (record-keeping), Korean FSS AI guidelines
 (audit trail), and AI Basic Act temporal evidence requirements via a single store.

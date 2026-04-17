@@ -1588,8 +1588,8 @@ SR 11-7 Pillar 2가 요구하는 *독립적 모델 검증*을 Champion-Challenge
   [쿼리 API], [`snapshot_at()`, `get_timeline()`, `expire_fact()`],
 )
 
-이것으로 EU AI Act 제12조(기록 보관), 금감원 AI 가이드라인(감사 추적),
-AI 기본법의 시계열 증적 요구사항을 단일 스토어로 충족한다.
+이 설계는 EU AI Act 제12조(기록 보관), 금감원 AI 가이드라인(감사 추적),
+AI 기본법의 시계열 증적 요구사항에 부합하도록 설계된 단일 스토어 구조이다.
 
 #v(1.5em)
 

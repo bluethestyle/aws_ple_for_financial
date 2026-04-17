@@ -532,7 +532,7 @@ Phase 0 runs on *CPU instances*. GPU instances are not wasted on Phase 0.
 
 Priority: cuDF (GPU) -> DuckDB (CPU columnar) -> pandas (last resort fallback, only for fewer than 10K records). Direct use of `pd.read_parquet()`, `pd.concat()`, `df.apply()` and similar pandas calls is avoided.
 
-== Phase 1--3: Ablation Study (48 Scenarios)
+== Phase 1--3: Ablation Study (23 Scenarios, 48 Total Configurations)
 
 Systematic experiments across 4 dimensions x multiple scenarios:
 

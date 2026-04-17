@@ -418,7 +418,7 @@ python scripts/run_sagemaker_distillation.py \
   --teacher-checkpoint s3://aiops-ple-financial/checkpoints/best/
 ```
 
-== Ablation Execution (4-Dimension, 48 Scenarios)
+== Ablation Execution (4-Dimension, 23 Scenarios)
 
 === Ablation Structure
 
@@ -809,12 +809,12 @@ Key fields per group:
   distill: true            # Whether to include in distillation
 ```
 
-== task_groups Section (GradSurgery / task-type projection)
+== task_groups Section (GradSurgery / task-type projection experiment)
 
-_Note: adaTT degrades at 13-task scale. Replaced by GradSurgery (PCGrad task-type projection)._
+_Note: adaTT degrades at 13-task scale. GradSurgery (PCGrad task-type projection) was tested as an alternative but was not adopted --- it showed no meaningful improvement over the PLE-only baseline and introduced VRAM overhead. The production configuration disables both adaTT and GradSurgery._
 
 ```yaml
-# grad_surgery section (replaces adaTT task_groups)
+# grad_surgery section (tested as adaTT task_groups alternative; not adopted in production)
 grad_surgery:
   enabled: true
   task_type_groups:
@@ -1034,7 +1034,7 @@ grep "gradient.*norm.*exceed" output/training.log
   [*Item*], [*On-Demand*], [*Spot*],
   [g4dn.xlarge per hour], [\$0.526], [\~\$0.16 (70% savings)],
   [50 epochs (\~4 hours)], [\$2.10], [\~\$0.64],
-  [24 ablation scenarios (9 structure × 15 expert)], [\~\$100], [\~\$30],
+  [23 ablation scenarios (14 joint feature+expert + 9 structure cross)], [\~\$100], [\~\$30],
 )
 
 == Cost Check CLI

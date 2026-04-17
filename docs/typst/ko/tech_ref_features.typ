@@ -294,7 +294,7 @@
 전체 ~349D 입력 텐서(Phase 0 후 403D)는 `feature_groups.yaml`의 `target_experts` 선언에 따라
 `FeatureRouter`가 전문가별 지정 인덱스를 슬라이싱하여 전달한다.
 각 전문가는 전체 피처가 아닌 관련 서브셋만 수신한다:
-deepfm=109D, temporal=129D, hgcn=34D, perslay=32D, causal=161D, lightgcn=66D, ot=127D.
+deepfm=168D, temporal=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, ot=127D.
 모델 파라미터는 4.77M → ~2.8M으로 감소하였다.
 
 == 전체 피처 텐서 구성
@@ -323,7 +323,7 @@ deepfm=109D, temporal=129D, hgcn=34D, perslay=32D, causal=161D, lightgcn=66D, ot
 #note[FeatureRouter 슬라이싱][
   구현에서 ~349D 입력 텐서(Phase 0 후 403D)는 `FeatureRouter`를 통해 전문가별로 슬라이싱된다.
   각 전문가는 `feature_groups.yaml`의 `target_experts` 필드에 지정된 피처 그룹의 인덱스만 수신한다.
-  전문가별 입력 차원: deepfm=109D, temporal=129D, hgcn=34D, perslay=32D, causal=161D, lightgcn=66D, ot=127D.
+  전문가별 입력 차원: deepfm=168D, temporal=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, ot=127D.
   전문가 출력은 모두 64D로 균일하게 정렬되어 CGC Gate에 전달된다.
 ]
 
@@ -1101,7 +1101,7 @@ MCC 계층 구조(Root -> L1 -> L2 -> Brand)를 반영한 좌표 및 임베딩. 
 )
 
 #note[per-expert 입력 차원 요약 (FeatureRouter 활성)][
-  deepfm=109D, temporal=129D, hgcn=34D, perslay=32D, causal=161D, lightgcn=66D, ot=127D.
+  deepfm=168D, temporal=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, ot=127D.
   출력은 모두 64D로 균일. 모델 파라미터: 4.77M → ~2.8M (감소).
   라우팅 구성: `feature_groups.yaml`의 `target_experts` 필드.
 ]

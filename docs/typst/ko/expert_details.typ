@@ -161,8 +161,11 @@
   계층 구조(Hyperbolic GCN), 위상 구조(PersLay/TDA), 협업 필터링(LightGCN),
   인과 추론(Causal/NOTEARS), 분포 매칭(Optimal Transport)이라는 고유한 수학적 관점을 제공하며,
   어떠한 단일 전문가도 다른 전문가의 역할을 대체할 수 없다.
-  추가로 GradSurgery(PCGrad 기반 태스크-타입 투영, adaTT를 13-task 규모에서 대체)를 통한 13개 태스크 간
-  gradient 충돌 해소 메커니즘과, 11개 학문 분야에서 도출된 ~349D 입력 피처 / Phase 0 후 403D 체계(Phase 0 v3/v4)를 기술한다.
+  추가로 13개 태스크 간 gradient 충돌 해소 실험을 기술한다: adaTT의 대안으로
+  GradSurgery(PCGrad 기반 태스크-타입 투영)를 실험하였으나, PLE 단독 baseline 대비 의미 있는
+  개선이 없었고 retained computation graph로 인한 VRAM 오버헤드가 있어 *프로덕션에는 채택하지 않았다*.
+  최종 구성은 adaTT와 GradSurgery를 모두 비활성화한다.
+  11개 학문 분야에서 도출된 ~349D 입력 피처 / Phase 0 후 403D 체계(Phase 0 v3/v4)도 기술한다.
   FeatureRouter 활성화로 각 전문가는 전체 ~349D 중 지정된 서브셋만 입력으로 받으며
   (deepfm=168D, temporal=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, ot=127D),
   출력은 64D로 균일하게 유지된다.

@@ -254,9 +254,11 @@
 )[
   *adaTT Scale Note (2026-04-15).* adaTT degrades at 13-task scale. Loss-level transfer
   (156 task pairs) undoes PLE's representation-level separation, causing gradient interference.
-  The active implementation replaces adaTT with *GradSurgery (PCGrad task-type projection)*,
-  which respects PLE's expert boundaries. This document is retained as a reference for
-  the adaTT design; see `grad_surgery.py` for the current implementation.
+  GradSurgery (PCGrad task-type projection) was tested as a gradient-level alternative to adaTT,
+  but showed no meaningful advantage over the PLE-only baseline while incurring significant VRAM
+  overhead (retained computation graph); GradSurgery was not adopted for production. The production
+  configuration disables both adaTT and GradSurgery. This document is retained as a reference for
+  the adaTT design.
 ]
 
 

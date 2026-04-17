@@ -85,8 +85,11 @@
   topological structure (PersLay/TDA), collaborative filtering (LightGCN),
   causal inference (Causal/NOTEARS), and distributional matching (Optimal Transport)---and
   no single expert can substitute for any other.
-  Additionally, this document covers the gradient-conflict resolution mechanism across 13 tasks
-  via GradSurgery (PCGrad task-type projection, replacing adaTT at 13-task scale), and the ~349D
+  Additionally, this document covers the gradient-conflict resolution investigation across 13 tasks:
+  GradSurgery (PCGrad task-type projection) was tested as a gradient-level alternative to adaTT
+  but was not adopted --- it showed no meaningful advantage over the PLE-only baseline while
+  incurring significant VRAM overhead (retained computation graph). The production configuration
+  disables both adaTT and GradSurgery. The document also covers the ~349D
   feature engineering framework (403D after Phase 0 log1p expansion) derived from 11 academic disciplines.
   With FeatureRouter active, each expert receives a designated subset of the 403D tensor rather than the full input.
 
@@ -919,8 +922,10 @@ Cuturi (NeurIPS 2013), Kantorovich (1942).
 )[
   *Scale Note (2026-04-15).* adaTT degrades at 13-task scale: loss-level transfer undoes PLE's
   representation-level separation (156 task pairs, combinatorial coupling). adaTT is retained here
-  for reference; the active implementation replaces it with *GradSurgery (PCGrad task-type projection)*,
-  which operates at the gradient level and respects PLE's expert boundaries.
+  for reference. GradSurgery (PCGrad task-type projection) was tested as a gradient-level alternative
+  but showed no meaningful advantage over the PLE-only baseline while incurring significant VRAM
+  overhead (retained computation graph); GradSurgery was not adopted for production. The production
+  configuration disables both adaTT and GradSurgery.
 ]
 
 == Motivation: Negative Transfer in Multi-Task Learning

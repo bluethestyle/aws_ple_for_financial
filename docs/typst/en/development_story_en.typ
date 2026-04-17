@@ -515,7 +515,7 @@ Ablation experiments and the training process yielded fundamental discoveries ab
 
 === PLE Toggle Bug and Ablation Filter Failure
 
-With `use_ple=false`, all 7 heterogeneous experts collapsed into a single MLP, making the baseline comparison unfair. The fix preserved the expert basket and disabled only PLE layering. Additionally, `feature_group_ranges` stored only column-level keys, so the ablation filter's group-level matching never succeeded --- all 24 scenarios showed identical AUC (0.913). Adding group-level keys resolved it.
+With `use_ple=false`, all 7 heterogeneous experts collapsed into a single MLP, making the baseline comparison unfair. The fix preserved the expert basket and disabled only PLE layering. Additionally, `feature_group_ranges` stored only column-level keys, so the ablation filter's group-level matching never succeeded --- all 24 scenarios showed identical AUC (0.913) (from an earlier v3/v4 debugging episode; the final v1 paper reports 23 scenarios). Adding group-level keys resolved it.
 
 === GPU Utilization Optimization
 
@@ -641,7 +641,7 @@ The core philosophy of the PLE architecture — Mixture of Experts — was appli
       #text(size: 11pt, fill: anthropic-text, weight: "bold")[Infrastructure and Experimentation]
       #v(4pt)
       #text(size: 10pt, fill: anthropic-text)[
-        • 24 ablation scenarios (9 structure × 15 expert) \
+        • 23 ablation scenarios (14 joint feature+expert + 9 structure cross) \
         • AWS SageMaker spot instances \
         • Phase 0 (CPU) + Phase 1\~2 (GPU) separation \
         • Config-driven pipeline architecture
@@ -661,7 +661,7 @@ Two papers have been prepared: one covering the heterogeneous expert PLE archite
 
 == Expert Specialization Revealed by Ablation
 
-Analysis across 24 ablation scenarios (9 structure × 15 expert) clearly demonstrated task-type-specific expert specialization. LightGCN showed the greatest contribution for multiclass tasks (next product prediction), while the Causal expert excelled at regression tasks (customer value estimation). This empirically validates the heterogeneous expert design.
+Analysis across 23 ablation scenarios (14 joint feature+expert + 9 structure cross) clearly demonstrated task-type-specific expert specialization. LightGCN showed the greatest contribution for multiclass tasks (next product prediction), while the Causal expert excelled at regression tasks (customer value estimation). This empirically validates the heterogeneous expert design.
 
 == On-Premises Operational Results
 
@@ -1060,11 +1060,13 @@ The conclusion: adaTT's loss-level transfer mechanism does not scale gracefully
 from homogeneous small-task-count settings to heterogeneous large-task-count
 settings with structural separation at the representation level.
 
-== GradSurgery: Gradient-Level Protection Instead of Loss-Level Transfer
+== GradSurgery: Tested Gradient-Level Alternative (Not Adopted)
 
-The diagnosis of the PLE + adaTT conflict motivated a new approach. Rather than
+The diagnosis of the PLE + adaTT conflict motivated a new experiment. Rather than
 attempting to mix task losses after the fact, the question became: can we prevent
 gradient corruption at the point where it occurs — during the backward pass?
+GradSurgery was implemented and evaluated, but ultimately showed no meaningful
+advantage over the PLE-only baseline; it was not adopted for production.
 
 GradSurgery (Yu et al., 2020) operates by projecting conflicting task gradients
 onto the normal plane of the interfering gradient, eliminating the component
@@ -1129,6 +1131,18 @@ processes and framework overhead are not visible until a training run begins and
 memory pressure reveals them. The only reliable defense is a pre-training VRAM
 audit: `nvidia-smi` before every run, with a hard stop if available memory is
 below the established baseline.
+
+=== GradSurgery Outcome: Not Adopted
+
+Despite the theoretical fit and careful VRAM mitigations, GradSurgery did not
+produce a meaningful improvement over the PLE-only baseline in ablation
+evaluation. The retained computation graph overhead reduced the effective batch
+size from 2048 to 1024 without a compensating gain in task metrics. The
+production configuration therefore disables both adaTT and GradSurgery, relying
+on PLE's representation-level separation alone. The GradSurgery experiment is
+recorded here as negative-result evidence: gradient-level projection does not
+reliably improve on architectural separation when the separation is already
+enforced by PLE's expert routing.
 
 == Why adaTT Works for Big Tech but Not for Finance
 
