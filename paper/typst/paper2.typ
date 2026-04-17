@@ -67,7 +67,7 @@
   We evaluate distillation quality (AUC gap $<$ 3.6 percentage points across 7 binary tasks, mean 2.6 pp),
   reason generation quality via automated compliance validation
   (L1 template coverage 100%, 13/13 tasks; compliance rules applied: suitability, consent, opt-out, profiling, disclosure),
-  and Safety Gate reliability (5 PII patterns, 4 regulatory check categories).
+  and Safety Gate reliability (5 PII patterns, 5 validation categories).
   The system targets low-risk products (check cards, deposits); investment and insurance recommendations are excluded from the deployment scope.
   The system achieves 120ms warm latency on AWS Lambda (L1 predict + 13 tasks)
   at a fraction of the cost of dedicated GPU inference servers,
@@ -117,7 +117,7 @@ We propose a full-chain solution from prediction to persuasion:
 
 + *3-Agent Reason Generation Pipeline*: Role-separated agents (selection → generation → safety) with independent improvement and audit logging.
 
-+ *Safety Gate for Financial Compliance*: Automated checking for hallucination, inappropriate investment advice, and regulatory violations (Korean Financial Consumer Protection Act (금소법, hereafter KKFCPA), Suitability Principle).
++ *Safety Gate for Financial Compliance*: Automated checking for hallucination, inappropriate investment advice, and regulatory violations (Korean Financial Consumer Protection Act (금소법, hereafter KFCPA), Suitability Principle).
 
 + *5-Agent Architecture (3 Serving + 2 Ops)*: Beyond the 3 serving agents, two operational agents (OpsAgent, AuditAgent) interpret monitoring and compliance outputs in natural language, enabling small-team MLOps without dedicated MLOps staff.
 
@@ -260,7 +260,7 @@ ranks highly for MCC-dependent tasks (e.g., top_mcc_shift), and the top-gain fea
 produce explanation-grounded statements such as "customer shows sustained preference
 for merchant category X" rather than generic co-holding signals.
 Crucially, not every task benefits equally from the teacher's soft labels.
-The adaptive threshold gate (Section 3.2) assesses teacher quality per task and
+The adaptive threshold gate (@adaptive-strategy) assesses teacher quality per task and
 routes accordingly: tasks where the teacher exceeds 2x random baseline are distilled,
 while others fall back to direct hard-label training or the rule engine,
 ensuring the soft-label signal is only applied where it genuinely adds value.
@@ -507,10 +507,10 @@ This avoids conflating metrics with incompatible semantics across task types.
     table.hline(stroke: 0.4pt),
     table.cell(colspan: 5, align: left)[_Regression (threshold-routed)_],
     [product\_stability (R²)], [< floor], [—], [—], [R² < floor → SKIP (L3)],
-    [mcc\_diversity\_trend (MAE)], [R²=0.031], [MAE 0.025], [—], [R² < 0.05 → DIRECT],
+    [mcc\_diversity\_trend], [R²=0.031#super[R]], [MAE 0.025#super[E]], [n/a], [R² < 0.05 → DIRECT],
     [cross\_sell\_count (R²)], [0.008], [—], [—], [R² < floor → SKIP (L3)],
   ),
-  caption: [Distillation results per task. Binary tasks use AUC gap (evaluation metric). Multiclass tasks use F1-macro as the _routing_ metric (threshold: $2\/K$); NDCG\@K is reported separately in per-task analysis. Regression tasks use R² as the _routing_ metric and MAE as the _evaluation_ metric. DIRECT-routed tasks show hard-label LGBM results; SKIP-routed tasks are served by the Layer 3 rule engine.],
+  caption: [Distillation results per task. Binary tasks use AUC gap (evaluation metric). Multiclass tasks use F1-macro as the _routing_ metric (threshold: $2\/K$); NDCG\@K is reported separately in per-task analysis. Regression tasks use R² as the _routing_ metric (superscript R) and MAE as the _evaluation_ metric (superscript E); gap is marked n/a when routing and evaluation metrics differ. DIRECT-routed tasks show hard-label LGBM results; SKIP-routed tasks are served by the Layer 3 rule engine.],
 ) <tab:distill-results>
 
 // ============================================================
@@ -841,7 +841,7 @@ opt-out statistics, governance checklist status.
   )[
     #text(size: 9pt)[
       *AuditAgent finding (measured):* \
-      "Recommendation reason grounding score 0.33 (threshold 0.50): only 1 of top-3 tasks had keyword match. Bias DI = 1.0 (4 protected groups treated equally). Financial Consumer Protection Act (금소법) violations: 0 (5 rules verified)." \
+      "Recommendation reason grounding score 0.33 (threshold 0.50): only 1 of top-3 tasks had keyword match. Bias DI = 1.0 (4 protected groups treated equally). KFCPA violations: 0 (5 rules verified)." \
       _3-agent consensus: grounding FAIL (1W+2F), fairness WARN (2P+1W), KFCPA PASS (3/3 unanimous)_
     ]
   ],
@@ -881,7 +881,7 @@ ensuring that the AuditAgent's input is a tamper-evident, time-ordered record of
 ) <tab:ops-design>
 
 The critical constraint is that operational agents have _no shared state_ with the serving path.
-The serving pipeline (L1 Feature Selector #sym.arrow L2a Reason Generator #sym.arrow L2b Safety Gate)
+The serving pipeline (Feature Selector #sym.arrow Reason Generator #sym.arrow Safety Gate)
 produces customer-facing outputs; the operational pipeline
 (DAG completion #sym.arrow OpsAgent/AuditAgent #sym.arrow report storage #sym.arrow human review)
 produces internal operations artifacts.
@@ -923,7 +923,8 @@ in financial AI operations:
 For systematic inspection, the pipeline is divided into six parts with 48 checklist items:
 P1 (Ingestion), P2 (Feature Engineering), P3 (Training/Distillation), P4 (Serving/Recommendation), P5 (Reason Generation), P6 (Monitoring/Governance).
 Each item is defined in YAML config with tool name, threshold, and verdict logic;
-OpsAgent handles 23 items, AuditAgent handles 25 items.
+OpsAgent handles 23 items grouped under 7 operational checkpoints (CP1--CP7, referenced in @tab:ops-consensus),
+and AuditAgent handles 25 items grouped under 5 audit viewpoints.
 
 == Tool Calling Architecture
 
@@ -933,30 +934,76 @@ as callable tools for the agents.
 Query tools can be called freely, while Action tools (incident creation, audit logging)
 require explicit approval, structurally enforcing the Query/Action boundary.
 
-== 3-Agent Consensus Mechanism
+== Environment-Adaptive Consensus Mechanism
 
 To structurally mitigate hallucination risk in LLM-based interpretation,
-three independent Sonnet sessions run in parallel.
+the consensus mechanism is _adapted to the deployment environment_
+because model capability differs fundamentally between the cloud and on-premises settings.
+A single consensus design cannot serve both: cloud-scale models can afford independent parallel voting,
+whereas smaller on-premises models require structural safeguards against conformity bias.
+
+=== AWS: Independent Parallel Voting (Jury Model)
+
+On AWS, three independent Claude Sonnet sessions run in parallel.
 Each agent is assigned a different perspective:
 $alpha$ (conservative), $beta$ (statistical significance), $gamma$ (business impact).
+Agents do not see each other's outputs --- the verdict is formed post-hoc by aggregation.
+Latency is ~5 seconds per checkpoint and cost is 3$times$ a single Sonnet call.
 
-Results are classified into three tiers:
-(1) *Consensus* (3/3): confirmed verdict,
-(2) *Majority* (2/3): priority review --- immediate operator attention,
-(3) *Minority Report* (1/3): secondary review --- dissenting opinion preserved separately.
+=== On-Premises: 2-Round Hybrid (Independent Vote → Sequential Deliberation)
 
-The core principle is *minority report preservation*.
-Once identified, a minority opinion is locked and cannot be deleted ---
-in operations/audit contexts, missing a signal is far more dangerous than a false alarm.
+On-premises deployment uses Qwen 2.5 14B Q4 running on a single RTX 4070 (12GB VRAM).
+At this parameter scale, a purely sequential deliberation (Delphi-style) exhibits
+_convergence bias_: later agents anchor to earlier opinions and minority dissent disappears.
+In operations and audit contexts, a missed signal is far more costly than a false alarm,
+so we split the process into two rounds:
+
+#list(tight: true,
+  [*Round 1 (independent vote, 5 agents)*: each agent votes without seeing others' outputs. Minority opinions are _locked_ at the end of this round and cannot be deleted in subsequent processing.],
+  [*Round 2 (sequential deliberation, 2 agents)*: two additional agents read the full Round 1 output, strengthen the arguments for each position (majority and minority alike), and produce a final structured verdict. Round 2 improves argument quality without overwriting the minority view preserved from Round 1.],
+)
+
+For each checkpoint, Round 1 takes ~75 seconds (5 agents $times$ 15s each on 14B Q4)
+and Round 2 takes ~40 seconds; only items flagged WARN or FAIL by the rule engine
+enter consensus (typically 5--10 per inspection), yielding a total of ~45 minutes per inspection cycle.
+
+This hybrid design is chosen over pure Delphi for four reasons:
+(1) _minority preservation_ --- secured by Round 1 independence and structurally unmodifiable thereafter;
+(2) _argument quality_ --- achieved by Round 2 deliberation, matching the benefit of pure Delphi;
+(3) _weak-model fit_ --- Round 1 independence avoids the conformity bias to which small models are
+especially susceptible; (4) _audit suitability_ --- every opinion is preserved, so an auditor
+can always trace "why a minority view was (or was not) escalated."
+
+=== Common Classification Rules
+
+Both environments produce three verdict tiers (counts differ by agent population):
+
+#figure(placement: top, scope: "parent",
+  table(
+    columns: (auto, auto, auto, 1.2fr),
+    inset: 5pt,
+    align: (left, left, left, left),
+    stroke: 0.5pt,
+    [*Tier*], [*AWS (3 agents)*], [*On-prem (5 R1 agents)*], [*Action*],
+    [Consensus (unanimous)], [3/3 agree], [5/5 agree], [Confirmed verdict],
+    [Majority (priority review)], [$gt.eq$ 2/3], [$gt.eq$ 3/5], [Immediate operator review],
+    [Minority Report], [1/3 dissent], [1--2/5 dissent], [Secondary review list, preserved separately],
+  ),
+  caption: [Verdict classification by environment. The on-prem R1 population is larger (5 vs 3) to compensate for lower per-agent reasoning capacity; the additional R2 deliberation does not alter the locked R1 verdicts.],
+) <tab:consensus-tiers>
+
+The core principle across both environments is *minority report preservation*.
 Novel problem types are often caught first by the dissenting perspective
 while the majority, anchored to familiar patterns, overlooks them.
 
-*Note on independence*: this pipeline invokes the *same* Sonnet model three times with different system prompts (conservative / statistical / business perspectives) and sampling temperature variation. What this actually secures is *conditioned diversity*, not weight-level independence. Unanimity therefore indicates only that three conditioned perspectives converged to the same point; a shared training lineage can share the same bias, so we *treat unanimity as a weak signal*. High-risk checks (AV1 fairness, AV2 PII detection, etc.) escalate any minority dissent to human review regardless of the majority verdict.
+*Note on independence*: in the AWS variant, this pipeline invokes the *same* Sonnet model three times with different system prompts and sampling temperature variation. What this secures is *conditioned diversity*, not weight-level independence. Unanimity therefore indicates only that three conditioned perspectives converged to the same point; a shared training lineage can share the same bias, so we *treat unanimity as a weak signal*. High-risk checks (AV1 fairness, AV2 PII detection, etc.) escalate any minority dissent to human review regardless of the majority verdict. The on-prem variant uses a single Qwen model checkpoint as well, so the same caveat applies; Round 1 independence mitigates but does not eliminate the shared-lineage bias.
 
-=== Consensus Results from Production Test
+=== Consensus Results from Production Test (AWS variant)
 
 @tab:ops-consensus and @tab:audit-consensus report the consensus outcomes
-from a production test run on the live Lambda serving pipeline.
+from a production test run on the live Lambda serving pipeline (AWS 3-agent variant).
+On-prem 2-Round results are not reported here because the on-prem deployment is an operational
+fallback target rather than a benchmark configuration.
 The verdict rule is: *PASS requires unanimous (3/3)*; any dissent yields WARN;
 any FAIL vote yields FAIL verdict regardless of majority.
 
@@ -1163,10 +1210,10 @@ explainable recommendations" becomes compatible with regulation.
       node((1, 0), [*Fairness Monitor* \ #text(size: 8pt)[DI/SPD/EOD]], width: 36mm, fill: gray-fill, name: <fair>),
       node((2, 0), [*Herding Detector* \ #text(size: 8pt)[HHI/Gini]], width: 36mm, fill: gray-fill, name: <herd>),
 
-      node((0, 1.5), [*OpsAgent* \ #text(size: 8pt)[7 checkpoints] \ #text(size: 8pt)[cross-checkpoint analysis]], width: 42mm, fill: ops-fill, name: <ops>),
-      node((2, 1.5), [*AuditAgent* \ #text(size: 8pt)[5 viewpoints] \ #text(size: 8pt)[3-Tier reason quality]], width: 42mm, fill: audit-fill, name: <aud>),
+      node((0, 1.5), [*OpsAgent* \ #text(size: 8pt)[7 checkpoints / 23 items] \ #text(size: 8pt)[cross-checkpoint analysis]], width: 42mm, fill: ops-fill, name: <ops>),
+      node((2, 1.5), [*AuditAgent* \ #text(size: 8pt)[5 viewpoints / 25 items] \ #text(size: 8pt)[3-Tier reason quality]], width: 42mm, fill: audit-fill, name: <aud>),
 
-      node((1, 2.8), [*3-Agent Consensus* \ #text(size: 8pt)[Sonnet × 3 independent voting] \ #text(size: 8pt)[Minority report preservation]], width: 55mm, fill: luma(240), name: <consensus>),
+      node((1, 2.8), [*Environment-Adaptive Consensus* \ #text(size: 8pt)[AWS: Sonnet × 3 parallel voting] \ #text(size: 8pt)[On-prem: Qwen × (5+2) 2-Round] \ #text(size: 8pt)[Minority report preservation]], width: 60mm, fill: luma(240), name: <consensus>),
 
       node((1, 4), [*Governance Report* \ #text(size: 8pt)[Monthly auto-generated]], width: 45mm, fill: report-fill, name: <gov>),
 
@@ -1351,7 +1398,7 @@ Human evaluation is planned for production deployment; automated compliance vali
     [L1 template coverage], [Tasks with template-based reason generation], [100% (13/13)],
     [Template variants], [Distinct templates (6 categories × 5 variants)], [30],
     [PII detection patterns], [Regex-based PII check rules], [5],
-    [Compliance rules applied], [Suitability, consent, opt-out, profiling], [4],
+    [Compliance rules applied], [Suitability, consent, opt-out, profiling, disclosure], [5],
   ),
   caption: [Automated reason quality metrics. Human evaluation is planned for production deployment (pending Bedrock L2a rollout).],
 ) <tab:human-eval>
@@ -1370,7 +1417,7 @@ and L2a Bedrock rewrite pipeline, reporting four automated quality dimensions.
     [*Metric*], [*Definition*], [*Result*],
     [Grounding score], [Fraction of tasks with matched Korean keywords in reason text], [0.33 (1/3 sampled)],
     [Readability], [Fluency score (no broken template markers)], [1.00],
-    [Overall quality], [Weighted combination of grounding + readability + compliance], [0.74],
+    [Overall quality], [$0.4 times$ grounding $+ 0.3 times$ readability $+ 0.3 times$ compliance (all normalized to $[0,1]$)], [0.74],
     [Bias DI], [Disparate Impact across all protected groups], [1.0 (no bias detected)],
     [Domestic compliance (KFCPA)], [Rules checked (suitability, consent, opt-out, profiling, disclosure)], [5 checked, 0 violations],
   ),
@@ -1394,7 +1441,7 @@ TemplateEngine before L2a Bedrock rewrite.
     [will\_acquire\_investments#super[†]], [This may align with your financial goals. This investment product is suited to your current financial lifecycle stage.],
     [churn\_signal], [We aim to maintain your valued transaction relationship. We analyze your usage patterns to recommend a customer retention program.(를)],
   ),
-  caption: [L1 template reason examples from production Lambda (ple-predict), translated from Korean, before L2a rewrite. The artifact "(를)" in rows 1 and 3 is the type of grammatical defect L2a corrects (a Korean object-marker placeholder left by the template engine). †Benchmark-only task; deployment restricted to low-risk products (Section 6.3).],
+  caption: [L1 template reason examples from production Lambda (ple-predict), translated from Korean, before L2a rewrite. The artifact "(를)" in rows 1 and 3 is the type of grammatical defect L2a corrects (a Korean object-marker placeholder left by the template engine). †Benchmark-only task; deployment restricted to low-risk products (Section 6.3.1).],
 ) <tab:l1-reasons>
 
 === L2a Bedrock Rewrite Example
@@ -1431,11 +1478,11 @@ First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the 
     stroke: 0.5pt,
     [*Metric*], [*Description*], [*Value*],
     [PII pattern count], [Regex-based PII detection rules], [5],
-    [Regulatory check categories], [Suitability, hallucination, PII, injection], [4],
+    [Validation categories], [Hallucination, Regulatory, Appropriateness, Tone, Factual (see @tab:safety-gate)], [5],
     [Human review sample rate], [Fraction of L2a outputs reviewed by humans], [5%],
     [Fallback rate to L1], [Configurable threshold; triggered on gate failure], [configurable],
   ),
-  caption: [Safety Gate automated metrics. Precision/recall evaluation pending live deployment; 4 of 5 validation stages map to regulatory categories (Section 4.3).],
+  caption: [Safety Gate automated metrics. Precision/recall evaluation pending live deployment; validation categories are defined in @tab:safety-gate.],
 ) <tab:safety-eval>
 
 == Serving Performance
@@ -1629,7 +1676,7 @@ via Gaussian Copula + latent variable variance budget with fixed seed).
 No real customer data is included in this version. Validation on production data is planned for a subsequent revision.
 The production system design targets low-risk check card products only;
 investment and insurance product recommendations are explicitly excluded
-from the deployment scope (Section 6.3).
+from the deployment scope (Section 6.3.1).
 The system is designed to comply with Korean FSS AI guidelines,
 the EU AI Act, and the Korean AI Basic Act,
 with automated fairness monitoring across 5 protected attributes.

@@ -1,11 +1,18 @@
 # Heterogeneous Expert PLE for Financial Product Recommendation
 
+[![Paper 1 DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19621884.svg)](https://doi.org/10.5281/zenodo.19621884)
+[![Paper 2 DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19622052.svg)](https://doi.org/10.5281/zenodo.19622052)
+[![License: CC BY 4.0](https://img.shields.io/badge/License-CC_BY_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
+
 **금융 상품 추천 시스템** -- 고객에게 "왜 이 상품인지" 설명할 수 있는 AI
 
 > A recommendation system that doesn't just predict what customers will buy —
 > it explains *why*, in language that customers, bankers, and regulators understand.
 
-[Paper 1 (Architecture)](paper/typst/paper1.pdf) | [Paper 2 (Serving & Ops)](paper/typst/paper2.pdf) | [Paper 3 (Loss Dynamics)](paper/typst/paper3.pdf)
+**Preprints on Zenodo:**
+- Paper 1 — [Heterogeneous Expert PLE: Architecture & Ablation](https://doi.org/10.5281/zenodo.19621884) ([local PDF](paper/typst/paper1.pdf))
+- Paper 2 — [From Prediction to Persuasion: Agentic Reason Generation & Compliance](https://doi.org/10.5281/zenodo.19622052) ([local PDF](paper/typst/paper2.pdf))
+- Paper 3 — [Loss Dynamics (work in progress)](paper/typst/paper3.pdf)
 
 ---
 
@@ -104,7 +111,7 @@ paper/                   Research papers (Typst)
 
 | Category | Documents |
 |----------|-----------|
-| **Papers** | [Paper 1: Architecture (EN)](paper/typst/paper1.pdf) · [KO](paper/typst/paper1_ko.pdf) · [Paper 2: Serving & Ops (EN)](paper/typst/paper2.pdf) · [KO](paper/typst/paper2_ko.pdf) · [Paper 3: Loss Dynamics](paper/typst/paper3.pdf) |
+| **Papers** | [Paper 1: Architecture (Zenodo DOI)](https://doi.org/10.5281/zenodo.19621884) · [local EN](paper/typst/paper1.pdf) · [KO](paper/typst/paper1_ko.pdf) · [Paper 2: Serving & Ops (Zenodo DOI)](https://doi.org/10.5281/zenodo.19622052) · [local EN](paper/typst/paper2.pdf) · [KO](paper/typst/paper2_ko.pdf) · [Paper 3: Loss Dynamics (WIP)](paper/typst/paper3.pdf) |
 | **Architecture** | [Overview](docs/typst/en/architecture_overview_en.pdf) · [Expert Details](docs/typst/en/expert_details_en.pdf) · [Pipeline Guide](docs/typst/en/pipeline_guide_en.pdf) |
 | **Technical Refs** | [PLE/adaTT](docs/typst/en/tech_ref_ple_adatt_en.pdf) · [Features](docs/typst/en/tech_ref_features_en.pdf) · [Causal/OT](docs/typst/en/tech_ref_causal_ot_en.pdf) · [Temporal](docs/typst/en/tech_ref_temporal_en.pdf) · [Distillation/Reason](docs/typst/en/tech_ref_distill_reason_en.pdf) |
 | **Regulatory** | [Compliance Summary](docs/typst/en/regulatory_summary_en.pdf) · [Full Framework](docs/typst/en/regulatory_framework_en.pdf) |
@@ -113,6 +120,34 @@ paper/                   Research papers (Typst)
 | **Case Studies** | [DuckDB as ML Pipeline Engine](docs/duckdb-case-study.md) · [AI Collaboration Guide](docs/typst/en/ai_collaboration_guide_en.pdf) |
 
 All technical documents are available in both Korean and English (see `docs/typst/ko/` and `docs/typst/en/`).
+
+## Citation
+
+If you use this work, please cite the preprints:
+
+```bibtex
+@misc{jeong2026heteroexpertple,
+  author       = {Jeong, Seonkyu and Sim, Euncheol and Kim, Youngchan},
+  title        = {{Heterogeneous Expert PLE: An Explainable Multi-Task
+                   Architecture for Financial Product Recommendation}},
+  year         = {2026},
+  publisher    = {Zenodo},
+  version      = {1.0},
+  doi          = {10.5281/zenodo.19621884},
+  url          = {https://doi.org/10.5281/zenodo.19621884}
+}
+
+@misc{jeong2026agenticreason,
+  author       = {Jeong, Seonkyu and Sim, Euncheol and Kim, Youngchan},
+  title        = {{From Prediction to Persuasion: Agentic Recommendation
+                   Reason Generation for Regulatory-Compliant Financial AI}},
+  year         = {2026},
+  publisher    = {Zenodo},
+  version      = {1.0},
+  doi          = {10.5281/zenodo.19622052},
+  url          = {https://doi.org/10.5281/zenodo.19622052}
+}
+```
 
 ## AI-Augmented Development
 

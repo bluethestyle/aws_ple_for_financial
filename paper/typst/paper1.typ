@@ -139,7 +139,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 == Contributions
 
-+ *Heterogeneous Shared Expert Basket with Structural Collapse Guarantee*: We replace PLE's homogeneous MLP experts with seven architecturally distinct experts (DeepFM, Mamba+LNN+Transformer, HGCN, PersLay, NOTEARS, LightGCN, Optimal Transport). Unlike prior "heterogeneous" MoE work that varies expert _size_ @mowst2024 or _modality_ @jamba2024, we vary the fundamental _inductive bias_, providing a structural guarantee against expert collapse --- a persistent failure mode in homogeneous MoE/PLE deployments @home2024.
++ *Heterogeneous Shared Expert Basket with Structural Collapse Guarantee*: We replace PLE's homogeneous MLP experts with seven architecturally distinct experts (DeepFM, Temporal Ensemble, HGCN, PersLay, Causal, LightGCN, Optimal Transport). Unlike prior "heterogeneous" MoE work that varies expert _size_ @mowst2024 or _modality_ @jamba2024, we vary the fundamental _inductive bias_, providing a structural guarantee against expert collapse --- a persistent failure mode in homogeneous MoE/PLE deployments @home2024.
 
 + *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via expert routing declarations at the feature group level), not the full 349D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 27D--168D), reducing model parameters from 4.77M to ~2.8M while strengthening each expert's specialization.
 
@@ -155,7 +155,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Uncertainty Weighting Correction*: We identify and fix a subtle implementation gap where per-task loss weights were silently ignored under uncertainty weighting --- yielding the single largest performance improvement ($+$0.018 NDCG\@3, $+$0.031 F1-macro), larger than any architectural change.
 
-+ *Comprehensive Ablation*: 27 scenarios (18 joint feature+expert + 9 structure cross) on a reproducible 1M-customer benchmark with Gaussian Copula + latent variable variance budget.
++ *Comprehensive Ablation*: 23 scenarios (14 joint feature+expert + 9 structure cross) on a reproducible 1M-customer benchmark with Gaussian Copula + latent variable variance budget.
 
 + *Config-driven Pipeline*: End-to-end system (feature engineering → training → distillation → serving) controlled by two configuration files, enabling deployment by teams with 1--2 ML engineers.
 
@@ -240,7 +240,7 @@ effectively deactivating others regardless of their functional diversity.
 Our heterogeneous expert design structurally prevents (1).
 For (2), prior work suggests sigmoid gating @sigmoid_moe2024 mitigates routing collapse
 through independent expert contributions.
-However, our ablation (Section 5.3) reveals that in heterogeneous task settings,
+However, our ablation (Section 5.4) reveals that in heterogeneous task settings,
 softmax's competitive isolation better protects minority-type tasks ---
 a reversal of the homogeneous-task finding.
 
@@ -559,7 +559,7 @@ The complete data-axis-to-expert-to-feature-generator mapping is shown in @tab:m
       edge(<towers>, <kd>, "->"),
       edge(<kd>, <serve>, "->"),
 
-      // adaTT arrows removed — adaTT degrades at 13-task scale (Section 5.3)
+      // adaTT arrows removed — adaTT degrades at 13-task scale (Section 5.4)
 
 
     )
@@ -568,7 +568,7 @@ The complete data-axis-to-expert-to-feature-generator mapping is shown in @tab:m
 ) <fig:architecture>
 
 Unlike standard PLE where shared experts are identical MLPs,
-our shared expert basket contains seven structurally distinct networks.
+our shared expert basket contains seven structurally distinct networks (@tab:experts).
 Each expert corresponds to one or more modality axes (@tab:modality-axis),
 ensuring that every structurally distinct data type
 is processed by an architecture designed for it:
@@ -673,7 +673,7 @@ that carry no information relevant to that expert's inductive bias.
 
 Feature group assignments are declared in `feature_groups.yaml` via the `target_experts` field,
 ensuring zero dataset-specific hardcoding in model code.
-The resulting per-expert input dimensions are:
+The resulting per-expert input dimensions are summarized in @tab:feature-router:
 
 #figure(
   scope: "parent",
@@ -732,7 +732,7 @@ The sigmoid variant evaluates each expert's relevance independently
 before normalization, allowing multiple experts to receive high weight simultaneously.
 The theoretical expectation is that sigmoid benefits heterogeneous experts
 by preserving non-redundant signals.
-However, our structure ablation (Section 5.3) reveals a surprising reversal:
+However, our structure ablation (Section 5.4) reveals a surprising reversal:
 softmax *outperforms* sigmoid in the 13-task heterogeneous setting,
 because its competitive allocation *protects* minority-type tasks
 (multiclass, regression) from gradient corruption by the majority type (binary).
@@ -771,7 +771,7 @@ each discipline's features are designed to feed a _specific expert_
 whose inductive bias can best exploit that signal type.
 Rather than relying solely on standard statistical features
 (mean, variance, trend), we apply domain-specific mathematical tools
-that each extract a structurally different signal from the same underlying data.
+that each extract a structurally different signal from the same underlying data (@tab:multidisciplinary).
 
 #figure(
   scope: "parent",
@@ -869,9 +869,9 @@ which is architecturally cumbersome when experts produce outputs of different sh
 if two tasks have similar gradient directions (high cosine similarity),
 their losses reinforce each other, regardless of the expert that produced the prediction.
 
-_Note_: While theoretically motivated, our ablation (Section 5.3) shows that adaTT
+_Note_: While theoretically motivated, our ablation (Section 5.4) shows that adaTT
 *degrades* performance at the 13-task scale due to 156-pair affinity estimation instability.
-GradSurgery (Section 5.3) was tested as a gradient-level alternative but not adopted due to lack of improvement and VRAM overhead.
+GradSurgery (Section 5.4) was tested as a gradient-level alternative but not adopted due to lack of improvement and VRAM overhead.
 
 == Logit Transfer
 
@@ -1045,7 +1045,7 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
     [Hard], [will_acquire\_\*], [0.03], [0.72], [0.50--0.56],
     [V.Hard], [next_mcc, top_mcc_shift], [0.02], [0.78], [0.50--0.51],
   ),
-  caption: [Variance budget per label tier. XGB AUC ceiling validates difficulty control.],
+  caption: [Variance budget per label tier (benchmark v4 per-tier allocation). XGB AUC ceiling validates difficulty control. The final benchmark version (v12) reported throughout this paper uses a unified global allocation (obs\_frac=0.15, lat\_frac=0.35, noise\_frac=0.50) with 3rd--5th order multiplicative label interactions, producing meaningful class distributions across all 13 tasks (described in the paragraph below).],
 ) <tab:variance-budget>
 
 The benchmark underwent several iterations (v2 through v4; see Appendix F for version history).
@@ -1158,7 +1158,7 @@ and uncertainty weighting (all variants use the corrected implementation
 where per-task loss weight is applied on top of learned precision).
 All variants use the full 7 heterogeneous expert basket with 10 epochs,
 batch size 5632, and AMP enabled.
-Avg AUC covers binary tasks only; NDCG\@3 is reported for nba\_primary (7-class product recommendation); Avg F1m covers multiclass tasks; Avg MAE covers regression tasks.
+Avg AUC covers binary tasks only; NDCG\@3 is reported for nba\_primary (7-class product recommendation); Avg F1m covers multiclass tasks; Avg MAE covers regression tasks. Results appear in @tab:structure-ablation.
 
 #figure(
   scope: "parent",
@@ -1220,7 +1220,7 @@ a practical lesson often overlooked in architecture-focused papers.
 
 == Expert Contribution Analysis: Beneficial vs.\ Negative Transfer (RQ4)
 
-We assess each expert's contribution by examining how performance changes when it is individually removed from the full model (baseline AUC = 0.6724, joint\_full 10-epoch). Positive ΔAUC indicates the expert contributes negative transfer; negative ΔAUC indicates the expert is beneficial. Magnitudes are small ($<$ 0.001) due to synthetic data limitations; genuine expert differentiation requires production data with real behavioral signals.
+We assess each expert's contribution by examining how performance changes when it is individually removed from the full model (baseline AUC = 0.6724, joint\_full 10-epoch). Positive ΔAUC indicates the expert contributes negative transfer; negative ΔAUC indicates the expert is beneficial. Magnitudes are small ($<$ 0.001) due to synthetic data limitations; genuine expert differentiation requires production data with real behavioral signals. Results are summarized in @tab:degradation.
 
 #figure(
   table(
@@ -1275,7 +1275,7 @@ to facilitate comparison across different numbers of experts.
 
 Measured on the PLE-softmax checkpoint,
 CGC layer gate weights show meaningful task-level specialization
-with entropy ratios ranging from 0.33 to 0.88 across the 13 tasks and 2 CGC layers.
+with entropy ratios ranging from 0.33 to 0.88 across the 13 tasks and 2 CGC layers (@tab:gate-entropy).
 This confirms that routing collapse has not occurred:
 all tasks engage multiple experts, while distinct tasks show distinct routing patterns.
 Low-entropy tasks concentrate on 1--2 experts; high-entropy tasks draw broadly across the expert basket.
@@ -1521,7 +1521,7 @@ a cautionary lesson for MTL practitioners.
 
 A particularly instructive failure: a configuration bug that disabled PLE
 collapsed the 7-expert basket into a single MLP,
-making all 24 ablation scenarios produce identical AUC (0.913).#footnote[The 0.913 AUC reflects an earlier benchmark version (v4) with different data distributions; current benchmark v12 produces AUC in the 0.67 range.]
+making all ablation scenarios in that early run produce identical AUC (0.913).#footnote[The 0.913 AUC reflects an earlier benchmark version (v4) with a different scenario count and data distribution; the final configuration (v12) reports 23 scenarios with AUC in the 0.67 range.]
 This was only discovered through systematic result comparison ---
 reinforcing the principle that ablation results must be verified
 against expected variation before drawing conclusions.
@@ -1738,16 +1738,17 @@ Full configuration files are available in the accompanying repository.
 
 #heading(numbering: none, level: 3)[B. Ablation Scenario Definitions]
 
-The 27 ablation scenarios (18 joint feature+expert + 9 structure cross) are organized into two phases:
+The 23 ablation scenarios (14 joint feature+expert + 9 structure cross) are organized into two phases:
 
-*Phase 1 --- Feature + Expert Joint Ablation (18 scenarios):*
-Baseline (DeepFM only with base features), DeepFM with all features,
-full model, 8 bottom-up scenarios (DeepFM + one expert with matching features),
-and 6 top-down scenarios (full minus one expert-feature pair).
+*Phase 1 --- Feature + Expert Joint Ablation (14 scenarios):*
+Full model (7 experts, PLE softmax) and DeepFM-only baseline;
+6 bottom-up scenarios (DeepFM + one of Temporal, HGCN, PersLay, LightGCN, Causal, OT with matching features);
+and 6 top-down scenarios (full minus one of the same 6 experts).
 
 *Phase 2 --- Task x Structure Cross Ablation (9 scenarios):*
-Nine structural variants --- shared-bottom (no PLE/adaTT), PLE-softmax, PLE-sigmoid,
-adaTT-only, PLE-softmax+adaTT, PLE-sigmoid+adaTT, and GradSurgery×3 (softmax+GradSurgery, sigmoid+GradSurgery, GradSurgery-only) ---
+Nine structural variants --- shared-bottom, PLE-softmax, PLE-sigmoid (no inter-task transfer);
+shared-bottom+adaTT, PLE-softmax+adaTT, PLE-sigmoid+adaTT (loss-level transfer);
+and three GradSurgery variants (shared-bottom+GradSurgery, softmax+GradSurgery, sigmoid+GradSurgery) ---
 all using the full 13 tasks and 7 heterogeneous experts with 10 epochs.
 
 #heading(numbering: none, level: 3)[C. Benchmark Data Generation]
@@ -1763,7 +1764,7 @@ Full generation code is available in the accompanying repository.
 
 #heading(numbering: none, level: 3)[D. AMP FP16 NaN Diagnosis and GradScaler Tuning]
 
-Heterogeneous experts with on-prem-aligned activation functions (ODE-based LNN, linear HGCN output, Softplus TDA weights) produce wider intermediate value ranges than homogeneous MLPs. Under AMP (FP16), this initially caused GradScaler overflow that cascaded into NaN loss --- observed from epoch 2 in PLE configurations with default GradScaler settings. All reported experiments use AMP FP16 training, which provides approximately 2× throughput on the T4/RTX GPU. The NaN issues were resolved by tuning three GradScaler parameters: `init_scale=1024` (lower initial scale reduces overflow at startup), `growth_interval=2000` (slower scale growth prevents rapid re-escalation after overflow events), and `max_scale=4096` (hard ceiling prevents runaway scaling for wide-range expert activations). Additionally, per-task log-variance parameters in the uncertainty weighting head are clamped to $[-5, 5]$ to prevent Softplus overflow from propagating through the loss. With these mitigations, zero NaN batches are observed across all ablation runs.
+Heterogeneous experts with on-prem-aligned activation functions (ODE-based LNN, linear HGCN output, Softplus TDA weights) produce wider intermediate value ranges than homogeneous MLPs. Under AMP (FP16), this initially caused GradScaler overflow that cascaded into NaN loss --- observed from epoch 2 in PLE configurations with default GradScaler settings. All reported experiments use AMP FP16 training, which provides approximately 2× throughput on the T4/RTX GPU. The NaN issues were resolved by tuning three GradScaler parameters: `init_scale=1024` (lower initial scale reduces overflow at startup), `growth_interval=2000` (slower scale growth prevents rapid re-escalation after overflow events), and `max_scale=4096` (hard ceiling prevents runaway scaling for wide-range expert activations). Additionally, per-task log-variance parameters in the uncertainty weighting head are clamped to $[-4, 4]$ to prevent Softplus overflow from propagating through the loss. With these mitigations, zero NaN batches are observed across all ablation runs.
 
 #heading(numbering: none, level: 3)[E. Structural Isomorphism Verification]
 
