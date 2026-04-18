@@ -579,6 +579,40 @@ Ablation 필터가 텐서에서 피처를 제거하는 데 성공했지만, `fea
 
 *Paper 3 방향 재좁히기*: 네 실험 모두 "primary representation에 residual을 더한다"는 공통 구조를 공유했다. 이 구조를 벗어나는 유일한 남은 방향은 A (BRP, Boosting-Residual Path): residual expert를 *primary의 prediction error 위에서* 학습시켜, primary representation을 건드리지 않고 최종 prediction 단계에서만 결합한다. B (TALA)는 parallel path지만 결국 결합 지점이 같아서 ECEB가 사실상 그 variant를 검증한 셈이다. 다음 실험은 BRP로 확정.
 
+=== BRP (Boosting-Residual Path) MV 실험 --- 처음 나타난 질적 차이
+
+*배경*: 다섯 번째 실험. 네 fusion 변종(loss-level adaTT, AdaTT-sp, M1 complement, ECEB MV)이 모두 "primary representation에 residual을 additive로 주입" 한다는 공통 구조로 실패했다. BRP는 이 구조를 명시적으로 탈출한다: residual expert는 *output 공간* 에서 residual logit을 산출하고, primary의 detached prediction error 위에서 boosting 방식으로 학습된다. Primary representation은 건드리지 않는다.
+
+*설계 (MV-BRP)*: `ResidualExpertBank` 모듈 추가 --- 각 task마다 별도 MLP head (hidden=[128,64], dropout=0.1), 입력은 마지막 CGC 층의 `shared_concat` (448차원 = 7 shared experts $times$ 64 hidden), 출력은 primary tower output dim (binary/regression=1, multiclass=N). 학습 discipline: `residual_target = y - "activation"(primary.detach())`, residual loss = MSE(residual_logit, residual_target), 가중치 0.1로 total loss에 가산. Primary tower는 `primary_predictions` 사전에 전달되어 원래 ground-truth loss 그대로 학습. 추론/평가 시 `predictions = primary + sigmoid(lambda_t) dot "residual"` 로 결합 ($lambda_t$ 는 per-task 학습 scalar, init $=-$2.0 $arrow$ sigmoid 약 0.12, 초기에 residual 억제). pipeline.yaml 기본 off, HP 플래그 `use_brp=true` 로 활성. 신규 코드 ~200줄, 기존 경로 변화 없음. 추가 파라미터 3.6M $arrow$ 총 3.56M.
+
+*결과 (10 에폭, single seed)*: `struct_13_brp` final AUC 0.6650 ($Delta$ = $-$0.0078 vs CGC, 6개 중 최악), 그러나 F1_macro 0.2117 (*6개 중 최고*, +0.0115 vs CGC), NDCG\@3 0.7039 (*6개 중 최고*, +0.0219 vs CGC), val_loss 20.87 (6개 중 최저). 트레이드오프는 monotone degradation이 아니다 --- primary 지표(AUC)는 하락하지만 ranking/multiclass 지표는 유의미하게 개선됐다.
+
+*6-way 비교*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  align: (left, center, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*Fusion*], [*Final AUC*], [*F1 macro*], [*NDCG\@3*], [*$Delta$ AUC*]
+  ),
+  [CGC baseline], [*0.6728*], [0.2002], [0.6820], [---],
+  [Loss-level adaTT], [0.6717], [0.2013], [0.6646], [$-$0.0011],
+  [AdaTT-sp], [0.6696], [0.1998], [0.6570], [$-$0.0032],
+  [M1 complement], [0.6675], [0.1998], [0.6611], [$-$0.0053],
+  [ECEB (MV)], [0.6665], [0.1998], [0.6549], [$-$0.0063],
+  [BRP (MV)], [0.6650], [*0.2117*], [*0.7039*], [$-$0.0078],
+)
+
+*Per-task 트레이드오프*: next_mcc (50-class, base F1 0.01 거의 random)에서 F1이 0.0100 $arrow$ 0.0440 (+340% relative)으로 *극적으로 개선*. 반면 churn_signal (baseline AUC 0.6868, binary 중 최고)이 0.6512로 $-$0.036 하락하여 aggregate AUC 손실의 대부분을 설명한다. 이 한 task를 제외하면 AUC도 거의 baseline 수준. 다른 binary 5개는 각각 $-$0.001 $tilde$ $-$0.010 의 작은 손실.
+
+*Mechanism 진단*: residual bank가 `shared_concat` 를 입력받고 residual MSE의 gradient가 shared experts까지 역전파된다 (residual target만 detach, 입력은 아님). Primary 성능이 천장 근처인 task에서는 shared experts가 primary-supporting 최적점에 이미 수렴했는데 추가 MSE pressure가 그 최적점에서 끌어냈다. Primary가 고전하는 task(next_mcc)에서는 residual이 실제 신호를 보충한다. 즉 BRP는 capacity를 easy task에서 hard task로 *재분배* 하는 "task-balance regularizer" 로 작동한다. 기존 fusion 실험들의 monotone degradation과 구조적으로 다른 pattern이다.
+
+*평가*: 여섯 실험 모두 aggregate AUC 개선은 이루지 못했다. 그러나 BRP는 처음으로 *metric-selective* 개선을 보였고, primary representation을 건드리지 않는 구조적 경로가 최소한 일부 지표에서는 유효하다는 증거를 남겼다. Paper 3 narrative는 "fusion augmentation은 AUC 개선 경로로는 막혀있다" 는 명제를 여섯 실험으로 고정하고, BRP를 trade-off case (하드 태스크 구원 vs. 쉬운 태스크 손실) 로 기록한다. 더 정교한 variant (shared_concat detach, per-task enabling, residual_loss_weight tuning)는 후속 실험 스코프.
+
+*환경 전환 노트*: 여섯 실험 모두 로컬 RTX 4070에서 scenario당 $tilde$ 33분 학습으로 진행했다. 다음 단계(variant 실험, multi-seed, cross-dataset)는 로컬 GPU 시간 예산을 초과하므로 SageMaker 제출 경로로 전환한다. 로컬에서의 아키텍처 디버깅은 충분히 끝났고, 후속은 확장 실험 단계다.
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.

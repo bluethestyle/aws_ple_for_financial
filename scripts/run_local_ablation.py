@@ -224,6 +224,30 @@ SCENARIOS: List[Dict[str, Any]] = [
          "use_hmm_projectors": "false",
      }},
 
+    # Paper 3 MV --- BRP (Boosting-Residual Path).
+    # Primary CGC pathway unchanged. A per-task residual expert bank
+    # operates on the last CGC layer's shared_concat (gate-bypass feature
+    # view) and produces per-task logit residuals. Residual loss = MSE on
+    # target - activation(primary.detach()) so the residual fits the
+    # primary's error alone (single-stage boosting). Inference combines
+    # primary + sigmoid(λ_t) * residual in output space. Unlike the four
+    # prior recovery mechanisms, BRP never touches the primary
+    # representation.
+    {"name": "struct_13_brp",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "use_adatt_sp": "false",
+         "use_residual_recovery": "false",
+         "use_eceb": "false",
+         "use_brp": "true",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
     # PLE sigmoid + GroupTaskExpert (GroupEncoder + ClusterEmbedding)
     {"name": "struct_13_ple_sigmoid_gte",
      "hp": {

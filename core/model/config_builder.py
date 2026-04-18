@@ -56,7 +56,7 @@ def build_ple_config(
         PLEConfig, ExpertConfig, ExpertBasketConfig,
         LossWeightingConfig, LogitTransferDef,
         GroupTaskExpertConfig, AdaTTConfig, AdaTTSPConfig,
-        ResidualRecoveryConfig, ECEBConfig, TaskGroupDef,
+        ResidualRecoveryConfig, ECEBConfig, BRPConfig, TaskGroupDef,
         CGCConfig, ExpertInputConfig,
     )
 
@@ -208,6 +208,14 @@ def build_ple_config(
     if use_eceb_raw is not None:
         model_config.setdefault("eceb", {})["enabled"] = bool(
             parse_bool_hp(use_eceb_raw)
+        )
+
+    # BRP (Paper 3 MV: boosting-residual path at output space).
+    # Off by default; enable via HP ``use_brp=true`` in ablation scenarios.
+    use_brp_raw = hp.get("use_brp")
+    if use_brp_raw is not None:
+        model_config.setdefault("brp", {})["enabled"] = bool(
+            parse_bool_hp(use_brp_raw)
         )
 
     # --- Loss weighting ---
@@ -402,6 +410,23 @@ def build_ple_config(
         uncertainty_source=str(eceb_raw.get("uncertainty_source", "gate_entropy")),
         recovery_source=str(eceb_raw.get("recovery_source", "uniform")),
         weight_init=float(eceb_raw.get("weight_init", 0.0)),
+    )
+
+    # BRP (Paper 3 MV: boosting-residual path at output space).
+    brp_raw = (
+        model_config.get("brp")
+        or label_schema.get("brp")
+        or config.get("brp")
+        or {}
+    )
+    ple_config.brp = BRPConfig(
+        enabled=bool(brp_raw.get("enabled", False)),
+        residual_hidden_dims=list(
+            brp_raw.get("residual_hidden_dims", [128, 64])
+        ),
+        residual_weight_init=float(brp_raw.get("residual_weight_init", -2.0)),
+        residual_loss_weight=float(brp_raw.get("residual_loss_weight", 0.1)),
+        dropout=float(brp_raw.get("dropout", 0.1)),
     )
 
     # GroupTaskExpert config

@@ -1095,6 +1095,15 @@ def save_eval_report(
             }
             if hasattr(ple_config, "eceb") else None
         ),
+        "brp": (
+            {
+                "enabled": ple_config.brp.enabled,
+                "residual_hidden_dims": ple_config.brp.residual_hidden_dims,
+                "residual_weight_init": ple_config.brp.residual_weight_init,
+                "residual_loss_weight": ple_config.brp.residual_loss_weight,
+            }
+            if hasattr(ple_config, "brp") else None
+        ),
         "gate_type": getattr(ple_config, "gate_type", "softmax"),
         "total_params": sum(p.numel() for p in model.parameters()),
         "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),

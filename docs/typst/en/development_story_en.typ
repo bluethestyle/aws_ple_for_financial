@@ -661,6 +661,40 @@ PLE's val_loss froze at 3.702 in Phase 2, while shared_bottom (1 MLP) paradoxica
 
 *Narrowing Paper 3 further*: All four experiments share the structural pattern "add a residual to the primary representation." The one remaining candidate that escapes this pattern is A (BRP, Boosting-Residual Path): a residual expert trained on the primary's *prediction errors*, combined with the primary only at the final prediction stage rather than at the representation. B (TALA) looks parallel in form but ultimately combines at the same point, so ECEB effectively acts as a MV-TALA as well. The next experiment is fixed on BRP.
 
+=== BRP (Boosting-Residual Path) MV --- The First Qualitatively Different Outcome
+
+*Background*: The fifth experiment. All four prior fusion variants (loss-level adaTT, AdaTT-sp, M1 complement, ECEB MV) failed under one shared structure: a residual injected additively into the primary representation. BRP explicitly escapes that structure --- the residual expert produces a *logit residual in output space*, and is trained only on the primary's detached prediction error (single-stage boosting). The primary representation is never touched.
+
+*Design (MV-BRP)*: A `ResidualExpertBank` module was added, one MLP head per task (hidden=[128, 64], dropout=0.1), input = the last CGC layer's `shared_concat` (448-dim = 7 shared experts $times$ 64 hidden), output = primary tower's output dim (1 for binary/regression, $N$ for multiclass). Training discipline: `residual_target = y - "activation"(primary.detach())`, residual loss = MSE(residual_logit, residual_target), weighted at 0.1 in the total loss. The primary tower receives `primary_predictions` separately and trains against ground-truth as in baseline PLE. At inference and evaluation, predictions combine as `primary + sigmoid(lambda_t) dot "residual"` with a per-task learnable scalar $lambda_t$ (init = $-$2.0, i.e. sigmoid $approx$ 0.12 to suppress the residual early in training). Off by default in `pipeline.yaml`; activated only through the HP flag `use_brp=true`. About 200 lines of new code, no change to existing paths. Total parameters 3.56M (+0.36M over baseline).
+
+*Result (10 epochs, single seed)*: `struct_13_brp` finished at AUC 0.6650 ($Delta = -0.0078$ vs CGC, the worst aggregate AUC of the six runs). But F1_macro was 0.2117 --- the *highest* of all six by a clear margin (+0.0115 over CGC) --- and NDCG\@3 was 0.7039 (also the highest, +0.0219 over CGC). val_loss finished at 20.87, the lowest of the six. The trade-off was not monotone degradation: the primary metric (AUC) dropped, while ranking and multiclass metrics materially improved.
+
+*6-way comparison*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  align: (left, center, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*Fusion*], [*Final AUC*], [*F1 macro*], [*NDCG\@3*], [*$Delta$ AUC*]
+  ),
+  [CGC baseline], [*0.6728*], [0.2002], [0.6820], [---],
+  [Loss-level adaTT], [0.6717], [0.2013], [0.6646], [$-$0.0011],
+  [AdaTT-sp], [0.6696], [0.1998], [0.6570], [$-$0.0032],
+  [M1 complement], [0.6675], [0.1998], [0.6611], [$-$0.0053],
+  [ECEB (MV)], [0.6665], [0.1998], [0.6549], [$-$0.0063],
+  [BRP (MV)], [0.6650], [*0.2117*], [*0.7039*], [$-$0.0078],
+)
+
+*Per-task trade-off*: next_mcc (50-class, base F1 near random at 0.01) improved dramatically from 0.0100 to 0.0440 (+340% relative). In the other direction, churn_signal --- which had the highest binary AUC in the baseline at 0.6868 --- dropped to 0.6512 ($-$0.036), and this single task accounts for most of the aggregate AUC loss. Excluding churn_signal, AUC would sit near baseline. The other 5 binary tasks each lost between $-$0.001 and $-$0.010.
+
+*Mechanism diagnosis*: the residual bank takes `shared_concat` as input, and the residual-MSE gradient propagates back into the shared experts (only the residual *target* was detached, not the input). For tasks where primary AUC is already near its ceiling, the shared experts had converged to a primary-supporting optimum; additional MSE pressure pulled them off that optimum. For tasks where primary struggles (next_mcc), the residual supplies real signal. In aggregate, BRP functions as a *task-balance regularizer* that redistributes shared-expert capacity from easy tasks toward hard tasks --- structurally distinct from the monotone degradation of the prior four experiments.
+
+*Assessment*: none of the six experiments improved aggregate AUC. But BRP was the first to produce *metric-selective* gains, indicating that a structurally decoupled path --- one that does not inject additively at the primary fusion point --- can at least reach some metrics that the representation-additive family cannot. Paper 3's narrative fixes the claim that fusion augmentation on this benchmark cannot improve AUC across the six variants evaluated, and files BRP as a trade-off case (hard-task rescue vs. easy-task capacity loss). More refined variants (shared_concat detach, per-task enabling, tuning `residual_loss_weight`) are follow-up scope.
+
+*Environment pivot*: all six experiments were executed on the local RTX 4070 at roughly 33 minutes per scenario. The next phase (BRP variants, multi-seed, cross-dataset) exceeds the local GPU time budget and moves to SageMaker submission. Local architectural debugging is complete; subsequent work is in the scaling-up phase.
+
 #section-break()
 
 

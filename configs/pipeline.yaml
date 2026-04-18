@@ -161,6 +161,30 @@ eceb:
   weight_init: 0.0                  # sigmoid(0)=0.5 → balanced start
 
 # ---------------------------------------------------------------------------
+# BRP (Paper 3 MV) — Boosting-Residual Path.
+# Single-stage boosting at the output prediction level. A per-task residual
+# expert bank takes the last CGC layer's shared_concat as a gate-bypass
+# feature view and produces per-task logit residuals matching each primary
+# tower's output shape. The residual expert is trained on the primary's
+# detached prediction error (MSE on target - sigmoid(primary).detach()),
+# keeping the primary's gradient isolated from the residual signal.
+# Inference and evaluation use the combined output
+# primary + sigmoid(λ_t) × residual so metrics reflect the ensemble.
+#
+# Unlike the four prior recovery mechanisms (adaTT, AdaTT-sp, M1
+# complement, ECEB), BRP does NOT add anything to the primary
+# representation — the residual lives in output space. Mutually exclusive
+# with adatt_sp / residual_recovery / eceb at the model level. Off by
+# default.
+# ---------------------------------------------------------------------------
+brp:
+  enabled: false                    # toggle via HP override
+  residual_hidden_dims: [128, 64]   # residual expert MLP widths
+  residual_weight_init: -2.0        # sigmoid(-2)≈0.12: residual starts suppressed
+  residual_loss_weight: 0.1         # weight of residual-error MSE in total loss
+  dropout: 0.1                      # residual expert dropout
+
+# ---------------------------------------------------------------------------
 # Gradient Surgery — PCGrad task-type projection (alternative to adaTT)
 # ---------------------------------------------------------------------------
 grad_surgery:

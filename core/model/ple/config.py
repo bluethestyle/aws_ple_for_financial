@@ -67,6 +67,39 @@ class AdaTTSPConfig:
 
 
 @dataclass
+class BRPConfig:
+    """Boosting-Residual Path (Paper 3, MV).
+
+    Motivation: the four preceding recovery mechanisms (loss-level adaTT,
+    AdaTT-sp, residual_complement, ECEB MV) all inject a residual
+    *additively into the primary representation* and empirically degrade
+    AUC in monotone proportion to the invasiveness of the intervention.
+    BRP is the one remaining design direction in Paper 3's scoping that
+    does not share this structure: it places a separate residual expert
+    bank that predicts *in output space* (per-task logit residual) and
+    combines only at the final prediction step, leaving the primary
+    representation untouched.
+
+    Training (MV): primary task tower is trained against ground-truth
+    targets as in baseline PLE. The residual expert for task *t* is
+    trained on ``e_t = y_t - activation(primary_t.detach())``, i.e. it
+    fits the primary's prediction error with the primary's gradient cut
+    off — the single-stage boosting discipline. Inference and evaluation
+    use the combined prediction ``primary + sigmoid(λ_t) * residual`` so
+    eval metrics reflect the ensemble.
+
+    Mutually exclusive with adatt_sp, residual_recovery, and eceb at the
+    PLE model level (a single fusion-augmentation family is active at
+    once). Off by default.
+    """
+    enabled: bool = False
+    residual_hidden_dims: List[int] = field(default_factory=lambda: [128, 64])
+    residual_weight_init: float = -2.0   # sigmoid(-2) ≈ 0.12: residual starts suppressed
+    residual_loss_weight: float = 0.1    # weight of residual-error loss in total
+    dropout: float = 0.1
+
+
+@dataclass
 class ECEBConfig:
     """Error-Conditioned Expert Bank — uncertainty-gated recovery (Paper 3, MV).
 
@@ -428,6 +461,9 @@ class PLEConfig:
 
     # -- ECEB (uncertainty-conditioned recovery, Paper 3 MV) ----------------
     eceb: ECEBConfig = field(default_factory=ECEBConfig)
+
+    # -- BRP (boosting-residual path, Paper 3 MV) ---------------------------
+    brp: BRPConfig = field(default_factory=BRPConfig)
 
     # -- Gradient Surgery (PCGrad) ------------------------------------------
     grad_surgery: GradSurgeryConfig = field(default_factory=GradSurgeryConfig)

@@ -857,3 +857,58 @@ class ExpertBasket:
     def task_expert_names(self) -> List[str]:
         """Names of task experts in the basket."""
         return list(self._config.task_experts)
+
+
+# ============================================================================
+# BRP — Residual Expert Bank (Paper 3 MV)
+# ============================================================================
+
+class ResidualExpertBank(nn.Module):
+    """Per-task residual expert producing logit residual at output scale.
+
+    Operates outside the CGC gate. Takes the last extraction layer's
+    ``shared_concat`` (concatenated shared-expert outputs) as a
+    gate-bypass feature view and produces per-task logit residuals with
+    shapes matching each task's primary tower output.
+
+    Training discipline (see ``BRPConfig``): the residual is supervised
+    only against ``target - activation(primary.detach())``; this keeps
+    the primary's gradient isolated from the residual expert's
+    learning signal (single-stage boosting).
+
+    The per-task combining scalar ``sigmoid(λ_t)`` lives on ``PLEModel``
+    as a single ``nn.Parameter`` — not here — so that one residual bank
+    serves all tasks with a consistent interface.
+    """
+
+    def __init__(
+        self,
+        task_names: List[str],
+        input_dim: int,
+        task_output_dims: Dict[str, int],
+        hidden_dims: Optional[List[int]] = None,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        if hidden_dims is None:
+            hidden_dims = [128, 64]
+        self.task_names = list(task_names)
+        self.input_dim = input_dim
+        self.task_output_dims = dict(task_output_dims)
+
+        self.heads = nn.ModuleDict()
+        for tn in self.task_names:
+            out_dim = int(task_output_dims[tn])
+            layers: List[nn.Module] = []
+            prev = input_dim
+            for h in hidden_dims:
+                layers.append(nn.Linear(prev, h))
+                layers.append(nn.ReLU())
+                layers.append(nn.Dropout(dropout))
+                prev = h
+            layers.append(nn.Linear(prev, out_dim))
+            self.heads[tn] = nn.Sequential(*layers)
+
+    def forward(self, task_name: str, x: torch.Tensor) -> torch.Tensor:
+        """Return per-task residual logit of shape ``(batch, task_output_dim)``."""
+        return self.heads[task_name](x)

@@ -441,6 +441,7 @@ class PLEModel(nn.Module):
         self._build_task_towers()
         self._build_evidential_layers()
         self._build_sae()
+        self._build_brp_bank()
         self._build_task_loss_fns()
         self._build_loss_weighting()
 
@@ -982,6 +983,63 @@ class PLEModel(nn.Module):
             sae_input_dim, self.sae.latent_dim, cfg.sae_weight,
         )
 
+    def _build_brp_bank(self) -> None:
+        """Build per-task residual expert bank (Paper 3 MV BRP).
+
+        Constructs a ``ResidualExpertBank`` that takes the last CGC layer's
+        ``shared_concat`` (num_shared × expert_hidden_dim) as a
+        gate-bypass feature view, and produces per-task logit residuals
+        matching each task's primary tower output dim. A single
+        ``nn.Parameter`` vector ``brp_scalar`` (one scalar per task) lives
+        at the model level to combine primary + sigmoid(scalar) × residual
+        at forward time.
+
+        Training uses detached primary predictions as the target's
+        subtrahend so the residual learns the primary's error alone
+        (single-stage boosting discipline).
+        """
+        cfg = self.config
+        brp_cfg = getattr(cfg, "brp", None)
+        if brp_cfg is None or not brp_cfg.enabled:
+            self.brp_bank = None
+            self.brp_scalar = None
+            return
+
+        if self.expert_basket is not None:
+            num_shared = self.expert_basket.num_shared_experts
+        else:
+            num_shared = cfg.num_shared_experts
+        shared_concat_dim = num_shared * cfg.shared_expert.output_dim
+
+        task_output_dims = {
+            tn: int(cfg.get_task_output_dim(tn)) for tn in self.task_names
+        }
+
+        from core.model.ple.experts import ResidualExpertBank
+        self.brp_bank = ResidualExpertBank(
+            task_names=self.task_names,
+            input_dim=shared_concat_dim,
+            task_output_dims=task_output_dims,
+            hidden_dims=brp_cfg.residual_hidden_dims,
+            dropout=brp_cfg.dropout,
+        )
+        self.brp_scalar = nn.Parameter(
+            torch.full(
+                (len(self.task_names),),
+                float(brp_cfg.residual_weight_init),
+            )
+        )
+        self._brp_residual_loss_weight = float(brp_cfg.residual_loss_weight)
+
+        logger.info(
+            "BRP bank built: input_dim=%d, tasks=%d, hidden=%s, "
+            "residual_weight_init=%.3f, residual_loss_weight=%.3f",
+            shared_concat_dim, len(self.task_names),
+            brp_cfg.residual_hidden_dims,
+            brp_cfg.residual_weight_init,
+            brp_cfg.residual_loss_weight,
+        )
+
     def _build_task_loss_fns(self) -> None:
         """Build per-task loss functions from config.
 
@@ -1389,6 +1447,28 @@ class PLEModel(nn.Module):
                 evidential_info[task_name] = ev_info
                 predictions[task_name] = ev_pred.unsqueeze(-1)
 
+        # 3b. BRP --- compute per-task residual logits from shared_concat and
+        # combine with primary predictions in output space. Primary
+        # predictions are preserved so the task loss can train the primary
+        # pathway alone (see _compute_brp_residual_loss).
+        primary_predictions: Optional[Dict[str, torch.Tensor]] = None
+        residual_logits_map: Optional[Dict[str, torch.Tensor]] = None
+        if self.brp_bank is not None and shared_concat is not None:
+            primary_predictions = dict(predictions)
+            residual_logits_map = {}
+            brp_lambdas = torch.sigmoid(self.brp_scalar)  # (num_tasks,)
+            for i, task_name in enumerate(self.task_names):
+                p = primary_predictions[task_name]
+                r = self.brp_bank(task_name, shared_concat)
+                # Align residual shape with primary (binary/regression
+                # primary can be (B,) or (B,1); multiclass is (B,C)).
+                if p.dim() == 1 and r.dim() == 2 and r.size(-1) == 1:
+                    r = r.squeeze(-1)
+                elif p.dim() == 2 and r.dim() == 1:
+                    r = r.unsqueeze(-1)
+                residual_logits_map[task_name] = r
+                predictions[task_name] = p + brp_lambdas[i] * r
+
         # 4. Loss computation
         total_loss = None
         task_losses = None
@@ -1399,7 +1479,16 @@ class PLEModel(nn.Module):
             # Cast predictions to FP32 for loss stability under AMP
             # (FP16 tower outputs can overflow ±65504 range)
             with torch.cuda.amp.autocast(enabled=False):
-                predictions_f32 = {k: v.float() for k, v in predictions.items()}
+                # BRP: train the primary tower on ground-truth using the
+                # pre-combine primary predictions. The residual expert is
+                # trained on the primary's detached error via an auxiliary
+                # MSE loss added below (single-stage boosting discipline).
+                loss_source = (
+                    primary_predictions
+                    if primary_predictions is not None
+                    else predictions
+                )
+                predictions_f32 = {k: v.float() for k, v in loss_source.items()}
                 task_losses = self._compute_task_losses(predictions_f32, inputs.targets)
 
             # Guard: if all tasks skipped loss (e.g. label imbalance), return zero loss
@@ -1481,6 +1570,22 @@ class PLEModel(nn.Module):
                 weighted_sae = self.config.sae_weight * sae_loss_value
                 total_loss = total_loss + weighted_sae
                 aux_losses["sae_loss"] = sae_loss_value.item()
+
+            # BRP residual loss (auxiliary, MSE on target - primary.detach()).
+            # Only contributes to the residual expert's gradients — the
+            # primary pathway is isolated by the .detach() in residual target.
+            if (self.training
+                    and self.brp_bank is not None
+                    and primary_predictions is not None
+                    and residual_logits_map is not None):
+                with torch.cuda.amp.autocast(enabled=False):
+                    brp_loss = self._compute_brp_residual_loss(
+                        primary_predictions, residual_logits_map, inputs.targets,
+                    )
+                if brp_loss is not None:
+                    weighted_brp = self._brp_residual_loss_weight * brp_loss
+                    total_loss = total_loss + weighted_brp
+                    aux_losses["brp_residual"] = weighted_brp.item()
 
             # TemporalEnsemble gate entropy monitoring (logging only, no reg)
             # Skip when task representation dim != expert input_dim (post-CGC)
@@ -1721,6 +1826,80 @@ class PLEModel(nn.Module):
             losses[task_name] = loss
 
         return losses
+
+    def _compute_brp_residual_loss(
+        self,
+        primary_predictions: Dict[str, torch.Tensor],
+        residual_logits_map: Dict[str, torch.Tensor],
+        targets: Dict[str, torch.Tensor],
+    ) -> Optional[torch.Tensor]:
+        """BRP residual MSE loss against target - activation(primary.detach()).
+
+        Per task type:
+          - binary: residual_target = y - sigmoid(primary_logit).detach().
+            Primary tower already applies sigmoid when activation="sigmoid",
+            so primary_predictions[t] is already in [0,1]; no extra sigmoid.
+          - multiclass: residual_target = one_hot(y) - softmax_output.detach().
+            Primary tower applies softmax, so primary_predictions[t] is the
+            softmax distribution already.
+          - regression: residual_target = y - primary.detach().
+
+        Returns the summed MSE loss across tasks (unweighted at the task
+        level — the single ``residual_loss_weight`` multiplier is applied
+        by the caller).
+        """
+        total: Optional[torch.Tensor] = None
+        n_contrib = 0
+        for task_name in self.task_names:
+            if task_name not in targets or task_name not in residual_logits_map:
+                continue
+            task_type = self.config.get_task_type(task_name)
+            primary = primary_predictions[task_name].float().detach()
+            residual = residual_logits_map[task_name].float()
+            target = targets[task_name]
+
+            if task_type == "binary":
+                # primary already sigmoid-activated; residual_target in [-1, 1]
+                p = primary.squeeze(-1) if primary.dim() > 1 else primary
+                r = residual.squeeze(-1) if residual.dim() > 1 else residual
+                y = target.float().view_as(p)
+                residual_target = y - p
+                # Skip degenerate batches (loss_fn already skips these)
+                n_pos = (y > 0.5).sum().item()
+                if n_pos == 0 or n_pos == len(y):
+                    continue
+                loss = F.mse_loss(r, residual_target)
+            elif task_type == "multiclass":
+                # primary already softmax; residual head outputs (B, C)
+                if primary.dim() != 2 or residual.dim() != 2:
+                    continue
+                num_cls = primary.size(-1)
+                y_long = target.long()
+                valid = y_long >= 0
+                if valid.sum().item() == 0:
+                    continue
+                y_clamped = y_long.clamp(min=0)
+                one_hot = F.one_hot(y_clamped, num_classes=num_cls).float()
+                residual_target = one_hot - primary
+                if not valid.all():
+                    residual_target = residual_target[valid]
+                    residual = residual[valid]
+                loss = F.mse_loss(residual, residual_target)
+            else:  # regression
+                p = primary.squeeze(-1) if primary.dim() > 1 else primary
+                r = residual.squeeze(-1) if residual.dim() > 1 else residual
+                y = target.float().view_as(p)
+                residual_target = y - p
+                loss = F.mse_loss(r, residual_target)
+
+            total = loss if total is None else total + loss
+            n_contrib += 1
+
+        if total is None or n_contrib == 0:
+            return None
+        # Average across contributing tasks so residual_loss_weight is
+        # calibrated per-task, independent of task count.
+        return total / float(n_contrib)
 
     def _iter_shared_experts(self):
         """Iterate over shared expert modules from extraction layers.
