@@ -1087,6 +1087,14 @@ def save_eval_report(
             }
             if hasattr(ple_config, "residual_recovery") else None
         ),
+        "eceb": (
+            {
+                "enabled": ple_config.eceb.enabled,
+                "uncertainty_source": ple_config.eceb.uncertainty_source,
+                "recovery_source": ple_config.eceb.recovery_source,
+            }
+            if hasattr(ple_config, "eceb") else None
+        ),
         "gate_type": getattr(ple_config, "gate_type", "softmax"),
         "total_params": sum(p.numel() for p in model.parameters()),
         "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),

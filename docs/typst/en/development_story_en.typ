@@ -632,6 +632,35 @@ PLE's val_loss froze at 3.702 in Phase 2, while shared_bottom (1 MLP) paradoxica
 
 *Lesson*: To improve the architecture, the definition of "residual" has to be decoupled from the gate itself. The candidate directions for Paper 3 are (a) a boosting-style residual path that trains on the primary prediction's *errors*, (b) a *task-agnostic* global aggregation placed in parallel with the primary rather than added to it, and (c) a self-regulating second-stage gate conditioned on prediction uncertainty. Each of these structurally avoids the failure mode shared by the three rejected variants. Selection of one of these three will drive the next experiment.
 
+=== ECEB (Error-Conditioned Expert Bank) MV --- The Experiment That Invalidated Our Diagnosis
+
+*Background*: After the M1 failure, the common failure mode of the three recovery experiments (loss-level adaTT, AdaTT-sp, M1 complement) was diagnosed as "a gate-derived residual injected additively at the primary's fusion point." To test that diagnosis, we implemented an ECEB minimum-viable design whose residual is derived not from the gate output but from the gate's *entropy* (uncertainty). By construction, ECEB escapes the shared failure mode of the previous three.
+
+*Design (MV-ECEB)*: A fourth `fusion_type = "eceb"` was added to CGCLayer. The primary gated weighted sum is preserved. The recovery path is a *task-agnostic consensus* (mean over all expert outputs), computed independently of the gate. The recovery weight is the product of a per-task learnable scalar $sigma(w_t)$ and a per-sample normalised gate entropy $H(g_t)/log N$. Final output = $"gated" + sigma(w_t) dot "entropy_ratio" dot "consensus"$. When the gate is confused (high entropy) recovery activates; when the gate is confident (low entropy) recovery approaches zero. Off by default in pipeline.yaml; enabled only through the HP flag `use_eceb=true`. Roughly 50 lines of new code, no effect on existing paths.
+
+*Result (10 epochs, single seed)*: `struct_13_eceb` finished at AUC 0.6665 with best AUC 0.6670 at epoch 4. Against CGC baseline (0.6728), $Delta$ = $-$0.0063 --- the *worst* among the four recovery variants. Unlike M1, the trajectory was not a monotone decline but oscillated in the 0.665--0.667 range; still, baseline was never crossed.
+
+*5-way comparison (struct_13 benchmark, 10 epochs, seed=42)*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  align: (left, left, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*Fusion*], [*Residual definition*], [*Fusion point*], [*Final AUC*], [*$Delta$ vs CGC*]
+  ),
+  [CGC gate], [---], [---], [*0.6728*], [---],
+  [Loss-level adaTT], [cross-task loss mixing], [primary loss], [0.6717], [$-$0.0011],
+  [AdaTT-sp], [own task expert mean], [primary repr (additive)], [0.6696], [$-$0.0032],
+  [M1 complement], [$(1-"gate")$ complement], [primary repr (additive)], [0.6675], [$-$0.0053],
+  [ECEB (MV)], [uncertainty $times$ consensus], [primary repr (additive)], [*0.6665*], [*$-$0.0063*],
+)
+
+*Revised diagnosis*: ECEB decouples the residual definition from the gate output and still fails. The earlier diagnosis --- that the common failure mode was "gate-derived residual" --- was therefore partially wrong. A more accurate reading is: *the primary output on this benchmark is already near-optimal, and any residual, however it is defined, structurally reduces to noise when injected additively at the same fusion point*. Regardless of how clever the residual definition is (gate inverse $arrow.r$ uncertainty-gated consensus), $abs(Delta)$ grew monotonically with the invasiveness of the intervention.
+
+*Narrowing Paper 3 further*: All four experiments share the structural pattern "add a residual to the primary representation." The one remaining candidate that escapes this pattern is A (BRP, Boosting-Residual Path): a residual expert trained on the primary's *prediction errors*, combined with the primary only at the final prediction stage rather than at the representation. B (TALA) looks parallel in form but ultimately combines at the same point, so ECEB effectively acts as a MV-TALA as well. The next experiment is fixed on BRP.
+
 #section-break()
 
 

@@ -508,11 +508,15 @@ class PLEModel(nn.Module):
             expert_names = shared_expert_names if layer_idx == 0 else None
 
             # Fusion type dispatch:
-            #   - adatt_sp.enabled        -> "adatt_sp"  (Li 2023 representation-level fusion)
-            #   - residual_recovery.enabled -> "residual_<method>" (Paper 3 intra-task recovery)
-            #   - otherwise               -> "cgc"       (standard PLE gate)
-            # adatt_sp and residual_recovery are mutually exclusive at this layer;
-            # if both are enabled we prefer residual_recovery (newer mechanism).
+            #   - eceb.enabled               -> "eceb"     (Paper 3 MV: uncertainty-conditioned recovery)
+            #   - residual_recovery.enabled  -> "residual_<method>" (Paper 3 intra-task recovery)
+            #   - adatt_sp.enabled           -> "adatt_sp" (Li 2023 representation-level fusion)
+            #   - otherwise                  -> "cgc"      (standard PLE gate)
+            # eceb, residual_recovery, and adatt_sp are mutually exclusive at
+            # this layer; precedence (newest first) is eceb > residual_recovery > adatt_sp.
+            _eceb_on = (
+                getattr(cfg, "eceb", None) is not None and cfg.eceb.enabled
+            )
             _adatt_sp_on = (
                 getattr(cfg, "adatt_sp", None) is not None and cfg.adatt_sp.enabled
             )
@@ -520,7 +524,10 @@ class PLEModel(nn.Module):
                 getattr(cfg, "residual_recovery", None) is not None
                 and cfg.residual_recovery.enabled
             )
-            if _rr_on:
+            if _eceb_on:
+                _fusion_type = "eceb"
+                _native_init = cfg.eceb.weight_init
+            elif _rr_on:
                 _fusion_type = f"residual_{cfg.residual_recovery.method}"
                 _native_init = cfg.residual_recovery.weight_init
             elif _adatt_sp_on:

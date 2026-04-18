@@ -204,6 +204,26 @@ SCENARIOS: List[Dict[str, Any]] = [
          "use_hmm_projectors": "false",
      }},
 
+    # Paper 3 MV --- ECEB (Error-Conditioned Expert Bank).
+    # Primary = standard CGC gated sum. Recovery = task-agnostic consensus
+    # (mean over all experts) scaled by sigmoid(learnable_gate) * gate_entropy
+    # per sample per task. High gate entropy (confused) -> recovery on;
+    # low gate entropy (confident) -> recovery near zero. Residual definition
+    # is decoupled from the gate output itself, unlike M1/AdaTT-sp/loss-adaTT.
+    {"name": "struct_13_eceb",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "use_adatt_sp": "false",
+         "use_residual_recovery": "false",
+         "use_eceb": "true",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
     # PLE sigmoid + GroupTaskExpert (GroupEncoder + ClusterEmbedding)
     {"name": "struct_13_ple_sigmoid_gte",
      "hp": {

@@ -267,7 +267,7 @@ class CGCLayer(nn.Module):
         self.feature_router = feature_router
         self._last_gate_weights: Dict[int, torch.Tensor] = {}
 
-        _valid_fusion = ("cgc", "adatt_sp", "residual_complement")
+        _valid_fusion = ("cgc", "adatt_sp", "residual_complement", "eceb")
         if fusion_type not in _valid_fusion:
             raise ValueError(
                 f"fusion_type must be one of {_valid_fusion}, got {fusion_type!r}"
@@ -291,6 +291,17 @@ class CGCLayer(nn.Module):
             )
         else:
             self.residual_recovery_weight = None
+
+        # ECEB (uncertainty-conditioned recovery, Paper 3 MV).
+        # Per-task learnable scalar modulated at forward time by the gate's
+        # normalised entropy — high entropy (gate confused) → recovery on;
+        # low entropy (gate confident) → recovery suppressed.
+        if fusion_type == "eceb":
+            self.eceb_gate = nn.Parameter(
+                torch.full((num_tasks,), float(native_residual_weight_init))
+            )
+        else:
+            self.eceb_gate = None
 
         if expert_hidden_dims is None:
             expert_hidden_dims = [expert_hidden_dim]
@@ -433,6 +444,27 @@ class CGCLayer(nn.Module):
                 complement = complement / (complement_sum + 1e-6)
                 residual = (complement.unsqueeze(-1) * all_outs).sum(dim=1)
                 gated = gated + self.residual_recovery_weight * residual
+
+            # ECEB (Paper 3 MV): uncertainty-conditioned task-agnostic
+            # recovery. Recovery path = mean over all experts (gate-
+            # independent "consensus"). Recovery weight is scaled by the
+            # *normalised* entropy of the gate's own distribution per sample
+            # — high entropy (gate confused) → recovery on; low entropy
+            # (gate confident) → recovery near zero.
+            elif self.fusion_type == "eceb":
+                num_total = gate_weights.size(-1)
+                # Per-sample entropy of the task's gate distribution.
+                gate_entropy = -(
+                    gate_weights * (gate_weights + 1e-8).log()
+                ).sum(dim=-1)  # (batch,)
+                max_entropy = math.log(float(num_total))
+                entropy_ratio = (gate_entropy / max_entropy).clamp(0.0, 1.0)  # (batch,)
+                # Task-agnostic consensus = mean over all experts.
+                consensus = all_outs.mean(dim=1)  # (batch, hidden)
+                # Per-task scalar gate (sigmoid) modulated by per-sample entropy.
+                task_gate = torch.sigmoid(self.eceb_gate[task_idx])  # scalar
+                recovery_weight = (task_gate * entropy_ratio).unsqueeze(-1)  # (batch, 1)
+                gated = gated + recovery_weight * consensus
 
             outputs.append(gated)
             if not self.training:

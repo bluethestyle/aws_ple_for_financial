@@ -56,7 +56,7 @@ def build_ple_config(
         PLEConfig, ExpertConfig, ExpertBasketConfig,
         LossWeightingConfig, LogitTransferDef,
         GroupTaskExpertConfig, AdaTTConfig, AdaTTSPConfig,
-        ResidualRecoveryConfig, TaskGroupDef,
+        ResidualRecoveryConfig, ECEBConfig, TaskGroupDef,
         CGCConfig, ExpertInputConfig,
     )
 
@@ -201,6 +201,14 @@ def build_ple_config(
     rr_method_raw = hp.get("residual_method")
     if rr_method_raw is not None:
         model_config.setdefault("residual_recovery", {})["method"] = str(rr_method_raw)
+
+    # ECEB (Paper 3 MV: uncertainty-conditioned recovery at the CGC gate).
+    # Off by default; enable via HP ``use_eceb=true`` in ablation scenarios.
+    use_eceb_raw = hp.get("use_eceb")
+    if use_eceb_raw is not None:
+        model_config.setdefault("eceb", {})["enabled"] = bool(
+            parse_bool_hp(use_eceb_raw)
+        )
 
     # --- Loss weighting ---
     lw_cfg = model_config.get("loss_weighting", {})
@@ -380,6 +388,20 @@ def build_ple_config(
         enabled=bool(rr_raw.get("enabled", False)),
         method=str(rr_raw.get("method", "complement")),
         weight_init=float(rr_raw.get("weight_init", 0.5)),
+    )
+
+    # ECEB (Paper 3 MV: uncertainty-conditioned recovery at the CGC gate).
+    eceb_raw = (
+        model_config.get("eceb")
+        or label_schema.get("eceb")
+        or config.get("eceb")
+        or {}
+    )
+    ple_config.eceb = ECEBConfig(
+        enabled=bool(eceb_raw.get("enabled", False)),
+        uncertainty_source=str(eceb_raw.get("uncertainty_source", "gate_entropy")),
+        recovery_source=str(eceb_raw.get("recovery_source", "uniform")),
+        weight_init=float(eceb_raw.get("weight_init", 0.0)),
     )
 
     # GroupTaskExpert config

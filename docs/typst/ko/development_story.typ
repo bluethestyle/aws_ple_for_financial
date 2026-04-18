@@ -550,6 +550,35 @@ Ablation 필터가 텐서에서 피처를 제거하는 데 성공했지만, `fea
 
 *교훈*: 구조를 개선하려면 residual 정의 자체를 gate와 독립적으로 재정의해야 한다. 후속 Paper 3 설계 방향은 (a) primary prediction의 *error* 위에서 학습하는 boosting-style residual path, (b) task-agnostic 전역 aggregation을 primary와 *parallel* 로 배치, (c) prediction uncertainty에 conditioned된 self-regulating 2차 gate --- 어느 쪽이든 gate 역을 residual로 쓰는 3개 실패 공식을 구조적으로 회피하는 설계여야 한다. 이 세 가지 중 하나를 다음 실험으로 선택한다.
 
+=== ECEB (Error-Conditioned Expert Bank) MV 실험 --- 진단이 틀렸음을 드러낸 실패
+
+*배경*: M1 실패 후 세 recovery 실험(loss-level adaTT, AdaTT-sp, M1 complement)의 공통 failure mode를 "gate 출력에서 파생된 residual을 primary fusion 지점에 additive 주입" 으로 진단했다. 이 진단을 검증하기 위해, residual 정의를 gate 출력이 아닌 *gate entropy (uncertainty)* 로부터 도출하는 ECEB minimum-viable 설계를 구현했다. 실패 모드를 구조적으로 회피한다고 가정한 설계였다.
+
+*설계 (MV-ECEB)*: CGCLayer에 네 번째 `fusion_type = "eceb"` 추가. primary = gated weighted sum 유지. recovery 경로는 *task-agnostic consensus* (all_outs 전체 평균)로 gate와 독립적으로 계산. recovery 가중치는 per-task learnable scalar $sigma(w_t)$와 per-sample gate entropy ratio $H(g_t)/log N$ 의 곱. 최종 = $"gated" + sigma(w_t) dot "entropy_ratio" dot "consensus"$. gate가 혼란할 때 (high entropy) recovery on, 확신할 때 (low entropy) recovery $approx$ 0. pipeline.yaml 기본 off, HP 플래그 `use_eceb=true`로만 활성. 신규 코드 ~50줄, 기존 경로 변화 없음.
+
+*결과 (10 에폭, single seed)*: `struct_13_eceb` final AUC 0.6665, best AUC 0.6670 (epoch 4). CGC baseline 0.6728 대비 $Delta$ = $-$0.0063 으로, *네 실험 중 최악*. M1과 달리 monotone decline 은 아니고 0.665~0.667 범위에서 진동했으나 baseline을 한 번도 넘지 못했다.
+
+*5-way 비교 (struct_13 벤치마크, 10 에폭, seed=42)*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  align: (left, left, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*Fusion*], [*Residual 정의*], [*Fusion 지점*], [*Final AUC*], [*$Delta$ vs CGC*]
+  ),
+  [CGC gate], [---], [---], [*0.6728*], [---],
+  [Loss-level adaTT], [cross-task loss mixing], [primary loss], [0.6717], [$-$0.0011],
+  [AdaTT-sp], [own task expert mean], [primary repr (additive)], [0.6696], [$-$0.0032],
+  [M1 complement], [$(1-"gate")$ complement], [primary repr (additive)], [0.6675], [$-$0.0053],
+  [ECEB (MV)], [uncertainty $times$ consensus], [primary repr (additive)], [*0.6665*], [*$-$0.0063*],
+)
+
+*진단 수정*: ECEB는 residual 정의를 gate 출력과 독립시켰는데도 실패했다. 즉 이전 세 실험의 공통 failure mode를 "gate-derived residual" 이라고 진단한 것은 부분적으로 틀렸다. 더 정확한 진단은: *primary 출력이 이 벤치마크에서 이미 near-optimal이고, 어떤 정의의 residual을 같은 fusion 지점에 additive로 주입해도 구조적으로 noise가 된다*. residual 정의의 영리함(gate inverse $arrow$ uncertainty-gated consensus)과 무관하게, 설계가 침습적일수록 $Delta$ 절댓값이 단조 증가했다.
+
+*Paper 3 방향 재좁히기*: 네 실험 모두 "primary representation에 residual을 더한다"는 공통 구조를 공유했다. 이 구조를 벗어나는 유일한 남은 방향은 A (BRP, Boosting-Residual Path): residual expert를 *primary의 prediction error 위에서* 학습시켜, primary representation을 건드리지 않고 최종 prediction 단계에서만 결합한다. B (TALA)는 parallel path지만 결국 결합 지점이 같아서 ECEB가 사실상 그 variant를 검증한 셈이다. 다음 실험은 BRP로 확정.
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.

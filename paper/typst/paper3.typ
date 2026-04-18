@@ -134,10 +134,12 @@ Our contributions:
   to uniform averaging; and a demonstration that val-loss is a misleading
   checkpoint criterion when regression and classification tasks coexist
   (Section 4.6).
-- A negative result across three gate-derived residual recovery mechanisms
-  (loss-level adaTT, AdaTT-sp, and complementary-gate recovery):
-  all three degrade aggregate AUC below the CGC baseline with a magnitude
-  that scales with the invasiveness of the intervention (Section 4.7).
+- A negative result across four additive residual recovery mechanisms
+  (loss-level adaTT, AdaTT-sp, complementary-gate recovery, and an
+  uncertainty-conditioned expert bank): all four degrade aggregate AUC
+  below the CGC baseline with a magnitude that scales monotonically with
+  the invasiveness of the intervention, including the one variant
+  designed to be gate-independent (Section 4.7).
 
 The system, data generator, and ablation scripts are publicly available.#footnote[
   https://github.com/bluethestyle/aws\_ple\_for\_financial
@@ -667,16 +669,18 @@ minimizes val loss.
 and (3) treat val loss as a diagnostic (indicating regression progress) rather
 than as the primary stopping criterion.
 
-== Finding 7: Gate-Derived Residual Recovery Underperforms <find7>
+== Finding 7: Additive Residual Recovery Underperforms Regardless of Residual Definition <find7>
 
 After Finding 2 established that the loss-level `adaTT` variant does not
-affect aggregate AUC at the 13-task scale ($Delta = -0.001$, null), two
+affect aggregate AUC at the 13-task scale ($Delta = -0.001$, null), three
 further mechanisms were evaluated on the same benchmark to test whether any
 fusion augmentation can extract useful signal beyond CGC's gated selection.
-Both mechanisms, along with the original, share one structural property:
-*they inject a gate-derived residual at the primary's fusion point*.
+All four experiments converge on a single conclusion: *any residual
+injected additively at the primary's fusion point degrades performance, and
+the degradation grows monotonically with the invasiveness of the
+intervention --- independently of how the residual is defined*.
 
-=== Three Mechanisms, One Failure Pattern
+=== Four Mechanisms, One Failure Pattern
 
 *Loss-level adaTT* (the variant reported in Paper 1) adds a weighted
 cross-task loss term, $L_i + lambda sum_(j != i) w(i arrow.r j) L_j$,
@@ -693,6 +697,17 @@ applied to the same expert outputs as a residual, scaled by a learnable
 scalar. The intent is to recover intra-task signal from experts the gate
 down-weighted, without any cross-task mixing.
 
+*ECEB (Error-Conditioned Expert Bank, MV)*, also introduced in this paper,
+is designed specifically to escape the shared structure of the three above:
+the residual is derived from the gate's *entropy* rather than from the
+gate's output. Concretely, the recovery path is a task-agnostic consensus
+(mean over all expert outputs, no gate weighting), scaled at forward time
+by the product of a per-task learnable scalar $sigma(w_t)$ and the
+normalised gate entropy $H(g_t)/log N$ (per sample). When the gate is
+confident (low entropy), recovery collapses toward zero; when it is
+distributed, recovery activates. By construction ECEB eliminates the
+"gate-derived residual" factor.
+
 Results on the 13-task benchmark (10 epochs, seed=42):
 
 #figure(
@@ -708,11 +723,16 @@ Results on the 13-task benchmark (10 epochs, seed=42):
     [Loss-level adaTT],    [0.6717], [0.6733 (ep2)],  [$-$0.0011],
     [AdaTT-sp (Li 2023)],  [0.6696], [0.6714 (ep3)],  [$-$0.0032],
     [M1 complement],       [0.6675], [0.6692 (ep1)],  [$-$0.0053],
+    [ECEB (MV)],           [0.6665], [0.6670 (ep4)],  [$-$0.0063],
   ),
-  caption: [4-way comparison of fusion mechanisms on the 13-task benchmark.
-  All three augmented variants fall below the CGC baseline; the magnitude of
-  the drop scales with the invasiveness of the intervention.]
-) <tab:fusion4way>
+  caption: [5-way comparison of fusion mechanisms on the 13-task benchmark.
+  All four augmented variants fall below the CGC baseline; the magnitude of
+  the drop scales monotonically with the invasiveness of the intervention.
+  ECEB, which decouples the residual definition from the gate output,
+  still fails --- and fails most severely --- demonstrating that the shared
+  failure mode is *additive injection at the primary fusion point*,
+  not gate-derivation of the residual.]
+) <tab:fusion5way>
 
 M1's best AUC at epoch 1 (pre-training) with monotone decline thereafter
 indicates that training the learnable recovery weight actively degrades
@@ -757,28 +777,42 @@ factors (label construction for churn_signal, near-floor base rate for
 next_mcc) than by gate entropy. Gate entropy cannot therefore be claimed
 as a structural predictor of recovery benefit on this benchmark.
 
-=== The Common Failure Mode
+=== The Common Failure Mode: Revised
 
-The three rejected mechanisms share a single structural property: each
-derives a residual from the gate output (either by inverting the gate or
-by selecting a fixed position such as "the task's own expert") and injects
-it additively at the primary's fusion point. When the CGC gate is already
-near-optimal on the 13-task benchmark, these residuals reduce to noise.
-*The converging conclusion across three experiments is that gate-derived
-residual recovery has no net value on this benchmark.*
+The first three rejected mechanisms (loss-level adaTT, AdaTT-sp, M1)
+share one structural property: each derives a residual from the gate
+output and injects it additively at the primary's fusion point. The ECEB
+MV experiment was constructed specifically to sever that link: its
+residual is derived from the gate's *entropy* rather than from its output,
+and the recovery path is a task-agnostic consensus that does not use gate
+weights at all. By the earlier diagnosis, ECEB should have behaved
+differently. It did not --- it produced the *largest* degradation of the
+four.
+
+The revised reading is therefore simpler and more conservative: *any
+residual injected additively at the primary's fusion point on this
+benchmark reduces to noise, because the primary output of the
+heterogeneous-expert CGC gate is already near-optimal for the task
+at hand*. The residual's definition --- gate inverse, own expert,
+uncertainty-gated consensus --- changes only how aggressively the noise
+is injected, and the monotone degradation reflects exactly that.
+
+This is a stronger, cleaner negative result than a per-mechanism rebuttal:
+the CGC gate's gated weighted sum is not improvable by *any* additive
+augmentation we tested, across a wide range of residual definitions.
 
 *Implication*: A fusion augmentation that improves over CGC at this scale
-must decouple its residual definition from the gate itself. Three directions
-that structurally avoid the observed failure mode are:
-(a) a boosting-style residual path trained on the primary prediction's
-*errors*, not on gate inversion;
-(b) a *task-agnostic* global aggregation placed in parallel with the
-primary rather than additively on top; and
-(c) a self-regulating second-stage gate conditioned on prediction
-uncertainty rather than on the primary gate's output.
-Selecting and evaluating one of these is the intended scope of
-a follow-up paper; the negative result reported here motivates why
-the simpler gate-derived alternatives have been rejected before that work.
+cannot live at the representation-additive position at all. The remaining
+candidate direction is a *boosting-style residual path* trained on the
+primary prediction's *errors* and combined with the primary only at the
+final prediction stage rather than at the representation. The alternative
+of a parallel task-agnostic aggregation path (an untested Paper 3
+direction in earlier drafts) is effectively eliminated by ECEB MV, which
+already implements a gate-independent consensus path; evaluating a
+separately-predicted variant of the same idea is unlikely to reverse the
+sign. Selection and evaluation of the boosting variant is left to a
+follow-up paper; the present negative-result family defines what such a
+mechanism must structurally avoid.
 
 = Discussion
 
@@ -875,16 +909,20 @@ These findings are not novel algorithms but practical diagnostics.
 We hope they prevent other practitioners from re-discovering the same pitfalls
 when scaling MTL to real-world heterogeneous task portfolios.
 
-Finding 7 reframes the search for fusion augmentation beyond CGC: on this
-benchmark, three distinct gate-derived residual mechanisms all underperform
-the baseline, with degradation magnitude scaling monotonically with
-intervention invasiveness. The takeaway is not that residual recovery is
-impossible, but that *any residual that is a function of the gate output
-is structurally unable to add value once the gate is already near-optimal*.
-A follow-up study will evaluate three alternatives that decouple the
-residual definition from the gate: boosting-style error-driven residuals,
-task-agnostic consensus paths placed in parallel with the primary,
-and uncertainty-conditioned self-regulating second-stage gates.
+Finding 7 reframes the search for fusion augmentation beyond CGC. On this
+benchmark, *four* additive residual mechanisms --- three derived from the
+gate output and a fourth deliberately decoupled from it via an
+uncertainty-conditioned consensus path --- all underperform the baseline,
+with degradation magnitude scaling monotonically with intervention
+invasiveness. The takeaway is stronger than the original reading:
+*no additive residual injected at the primary's fusion point improves
+over the CGC gated weighted sum on this benchmark, regardless of how the
+residual is defined*. A follow-up study will therefore evaluate a
+structurally distinct alternative: a boosting-style residual path that
+is trained on the primary prediction's errors and combined with the
+primary only at the output prediction level, leaving the representation
+untouched. This is the one remaining design direction that the negative
+results reported here have not already ruled out.
 
 // ============================================================
 = Author Contributions

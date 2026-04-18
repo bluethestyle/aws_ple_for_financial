@@ -142,6 +142,25 @@ residual_recovery:
   weight_init: 0.5                  # learnable residual weight initial value
 
 # ---------------------------------------------------------------------------
+# ECEB (Paper 3 MV) — Error-Conditioned Expert Bank.
+# Uncertainty-conditioned residual: recovery path is a task-agnostic
+# consensus (mean over all experts), scaled at forward time by the gate's
+# normalised entropy per sample. Rationale: the three gate-derived residual
+# mechanisms (loss-level adaTT, AdaTT-sp, residual_complement) all failed
+# because their residual definitions depended on the gate output itself.
+# ECEB decouples the residual by conditioning on uncertainty, not on the
+# gate's inverse.
+#
+# Mutually exclusive with adatt_sp and residual_recovery at the CGC gate
+# layer. Off by default.
+# ---------------------------------------------------------------------------
+eceb:
+  enabled: false                    # toggle via HP override
+  uncertainty_source: "gate_entropy"  # gate_entropy (only option in MV)
+  recovery_source: "uniform"        # uniform (mean over experts)
+  weight_init: 0.0                  # sigmoid(0)=0.5 → balanced start
+
+# ---------------------------------------------------------------------------
 # Gradient Surgery — PCGrad task-type projection (alternative to adaTT)
 # ---------------------------------------------------------------------------
 grad_surgery:

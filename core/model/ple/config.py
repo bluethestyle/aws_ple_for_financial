@@ -67,6 +67,36 @@ class AdaTTSPConfig:
 
 
 @dataclass
+class ECEBConfig:
+    """Error-Conditioned Expert Bank — uncertainty-gated recovery (Paper 3, MV).
+
+    Rationale: the three preceding recovery mechanisms (loss-level adaTT,
+    AdaTT-sp, residual_complement) all inject a *gate-derived* residual at
+    the primary's fusion point and were empirically null-to-negative. ECEB
+    replaces the gate-inverse signal with an *uncertainty-conditioned*
+    residual: when the CGC gate is confused (high entropy), recovery is
+    activated; when the gate is confident (low entropy), recovery is
+    suppressed. The uncertainty signal is the gate's own entropy, measured
+    per-sample per-task — a direct structural property, not a post-hoc
+    estimate.
+
+    MV-ECEB (minimum-viable) implementation:
+      - Recovery path = task-agnostic consensus (mean over all expert
+        outputs), placed in parallel with the gated primary.
+      - Recovery weight = sigmoid(learnable_gate) * normalised_entropy,
+        where normalised_entropy = H(gate) / log(num_total_experts).
+      - Output = gated + recovery_weight * consensus.
+
+    Mutually exclusive with adatt_sp and residual_recovery at the CGC gate
+    layer. Off by default.
+    """
+    enabled: bool = False
+    uncertainty_source: str = "gate_entropy"  # gate_entropy (only option in MV)
+    recovery_source: str = "uniform"          # uniform (mean over experts)
+    weight_init: float = 0.0                  # sigmoid(0)=0.5 → balanced start
+
+
+@dataclass
 class ResidualRecoveryConfig:
     """Intra-task residual expert recovery (Paper 3).
 
@@ -395,6 +425,9 @@ class PLEConfig:
 
     # -- Residual recovery (intra-task, Paper 3) ----------------------------
     residual_recovery: ResidualRecoveryConfig = field(default_factory=ResidualRecoveryConfig)
+
+    # -- ECEB (uncertainty-conditioned recovery, Paper 3 MV) ----------------
+    eceb: ECEBConfig = field(default_factory=ECEBConfig)
 
     # -- Gradient Surgery (PCGrad) ------------------------------------------
     grad_surgery: GradSurgeryConfig = field(default_factory=GradSurgeryConfig)
