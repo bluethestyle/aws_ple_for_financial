@@ -478,6 +478,24 @@ The government office firewall blocked `download.pytorch.org` (403 Forbidden). A
 
 At batch 6144: 12GB dedicated + 11GB shared GPU memory = 23GB total, 10 hours per scenario. At batch 2048: 9GB + 0.1GB = 9.1GB, 2 hours per scenario. Shared GPU memory traverses PCIe at 10--20x slower than dedicated VRAM. This quantitative analysis determined the optimal batch size.
 
+=== Lambda 250MB zip Limit and Migration to Container Image
+
+Serving dependencies grew organically during the Paper 2 build. lightgbm (LGBM student models), lancedb (recommendation cases and diagnostic store), duckdb (VSS search), and pyyaml were added in sequence, and the layer-based bundle exceeded Lambda's 250MB zip ceiling.
+
+Three attempts failed before Container Image succeeded. First, a merged-layer deployment threw `libgomp.so.1 missing` at runtime --- lightgbm's OpenMP dependency was absent from the Amazon Linux base. Second, the "pre-download wheels locally and inject via `pip install --no-index --find-links`" path failed with SSL verification errors inside the Docker build network. Third, a stale `credsStore: desktop` entry in `~/.docker/config.json` on Windows blocked ECR login; only after removing it did `docker push` succeed. Finally, the default build produced an OCI manifest that Lambda refused; `docker build --provenance=false` forced a Docker V2 manifest and the image finally launched.
+
+The resolution was to migrate to a Lambda Container Image (10GB limit, Python 3.10 base). Lesson: when serving dependencies accumulate quietly, the zip+layer 250MB ceiling must be checked pre-emptively. On Windows, Container Image migration takes roughly a day of iteration, walking through credential, SSL, and manifest compatibility in order.
+
+=== LanceDB Design Error --- From Raw Feature Dumps to Recommendation Case Accumulation
+
+The initial Paper 2 design stored all 349-dimensional raw feature vectors × 1M customers in LanceDB. Runtime footprint hit 1.4GB per snapshot, growing linearly with each periodic refresh.
+
+User feedback was direct: "Why are you storing every customer in Lance?" The diagnosis was clean. LanceDB's value is in *accumulating outcome-bearing cases over time* --- not in mirroring population-wide feature state as a snapshot. The correct unit is "one recommendation case = one inference log entry."
+
+The redesign had three parts. First, a `recommendation_cases` table is written after each Lambda invocation: user_id, timestamp, 13 task probabilities, L1 reasons, FDTVS scores. Second, DiagnosticCaseStore and TemporalFactStore were consolidated onto the same LanceDB instance, introducing no new database dependency. Third, the raw feature matrix dump was removed --- it can always be recomputed from the source parquet on demand.
+
+Lesson: the right question when adopting a vector DB is *"what do we accumulate over time?"*, not *"what current state do we mirror?"* The first pattern leaves useful traces for audit and A/B analysis; the second produces a bloated cache of data that already lives elsewhere.
+
 == Pipeline Engineering
 
 System-level issues in large-scale data processing and ablation orchestration.
@@ -501,6 +519,18 @@ Glob's alphabetical ordering loaded `benchmark_ground_truth.parquet` before the 
 === Batch Size Mismatch and bash JSON Escaping
 
 `pipeline.yaml` specified batch_size=2048, but `run_ablation_manual.sh` overrode it to 6144, triggering VRAM spillover. All settings were unified to a single config source. A separate bash JSON escaping failure was also fixed.
+
+=== Calibration Pickle Failure --- Local Classes Are Not Serialisable by joblib
+
+A distillation job ran on a SageMaker g4dn.xlarge Spot instance. The pipeline flowed through teacher soft-label generation, 7 LGBM student distillation runs, 3 LGBM direct-training runs, calibration, fidelity validation, drift baseline, and model save. The job ran cleanly for 49 minutes through all distillation and calibration fitting, then crashed at the very last step: `joblib.dump(calib, calib_path)`.
+
+The error was: `_pickle.PicklingError: Can't pickle <class 'containers.distillation.calibration.calibrate_students.<locals>._LGBMProbWrapper'>`.
+
+The cause was textbook. `_LGBMProbWrapper` --- a sklearn-compatible shim around a trained LGBM so that `CalibratedClassifierCV` could consume it --- had been defined *inside* the `calibrate_students()` function as a local class. Python's pickle protocol cannot serialise local classes because they have no importable module path. The wrapper worked fine during fit; the constraint surfaced only when `joblib.dump` attempted to persist it.
+
+The fix was a single move: `_LGBMProbWrapper` was hoisted to module level in `containers/distillation/calibration.py`. The identical job configuration re-ran in 2352 seconds (~39 minutes on Spot, no interruptions this time) and completed with rc=0.
+
+*Lesson*: sklearn-compatible wrappers that will be joblib-dumped must live at module level, never inside a function. The Python error is cryptic and only emerges at `joblib.dump` time, so hours of training can be thrown away before the problem is visible. A cheap defence is a unit test that pickles every wrapper type used downstream --- the same bug is caught in seconds. A second lesson concerns the economics of Spot: unreliable recovery amplifies the cost of late-stage crashes. Fail-fast checks at job start beat trusting the integration at job end.
 
 == Architecture Insights
 
@@ -534,9 +564,31 @@ PLE's val_loss froze at 3.702 in Phase 2, while shared_bottom (1 MLP) paradoxica
 
 5. *warmup_epochs: 0*: Transfer began immediately while the affinity matrix was still identity (no measurements taken), resulting in meaningless loss sharing from epoch one.
 
-*Outcome*: sigmoid_adatt AUC improved from 0.5605 to 0.5746 (+0.014). At peak (Ep6) it reached 0.5786, surpassing the sigmoid baseline (0.5771).
+*Outcome*: sigmoid_adatt AUC improved from 0.5605 to 0.5746 (+0.014). At peak (Ep6) it reached 0.5786, surpassing the sigmoid baseline (0.5771). More decisively, these five bugs account for the entire $-$0.019 AUC delta that had once been interpreted as "adaTT damaging PLE at 13-task scale" --- after the fixes, the adaTT on-vs-off gap collapsed from $-$0.019 to $-$0.001, inside single-seed noise. The earlier reading was an implementation artefact, not an algorithmic finding.
 
 *Lesson*: Preflight logging (`"AdaTT config: warmup=X, freeze=X, source=X"`) was added so that config application can be verified before training begins. Had MLflow been in place, a significant portion of this investigation could have been avoided.
+
+=== Our "adaTT" Was Not Li 2023 --- A Naming Drift Discovery
+
+*Background*: While scoping Paper 3, I re-read the docstring and reference block of `core/model/ple/adatt.py`. We had been using the name inherited from the on-prem codebase without ever checking whether the name and the implementation shared a lineage.
+
+*Finding*: The docstring cited only two papers: Fifty et al. NeurIPS 2021 (Task Affinity Groupings, TAG) and Chen et al. ICML 2018 (GradNorm). Li et al. KDD 2023 "AdaTT: Adaptive Task-to-Task Fusion Network" was nowhere to be found.
+
+*Diagnosis*: Our implementation computes $L_i^"adaTT" = L_i + lambda sum_(j != i) w(i -> j) L_j$, where $w(i -> j)$ is an EMA-smoothed gradient cosine similarity. This is loss-level transfer. Li 2023's AdaTT, by contrast, is a *representation-level fusion* that stacks a learned gating network over expert activations while preserving a native expert residual. The two algorithms share only the name.
+
+*Implication*: Paper 1's "adaTT" narrative was, in effect, an evaluation of a TAG + GradNorm hybrid --- not of Li 2023's mechanism. A single inherited name created a systematic interpretive confusion. A reviewer comparing our results against Li 2023 would have reasonably concluded we had failed to reproduce their method.
+
+*Lesson*: Code naming must match the citation lineage. When a mechanism is "inspired by" prior work, the docstring must explicitly separate *what was reproduced* from *what was changed*. One name cannot be allowed to paper over five years of divergent research threads.
+
+=== Paper 1 v1.1 --- Algorithmic Finding or Implementation Artefact?
+
+*Background*: After fixing the five porting bugs and resolving the naming drift, I re-ran `struct_13_ple_sigmoid` and `struct_13_ple_sigmoid_adatt` at 10 epochs with a single seed. We needed to see whether the pre-fix and post-fix numbers told the same story.
+
+*Finding*: The sigmoid + adaTT AUC moved from 0.6541 (pre-fix, the number Paper 1 originally reported as a $-$0.019 degradation) to 0.6717 (post-fix). The adaTT on-vs-off gap shrank to $-$0.001 --- well within run-to-run noise. The original claim that "adaTT degrades performance" was no longer supported by the data.
+
+*Action*: We issued a Paper 1 v1.1 correction commit. The abstract and Section 5.4 were rewritten from "degrades performance" to "has null effect at 13-task scale." The results table was replaced with the post-fix numbers, and the caption disclosed the five bugs by name. Finding 2 (the "156 task-pair instability" hypothesis) was rewritten to read *"the original attribution was plausible but is not supported once the implementation bugs are fixed."*
+
+*Lesson*: What looked like a negative *algorithmic* finding turned out to be an implementation artefact. The responsible response at such a moment is not to retrofit a cleaner narrative after the fact; it is to publish the correction transparently. The original attribution --- that TAG-style affinity becomes unstable at 156 task-pairs --- was a reasonable hypothesis, but once the bugs were fixed, no evidence remained to support it. That fact belongs in the record as-is.
 
 #section-break()
 
@@ -695,6 +747,34 @@ The core reason for this separation: LLM non-determinism is a risk in audit cont
 Minority opinions (1/3) in the 3-agent consensus are structurally preserved. Initially considered pure Delphi (sequential deliberation), but identified the problem of "later agents conforming to earlier opinions." Final design: Round 1 locks minorities via independent voting, Round 2 only strengthens arguments --- minorities are never deleted.
 
 The name was inspired by the film _Minority Report_: one of three precogs makes a different prediction.
+
+=== Consensus Semantics: "PASS Requires Unanimity by Default"
+
+When we built the 3-agent consensus pipeline as three parallel Bedrock Claude Sonnet 4.6 calls, the initial `ConsensusArbiter` classified verdicts by simple majority: 2/3 PASS meant PASS, 1/3 meant FAIL. It looked like common sense.
+
+User feedback broke that premise. "2 PASS + 1 WARN --- that one also has to surface as a minority report." If majority voting silently absorbs the WARN, there is no way to answer "why was that warning buried?" at regulatory reporting time. Dissent must not be absorbed --- it must *surface*.
+
+The redesign is three lines:
+
++ PASS requires a 3/3 unanimous vote --- zero dissent tolerated
++ Any WARN or FAIL from any of the three agents escalates the overall verdict to WARN
++ The `minority_report` field *always* preserves the reasoning of every dissenting agent --- never deletable
+
+Lesson: In regulated financial ML, consensus semantics is a *compliance-sensitive design decision, not a statistics question*. The pattern SR 11-7 model risk management expects is "unanimous for PASS, any dissent escalates." Majority voting feels natural in research, but from an audit perspective it forces you to justify, every time, why a minority opinion was discarded. The default should lean toward the precautionary threshold --- the consensus-layer version of our project-wide principle that missing a signal is worse than raising a false alarm.
+
+=== Built $!=$ Wired: "Implemented, but Nothing Calls It"
+
+During Paper 2 / Lambda end-to-end verification, the same pattern surfaced again and again --- *the class was complete, but nothing at runtime was calling it*.
+
+- *Champion-Challenger gate*: `ModelCompetition.evaluate()` in `core/evaluation/model_competition.py` was fully implemented --- invoked only from tests. `submit_pipeline.py` bypassed it and auto-promoted on fidelity pass.
+- *ConsensusArbiter*: implemented, but the initial OpsAgent / AuditAgent never invoked it.
+- *DiagnosticCaseStore, TemporalFactStore*: classes defined in both paper design and code; Lambda never called them.
+- *FDTVSScorer, SelfChecker*: built, but never wired into Lambda `predict.py`.
+- *`recommendation_cases` LanceDB table*: schema defined; Lambda never appended a row.
+
+The trigger was two short questions. The user asked "Did you do Paper 2 §5.10?" and "Do the Ops/Audit agents actually reference LanceDB?" An audit followed, and *seven unlinked features* surfaced. The fix was a single commit: `feat: Connect all 7 unlinked features to Lambda + agents`.
+
+Lesson: *Implementation is not integration.* AI-augmented development produces modules quickly but routinely skips the wiring phase. Every new module needs a checklist entry --- "who calls this, and is the path actually exercised by end-to-end tests?" And a periodic *module inventory vs.~runtime call-graph* audit is non-negotiable. The faster the generation rhythm, the shorter the wiring-audit cycle has to be. "Built" is a weaker claim than it feels; only "wired and exercised" counts.
 
 === Feature Reverse-Mapping Pipeline Completion
 
@@ -1018,36 +1098,13 @@ broken training environment. Once the environment was fixed, the underlying
 architectural preference reasserted itself. Without the root-cause investigation,
 the "sigmoid is better" conclusion would have been carried forward indefinitely.
 
-== adaTT at Scale: 13 Tasks, 156 Pairs
+== adaTT at Scale: 13 Tasks, 156 Pairs --- And a Retracted Reading
 
-The five adaTT porting bugs discovered in the previous session had been fixed.
-With those fixes and correct uncertainty weighting, a cleaner picture emerged
-of where adaTT actually fails.
+An early ablation showed adaTT reducing AUC by $-$0.019 against the PLE-only baseline at the 13-task configuration, and for a while this was the evidence behind a narrative of "adaTT structurally failing at 13-task scale." Two explanations were offered in parallel: a combinatorial one (affinity estimation is noisy across 156 directed pairs with limited gradient history), and a structural one (PLE's representation-level separation is undone by adaTT's loss-level re-mixing). That reading is what earlier revisions of this development note carried.
 
-The fundamental challenge is combinatorial. adaTT's affinity estimation is designed
-for the regime in which it was developed: 4 tasks, 12 directed pairs. At 13 tasks
-there are 156 directed pairs. Affinity estimation requires enough gradient history
-per pair to produce a stable signal; with limited training epochs and 156 pairs
-competing for that signal, the affinity matrix is noisy and the transfer schedule
-(warmup, freeze) does not have time to stabilize.
+The next session's line-by-line diff against the on-prem source surfaced five porting drifts --- gradient extraction frequency (once per epoch vs.~every 10 steps), config loader path (the root-level `adatt:` block was never read), `freeze_epoch` not wired into `AdaTTConfig`, uncertainty weighting and adaTT implemented as either/or rather than serial, and `warmup_epochs=0` as the silent default. After all five were fixed, Sigmoid + adaTT AUC moved from 0.6541 to 0.6717, and the adaTT on-vs-off delta shrank from $-$0.019 to $-$0.001 --- inside single-seed noise.
 
-More structurally: PLE and adaTT operate on different decomposition levels.
-PLE separates task representations at the expert layer — each expert specializes
-in a feature modality, and CGC routing determines which experts contribute to
-which tasks. adaTT then re-mixes these task representations at the loss level,
-applying transfer weights that redirect gradient signal between tasks.
-These two mechanisms are not complementary; they pull in opposite directions.
-PLE's separation is undone by adaTT's re-mixing.
-
-The confirming experiment was Shared Bottom + adaTT. Without PLE's separation,
-adaTT is neutral: performance neither improves nor degrades significantly.
-adaTT is not inherently problematic. The conflict is specific to the PLE +
-adaTT combination, where architectural separation at the representation level
-is undermined by loss-level re-mixing.
-
-The conclusion: adaTT's loss-level transfer mechanism does not scale gracefully
-from homogeneous small-task-count settings to heterogeneous large-task-count
-settings with structural separation at the representation level.
+The $-$0.019 was an implementation artefact, not an algorithmic finding. The earlier reading of a structural PLE + adaTT conflict at 13-task scale did not survive empirical retest; the honest current statement is that adaTT is a null effect at this scale --- no reliable gain, no reliable harm. The combinatorial-affinity and representation-vs-loss-level hypotheses remain theoretically plausible but are not confirmed on this dataset at this size. The reason this episode is kept in the record is plain: architectural conclusions drawn before the bugs are fixed harden implementation debris into permanent "findings."
 
 == GradSurgery: Tested Gradient-Level Alternative (Not Adopted)
 
@@ -1133,50 +1190,13 @@ recorded here as negative-result evidence: gradient-level projection does not
 reliably improve on architectural separation when the separation is already
 enforced by PLE's expert routing.
 
-== Why adaTT Works for Big Tech but Not for Finance
+== Financial Operational Regimes and Task Coupling: Hypothesis vs.~Current Evidence
 
-The adaTT results forced a deeper question: why does a method published at KDD 2023
-by Meta Research fail in our setting?
+While the observation of adaTT failing in this setting still stood, we developed an operational-regime explanation for why. At Meta's _population-scale_ data, task-to-task gradient relationships (CTR/CVR) are stable across billions of samples, so adaTT's loss-level transfer reflects real structure. Financial institutions, with 10--20M customer _sample-scale_ data, face distribution drift --- rate hikes, product policy changes, regulatory shifts --- that can invert task relationships, so loss-level coupling risks _correlated model failure_ across linked tasks. Retraining cadence (hourly for big tech vs.~weekly/monthly for finance) then determines whether that coupling cost is affordable.
 
-The answer lies in the difference between _population-scale_ and _sample-scale_ data.
-Meta operates on billions of daily interactions. At that scale, the training set is
-essentially the population — overfitting is nearly impossible because the model sees
-virtually every pattern that exists. When adaTT couples CTR and CVR tasks through
-loss-level transfer, the coupling reflects a genuine structural relationship (clicking
-precedes purchasing) that is stable across billions of samples. The "mutual overfitting"
-between tasks is actually precise pattern learning, and any performance gain — even
-0.001 AUC — translates directly to revenue at Meta's scale.
+The hypothesis is appealing and operationally useful. But the $-$0.019 AUC gap that anchored it collapsed to $-$0.001 after the five porting bugs were fixed. The narrative of "big-tech MTL methods being counterproductive in finance" is therefore not currently supported by empirical evidence on this dataset. What remains is a theoretical argument: in regimes with frequent distribution drift and limited sample size, loss-level task coupling is harder to lifecycle-manage than isolated architectures --- still a legitimate design consideration for financial AI deployment.
 
-Financial institutions operate in a fundamentally different regime.
-Even large retail banks with 10–20 million customers generate training sets that are
-_samples_ of evolving customer behavior, not populations. Interest rate changes,
-product policy updates, and regulatory shifts cause distribution drift that invalidates
-task-to-task relationships learned from historical data.
-When adaTT couples churn prediction with product acquisition prediction,
-it assumes that the gradient relationship between these tasks is stable.
-In finance, a rate hike can invert this relationship overnight —
-customers who were acquiring products may start churning,
-while previously churning customers may be attracted by new deposit rates.
-
-This leads to a concrete operational risk: task coupling through loss-level transfer
-creates _correlated model failure_. When one task's distribution shifts, the coupled
-loss propagates the error to all connected tasks. In a decoupled architecture (PLE
-softmax with independent task losses), each task can drift independently and be
-retrained or monitored independently. The model's failure modes are isolated rather
-than systemic.
-
-#quote-box()[
-  The choice between adaTT-style coupling and PLE-style isolation is ultimately a
-  choice about model lifecycle management.
-  Big tech can afford tight coupling because they retrain hourly and have population-scale data.
-  Financial institutions, with weekly-to-monthly retraining and sample-scale data,
-  need architectural isolation to extend model lifetime and contain drift propagation.
-]
-
-This insight — that _the optimal MTL architecture depends on the operational regime,
-not just the task structure_ — is perhaps the most practically useful finding from the
-entire ablation campaign. It explains why methods that dominate academic benchmarks
-and big-tech deployments may be counterproductive in regulated, lower-data environments.
+The documentation policy is to keep this discussion rather than delete it. The distinction between population and sample regimes, and the concern about correlated failure modes, reflects real risks that inform deployment choices. What we should not do is treat this concern as empirically proven by adaTT's own measured failure --- it was not. It stays as an open hypothesis awaiting re-validation under genuine distribution-drift conditions (real bank data, post-rate-shock retraining) rather than as a confirmed finding.
 
 == Self-Regulating Experts: When Silence Is the Best Signal
 
