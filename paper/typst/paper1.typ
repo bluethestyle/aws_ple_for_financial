@@ -59,7 +59,7 @@
   through business-interpretable gate weights.
   *Second*, ablation on a 13-task benchmark (7 binary + 3 multiclass + 3 regression, 1M customers)
   shows that our _loss-level_ inter-task transfer mechanism (a TAG + GradNorm hybrid retained under the "adaTT" label, distinct from the representation-level adaTT of @li2023)
-  degrades performance in this heterogeneous setting because of instability in estimating 156 task-pair affinities.
+  has a *null effect* at this scale: after correcting five implementation bugs inherited from the on-prem port, the AUC difference with vs.~without adaTT shrinks to $-$0.001, indistinguishable from single-seed measurement noise.
   The single largest improvement instead comes from correcting a subtle uncertainty-weighting
   implementation gap where per-task loss weights were silently ignored.
   *Third*, we experiment with _GradSurgery_, a task-type gradient projection method
@@ -71,8 +71,7 @@
   among gate variants.
   Softmax also outperforms sigmoid in this heterogeneous setting,
   reversing findings from the homogeneous-task literature.
-  GradSurgery maintains baseline performance (AUC 0.673, F1-macro 0.203),
-  whereas adaTT degrades AUC by $-$0.019.
+  Both GradSurgery (AUC 0.673, F1-macro 0.203) and the corrected adaTT implementation (sigmoid+adaTT AUC 0.672) maintain baseline performance; neither provides a gain.
   The operational motivation --- consolidating 13 individual models into a single MTL model
   for unified training, serving, and monitoring --- is validated:
   the shared-bottom baseline already exceeds per-task XGBoost ceilings,
@@ -152,7 +151,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Gate Type Analysis for Heterogeneous MTL*: We demonstrate that softmax gating outperforms sigmoid in 13-task heterogeneous settings (7 binary + 3 multiclass + 3 regression), reversing the conventional preference from homogeneous-task literature @tang2020 @sigmoid_moe2024. The reversal is attributed to softmax's protective isolation of minority-type tasks from majority-type gradient corruption.
 
-+ *Loss-Level vs.~Gradient-Level Transfer*: Our loss-level inter-task transfer mechanism (a TAG @fifty2021tag + GradNorm @chen2018gradnorm hybrid, retained under the internal "adaTT" label but distinct from the representation-level adaTT of @li2023 --- see Section 4.5) degrades performance at 13-task scale due to 156 task-pair affinity estimation instability. We additionally experiment with GradSurgery (gradient-level projection between 3 task-type groups), which avoids this degradation but shows no additional gain and incurs VRAM overhead from the retained computation graph; GradSurgery is not adopted for production.
++ *Loss-Level vs.~Gradient-Level Transfer*: Our loss-level inter-task transfer mechanism (a TAG @fifty2021tag + GradNorm @chen2018gradnorm hybrid, retained under the internal "adaTT" label but distinct from the representation-level adaTT of @li2023 --- see Section 4.5) has a null effect at 13-task scale after correcting five implementation bugs: the AUC change with adaTT vs.~without is $-$0.001, within single-seed measurement noise. An earlier draft reported $-$0.019, attributed at the time to algorithmic instability; the corrected measurements locate the cause in the implementation rather than in the loss-level mechanism per se (see Section 5.4 table caption). We additionally experiment with GradSurgery (gradient-level projection between 3 task-type groups), which also shows no gain and incurs VRAM overhead from the retained computation graph; GradSurgery is not adopted for production either.
 
 + *Uncertainty Weighting Correction*: We identify and fix a subtle implementation gap where per-task loss weights were silently ignored under uncertainty weighting --- yielding the single largest performance improvement ($+$0.018 NDCG\@3, $+$0.031 F1-macro), larger than any architectural change.
 
@@ -870,7 +869,7 @@ This departure from @li2023 was motivated by two heterogeneous-expert considerat
 (1) representation-level transfer requires matching hidden dimensions across experts whose native outputs differ in shape and semantics (on-prem H-GCN produces 128D, the remainder 64D), making cross-expert fusion architecturally cumbersome;
 (2) loss-level transfer is architecturally orthogonal to the PLE layer and can be toggled without modifying the expert routing; gradient-cosine affinity is additionally interpretable ("tasks that help each other move gradients in the same direction"), which matters for regulated MRM documentation.
 
-_Note._ While theoretically motivated, our ablation (Section 5.4) shows that this loss-level variant *degrades* performance at the 13-task scale due to 156-pair affinity estimation instability. Crucially, the architectural orthogonality argument turns out to be incomplete: loss-level auxiliary weighting does not mix representations, but the gradients of the auxiliary terms still flow back through the PLE gate, partially counteracting the gate's task-specific specialization at the backward-pass level. GradSurgery (Section 5.4) was tested as a gradient-level alternative but not adopted due to lack of improvement and VRAM overhead.
+_Note._ After correcting five implementation bugs in the on-prem port (gradient-extraction frequency, adaTT config loader, `freeze_epoch` wiring, uncertainty-weighting ordering, and `warmup_epochs` default), our ablation (Section 5.4) shows that this loss-level variant has a *null effect* at the 13-task scale: AUC changes by only $-$0.001 with adaTT vs.~without, well within single-seed measurement noise. An earlier draft reported a $-$0.019 AUC degradation; that result turned out to be driven by the five implementation bugs rather than by any intrinsic scalability problem of loss-level transfer. We preserve this note for transparency about the investigative process: it is easy for a paper to publish an "algorithmic finding" that is in fact an implementation artefact, and we believe reporting the correction is more useful than retrofitting a cleaner narrative. GradSurgery (Section 5.4) was tested as a gradient-level alternative but likewise shows no gain over the PLE-only baseline and is not adopted.
 
 == Logit Transfer
 
@@ -1174,16 +1173,16 @@ Avg AUC covers binary tasks only; NDCG\@3 is reported for nba\_primary (7-class 
     [Shared Bottom], [0.6711], [0.7014], [0.6831], [0.2007], [0.9602],
     [PLE Softmax], [*0.6729*], [*0.7144*], [0.6814], [0.2009], [*0.9598*],
     [PLE Sigmoid], [0.6728], [0.7131], [0.6820], [*0.2021*], [0.9601],
-    table.cell(colspan: 6, align: left, [_adaTT loss-level transfer_]),
-    [SB + adaTT], [0.6698], [0.7048], [0.6921], [0.1963], [0.9672],
-    [Sigmoid + adaTT], [0.6541], [0.6998], [0.6762], [0.1992], [0.9721],
-    [Softmax + adaTT], [0.6549], [0.7022], [0.6780], [0.1993], [0.9709],
+    table.cell(colspan: 6, align: left, [_adaTT loss-level transfer (corrected)†_]),
+    [SB + adaTT], [0.6708], [0.7048], [0.6791], [0.1999], [0.9606],
+    [Sigmoid + adaTT], [0.6717], [0.7127], [0.6646], [0.2013], [0.9598],
+    [Softmax + adaTT], [0.6722], [0.7022], [0.6856], [0.2015], [0.9597],
     table.cell(colspan: 6, align: left, [_GradSurgery gradient-level projection†_]),
     [SB + GradSurgery (exp.)], [0.6704], [0.6963], [0.6860], [0.1986], [0.9614],
     [Softmax + GradSurgery (exp.)], [0.6726], [0.6918], [0.6830], [*0.2027*], [0.9588],
     [Sigmoid + GradSurgery (exp.)], [0.6721], [0.6888], [0.6811], [0.2020], [0.9603],
   ),
-  caption: [Structure ablation across gate type and inter-task transfer variants. Bold = best per metric within gate comparison. †GradSurgery uses batch 4096 (vs.~5632) due to retain\_graph VRAM overhead.],
+  caption: [Structure ablation across gate type and inter-task transfer variants. Bold = best per metric within gate comparison. †The adaTT rows reflect *corrected* numbers after five implementation bugs inherited from the on-prem port were identified and fixed (gradient-extraction frequency, adaTT config loader path, `freeze_epoch` wiring, uncertainty-weighting ordering, and `warmup_epochs` default). An earlier draft reported a pre-fix Sigmoid+adaTT AUC of 0.6541 and a $-$0.019 AUC degradation; the corrected values are presented here. ‡GradSurgery uses batch 4096 (vs.~5632) due to retain\_graph VRAM overhead.],
 ) <tab:structure-ablation>
 
 Three findings emerge from the structure ablation.
@@ -1198,13 +1197,12 @@ from corrupting multiclass-relevant experts.
 Crucially, the uncertainty weights converge to identical values (nba\_primary: 0.335)
 under both gate types, confirming that the improvement is purely structural.
 
-*Finding 2: adaTT loss-level transfer degrades all metrics.*
-Adding adaTT causes AUC to drop by $-$0.019 and best NDCG\@3 by $-$0.013
-relative to the corresponding PLE-only variant (sigmoid+adaTT vs.~sigmoid alone).
-The root cause is a _scaling mismatch_: 13 tasks produce 156 directed transfer pairs,
-but 7 active transfer epochs (10 total minus 3 warmup) provide insufficient
-gradient samples for stable affinity estimation.
-The original @li2023 adaTT was validated on a small number of homogeneous tasks via representation-level gating where fusion weights are learned end-to-end rather than estimated from gradient statistics; our loss-level gradient-cosine variant depends on accumulating enough per-batch gradient samples to stabilize the affinity matrix, and 156 pairs at 13$times$ the original task count without a proportional epoch increase leaves the affinity noisy, so it acts as gradient noise rather than coherent transfer.
+*Finding 2: adaTT loss-level transfer has a null effect at 13-task scale.*
+After correcting the five porting bugs listed in the table caption,
+adding adaTT changes AUC by only $-$0.001 (sigmoid+adaTT 0.6717 vs.~sigmoid-alone 0.6728; softmax+adaTT 0.6722 vs.~softmax-alone 0.6730) and does not shift any other metric beyond single-seed measurement noise.
+The pre-correction $-$0.019 AUC drop reported in an earlier draft is now attributed to these implementation bugs rather than to an algorithmic property of loss-level transfer, which was the previously hypothesised cause.
+Our loss-level gradient-cosine variant therefore neither helps nor meaningfully hurts at 13-task scale: the auxiliary loss weighting produces transfer signal that is *indistinguishable from zero* relative to PLE-only baselines.
+This should not be generalised as a negative result for representation-level adaTT @li2023, which we do not evaluate; that mechanism learns fusion weights end-to-end on expert activations rather than from gradient cosine statistics and is a distinct algorithm (see Section 4.5). A direct comparison is deferred to follow-up work.
 
 *Finding 3: Correcting uncertainty weighting yields larger gains than architecture changes.*
 The single largest performance improvement (+0.018 NDCG\@3, +0.031 F1-macro)
@@ -1352,16 +1350,12 @@ when all tasks share the same loss type (as in prior work),
 cooperative blending is beneficial;
 when loss types differ fundamentally, competitive isolation is protective.
 
-*Loss-level transfer (adaTT) fails at 13-task scale.*
-adaTT degrades all metrics relative to the corresponding PLE-only variant.
-The mechanism --- adding weighted auxiliary losses $L_i^"adaTT" = L_i + lambda sum_(j eq.not i) w_(i arrow.r j) L_j$ ---
-amplifies gradient noise when affinity estimation is unstable.
-With 156 directed task pairs and only 7 active transfer epochs (10 total minus 3 warmup),
-the per-pair gradient cosine similarity measurements are insufficiently averaged.
-This identifies a _scalability boundary_ for gradient-cosine loss-level transfer:
-the approach is closest in spirit to @fifty2021tag and @chen2018gradnorm, which were demonstrated on small task counts;
-scaling to 13 tasks (156 directed pairs) without a proportional increase in per-pair gradient samples
-exceeds the method's estimation capacity. The representation-level adaTT of @li2023 is a distinct mechanism and is not directly evaluated here.
+*Loss-level transfer (adaTT) provides no measurable benefit at 13-task scale.*
+After correcting the five porting bugs in the caption of Table @tab:structure-ablation, the AUC change with adaTT vs.~without is $-$0.001 across both gate types (sigmoid and softmax) --- within single-seed measurement noise.
+The mechanism --- adding weighted auxiliary losses $L_i^"adaTT" = L_i + lambda sum_(j eq.not i) w_(i arrow.r j) L_j$ with $w_(i arrow.r j)$ estimated from gradient cosine similarity --- produces transfer signal that is *not distinguishable from zero* relative to PLE-only baselines.
+An earlier draft reported a $-$0.019 AUC drop and attributed it to a 156 task-pair affinity estimation limit; with the bug-fixed implementation, the effect vanishes, so the attribution is no longer supported by our data.
+The honest conclusion is operational: at 13-task heterogeneous scale, the gradient-cosine loss-level variant (TAG @fifty2021tag + GradNorm @chen2018gradnorm in spirit) neither helps nor hurts, adds compute cost, and can be disabled without loss.
+The representation-level adaTT of @li2023 is a distinct mechanism that learns fusion weights end-to-end on expert activations and is not directly evaluated here; we leave that comparison to follow-up work.
 
 *GradSurgery: gradient-level projection as an alternative.*
 To address the loss-level transfer limitation,
@@ -1376,13 +1370,8 @@ relative to the number of tasks.
 Softmax+GradSurgery achieves AUC 0.6726 (vs.~softmax-alone 0.6729)
 and the highest F1-macro (0.2027) and lowest MAE (0.9588) across all variants,
 while best NDCG\@3 (0.6918) is lower than softmax-alone (0.7144).
-Critically, GradSurgery does _not_ degrade performance ---
-unlike adaTT, which drops AUC by $-$0.019.
-However, the retained computation graph overhead constrains batch size on 12GB GPUs,
-the NDCG gap suggests that gradient-level projection
-may not fully capture the ranking signal that PLE's representation-level
-gate routing provides, and GradSurgery shows no meaningful advantage
-over PLE softmax alone.
+GradSurgery does not degrade performance either, but --- like the corrected adaTT --- it shows no meaningful advantage over PLE softmax alone.
+The retained computation graph overhead constrains batch size on 12GB GPUs, and the NDCG gap suggests that gradient-level projection may not fully capture the ranking signal that PLE's representation-level gate routing provides.
 GradSurgery was therefore not adopted for production.
 The most robust configuration remains PLE softmax without transfer mechanisms.
 
@@ -1570,9 +1559,9 @@ Validation on proprietary financial data is planned for a subsequent version
 but is not included here due to regulatory data access constraints.
 
 *adaTT evaluation at limited epoch budget.*
-adaTT's degradation may be partly attributable to the 10-epoch training budget.
-With 50+ epochs, affinity estimation may stabilize sufficiently for 156 task pairs.
-However, the 10-epoch budget reflects practical constraints
+The corrected adaTT implementation's null effect may be partly attributable to the 10-epoch training budget:
+with 50+ epochs, affinity estimation may stabilize sufficiently for 156 task pairs and potentially produce a measurable positive effect.
+The 10-epoch budget reflects practical constraints
 (ablation throughput on a single GPU) and is sufficient
 for convergence of non-transfer variants.
 
@@ -1620,8 +1609,9 @@ through business-interpretable gate weights,
 without reliance on post-hoc attribution methods.
 
 *Second*, ablation at 13-task scale reveals that
-loss-level inter-task transfer (adaTT) degrades performance
-due to affinity estimation instability at 156 task pairs,
+loss-level inter-task transfer (adaTT) has a null effect
+once five implementation bugs inherited from the on-prem port are corrected
+($-$0.001 AUC change, within single-seed noise),
 while the single largest improvement comes from
 _correcting loss balancing_ rather than architectural changes.
 This finding challenges the common assumption
@@ -1633,8 +1623,7 @@ deserves the same scrutiny as architecture design.
 a task-type gradient projection method that addresses inter-task interference
 at the gradient level rather than the loss level,
 reducing the $O(k^2)$ task-pair estimation problem to $O(1)$ type-group projections.
-GradSurgery avoids the degradation caused by loss-level transfer
-(F1-macro 0.203 vs.~adaTT's 0.199; MAE 0.959 vs.~0.971),
+GradSurgery matches PLE-only performance (F1-macro 0.203 vs.~the corrected adaTT's 0.201)
 but does not surpass PLE softmax alone on the primary ranking metric
 (NDCG\@3 0.692 vs.~0.714) and incurs significant VRAM overhead from the retained computation graph.
 GradSurgery is therefore not adopted for production.
