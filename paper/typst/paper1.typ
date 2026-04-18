@@ -58,8 +58,8 @@
   providing a structural guarantee against expert collapse and inherent explainability
   through business-interpretable gate weights.
   *Second*, ablation on a 13-task benchmark (7 binary + 3 multiclass + 3 regression, 1M customers)
-  shows that _loss-level_ inter-task transfer (adaTT) degrades performance
-  in this heterogeneous setting because of instability in estimating 156 task-pair affinities.
+  shows that our _loss-level_ inter-task transfer mechanism (a TAG + GradNorm hybrid retained under the "adaTT" label, distinct from the representation-level adaTT of @li2023)
+  degrades performance in this heterogeneous setting because of instability in estimating 156 task-pair affinities.
   The single largest improvement instead comes from correcting a subtle uncertainty-weighting
   implementation gap where per-task loss weights were silently ignored.
   *Third*, we experiment with _GradSurgery_, a task-type gradient projection method
@@ -152,7 +152,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Gate Type Analysis for Heterogeneous MTL*: We demonstrate that softmax gating outperforms sigmoid in 13-task heterogeneous settings (7 binary + 3 multiclass + 3 regression), reversing the conventional preference from homogeneous-task literature @tang2020 @sigmoid_moe2024. The reversal is attributed to softmax's protective isolation of minority-type tasks from majority-type gradient corruption.
 
-+ *Loss-Level vs.~Gradient-Level Transfer*: We show that adaTT (loss-level transfer) degrades performance at 13-task scale due to 156 task-pair affinity estimation instability, and experiment with GradSurgery (gradient-level projection between 3 task-type groups) as an alternative that avoids adaTT's degradation but shows no additional gain and incurs VRAM overhead from the retained computation graph; GradSurgery is not adopted for production.
++ *Loss-Level vs.~Gradient-Level Transfer*: Our loss-level inter-task transfer mechanism (a TAG @fifty2021tag + GradNorm @chen2018gradnorm hybrid, retained under the internal "adaTT" label but distinct from the representation-level adaTT of @li2023 --- see Section 4.5) degrades performance at 13-task scale due to 156 task-pair affinity estimation instability. We additionally experiment with GradSurgery (gradient-level projection between 3 task-type groups), which avoids this degradation but shows no additional gain and incurs VRAM overhead from the retained computation graph; GradSurgery is not adopted for production.
 
 + *Uncertainty Weighting Correction*: We identify and fix a subtle implementation gap where per-task loss weights were silently ignored under uncertainty weighting --- yielding the single largest performance improvement ($+$0.018 NDCG\@3, $+$0.031 F1-macro), larger than any architectural change.
 
@@ -171,7 +171,7 @@ The progression from Shared-Bottom @caruana1997 to MMoE @ma2018 to PLE @tang2020
 increasing sophistication in managing negative transfer between tasks.
 MMoE introduced per-task gating over a shared expert pool, while PLE further separated
 shared and task-specific experts with a progressive extraction structure.
-AdaTT @li2023 extended this with adaptive inter-task transfer.
+AdaTT @li2023 extended this with adaptive inter-task transfer at the *representation level* (per-task fusion over expert outputs via learned gating). Gradient-based task-affinity methods such as Task Affinity Groupings @fifty2021tag and adaptive loss balancing @chen2018gradnorm are a parallel line of work that modulates *loss scalars* using per-task gradient statistics rather than mixing representations; our implementation (Section 4.5) follows this second line and should not be confused with the representation-level mechanism of @li2023, despite our retention of the "adaTT" label for continuity.
 
 Other notable MTL architectures include ESMM @ma2018esmm (entire-space modeling for conversion rate),
 STAR @sheng2021star (star topology for multi-domain CTR),
@@ -855,27 +855,22 @@ The four task groups --- Engagement, Lifecycle, Value, Consumption --- and their
 adaTT enforces differentiated transfer: strong intra-group transfer (same DNA perspective)
 and weaker inter-group transfer (different perspectives, minimizing negative transfer).
 
-*Loss-level transfer.* In a notable departure from the original adaTT @li2023,
-which transfers at the representation level, our implementation operates at the _loss level_:
+*Loss-level transfer — terminology and provenance.*
+Our inter-task transfer mechanism differs from the original adaTT @li2023 on *two* dimensions simultaneously:
 
-$ cal(L)_i^("adaTT") = cal(L)_i + lambda sum_(j eq.not i) w_(i arrow.r j) dot cal(L)_j $ <eq:adatt>
++ *Level of operation.* @li2023's adaTT performs representation-level fusion: per-task fusion layers adaptively combine task-specific and shared expert *outputs* through learned gating networks. Our implementation, in contrast, operates at the *loss level*:
 
-where $w_(i arrow.r j)$ is the transfer weight from task $j$ to task $i$,
-computed via gradient cosine similarity between task loss gradients.
-The base task losses $cal(L)_i$ are weighted by learned uncertainty @kendall2018,
-and binary classification tasks with severe class imbalance (e.g., churn_signal)
-use focal loss @lin2017focal with task-specific $alpha$ and $gamma$ parameters.
+  $ cal(L)_i^("trans") = cal(L)_i + lambda sum_(j eq.not i) w_(i arrow.r j) dot cal(L)_j $ <eq:adatt>
 
-This design choice was motivated by two considerations:
-(1) representation-level transfer requires matching hidden dimensions across heterogeneous experts,
-which is architecturally cumbersome when experts produce outputs of different shapes and semantics;
-(2) loss-level transfer naturally respects the task group structure ---
-if two tasks have similar gradient directions (high cosine similarity),
-their losses reinforce each other, regardless of the expert that produced the prediction.
++ *Affinity source.* @li2023 learns the fusion weights through differentiable gating on expert activations. We compute $w_(i arrow.r j)$ from *gradient cosine similarity* between per-task loss gradients, smoothed by EMA --- an approach closer to Task Affinity Groupings @fifty2021tag and GradNorm-style adaptive loss balancing @chen2018gradnorm than to @li2023.
 
-_Note_: While theoretically motivated, our ablation (Section 5.4) shows that adaTT
-*degrades* performance at the 13-task scale due to 156-pair affinity estimation instability.
-GradSurgery (Section 5.4) was tested as a gradient-level alternative but not adopted due to lack of improvement and VRAM overhead.
+In other words, what we call "adaTT" throughout this paper is not a re-implementation of @li2023, but a *TAG + GradNorm hybrid for heterogeneous-expert PLE*. We retain the "adaTT" shorthand for continuity with prior internal documentation; readers familiar with @li2023 should treat the two mechanisms as distinct. The base task losses $cal(L)_i$ are further weighted by learned uncertainty @kendall2018, and imbalanced binary tasks (e.g., churn_signal) use focal loss @lin2017focal with task-specific $alpha$ and $gamma$.
+
+This departure from @li2023 was motivated by two heterogeneous-expert considerations:
+(1) representation-level transfer requires matching hidden dimensions across experts whose native outputs differ in shape and semantics (on-prem H-GCN produces 128D, the remainder 64D), making cross-expert fusion architecturally cumbersome;
+(2) loss-level transfer is architecturally orthogonal to the PLE layer and can be toggled without modifying the expert routing; gradient-cosine affinity is additionally interpretable ("tasks that help each other move gradients in the same direction"), which matters for regulated MRM documentation.
+
+_Note._ While theoretically motivated, our ablation (Section 5.4) shows that this loss-level variant *degrades* performance at the 13-task scale due to 156-pair affinity estimation instability. Crucially, the architectural orthogonality argument turns out to be incomplete: loss-level auxiliary weighting does not mix representations, but the gradients of the auxiliary terms still flow back through the PLE gate, partially counteracting the gate's task-specific specialization at the backward-pass level. GradSurgery (Section 5.4) was tested as a gradient-level alternative but not adopted due to lack of improvement and VRAM overhead.
 
 == Logit Transfer
 
@@ -1209,9 +1204,7 @@ relative to the corresponding PLE-only variant (sigmoid+adaTT vs.~sigmoid alone)
 The root cause is a _scaling mismatch_: 13 tasks produce 156 directed transfer pairs,
 but 7 active transfer epochs (10 total minus 3 warmup) provide insufficient
 gradient samples for stable affinity estimation.
-The original adaTT was validated on 4 tasks (12 pairs);
-our 13$times$ increase in pair count without proportional epoch increase
-causes noisy transfer that acts as gradient noise.
+The original @li2023 adaTT was validated on a small number of homogeneous tasks via representation-level gating where fusion weights are learned end-to-end rather than estimated from gradient statistics; our loss-level gradient-cosine variant depends on accumulating enough per-batch gradient samples to stabilize the affinity matrix, and 156 pairs at 13$times$ the original task count without a proportional epoch increase leaves the affinity noisy, so it acts as gradient noise rather than coherent transfer.
 
 *Finding 3: Correcting uncertainty weighting yields larger gains than architecture changes.*
 The single largest performance improvement (+0.018 NDCG\@3, +0.031 F1-macro)
@@ -1365,10 +1358,10 @@ The mechanism --- adding weighted auxiliary losses $L_i^"adaTT" = L_i + lambda s
 amplifies gradient noise when affinity estimation is unstable.
 With 156 directed task pairs and only 7 active transfer epochs (10 total minus 3 warmup),
 the per-pair gradient cosine similarity measurements are insufficiently averaged.
-This identifies a _scalability boundary_ for loss-level transfer:
-adaTT was validated on 4 tasks (12 pairs) @li2023;
-scaling to 13 tasks (156 pairs) without proportional epoch increase
-exceeds the method's estimation capacity.
+This identifies a _scalability boundary_ for gradient-cosine loss-level transfer:
+the approach is closest in spirit to @fifty2021tag and @chen2018gradnorm, which were demonstrated on small task counts;
+scaling to 13 tasks (156 directed pairs) without a proportional increase in per-pair gradient samples
+exceeds the method's estimation capacity. The representation-level adaTT of @li2023 is a distinct mechanism and is not directly evaluated here.
 
 *GradSurgery: gradient-level projection as an alternative.*
 To address the loss-level transfer limitation,
