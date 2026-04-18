@@ -267,9 +267,10 @@ class CGCLayer(nn.Module):
         self.feature_router = feature_router
         self._last_gate_weights: Dict[int, torch.Tensor] = {}
 
-        if fusion_type not in ("cgc", "adatt_sp"):
+        _valid_fusion = ("cgc", "adatt_sp", "residual_complement")
+        if fusion_type not in _valid_fusion:
             raise ValueError(
-                f"fusion_type must be 'cgc' or 'adatt_sp', got {fusion_type!r}"
+                f"fusion_type must be one of {_valid_fusion}, got {fusion_type!r}"
             )
         self.fusion_type = fusion_type
         # Native expert residual (AdaTT-sp, Li et al. KDD 2023).
@@ -280,6 +281,16 @@ class CGCLayer(nn.Module):
             )
         else:
             self.native_residual_weight = None
+
+        # Residual recovery (Paper 3): recover signal from experts *not*
+        # selected by the gate, within the same task. Mutually exclusive
+        # with adatt_sp at this layer.
+        if fusion_type == "residual_complement":
+            self.residual_recovery_weight = nn.Parameter(
+                torch.tensor(float(native_residual_weight_init))
+            )
+        else:
+            self.residual_recovery_weight = None
 
         if expert_hidden_dims is None:
             expert_hidden_dims = [expert_hidden_dim]
@@ -408,6 +419,20 @@ class CGCLayer(nn.Module):
             if self.fusion_type == "adatt_sp":
                 native = task_outs.mean(dim=1)  # (batch, hidden)
                 gated = gated + self.native_residual_weight * native
+
+            # Residual recovery --- complementary gate (Paper 3, M1).
+            # Primary = gated weighted sum (experts the gate "selected").
+            # Residual = weighted sum with (1 - gate) weights renormalised
+            # over the expert axis — this recovers signal from experts the
+            # gate down-weighted, *within the same task*, without any
+            # cross-task mixing.
+            elif self.fusion_type == "residual_complement":
+                complement = (1.0 - gate_weights).clamp(min=0.0)  # (batch, num_total)
+                complement_sum = complement.sum(dim=-1, keepdim=True)
+                # Avoid division by zero when the gate saturates.
+                complement = complement / (complement_sum + 1e-6)
+                residual = (complement.unsqueeze(-1) * all_outs).sum(dim=1)
+                gated = gated + self.residual_recovery_weight * residual
 
             outputs.append(gated)
             if not self.training:

@@ -507,19 +507,28 @@ class PLEModel(nn.Module):
             router = self.feature_router if layer_idx == 0 else None
             expert_names = shared_expert_names if layer_idx == 0 else None
 
-            # Fusion type: "cgc" (default) or "adatt_sp" (Li 2023 representation-level
-            # fusion with native expert residual).  Toggled from pipeline.yaml
-            # adatt_sp.enabled.
-            _fusion_type = (
-                "adatt_sp"
-                if getattr(cfg, "adatt_sp", None) is not None and cfg.adatt_sp.enabled
-                else "cgc"
+            # Fusion type dispatch:
+            #   - adatt_sp.enabled        -> "adatt_sp"  (Li 2023 representation-level fusion)
+            #   - residual_recovery.enabled -> "residual_<method>" (Paper 3 intra-task recovery)
+            #   - otherwise               -> "cgc"       (standard PLE gate)
+            # adatt_sp and residual_recovery are mutually exclusive at this layer;
+            # if both are enabled we prefer residual_recovery (newer mechanism).
+            _adatt_sp_on = (
+                getattr(cfg, "adatt_sp", None) is not None and cfg.adatt_sp.enabled
             )
-            _native_init = (
-                cfg.adatt_sp.native_residual_weight_init
-                if getattr(cfg, "adatt_sp", None) is not None
-                else 1.0
+            _rr_on = (
+                getattr(cfg, "residual_recovery", None) is not None
+                and cfg.residual_recovery.enabled
             )
+            if _rr_on:
+                _fusion_type = f"residual_{cfg.residual_recovery.method}"
+                _native_init = cfg.residual_recovery.weight_init
+            elif _adatt_sp_on:
+                _fusion_type = "adatt_sp"
+                _native_init = cfg.adatt_sp.native_residual_weight_init
+            else:
+                _fusion_type = "cgc"
+                _native_init = 1.0
 
             layer = CGCLayer(
                 input_dim=in_dim,

@@ -1080,6 +1080,13 @@ def save_eval_report(
             ple_config.adatt_sp.enabled
             if hasattr(ple_config, "adatt_sp") else None
         ),
+        "residual_recovery": (
+            {
+                "enabled": ple_config.residual_recovery.enabled,
+                "method": ple_config.residual_recovery.method,
+            }
+            if hasattr(ple_config, "residual_recovery") else None
+        ),
         "gate_type": getattr(ple_config, "gate_type", "softmax"),
         "total_params": sum(p.numel() for p in model.parameters()),
         "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),

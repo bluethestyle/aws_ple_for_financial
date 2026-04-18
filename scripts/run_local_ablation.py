@@ -184,6 +184,26 @@ SCENARIOS: List[Dict[str, Any]] = [
          "use_hmm_projectors": "false",
      }},
 
+    # Paper 3 --- intra-task residual recovery via complementary gate (M1).
+    # After the standard gated weighted sum, add a learnable-scalar-weighted
+    # residual whose weights are the renormalised (1 - gate_weights). This
+    # recovers signal from experts the gate down-weighted, *within the same
+    # task* and without any cross-task mixing. Everything else matches
+    # struct_13_ple_sigmoid.
+    {"name": "struct_13_residual_complement",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "use_adatt_sp": "false",
+         "use_residual_recovery": "true",
+         "residual_method": "complement",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
     # PLE sigmoid + GroupTaskExpert (GroupEncoder + ClusterEmbedding)
     {"name": "struct_13_ple_sigmoid_gte",
      "hp": {

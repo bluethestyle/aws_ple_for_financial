@@ -67,6 +67,35 @@ class AdaTTSPConfig:
 
 
 @dataclass
+class ResidualRecoveryConfig:
+    """Intra-task residual expert recovery (Paper 3).
+
+    Motivation: PLE's per-task CGC gate selects primary experts and
+    down-weights others. Cross-task fusion mechanisms (loss-level adaTT,
+    Li 2023 AdaTT-sp) do not recover the signal that the gate attenuated
+    — they mix losses / other tasks' experts instead. This config controls
+    *intra-task* residual recovery mechanisms that reclaim signal from the
+    unselected experts *within the same task's forward pass*, without any
+    cross-task mixing.
+
+    Methods:
+      - ``complement``: primary = gated sum; residual = weighted sum with
+        (1 - gate) weights renormalised over the expert axis; output =
+        primary + α * residual (α learnable scalar).
+      - ``orthogonal``: project each expert's output onto the complement
+        of the primary direction before aggregating as residual (Paper 3
+        future extension).
+      - ``dualgate``: learn a second per-task gate explicitly for residual
+        weighting (Paper 3 future extension).
+
+    Mutually exclusive with AdaTT-sp at the CGC gate layer.
+    """
+    enabled: bool = False
+    method: str = "complement"  # complement | orthogonal | dualgate
+    weight_init: float = 0.5
+
+
+@dataclass
 class TaskGroupDef:
     """A single task group for adaTT."""
     members: List[str] = field(default_factory=list)
@@ -363,6 +392,9 @@ class PLEConfig:
 
     # -- AdaTT-sp (representation-level fusion, Li et al. KDD 2023) ---------
     adatt_sp: AdaTTSPConfig = field(default_factory=AdaTTSPConfig)
+
+    # -- Residual recovery (intra-task, Paper 3) ----------------------------
+    residual_recovery: ResidualRecoveryConfig = field(default_factory=ResidualRecoveryConfig)
 
     # -- Gradient Surgery (PCGrad) ------------------------------------------
     grad_surgery: GradSurgeryConfig = field(default_factory=GradSurgeryConfig)

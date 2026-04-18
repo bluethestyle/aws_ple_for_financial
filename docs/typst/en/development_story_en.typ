@@ -600,6 +600,38 @@ PLE's val_loss froze at 3.702 in Phase 2, while shared_bottom (1 MLP) paradoxica
 
 *Lesson*: When a heterogeneous expert basket already encodes enough inductive bias, whatever per-task fusion mechanism sits on top --- loss-level TAG + GradNorm, or representation-level Li 2023 AdaTT-sp --- lands in null-to-negative territory. The more accurate reading is not "which fusion wins," but *at this scale, fusion augmentation is not needed*. Paper 3's primary contribution has shifted from "which fusion is best" to *"when does fusion augmentation stop mattering?"*
 
+=== The M1 Residual Complement Experiment --- "Recovering the Unselected" Fails
+
+*Background*: After the AdaTT-sp failure, one original-form hypothesis from the project's early scoping remained. "When the PLE gate selects certain experts, might useful signal remain in the ones it down-weighted? What we want is a residual-signal-extraction mechanism that replaces adaTT." To test this directly --- not via cross-task mixing (loss-level adaTT), not via re-injecting the task's own expert (AdaTT-sp), but as an *intra-task complementary recovery* --- we designed M1.
+
+*Design*: A third `fusion_type = "residual_complement"` was added to `CGCLayer`. The primary gated weighted sum is preserved, and a complement = $(1 - "gate_weights")$ is clamped and renormalised to form a complementary weighting, which is then aggregated over `all_outs` as a residual. The final output is $"gated" + w_r dot "residual"$ where $w_r$ is a learnable scalar (`residual_recovery_weight`). Off by default in `pipeline.yaml`; activated only through the HP flag `use_residual_recovery=true`. Roughly 30 lines of new code, no effect on existing paths.
+
+*Result (10 epochs, single seed)*: `struct_13_residual_complement` finished at AUC 0.6675 with best AUC 0.6692 at epoch 1. Against CGC baseline (0.6728), $Delta$ = $-$0.0053 --- the *largest drop* among the three fusion variants. More decisively, the peak AUC occurred at epoch 1 and the curve declined monotonically thereafter --- as the learnable recovery weight was trained, performance actively worsened. Random initialisation was a less harmful state than the converged weight.
+
+*4-way comparison (struct_13 benchmark, 10 epochs, seed=42)*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  align: (left, center, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*Fusion*], [*Mechanism*], [*Final AUC*], [*Best AUC (ep)*], [*$Delta$ vs CGC*]
+  ),
+  [CGC gate], [gated weighted sum of selected experts], [*0.6728*], [0.6728 (ep10)], [---],
+  [Loss-level adaTT], [cross-task loss mixing], [0.6717], [0.6733 (ep2)], [$-$0.0011],
+  [AdaTT-sp (Li 2023)], [per-task own-expert residual], [0.6696], [0.6714 (ep3)], [$-$0.0032],
+  [M1 residual complement], [$(1-"gate")$ recovery of unselected], [*0.6675*], [0.6692 (ep1)], [*$-$0.0053*],
+)
+
+*Per-task analysis*: Although the aggregate $Delta$ is at noise level, task-level breakdown revealed three groups. Group A (low gate entropy, 3 tasks: segment_prediction, top_mcc_shift, mcc_diversity_trend) was insensitive to every recovery mechanism ($abs(Delta) <= 0.003$). Group B (high-entropy tasks, 2 cases: churn_signal and will_acquire_lending) suffered the largest M1 degradation ($-$0.020 and $-$0.009). The single positive outlier was next_mcc (50-class, base F1 near random at 0.01): $Delta$ = +0.005 across all three recovery variants. The remaining 8 tasks fell within noise ($abs(Delta) <= 0.005$).
+
+*Gate-entropy correlation*: Task-level gate entropy was extracted from the last CGC layer of the joint_full checkpoint and correlated with each variant's $Delta$. M1: $r = -0.40$; AdaTT-sp: $r = -0.32$; loss-level adaTT: $r = -0.31$. All three pointed the same direction (higher entropy $arrow.r$ recovery hurts more), but with n=13 and p $approx$ 0.18 the correlation is not statistically significant. Gate entropy therefore cannot be claimed as a structural explanation of recovery benefit. The two outliers --- churn_signal and next_mcc --- were better explained by task-specific factors (label construction for churn, near-random base rate for next_mcc) than by entropy.
+
+*Shared failure mode of the three*: loss-level adaTT, AdaTT-sp, and M1 all share the same structure --- *a gate-derived residual additively injected at the same fusion point as the primary*. When the CGC gate is already near-optimal at AUC 0.6728, inverting the gate or forcibly restoring down-weighted experts reduces to adding noise. The converging conclusion across three experiments is simple: *gate-derived residual has no recovery value*.
+
+*Lesson*: To improve the architecture, the definition of "residual" has to be decoupled from the gate itself. The candidate directions for Paper 3 are (a) a boosting-style residual path that trains on the primary prediction's *errors*, (b) a *task-agnostic* global aggregation placed in parallel with the primary rather than added to it, and (c) a self-regulating second-stage gate conditioned on prediction uncertainty. Each of these structurally avoids the failure mode shared by the three rejected variants. Selection of one of these three will drive the next experiment.
+
 #section-break()
 
 

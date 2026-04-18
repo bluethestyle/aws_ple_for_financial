@@ -134,6 +134,10 @@ Our contributions:
   to uniform averaging; and a demonstration that val-loss is a misleading
   checkpoint criterion when regression and classification tasks coexist
   (Section 4.6).
+- A negative result across three gate-derived residual recovery mechanisms
+  (loss-level adaTT, AdaTT-sp, and complementary-gate recovery):
+  all three degrade aggregate AUC below the CGC baseline with a magnitude
+  that scales with the invasiveness of the intervention (Section 4.7).
 
 The system, data generator, and ablation scripts are publicly available.#footnote[
   https://github.com/bluethestyle/aws\_ple\_for\_financial
@@ -663,6 +667,119 @@ minimizes val loss.
 and (3) treat val loss as a diagnostic (indicating regression progress) rather
 than as the primary stopping criterion.
 
+== Finding 7: Gate-Derived Residual Recovery Underperforms <find7>
+
+After Finding 2 established that the loss-level `adaTT` variant does not
+affect aggregate AUC at the 13-task scale ($Delta = -0.001$, null), two
+further mechanisms were evaluated on the same benchmark to test whether any
+fusion augmentation can extract useful signal beyond CGC's gated selection.
+Both mechanisms, along with the original, share one structural property:
+*they inject a gate-derived residual at the primary's fusion point*.
+
+=== Three Mechanisms, One Failure Pattern
+
+*Loss-level adaTT* (the variant reported in Paper 1) adds a weighted
+cross-task loss term, $L_i + lambda sum_(j != i) w(i arrow.r j) L_j$,
+with transfer weights estimated from gradient cosine similarity.
+
+*AdaTT-sp* @li2023 adds a native-expert residual: after the CGC gate
+produces the weighted sum, the mean output of the task's own task-specific
+experts is re-injected, scaled by a learnable scalar.
+
+*Residual complement (M1)*, introduced in this paper, preserves the
+primary gated output and adds a complementary weighting
+$(1 - "gate_weights")$ (clamped and renormalised over the expert axis)
+applied to the same expert outputs as a residual, scaled by a learnable
+scalar. The intent is to recover intra-task signal from experts the gate
+down-weighted, without any cross-task mixing.
+
+Results on the 13-task benchmark (10 epochs, seed=42):
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, center, center, center),
+    stroke: 0.5pt,
+    inset: 5pt,
+    table.header(
+      [*Fusion*], [*Final AUC*], [*Best AUC (epoch)*], [*$Delta$ vs CGC*]
+    ),
+    [CGC gate (baseline)], [0.6728], [0.6728 (ep10)], [---],
+    [Loss-level adaTT],    [0.6717], [0.6733 (ep2)],  [$-$0.0011],
+    [AdaTT-sp (Li 2023)],  [0.6696], [0.6714 (ep3)],  [$-$0.0032],
+    [M1 complement],       [0.6675], [0.6692 (ep1)],  [$-$0.0053],
+  ),
+  caption: [4-way comparison of fusion mechanisms on the 13-task benchmark.
+  All three augmented variants fall below the CGC baseline; the magnitude of
+  the drop scales with the invasiveness of the intervention.]
+) <tab:fusion4way>
+
+M1's best AUC at epoch 1 (pre-training) with monotone decline thereafter
+indicates that training the learnable recovery weight actively degrades
+performance --- random initialisation is a less harmful operating point
+than the converged weight.
+
+=== Per-Task Breakdown and the Two Outliers
+
+Aggregate deltas are at noise level ($<= 0.005$) across all variants, but
+a per-task breakdown reveals three regimes:
+
+- *Gate-saturated tasks* (segment_prediction, top_mcc_shift,
+  mcc_diversity_trend) have low gate entropy (ratio $< 0.55$) and are
+  insensitive to every recovery mechanism ($abs(Delta) <= 0.003$).
+- *Gate-distributed tasks with a strong primary* (churn_signal,
+  will_acquire_lending) have high gate entropy (ratio $> 0.82$) and show
+  the largest M1 degradation ($-$0.020 and $-$0.009).
+- *A single positive outlier* is next_mcc (50 classes, near-random base F1
+  $approx$ 0.01): all three recovery variants improve it by
+  $+$0.005 to $+$0.008. The gain is large relative to the base but small
+  in absolute terms; we attribute it to the near-floor starting point
+  rather than to a genuine recovery effect.
+
+The remaining 8 tasks fall within noise ($abs(Delta) <= 0.005$).
+
+=== Gate Entropy Correlation: Weak Signal
+
+To test whether gate entropy structurally predicts recovery benefit, we
+extract per-task gate weights from the final CGC layer of the
+joint_full checkpoint and correlate task-level entropy with each variant's
+$Delta$:
+
+- Loss-level adaTT: $r = -0.31$
+- AdaTT-sp: $r = -0.32$
+- M1 complement: $r = -0.40$
+
+All three correlations are negative (higher entropy $arrow.r$ more harm)
+with consistent sign, but with $n = 13$ and $p approx 0.18$ none meets
+conventional significance. The two outliers
+--- churn_signal and next_mcc --- are better explained by task-specific
+factors (label construction for churn_signal, near-floor base rate for
+next_mcc) than by gate entropy. Gate entropy cannot therefore be claimed
+as a structural predictor of recovery benefit on this benchmark.
+
+=== The Common Failure Mode
+
+The three rejected mechanisms share a single structural property: each
+derives a residual from the gate output (either by inverting the gate or
+by selecting a fixed position such as "the task's own expert") and injects
+it additively at the primary's fusion point. When the CGC gate is already
+near-optimal on the 13-task benchmark, these residuals reduce to noise.
+*The converging conclusion across three experiments is that gate-derived
+residual recovery has no net value on this benchmark.*
+
+*Implication*: A fusion augmentation that improves over CGC at this scale
+must decouple its residual definition from the gate itself. Three directions
+that structurally avoid the observed failure mode are:
+(a) a boosting-style residual path trained on the primary prediction's
+*errors*, not on gate inversion;
+(b) a *task-agnostic* global aggregation placed in parallel with the
+primary rather than additively on top; and
+(c) a self-regulating second-stage gate conditioned on prediction
+uncertainty rather than on the primary gate's output.
+Selecting and evaluating one of these is the intended scope of
+a follow-up paper; the negative result reported here motivates why
+the simpler gate-derived alternatives have been rejected before that work.
+
 = Discussion
 
 == Practical Guidelines Summary
@@ -757,6 +874,17 @@ disrupting the ranking-optimal parameter region.
 These findings are not novel algorithms but practical diagnostics.
 We hope they prevent other practitioners from re-discovering the same pitfalls
 when scaling MTL to real-world heterogeneous task portfolios.
+
+Finding 7 reframes the search for fusion augmentation beyond CGC: on this
+benchmark, three distinct gate-derived residual mechanisms all underperform
+the baseline, with degradation magnitude scaling monotonically with
+intervention invasiveness. The takeaway is not that residual recovery is
+impossible, but that *any residual that is a function of the gate output
+is structurally unable to add value once the gate is already near-optimal*.
+A follow-up study will evaluate three alternatives that decouple the
+residual definition from the gate: boosting-style error-driven residuals,
+task-agnostic consensus paths placed in parallel with the primary,
+and uncertainty-conditioned self-regulating second-stage gates.
 
 // ============================================================
 = Author Contributions

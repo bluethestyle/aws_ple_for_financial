@@ -55,7 +55,8 @@ def build_ple_config(
     from core.model.ple.config import (
         PLEConfig, ExpertConfig, ExpertBasketConfig,
         LossWeightingConfig, LogitTransferDef,
-        GroupTaskExpertConfig, AdaTTConfig, AdaTTSPConfig, TaskGroupDef,
+        GroupTaskExpertConfig, AdaTTConfig, AdaTTSPConfig,
+        ResidualRecoveryConfig, TaskGroupDef,
         CGCConfig, ExpertInputConfig,
     )
 
@@ -188,6 +189,18 @@ def build_ple_config(
         model_config.setdefault("adatt_sp", {})["enabled"] = bool(
             parse_bool_hp(use_adatt_sp_raw)
         )
+
+    # Residual recovery (Paper 3 intra-task recovery at the CGC gate).
+    # Off by default; enable via HP ``use_residual_recovery=true`` and select
+    # method via ``residual_method`` ("complement" / "orthogonal" / "dualgate").
+    use_rr_raw = hp.get("use_residual_recovery")
+    if use_rr_raw is not None:
+        model_config.setdefault("residual_recovery", {})["enabled"] = bool(
+            parse_bool_hp(use_rr_raw)
+        )
+    rr_method_raw = hp.get("residual_method")
+    if rr_method_raw is not None:
+        model_config.setdefault("residual_recovery", {})["method"] = str(rr_method_raw)
 
     # --- Loss weighting ---
     lw_cfg = model_config.get("loss_weighting", {})
@@ -354,6 +367,19 @@ def build_ple_config(
         native_residual_weight_init=float(
             adatt_sp_raw.get("native_residual_weight_init", 1.0)
         ),
+    )
+
+    # Residual recovery (Paper 3 intra-task mechanisms: complement / orthogonal / dualgate).
+    rr_raw = (
+        model_config.get("residual_recovery")
+        or label_schema.get("residual_recovery")
+        or config.get("residual_recovery")
+        or {}
+    )
+    ple_config.residual_recovery = ResidualRecoveryConfig(
+        enabled=bool(rr_raw.get("enabled", False)),
+        method=str(rr_raw.get("method", "complement")),
+        weight_init=float(rr_raw.get("weight_init", 0.5)),
     )
 
     # GroupTaskExpert config

@@ -518,6 +518,38 @@ Ablation 필터가 텐서에서 피처를 제거하는 데 성공했지만, `fea
 
 *교훈*: 이종 expert basket이 이미 충분히 강한 inductive bias를 제공하면, per-task fusion mechanism을 뭘 쓰든 (loss-level TAG+GradNorm이든, representation-level Li 2023 AdaTT-sp든) 모두 null-to-negative 영역에 머무른다. 두 메커니즘의 "승패"가 아니라, *이 스케일에서는 fusion augmentation 자체가 필요 없다* 는 것이 더 정확한 결론이다. Paper 3의 primary contribution이 "어느 fusion이 최선인가"에서 *"fusion augmentation이 언제 의미 없어지는가"* 로 재조정됐다.
 
+=== M1 Residual Complement 실험 --- "선택받지 못한 신호 회수"의 실패
+
+*배경*: AdaTT-sp 실패 후 남은 가설은 프로젝트 초기의 원형 직관이었다. "PLE gate가 특정 expert를 선택하면, 나머지 expert들의 신호 중에서도 쓸만한 것이 있지 않을까? adaTT를 대체할 잔여 신호 추출 메커니즘이 필요하다." 이 가설을 직접 테스트하기 위해 cross-task 혼합(loss-level adaTT)이나 per-task own-expert 재주입(AdaTT-sp)이 아닌, *intra-task complementary recovery* (M1)를 설계했다.
+
+*설계*: `CGCLayer`에 세 번째 `fusion_type = "residual_complement"`를 추가했다. primary = gated weighted sum은 그대로 두고, complement = $(1 - "gate_weights")$ 를 clamp 후 정규화하여 얻은 보수 가중치로 all_outs 가중합을 추가로 계산, 최종 출력 = $"gated" + w_r dot "residual"$ ($w_r$ 는 `residual_recovery_weight`, 학습 가능 스칼라). pipeline.yaml 기본 off, HP 플래그 `use_residual_recovery=true`로만 활성화. 신규 코드 ~30줄, 기존 경로 변화 없음.
+
+*결과 (10 에폭, single seed)*: `struct_13_residual_complement` final AUC 0.6675, best AUC 0.6692 (epoch 1). CGC baseline (0.6728) 대비 $Delta$ = $-$0.0053 으로, 세 fusion 변종 중 *가장 큰 하락* 이었다. 더 결정적으로, 최고 성능이 epoch 1에서 나오고 이후 단조 하락했다 --- learnable recovery weight가 학습될수록 오히려 성능이 나빠졌다. Random 초깃값이 학습된 값보다 덜 해로운 상태라는 의미다.
+
+*4-way 비교 (struct_13 벤치마크, 10 에폭, seed=42)*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  align: (left, center, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*Fusion*], [*기제*], [*Final AUC*], [*Best AUC (ep)*], [*$Delta$ vs CGC*]
+  ),
+  [CGC gate], [선택 expert weighted sum], [*0.6728*], [0.6728 (ep10)], [---],
+  [Loss-level adaTT], [cross-task loss mixing], [0.6717], [0.6733 (ep2)], [$-$0.0011],
+  [AdaTT-sp (Li 2023)], [per-task own expert residual], [0.6696], [0.6714 (ep3)], [$-$0.0032],
+  [M1 residual complement], [(1$-$gate) 미선택 회수], [*0.6675*], [0.6692 (ep1)], [*$-$0.0053*],
+)
+
+*Per-task 분석*: aggregate $Delta$ 는 noise 수준이지만 태스크별로 뜯어보면 세 그룹이 드러났다. Group A (gate entropy 낮음, 3 tasks: segment_prediction, top_mcc_shift, mcc_diversity_trend)는 모든 recovery 방식에 둔감했다 ($abs(Delta) <= 0.003$). Group B (gate entropy 높은 중 2 tasks: churn_signal, will_acquire_lending)에서 M1이 크게 하락했다 ($-$0.020, $-$0.009). 유일한 positive outlier는 next_mcc (50-class, base F1 0.01 거의 random): $Delta$ = +0.005 로 세 방식 모두 개선. 나머지 8 tasks는 $abs(Delta) <= 0.005$ 의 noise 영역.
+
+*Gate entropy 상관분석*: joint_full 체크포인트의 마지막 CGC 층에서 task별 gate entropy를 추출해 recovery $Delta$ 와 Pearson 상관을 계산했다. M1: $r = -0.40$, AdaTT-sp: $r = -0.32$, loss-level adaTT: $r = -0.31$. 세 방식 모두 같은 방향성 (entropy 높을수록 recovery 해로움)이지만, n=13, p $approx$ 0.18 로 통계적 유의성 없음. Gate entropy가 recovery benefit을 구조적으로 설명한다고 주장할 근거로는 부족하다. Churn_signal과 next_mcc라는 두 outlier는 entropy가 아닌 각각 label construction과 base rate 같은 task-specific 요인으로 설명하는 편이 더 자연스러웠다.
+
+*세 실패의 공통 실패 모드*: adaTT (loss-level), AdaTT-sp (per-task native residual), M1 (complement) 모두 *gate 출력에서 파생된 residual을 primary와 동일 fusion 지점에 additive로 주입* 한다는 구조를 공유한다. CGC gate가 이미 AUC 0.6728 수준으로 near-optimal이면, gate의 역이나 gate가 낮춘 expert를 강제로 복원하는 것은 noise 추가에 불과하다. 세 실험의 공통 결론은 "gate-derived residual은 회수 가치가 없다" 이다.
+
+*교훈*: 구조를 개선하려면 residual 정의 자체를 gate와 독립적으로 재정의해야 한다. 후속 Paper 3 설계 방향은 (a) primary prediction의 *error* 위에서 학습하는 boosting-style residual path, (b) task-agnostic 전역 aggregation을 primary와 *parallel* 로 배치, (c) prediction uncertainty에 conditioned된 self-regulating 2차 gate --- 어느 쪽이든 gate 역을 residual로 쓰는 3개 실패 공식을 구조적으로 회피하는 설계여야 한다. 이 세 가지 중 하나를 다음 실험으로 선택한다.
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.

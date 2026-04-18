@@ -128,6 +128,20 @@ adatt_sp:
   native_residual_weight_init: 1.0  # learnable scalar initial value
 
 # ---------------------------------------------------------------------------
+# Residual recovery (Paper 3) — intra-task recovery of signal from experts
+# *not* selected by the CGC gate. Unlike adatt_sp (which preserves the task's
+# own task-specific expert output) or loss-level adaTT (which mixes task
+# losses across tasks), residual_recovery reclaims under-weighted experts'
+# output within the same task's forward, without any cross-task mixing.
+#
+# Mutually exclusive with adatt_sp at the CGC gate layer. Off by default.
+# ---------------------------------------------------------------------------
+residual_recovery:
+  enabled: false                    # toggle via HP override
+  method: "complement"              # complement | orthogonal | dualgate (future)
+  weight_init: 0.5                  # learnable residual weight initial value
+
+# ---------------------------------------------------------------------------
 # Gradient Surgery — PCGrad task-type projection (alternative to adaTT)
 # ---------------------------------------------------------------------------
 grad_surgery:
