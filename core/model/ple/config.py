@@ -48,6 +48,25 @@ class CGCConfig:
 
 
 @dataclass
+class AdaTTSPConfig:
+    """AdaTT-sp fusion configuration (Li et al., KDD 2023).
+
+    When enabled, the per-task fusion in CGCLayer adds the task's own
+    task-specific experts' mean output as a learnable-scalar residual on
+    top of the standard gated weighted sum. This implements the core
+    mechanism of AdaTT-sp (the ``sp`` / specific-fusion variant of the
+    AdaTT paper) without the optional AllExpertGF second-stage fusion.
+
+    Unlike the prior ``AdaTTConfig`` (which controls the TAG + GradNorm
+    inspired *loss-level* transfer retained under the ``adaTT`` label for
+    historical continuity), AdaTTSPConfig controls *representation-level*
+    fusion at the CGC gate layer.
+    """
+    enabled: bool = False
+    native_residual_weight_init: float = 1.0
+
+
+@dataclass
 class TaskGroupDef:
     """A single task group for adaTT."""
     members: List[str] = field(default_factory=list)
@@ -339,8 +358,11 @@ class PLEConfig:
     # -- Cluster sub-heads ---------------------------------------------------
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
 
-    # -- adaTT (Adaptive Task Transfer) ------------------------------------
+    # -- adaTT (Adaptive Task Transfer — loss-level TAG + GradNorm variant)
     adatt: AdaTTConfig = field(default_factory=AdaTTConfig)
+
+    # -- AdaTT-sp (representation-level fusion, Li et al. KDD 2023) ---------
+    adatt_sp: AdaTTSPConfig = field(default_factory=AdaTTSPConfig)
 
     # -- Gradient Surgery (PCGrad) ------------------------------------------
     grad_surgery: GradSurgeryConfig = field(default_factory=GradSurgeryConfig)

@@ -55,7 +55,7 @@ def build_ple_config(
     from core.model.ple.config import (
         PLEConfig, ExpertConfig, ExpertBasketConfig,
         LossWeightingConfig, LogitTransferDef,
-        GroupTaskExpertConfig, AdaTTConfig, TaskGroupDef,
+        GroupTaskExpertConfig, AdaTTConfig, AdaTTSPConfig, TaskGroupDef,
         CGCConfig, ExpertInputConfig,
     )
 
@@ -180,6 +180,14 @@ def build_ple_config(
     use_hmm_raw = hp.get("use_hmm_projectors")
     if use_hmm_raw is not None and not parse_bool_hp(use_hmm_raw):
         model_config["_disable_hmm_projectors"] = True
+
+    # AdaTT-sp (Li 2023 representation-level fusion at the CGC gate).
+    # Off by default; enable via HP ``use_adatt_sp=true`` in ablation scenarios.
+    use_adatt_sp_raw = hp.get("use_adatt_sp")
+    if use_adatt_sp_raw is not None:
+        model_config.setdefault("adatt_sp", {})["enabled"] = bool(
+            parse_bool_hp(use_adatt_sp_raw)
+        )
 
     # --- Loss weighting ---
     lw_cfg = model_config.get("loss_weighting", {})
@@ -331,6 +339,22 @@ def build_ple_config(
             freeze_epoch=_freeze,
             grad_interval=adatt_cfg_raw.get("grad_interval", 10),
         )
+
+    # AdaTT-sp (representation-level fusion, Li et al. KDD 2023).
+    # Separate from the loss-level AdaTTConfig above; only the CGC gate
+    # layer's fusion behaviour is affected.
+    adatt_sp_raw = (
+        model_config.get("adatt_sp")
+        or label_schema.get("adatt_sp")
+        or config.get("adatt_sp")
+        or {}
+    )
+    ple_config.adatt_sp = AdaTTSPConfig(
+        enabled=bool(adatt_sp_raw.get("enabled", False)),
+        native_residual_weight_init=float(
+            adatt_sp_raw.get("native_residual_weight_init", 1.0)
+        ),
+    )
 
     # GroupTaskExpert config
     gte_cfg_raw = model_config.get("group_task_expert", {})

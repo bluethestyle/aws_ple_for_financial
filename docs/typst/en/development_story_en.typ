@@ -590,6 +590,16 @@ PLE's val_loss froze at 3.702 in Phase 2, while shared_bottom (1 MLP) paradoxica
 
 *Lesson*: What looked like a negative *algorithmic* finding turned out to be an implementation artefact. The responsible response at such a moment is not to retrofit a cleaner narrative after the fact; it is to publish the correction transparently. The original attribution --- that TAG-style affinity becomes unstable at 156 task-pairs --- was a reasonable hypothesis, but once the bugs were fixed, no evidence remained to support it. That fact belongs in the record as-is.
 
+=== Reproducing Li 2023 AdaTT --- The AdaTT-sp Experiment
+
+*Background*: After the Paper 1 v1.1 correction, one question remained. If our loss-level variant was a null effect, would Li 2023's *original* representation-level adaTT behave differently? Up to that point the two algorithms had shared a name without either being evaluated on the other's terms. While scoping Paper 3, we decided to implement the original mechanism on our heterogeneous expert basket.
+
+*Implementation (AdaTT-sp)*: Li 2023's core mechanism is a per-task fusion unit = softmax-weighted sum over experts + a learnable-scalar-weighted *native expert residual*. Rather than stacking a separate layer, we added a `fusion_type: "cgc" | "adatt_sp"` flag to the existing CGC gate: when `adatt_sp` is selected, the mean output of the task's own task-specific experts is added to the gated weighted sum as a residual, scaled by a learnable `native_residual_weight` (init = 1.0). The pipeline.yaml default is `adatt_sp.enabled: false`; it is activated only through the HP flag `use_adatt_sp=true`. Roughly 50 lines of new code, no behavioural change to the main path.
+
+*Result (10 epochs, single seed)*: `struct_13_adatt_sp` achieved AUC 0.6696, Best NDCG\@3 0.6825. Against the baseline `struct_13_ple_sigmoid` (CGC gate, AUC 0.6728), the AUC delta was $-$0.0032. For reference, the loss-level variant's delta was $-$0.0011, so the *original representation-level mechanism produced a larger drop*, not a smaller one --- about three times as large. The Paper 3 scoping hypothesis ("the original might work better") was refuted on this data.
+
+*Lesson*: When a heterogeneous expert basket already encodes enough inductive bias, whatever per-task fusion mechanism sits on top --- loss-level TAG + GradNorm, or representation-level Li 2023 AdaTT-sp --- lands in null-to-negative territory. The more accurate reading is not "which fusion wins," but *at this scale, fusion augmentation is not needed*. Paper 3's primary contribution has shifted from "which fusion is best" to *"when does fusion augmentation stop mattering?"*
+
 #section-break()
 
 

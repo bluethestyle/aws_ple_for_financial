@@ -106,7 +106,7 @@ model:
     dropout: 0.1
 
 # ---------------------------------------------------------------------------
-# adaTT — task affinity transfer (inter/intra group)
+# adaTT — task affinity transfer (inter/intra group, loss-level TAG + GradNorm variant)
 # ---------------------------------------------------------------------------
 adatt:
   transfer_lambda: 0.1
@@ -115,6 +115,17 @@ adatt:
   freeze_epoch: 8           # freeze transfer weights for stable fine-tuning
   grad_interval: 10         # extract gradients every N steps
   inter_group_strength: 0.3
+
+# ---------------------------------------------------------------------------
+# AdaTT-sp (Li et al., KDD 2023) — representation-level fusion at the CGC gate.
+# When enabled, the per-task CGC fusion adds the task's own task-specific
+# experts' mean output as a learnable-scalar residual on top of the gated
+# weighted sum. Unlike the `adatt:` block above (which controls loss-level
+# transfer), this modifies the CGC gate itself. Off by default.
+# ---------------------------------------------------------------------------
+adatt_sp:
+  enabled: false                    # toggle via HP override in ablation scenarios
+  native_residual_weight_init: 1.0  # learnable scalar initial value
 
 # ---------------------------------------------------------------------------
 # Gradient Surgery — PCGrad task-type projection (alternative to adaTT)

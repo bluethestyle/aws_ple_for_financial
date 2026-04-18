@@ -155,6 +155,35 @@ SCENARIOS: List[Dict[str, Any]] = [
          "use_hmm_projectors": "false",
      }},
 
+    # PLE sigmoid + adaTT (pure) — identical to struct_13_ple_sigmoid but with adaTT enabled.
+    # Purpose: isolate the PLE+adaTT interference effect without GTE/LT/HMM confounds.
+    {"name": "struct_13_ple_sigmoid_adatt",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "true",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
+    # PLE sigmoid + AdaTT-sp representation-level fusion (Li et al., KDD 2023).
+    # Identical to struct_13_ple_sigmoid but with the CGC gate replaced by the
+    # AdaTT-sp variant (native expert residual added on top of the gated sum).
+    # Loss-level "adaTT" stays OFF to isolate the fusion-mechanism effect.
+    {"name": "struct_13_adatt_sp",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "use_adatt_sp": "true",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
     # PLE sigmoid + GroupTaskExpert (GroupEncoder + ClusterEmbedding)
     {"name": "struct_13_ple_sigmoid_gte",
      "hp": {

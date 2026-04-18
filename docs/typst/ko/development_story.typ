@@ -508,6 +508,16 @@ Ablation 필터가 텐서에서 피처를 제거하는 데 성공했지만, `fea
 
 *교훈*: "알고리즘이 안 먹힌다"로 보이는 negative result가 사실은 implementation artefact였다. 이런 순간의 책임 있는 대응은 더 깔끔한 서사를 사후 재조립하는 것이 아니라, 수정을 투명하게 공개하는 것이다. 초판의 귀인(TAG affinity가 156 task-pair scale에서 불안정해진다) 은 합리적인 가설이었으나, 버그가 고쳐진 뒤에는 그 가설을 지지할 증거가 남지 않았다 --- 그 사실이 그대로 기록되어야 한다.
 
+=== Li 2023 원본 adaTT 재현 --- AdaTT-sp 실험 결과
+
+*배경*: Paper 1 v1.1 정정 후 남은 질문은 이것이었다. "우리 loss-level 변종이 null이면, Li 2023의 *원본* representation-level adaTT는 다를까?" 이 시점까지 두 알고리즘은 이름만 공유했을 뿐 어느 쪽도 서로의 조건에서 평가되지 않았다. Paper 3를 기획하면서 원본 메커니즘을 우리 이종 expert basket 위에 구현하기로 했다.
+
+*구현 (AdaTT-sp)*: Li 2023의 핵심 메커니즘은 per-task fusion unit = softmax-weighted sum over experts + learnable scalar가 가중한 *native expert residual*. CGC gate에 별도 층을 얹지 않고 `fusion_type: "cgc" | "adatt_sp"` 플래그로 분기하여, adatt_sp 시 gated weighted sum 뒤에 task의 own task-specific expert 평균을 residual로 더했다. `native_residual_weight`는 초깃값 1.0의 학습 가능 scalar. pipeline.yaml `adatt_sp.enabled: false` 기본, HP 플래그 `use_adatt_sp=true`로만 활성. 신규 코드 ~50줄, main 동작 변화 없음.
+
+*결과 (10 에폭, single seed)*: `struct_13_adatt_sp` AUC 0.6696, Best NDCG\@3 0.6825. 베이스라인 `struct_13_ple_sigmoid` (CGC gate, AUC 0.6728) 대비 AUC 변화량은 $-$0.0032였다. 참고로 loss-level 변종은 $-$0.0011이었으니, *원본 representation-level이 오히려 더 큰 하락*을 보였다 --- 3배 차이. Paper 3 기획 시점의 가설("원본이 더 잘 작동할 수도 있다")은 이 데이터에서 반증됐다.
+
+*교훈*: 이종 expert basket이 이미 충분히 강한 inductive bias를 제공하면, per-task fusion mechanism을 뭘 쓰든 (loss-level TAG+GradNorm이든, representation-level Li 2023 AdaTT-sp든) 모두 null-to-negative 영역에 머무른다. 두 메커니즘의 "승패"가 아니라, *이 스케일에서는 fusion augmentation 자체가 필요 없다* 는 것이 더 정확한 결론이다. Paper 3의 primary contribution이 "어느 fusion이 최선인가"에서 *"fusion augmentation이 언제 의미 없어지는가"* 로 재조정됐다.
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.

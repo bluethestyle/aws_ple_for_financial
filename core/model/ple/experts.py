@@ -255,6 +255,8 @@ class CGCLayer(nn.Module):
         feature_router: Optional["FeatureRouter"] = None,
         shared_expert_names: Optional[List[str]] = None,
         gate_type: str = "softmax",
+        fusion_type: str = "cgc",
+        native_residual_weight_init: float = 1.0,
     ):
         super().__init__()
         self.num_tasks = num_tasks
@@ -264,6 +266,20 @@ class CGCLayer(nn.Module):
         self.expert_hidden_dim = expert_hidden_dim
         self.feature_router = feature_router
         self._last_gate_weights: Dict[int, torch.Tensor] = {}
+
+        if fusion_type not in ("cgc", "adatt_sp"):
+            raise ValueError(
+                f"fusion_type must be 'cgc' or 'adatt_sp', got {fusion_type!r}"
+            )
+        self.fusion_type = fusion_type
+        # Native expert residual (AdaTT-sp, Li et al. KDD 2023).
+        # Learnable scalar so the network can weight or suppress the residual.
+        if fusion_type == "adatt_sp":
+            self.native_residual_weight = nn.Parameter(
+                torch.tensor(float(native_residual_weight_init))
+            )
+        else:
+            self.native_residual_weight = None
 
         if expert_hidden_dims is None:
             expert_hidden_dims = [expert_hidden_dim]
@@ -384,6 +400,15 @@ class CGCLayer(nn.Module):
 
             # Weighted sum: (batch, hidden)
             gated = (gate_weights.unsqueeze(-1) * all_outs).sum(dim=1)
+
+            # AdaTT-sp native expert residual (Li et al., KDD 2023).
+            # After gated weighted sum, add the task's own task-specific
+            # experts' mean output back as a residual so the native expert
+            # always contributes regardless of what the gate learns.
+            if self.fusion_type == "adatt_sp":
+                native = task_outs.mean(dim=1)  # (batch, hidden)
+                gated = gated + self.native_residual_weight * native
+
             outputs.append(gated)
             if not self.training:
                 self._last_gate_weights[task_idx] = gate_weights.detach()

@@ -507,6 +507,20 @@ class PLEModel(nn.Module):
             router = self.feature_router if layer_idx == 0 else None
             expert_names = shared_expert_names if layer_idx == 0 else None
 
+            # Fusion type: "cgc" (default) or "adatt_sp" (Li 2023 representation-level
+            # fusion with native expert residual).  Toggled from pipeline.yaml
+            # adatt_sp.enabled.
+            _fusion_type = (
+                "adatt_sp"
+                if getattr(cfg, "adatt_sp", None) is not None and cfg.adatt_sp.enabled
+                else "cgc"
+            )
+            _native_init = (
+                cfg.adatt_sp.native_residual_weight_init
+                if getattr(cfg, "adatt_sp", None) is not None
+                else 1.0
+            )
+
             layer = CGCLayer(
                 input_dim=in_dim,
                 num_tasks=len(self.task_names),
@@ -518,6 +532,8 @@ class PLEModel(nn.Module):
                 feature_router=router,
                 shared_expert_names=expert_names,
                 gate_type=getattr(cfg, "gate_type", "softmax"),
+                fusion_type=_fusion_type,
+                native_residual_weight_init=_native_init,
             )
 
             # When Expert Basket is configured, replace the first layer's

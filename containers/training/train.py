@@ -1076,6 +1076,10 @@ def save_eval_report(
                                   getattr(ple_config, "task_expert_output_dim", None)),
         "loss_weighting": ple_config.loss_weighting.strategy,
         "adatt_enabled": ple_config.adatt.enabled if hasattr(ple_config, "adatt") else None,
+        "adatt_sp_enabled": (
+            ple_config.adatt_sp.enabled
+            if hasattr(ple_config, "adatt_sp") else None
+        ),
         "gate_type": getattr(ple_config, "gate_type", "softmax"),
         "total_params": sum(p.numel() for p in model.parameters()),
         "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),
