@@ -276,8 +276,16 @@ def submit_training_jobs(
             use_spot_instances=aws_config["use_spot"],
             max_wait=7200,       # 2hr max wait (CLAUDE.md: max_wait = max_run + 1hr)
             max_run=5400,        # 1.5hr max run
-            checkpoint_s3_uri=f"s3://{s3_bucket}/{S3_CHECKPOINT_PREFIX}/{scenario['name']}",
-            output_path=f"s3://{s3_bucket}/{S3_OUTPUT_PREFIX}",
+            # Per-submission unique paths: include job_name so re-submissions
+            # do not accidentally resume from a stale checkpoint left by
+            # a previous run (observed: 2026-04-14 epoch_31 checkpoint
+            # auto-resumed when a fresh 10-epoch run was submitted on 04-19,
+            # causing the trainer to skip entirely since 31 >= target).
+            # job_name already includes a timestamp, so each submission
+            # gets its own path. Within a single job, spot-interrupt
+            # resume still works (same job_name -> same path).
+            checkpoint_s3_uri=f"s3://{s3_bucket}/{S3_CHECKPOINT_PREFIX}/{scenario['name']}/{job_name}",
+            output_path=f"s3://{s3_bucket}/{S3_OUTPUT_PREFIX}/{scenario['name']}/{job_name}",
             disable_profiler=True,  # CLAUDE.md 1.5: profiler OFF
             environment={
                 "PYTHONPATH": "/opt/ml/code",
