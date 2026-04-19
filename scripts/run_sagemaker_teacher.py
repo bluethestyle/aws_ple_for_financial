@@ -517,6 +517,16 @@ def parse_args() -> argparse.Namespace:
         "--skip-cost-check", action="store_true",
         help="Skip AWS cost check before submission",
     )
+    parser.add_argument(
+        "--scenarios", type=str, default=None,
+        help="Comma-separated scenario names to submit "
+             "(default: all 3). Example: --scenarios teacher_full",
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=None,
+        help="Override BASE_HPS['epochs'] (default: 30). Useful for "
+             "quick patch-verification runs.",
+    )
     return parser.parse_args()
 
 
@@ -549,9 +559,26 @@ def main() -> None:
         monitor_existing_jobs()
         return
 
+    # --- Apply CLI overrides to BASE_HPS / SCENARIOS ---
+    if args.epochs is not None:
+        BASE_HPS["epochs"] = int(args.epochs)
+        logger.info("[override] BASE_HPS['epochs'] = %d", BASE_HPS["epochs"])
+    global SCENARIOS
+    if args.scenarios:
+        requested = [s.strip() for s in args.scenarios.split(",") if s.strip()]
+        filtered = [s for s in SCENARIOS if s["name"] in requested]
+        missing = set(requested) - {s["name"] for s in filtered}
+        if missing:
+            logger.error("Unknown scenario names: %s. Available: %s",
+                         sorted(missing), [s["name"] for s in SCENARIOS])
+            sys.exit(1)
+        SCENARIOS = filtered
+        logger.info("[override] Submitting only: %s", [s["name"] for s in SCENARIOS])
+
     # --- Submit (or dry-run) ---
     logger.info("=" * 60)
-    logger.info("SageMaker Teacher Training — 30 epochs, 3 scenarios")
+    logger.info("SageMaker Teacher Training — %d epochs, %d scenario(s)",
+                 BASE_HPS["epochs"], len(SCENARIOS))
     logger.info("=" * 60)
 
     # Pre-flight verification
@@ -564,12 +591,15 @@ def main() -> None:
     if not args.dry_run and not args.skip_cost_check:
         verify_cost()
 
-    # Cost estimate
+    # Cost estimate (scaled to actual scenario count + epoch count)
+    n_scn = len(SCENARIOS)
+    epoch_scale = BASE_HPS["epochs"] / 30.0
+    est_hr_per = 1.0 * epoch_scale
     logger.info("\n--- Cost estimate ---")
     logger.info("  Instance: %s (Spot ~$0.21/hr)", aws_config["instance_type"])
-    logger.info("  Max run: 1.5hr x 3 scenarios = 4.5hr max")
-    logger.info("  Expected: ~1hr x 3 = ~$0.63 + S3 ~$0.05 = ~$0.68")
-    logger.info("  Budget ceiling: $1.00")
+    logger.info("  Max run: ~%.1fhr x %d scenario(s)", 1.5 * epoch_scale, n_scn)
+    logger.info("  Expected: ~%.1fhr x %d = ~$%.2f + S3 ~$0.05",
+                est_hr_per, n_scn, est_hr_per * 0.21 * n_scn)
 
     # HP verification
     logger.info("\n--- HP verification ---")
