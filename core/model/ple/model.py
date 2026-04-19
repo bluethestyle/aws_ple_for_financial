@@ -1030,14 +1030,17 @@ class PLEModel(nn.Module):
             )
         )
         self._brp_residual_loss_weight = float(brp_cfg.residual_loss_weight)
+        self._brp_detach_input = bool(getattr(brp_cfg, "detach_input", False))
 
         logger.info(
             "BRP bank built: input_dim=%d, tasks=%d, hidden=%s, "
-            "residual_weight_init=%.3f, residual_loss_weight=%.3f",
+            "residual_weight_init=%.3f, residual_loss_weight=%.3f, "
+            "detach_input=%s",
             shared_concat_dim, len(self.task_names),
             brp_cfg.residual_hidden_dims,
             brp_cfg.residual_weight_init,
             brp_cfg.residual_loss_weight,
+            self._brp_detach_input,
         )
 
     def _build_task_loss_fns(self) -> None:
@@ -1457,9 +1460,14 @@ class PLEModel(nn.Module):
             primary_predictions = dict(predictions)
             residual_logits_map = {}
             brp_lambdas = torch.sigmoid(self.brp_scalar)  # (num_tasks,)
+            # Optionally cut gradient flow from the residual bank back into
+            # the shared experts (BRPConfig.detach_input).
+            brp_input = (
+                shared_concat.detach() if self._brp_detach_input else shared_concat
+            )
             for i, task_name in enumerate(self.task_names):
                 p = primary_predictions[task_name]
-                r = self.brp_bank(task_name, shared_concat)
+                r = self.brp_bank(task_name, brp_input)
                 # Align residual shape with primary (binary/regression
                 # primary can be (B,) or (B,1); multiclass is (B,C)).
                 if p.dim() == 1 and r.dim() == 2 and r.size(-1) == 1:

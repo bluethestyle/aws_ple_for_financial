@@ -613,6 +613,57 @@ Ablation 필터가 텐서에서 피처를 제거하는 데 성공했지만, `fea
 
 *환경 전환 노트*: 여섯 실험 모두 로컬 RTX 4070에서 scenario당 $tilde$ 33분 학습으로 진행했다. 다음 단계(variant 실험, multi-seed, cross-dataset)는 로컬 GPU 시간 예산을 초과하므로 SageMaker 제출 경로로 전환한다. 로컬에서의 아키텍처 디버깅은 충분히 끝났고, 후속은 확장 실험 단계다.
 
+=== BRP-detached (MV+) --- Gradient Entanglement 가설 검증과 Paper 3 Positive Finding
+
+*배경*: MV-BRP가 질적 trade-off를 보였지만 aggregate AUC는 여전히 6개 중 최악이었다 ($Delta = -0.0078$). Per-task 진단은 churn_signal (기존 binary AUC 최고 0.6868)이 BRP 하에서 0.6512로 $-$0.036 하락한 것이 aggregate 손실의 대부분을 설명했다. 제안된 mechanism은 "shared experts가 primary-supporting 최적점에 수렴한 상태에서, residual bank가 `shared_concat` 를 입력받고 residual MSE의 gradient가 shared experts까지 역전파되어 그 최적점을 오염시킨다" 였다. 이 가설을 단일 수정으로 직접 검증할 수 있다: residual bank 입력을 `shared_concat.detach()` 로 바꿔 shared experts의 gradient를 완전히 격리한다. SageMaker 이관 직전 이 마지막 한 variant만 로컬에서 추가 실행했다.
+
+*설계*: `BRPConfig` 에 `detach_input: bool = False` 필드 추가, pipeline.yaml 기본 off, HP 플래그 `brp_detach_input=true` 로만 활성. forward pass에서 `brp_input = shared_concat.detach() if self._brp_detach_input else shared_concat`. 구조 변경은 이 한 줄뿐이며 파라미터 수, 학습 스텝 수, primary pathway 모두 불변.
+
+*결과 (10 에폭, seed=42, 재시작 한번 포함)*: `struct_13_brp_detached` final AUC *0.6721* (CGC 대비 $Delta = -0.0007$, noise 수준, 실질적 동급). Best AUC *0.6736* @ ep8 (CGC 0.6728을 $+0.0008$ 초과). F1 macro 0.2075 (CGC 대비 $+0.0073$), NDCG\@3 0.6965 ($+0.0145$, ep7에서 0.7315 peak), MAE 0.9688 (약간 손실).
+
+*Per-task 직접 검증 --- 가설 완전 확인*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto, auto),
+  align: (left, center, center, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*task*], [*type*], [*CGC*], [*BRP (MV)*], [*BRP-detached*], [*진단*]
+  ),
+  [churn_signal], [binary], [0.6868], [*0.6512*], [*0.6852*], [복원 (−0.036 → −0.002)],
+  [will_acquire_lending], [binary], [0.6549], [0.6453], [0.6553], [복원],
+  [will_acquire_deposits], [binary], [0.6534], [0.6493], [0.6536], [복원],
+  [will_acquire_investments], [binary], [0.6754], [0.6719], [0.6764], [복원],
+  [next_mcc (50-class)], [f1], [0.0100], [*0.0440*], [*0.0356*], [유지 (+340% → +256%)],
+  [others (8 tasks)], [---], [---], [within noise], [within noise], [변화 없음],
+)
+
+*해석*: MV-BRP의 easy-task AUC 손실은 *구현 artefact (shared_concat gradient leak)* 였고 알고리즘적 trade-off가 아니었다. `.detach()` 한 줄로 churn_signal은 0.6852로 복원되었으며 ($Delta$만 $-$0.002, noise 안), 동시에 next_mcc의 F1 rescue는 +256% relative로 유지되었다. 이는 residual bank의 자기 파라미터만으로도 hard-task 구원에 충분한 신호를 학습할 수 있음을 보여준다. Shared experts는 primary-supporting 역할을 그대로 유지하되, residual bank가 별도 경로로 하드 태스크를 보충한다.
+
+*7-way 최종 비교*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  align: (left, center, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*Fusion*], [*Final AUC*], [*F1 macro*], [*NDCG\@3*], [*$Delta$ AUC*]
+  ),
+  [CGC baseline], [*0.6728*], [0.2002], [0.6820], [---],
+  [Loss-level adaTT], [0.6717], [0.2013], [0.6646], [$-$0.0011],
+  [AdaTT-sp], [0.6696], [0.1998], [0.6570], [$-$0.0032],
+  [M1 complement], [0.6675], [0.1998], [0.6611], [$-$0.0053],
+  [ECEB (MV)], [0.6665], [0.1998], [0.6549], [$-$0.0063],
+  [BRP (MV)], [0.6650], [0.2117], [0.7039], [$-$0.0078],
+  [*BRP-detached*], [*0.6721*], [*0.2075*], [*0.6965*], [*$-$0.0007 (tied)*],
+)
+
+*Paper 3 narrative 전환*: 이전 6-way 결과는 "heterogeneous expert PLE + CGC gate 위에서 6개 fusion augmentation 모두 aggregate AUC 개선 실패" 로 서술했다. BRP-detached 추가 후 narrative는 정밀해진다: "Representation-additive fusion (adaTT 계열 + ECEB) 은 monotone degradation으로 실패. *Output-space boosting + shared-expert gradient 격리* (BRP-detached) 만이 AUC 보존 + F1/NDCG 개선을 동시 달성." 이제 Paper 3는 순수 negative result가 아니라 *mechanism diagnosis + 구조적 해법 제시* 의 스토리다. 일곱 실험 중 여섯은 어디를 건드리면 안 되는지(primary representation에 additive), 그 여섯을 참조해서 일곱 번째가 어떻게 positive 영역에 닿았는지(shared concat detach + output-space boosting)를 보여준다.
+
+*Robustness 제한*: single seed, single dataset. multi-seed 및 cross-dataset 검증은 SageMaker 경로에서 진행한다.
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.

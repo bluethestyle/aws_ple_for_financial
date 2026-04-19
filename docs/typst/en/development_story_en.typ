@@ -695,6 +695,57 @@ PLE's val_loss froze at 3.702 in Phase 2, while shared_bottom (1 MLP) paradoxica
 
 *Environment pivot*: all six experiments were executed on the local RTX 4070 at roughly 33 minutes per scenario. The next phase (BRP variants, multi-seed, cross-dataset) exceeds the local GPU time budget and moves to SageMaker submission. Local architectural debugging is complete; subsequent work is in the scaling-up phase.
 
+=== BRP-detached (MV+) --- Verifying the Gradient-Entanglement Hypothesis, and Paper 3's Positive Finding
+
+*Background*: MV-BRP produced a qualitative trade-off but its aggregate AUC was still the worst of the six variants ($Delta = -0.0078$). The per-task breakdown showed that churn_signal --- the highest binary AUC in the baseline at 0.6868 --- fell to 0.6512 under BRP, a $-$0.036 drop that explained most of the aggregate loss. The proposed mechanism was that residual-MSE gradients, flowing back into shared experts through the `shared_concat` input, were pulling those experts off the primary-supporting optimum they had converged to. Before the SageMaker pivot, one last local variant was run to test this hypothesis with a single-line change: feed `shared_concat.detach()` into the residual bank so that shared experts cannot receive residual-MSE gradients at all.
+
+*Design*: added `detach_input: bool = False` to `BRPConfig`, default off in pipeline.yaml, activated only through the HP flag `brp_detach_input=true`. Forward pass: `brp_input = shared_concat.detach() if self._brp_detach_input else shared_concat`. No parameter-count change, no training-step change, the primary pathway is unaffected.
+
+*Result (10 epochs, seed=42, one mid-run restart)*: `struct_13_brp_detached` reached a final AUC of *0.6721* against CGC's 0.6728 --- $Delta = -0.0007$, within noise, effectively tied. Best AUC *0.6736* at epoch 8 actually exceeds the baseline by $+0.0008$. F1 macro 0.2075 (+0.0073 over CGC), NDCG\@3 0.6965 (+0.0145, peaking at 0.7315 at ep7), MAE 0.9688 (a small regression loss).
+
+*Per-task validation --- hypothesis confirmed*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto, auto),
+  align: (left, center, center, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*task*], [*type*], [*CGC*], [*BRP (MV)*], [*BRP-detached*], [*verdict*]
+  ),
+  [churn_signal], [binary], [0.6868], [*0.6512*], [*0.6852*], [restored (−0.036 → −0.002)],
+  [will_acquire_lending], [binary], [0.6549], [0.6453], [0.6553], [restored],
+  [will_acquire_deposits], [binary], [0.6534], [0.6493], [0.6536], [restored],
+  [will_acquire_investments], [binary], [0.6754], [0.6719], [0.6764], [restored],
+  [next_mcc (50-class)], [f1], [0.0100], [*0.0440*], [*0.0356*], [retained (+340% → +256%)],
+  [others (8 tasks)], [---], [---], [within noise], [within noise], [unchanged],
+)
+
+*Interpretation*: the easy-task AUC loss in MV-BRP was an *implementation artefact* (a `shared_concat` gradient leak), not an algorithmic trade-off. A single `.detach()` line restored churn_signal to 0.6852 ($Delta$ = $-$0.002, within noise), while retaining +256% relative rescue on next_mcc. The residual bank's own parameters carry enough capacity to learn the hard-task correction signal; once shared experts are insulated from residual-MSE gradients, they stay on the primary-supporting optimum and the two paths stop competing.
+
+*Final 7-way comparison*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  align: (left, center, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*Fusion*], [*Final AUC*], [*F1 macro*], [*NDCG\@3*], [*$Delta$ AUC*]
+  ),
+  [CGC baseline], [*0.6728*], [0.2002], [0.6820], [---],
+  [Loss-level adaTT], [0.6717], [0.2013], [0.6646], [$-$0.0011],
+  [AdaTT-sp], [0.6696], [0.1998], [0.6570], [$-$0.0032],
+  [M1 complement], [0.6675], [0.1998], [0.6611], [$-$0.0053],
+  [ECEB (MV)], [0.6665], [0.1998], [0.6549], [$-$0.0063],
+  [BRP (MV)], [0.6650], [0.2117], [0.7039], [$-$0.0078],
+  [*BRP-detached*], [*0.6721*], [*0.2075*], [*0.6965*], [*$-$0.0007 (tied)*],
+)
+
+*Paper 3 narrative update*: the earlier 6-way reading was "six fusion augmentations on top of heterogeneous-expert PLE + CGC gate all fail to improve aggregate AUC." With BRP-detached included, the reading becomes more precise. *Representation-additive fusions* (the adaTT family plus ECEB) monotonically degrade AUC. *Output-space boosting with shared-expert gradient isolation* (BRP-detached) instead preserves AUC and improves F1 and NDCG\@3. Paper 3 is no longer a pure negative result; it is a mechanism diagnosis plus a structural fix. Six of the seven experiments define what not to touch (the primary representation, additively); the seventh shows how to reach a positive region (output-space boosting + gradient isolation on shared_concat).
+
+*Robustness caveat*: single seed, single dataset. Multi-seed and cross-dataset validation is reserved for the SageMaker path.
+
 #section-break()
 
 

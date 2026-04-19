@@ -183,6 +183,9 @@ brp:
   residual_weight_init: -2.0        # sigmoid(-2)≈0.12: residual starts suppressed
   residual_loss_weight: 0.1         # weight of residual-error MSE in total loss
   dropout: 0.1                      # residual expert dropout
+  detach_input: false               # when true, shared_concat.detach() before
+                                    # feeding residual bank (isolates shared
+                                    # experts from residual-MSE gradient).
 
 # ---------------------------------------------------------------------------
 # Gradient Surgery — PCGrad task-type projection (alternative to adaTT)

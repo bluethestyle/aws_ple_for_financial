@@ -248,6 +248,28 @@ SCENARIOS: List[Dict[str, Any]] = [
          "use_hmm_projectors": "false",
      }},
 
+    # Paper 3 MV+ --- BRP with detached shared_concat input.
+    # Identical to struct_13_brp but shared_concat is detached before
+    # entering the residual bank, so residual-MSE gradients cannot
+    # propagate into the shared experts. Tests whether the easy-task
+    # AUC loss observed in struct_13_brp was caused by shared-expert
+    # capacity being pulled off its primary-supporting optimum.
+    {"name": "struct_13_brp_detached",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "use_adatt_sp": "false",
+         "use_residual_recovery": "false",
+         "use_eceb": "false",
+         "use_brp": "true",
+         "brp_detach_input": "true",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
     # PLE sigmoid + GroupTaskExpert (GroupEncoder + ClusterEmbedding)
     {"name": "struct_13_ple_sigmoid_gte",
      "hp": {

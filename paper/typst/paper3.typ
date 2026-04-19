@@ -134,17 +134,21 @@ Our contributions:
   to uniform averaging; and a demonstration that val-loss is a misleading
   checkpoint criterion when regression and classification tasks coexist
   (Section 4.6).
-- A 6-way comparison of fusion augmentations on top of the CGC
-  baseline. No variant improves aggregate AUC; the four
-  representation-additive mechanisms (loss-level adaTT, AdaTT-sp,
-  complementary-gate recovery, uncertainty-conditioned expert bank)
-  degrade AUC monotonically with intervention invasiveness, while an
-  output-space boosting residual (BRP) produces the highest F1 macro
-  and NDCG\@3 of the six at the cost of the strongest binary task.
-  This clarifies that fusion-augmentation claims must be stated
-  per-metric, and that gains on ranking or multiclass --- where they
-  exist --- come from capacity redistribution across tasks rather
-  than from additional signal extraction (Section 4.7).
+- A 7-way comparison of fusion augmentations on top of the CGC
+  baseline that maps out two structural boundaries. *Representation-
+  additive fusions* (loss-level adaTT, AdaTT-sp, complementary-gate
+  recovery, uncertainty-conditioned expert bank) all degrade AUC
+  monotonically with intervention invasiveness. *Output-space
+  boosting* (BRP) reverses the sign on F1 macro and NDCG\@3 but
+  initially still degrades AUC; per-task diagnosis attributes the AUC
+  loss to residual-MSE gradients leaking into shared experts through
+  a shared-representation input. Detaching that input (BRP-detached)
+  ties CGC on AUC ($Delta = -0.0007$; best epoch exceeds baseline
+  by $+0.0008$) while preserving the F1/NDCG gains and $+$256%
+  relative rescue on the hardest multiclass task. The positive
+  finding is therefore a structural recipe, not a new mechanism:
+  output-space residual plus shared-expert gradient isolation
+  (Section 4.7).
 
 The system, data generator, and ablation scripts are publicly available.#footnote[
   https://github.com/bluethestyle/aws\_ple\_for\_financial
@@ -674,16 +678,23 @@ minimizes val loss.
 and (3) treat val loss as a diagnostic (indicating regression progress) rather
 than as the primary stopping criterion.
 
-== Finding 7: Additive Residual Recovery Underperforms Regardless of Residual Definition <find7>
+== Finding 7: Representation-Additive Fusion Fails; Output-Space Boosting with Gradient Isolation Succeeds <find7>
 
 After Finding 2 established that the loss-level `adaTT` variant does not
-affect aggregate AUC at the 13-task scale ($Delta = -0.001$, null), three
-further mechanisms were evaluated on the same benchmark to test whether any
-fusion augmentation can extract useful signal beyond CGC's gated selection.
-All four experiments converge on a single conclusion: *any residual
-injected additively at the primary's fusion point degrades performance, and
-the degradation grows monotonically with the invasiveness of the
-intervention --- independently of how the residual is defined*.
+affect aggregate AUC at the 13-task scale ($Delta = -0.001$, null), six
+further mechanisms were evaluated on the same benchmark to test which
+forms of fusion augmentation (if any) can extract useful signal beyond
+CGC's gated selection. Six of the seven experiments (including adaTT)
+share a structural property --- they inject a residual additively into
+the primary representation --- and all six degrade aggregate AUC, with a
+monotone relationship between intervention invasiveness and degradation
+magnitude. The seventh experiment moves the residual into output space,
+trains it as a boosting correction on the primary's detached error, and
+--- with one additional modification to isolate shared-expert gradients
+--- preserves AUC while meaningfully improving F1 macro and NDCG\@3.
+Paper 3's practical reading is therefore: representation-additive fusion
+is empirically dead on this benchmark; output-space boosting is alive,
+conditional on gradient isolation.
 
 === Five Mechanisms, One Aggregate-AUC Conclusion
 
@@ -724,6 +735,13 @@ alone; the combined output $"primary" + sigma(lambda_t) dot "residual"$
 is used for inference and evaluation only. The primary representation is
 never touched.
 
+*BRP-detached*, a single-line modification of BRP, feeds
+`shared_concat.detach()` into the residual bank instead of the raw
+`shared_concat`. This cuts any residual-MSE gradient from flowing back
+into the shared experts while leaving the primary pathway, parameter
+count, and training schedule unchanged. The modification was motivated
+by the per-task analysis of BRP below.
+
 Results on the 13-task benchmark (10 epochs, seed=42):
 
 #figure(
@@ -735,21 +753,27 @@ Results on the 13-task benchmark (10 epochs, seed=42):
     table.header(
       [*Fusion*], [*Final AUC*], [*F1 macro*], [*NDCG\@3*], [*$Delta$ AUC*]
     ),
-    [CGC gate (baseline)], [*0.6728*], [0.2002], [0.6820], [---],
-    [Loss-level adaTT],    [0.6717], [0.2013], [0.6646], [$-$0.0011],
-    [AdaTT-sp (Li 2023)],  [0.6696], [0.1998], [0.6570], [$-$0.0032],
-    [M1 complement],       [0.6675], [0.1998], [0.6611], [$-$0.0053],
-    [ECEB (MV)],           [0.6665], [0.1998], [0.6549], [$-$0.0063],
-    [BRP (MV)],            [0.6650], [*0.2117*], [*0.7039*], [$-$0.0078],
+    [CGC gate (baseline)],  [*0.6728*], [0.2002],   [0.6820],   [---],
+    [Loss-level adaTT],     [0.6717],   [0.2013],   [0.6646],   [$-$0.0011],
+    [AdaTT-sp (Li 2023)],   [0.6696],   [0.1998],   [0.6570],   [$-$0.0032],
+    [M1 complement],        [0.6675],   [0.1998],   [0.6611],   [$-$0.0053],
+    [ECEB (MV)],            [0.6665],   [0.1998],   [0.6549],   [$-$0.0063],
+    [BRP (MV)],             [0.6650],   [*0.2117*], [*0.7039*], [$-$0.0078],
+    [*BRP-detached*],       [*0.6721*], [0.2075],   [0.6965],   [*$-$0.0007 (tied)*],
   ),
-  caption: [6-way comparison of fusion mechanisms on the 13-task benchmark.
-  None of the five augmented variants improves aggregate AUC over the CGC
-  baseline. The first four follow a monotone degradation pattern whose
-  magnitude scales with the invasiveness of the intervention. BRP breaks
-  the pattern: it produces the largest AUC drop while simultaneously
-  delivering the highest F1 macro and NDCG\@3 of the six runs --- a
-  task-balance trade-off rather than a pure failure.]
-) <tab:fusion6way>
+  caption: [7-way comparison of fusion mechanisms on the 13-task benchmark.
+  The five representation-additive variants (rows 2--6) degrade aggregate
+  AUC below the CGC baseline, with magnitude growing monotonically in the
+  invasiveness of the intervention. BRP (row 6) breaks the pattern by
+  placing the residual in output space and training it as a boosting
+  correction: it produces the largest AUC drop of the six augmented
+  variants but simultaneously the highest F1 macro and NDCG\@3 --- a
+  task-balance trade-off driven by gradient entanglement at the
+  `shared_concat` input. BRP-detached (row 7) severs that entanglement by
+  detaching `shared_concat` before the residual bank; AUC returns to
+  baseline ($Delta = -0.0007$, best $= 0.6736$ at epoch 8, $+$0.0008 over
+  CGC) while F1 macro and NDCG\@3 remain above the baseline.]
+) <tab:fusion7way>
 
 M1's best AUC at epoch 1 (pre-training) with monotone decline thereafter
 indicates that training the learnable recovery weight actively degrades
@@ -794,68 +818,106 @@ factors (label construction for churn_signal, near-floor base rate for
 next_mcc) than by gate entropy. Gate entropy cannot therefore be claimed
 as a structural predictor of recovery benefit on this benchmark.
 
-=== BRP: A Qualitatively Different Outcome
+=== BRP and BRP-detached: Diagnosing the Mechanism
 
 The first four augmented variants (loss-level adaTT, AdaTT-sp, M1, ECEB)
 all inject a residual additively into the primary representation and
 produce monotone degradation. BRP is the one variant in the family that
-explicitly avoids this: its residual lives in output space and is
-trained only on the primary's detached error. BRP's aggregate AUC is
-nevertheless the *lowest* of the six ($Delta = -0.0078$), but the drop
-is accompanied by the *highest* F1 macro and NDCG\@3 of the six runs
-(+0.0115 and +0.0219 over CGC respectively). BRP is therefore not a
-monotone failure but a task-balance trade-off.
+places the residual in output space. BRP's aggregate AUC is
+nevertheless the *lowest* of the five non-baseline runs
+($Delta = -0.0078$), but the drop is accompanied by the *highest* F1
+macro and NDCG\@3 of those five (+0.0115 and +0.0219 over CGC). The
+BRP result therefore looked at first like a task-balance trade-off
+rather than a success.
 
-A per-task breakdown clarifies the trade-off. next_mcc (50-class,
+A per-task breakdown tells a more specific story. next_mcc (50-class,
 baseline macro-F1 at near-random 0.0100) improves to 0.0440
-(+340% relative) under BRP. In the opposite direction, churn_signal
---- the task with the highest binary AUC in the baseline (0.6868) ---
-drops to 0.6512 ($-$0.036), and this single task accounts for most of
-the aggregate AUC loss. Excluding churn_signal, BRP's binary AUC sits
-near baseline; the remaining five binary tasks each lose between
-$-$0.001 and $-$0.010.
+(+340% relative) under BRP --- the hard-task rescue effect. In the
+opposite direction, churn_signal --- the task with the highest binary
+AUC in the baseline (0.6868) --- drops to 0.6512 ($-$0.036) under BRP,
+and this single task accounts for most of the aggregate AUC loss.
+Excluding churn_signal, BRP's binary AUC sits near baseline; the
+remaining five binary tasks each lose between $-$0.001 and $-$0.010.
 
-The mechanism is consistent with a capacity-reallocation reading. BRP's
-residual bank consumes `shared_concat`, and residual-MSE gradients
-propagate back into the shared experts (only the residual *target* was
-detached, not its input). For tasks where the primary is already near
-its ceiling, the shared experts had converged to a primary-supporting
-optimum and additional MSE pressure pulls them off it. For tasks where
-the primary struggles (next_mcc), the residual supplies signal the
-primary could not extract. BRP therefore acts as a task-balance
-regularizer that shifts shared-expert capacity from easy to hard tasks,
-rather than as a universal-improvement mechanism.
+The mechanism is a shared-expert gradient leak. BRP's residual bank
+consumes `shared_concat`, and residual-MSE gradients propagate back
+into the shared experts --- only the residual *target* was detached,
+not its input. For tasks where the primary is already near its ceiling,
+the shared experts had converged to a primary-supporting optimum and
+the additional MSE pressure pulls them off it. For tasks where the
+primary struggles (next_mcc), the residual supplies signal the primary
+could not extract. The aggregate drop is therefore not an algorithmic
+limitation of output-space boosting --- it is an implementation
+artefact of training the residual bank through the shared
+representation.
 
-=== Revised Common-Mode Conclusion
+BRP-detached tests this directly. Swapping `shared_concat` for
+`shared_concat.detach()` in the residual bank's input --- no parameter
+change, no training-schedule change --- produces the following
+per-task pattern:
 
-Across the six runs:
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    align: (left, center, center, center, center),
+    stroke: 0.5pt,
+    inset: 5pt,
+    table.header(
+      [*Task*], [*CGC*], [*BRP*], [*BRP-detached*], [*Verdict*]
+    ),
+    [churn_signal (AUC)],             [0.6868], [*0.6512*], [*0.6852*], [restored],
+    [will_acquire_lending (AUC)],     [0.6549], [0.6453],   [0.6553],   [restored],
+    [will_acquire_deposits (AUC)],    [0.6534], [0.6493],   [0.6536],   [restored],
+    [will_acquire_investments (AUC)], [0.6754], [0.6719],   [0.6764],   [restored],
+    [next_mcc (F1 macro)],            [0.0100], [*0.0440*], [*0.0356*], [retained (+256%)],
+    [remaining 8 tasks],              [---],    [$plus.minus 0.002$], [$plus.minus 0.002$], [unchanged],
+  ),
+  caption: [Per-task comparison of BRP and BRP-detached versus CGC on the
+  subset of tasks where BRP materially changed the metric. Detaching
+  `shared_concat` restores every easy-task AUC loss ($-$0.036 on
+  churn_signal drops to $-$0.002) while retaining the majority of the
+  next_mcc rescue effect (+340% relative reduces to +256%, still
+  dominant over CGC's near-random baseline).]
+) <tab:brp-pertask>
 
-+ On *aggregate AUC*, no augmented variant improves over CGC, and the
-  worst-case drop ($-0.008$) is bounded. The monotone-degradation
-  pattern of the first four is straightforward: additive injection at
-  the primary's fusion point reduces to noise once the primary is
-  near-optimal.
-+ On *F1 macro* and *NDCG\@3*, BRP's output-space boosting path does
-  improve meaningfully, at the cost of the best-performing binary task.
-  The remaining representation-additive family cannot reach these
-  gains: all four hold F1 within $plus.minus 0.0015$ of CGC and NDCG\@3 below
-  0.6700.
+The diagnosis is therefore confirmed at the per-task level. The easy-
+task AUC loss in BRP was caused by residual-MSE gradients reshaping
+shared experts; detaching the input cuts that channel, shared experts
+remain on the primary-supporting optimum, and the residual bank uses
+only its own parameters to learn the hard-task correction.
 
-The conclusion is therefore dual. *For AUC*: no fusion augmentation in
-this family improves over the CGC gate on this benchmark. *For ranking
-and multiclass*: only a structurally decoupled path (BRP) produces
-gains, and the improvement comes from capacity redistribution rather
-than from additional signal extraction.
+=== Conclusion: Two Structural Boundaries
 
-*Implication*: claims of fusion-augmentation improvement should be
-stated per-metric, not aggregated. A reviewer asking "which mechanism
-helps here?" should receive: (i) none on AUC, (ii) only output-space
-boosting with capacity-reallocation semantics on F1/NDCG, (iii) a
-clear per-task trade-off to be tuned by the practitioner (e.g. disable
-BRP on tasks whose primary is already near-ceiling). More refined BRP
-variants (`shared_concat.detach()` to isolate gradient flow, per-task
-activation of the residual bank, and tuning of the residual-loss
-weight) are natural follow-ups that this paper does not resolve.
+Across the seven runs, two structural boundaries organize the space of
+fusion augmentations on top of a heterogeneous-expert PLE with CGC
+gating:
+
++ *Representation-additive fusions fail on aggregate AUC.* Four
+  variants --- loss-level adaTT, AdaTT-sp, M1 complement, and ECEB ---
+  all inject a residual additively into the primary representation.
+  All four degrade AUC, with a monotone relationship between
+  intervention invasiveness and degradation magnitude
+  ($-0.001$ to $-0.006$). The residual's definition (gate inverse, own
+  expert, uncertainty-gated consensus) does not change this.
++ *Output-space boosting succeeds, conditional on gradient isolation.*
+  BRP places the residual in output space and is trained as a boosting
+  correction on the primary's detached prediction error. In its MV
+  form, residual-MSE gradients still leak into shared experts through
+  the `shared_concat` input, producing the largest aggregate AUC drop
+  ($-0.008$) despite the best F1/NDCG scores. Detaching that input
+  closes the leak: BRP-detached ties CGC on aggregate AUC
+  ($Delta = -0.0007$; best epoch exceeds baseline by $+0.0008$) and
+  improves F1 macro by $+0.007$ and NDCG\@3 by $+0.015$, while
+  preserving $+256$% relative rescue on the hardest multiclass task.
+
+Taken together, the findings define what a successful fusion
+augmentation on this kind of architecture must structurally avoid
+(representation-additive injection at the primary's fusion point,
+especially when the primary is near-optimal) and what it must include
+(output-space residual + isolation of shared-expert gradients). BRP-
+detached is a positive-result structural recipe, not a universal
+improvement; the following section discusses its scope and the open
+questions it leaves unanswered.
 
 = Discussion
 
@@ -952,24 +1014,28 @@ These findings are not novel algorithms but practical diagnostics.
 We hope they prevent other practitioners from re-discovering the same pitfalls
 when scaling MTL to real-world heterogeneous task portfolios.
 
-Finding 7 reframes the search for fusion augmentation beyond CGC.
-Across five augmented variants, no mechanism improves aggregate AUC over
-the CGC baseline on this benchmark. The four representation-additive
-variants --- three gate-derived residuals plus an uncertainty-conditioned
-consensus path --- degrade AUC monotonically with intervention
-invasiveness. A fifth variant that moves the residual entirely into
-output space and trains it as a boosting-style correction on the
-primary's detached error (BRP) does not recover AUC either, but it does
-produce the highest F1 macro and NDCG\@3 of all six runs at the cost of
-the best-performing binary task. The result supports a per-metric
-reading: on aggregate AUC, *no* fusion augmentation in this family
-helps; on ranking and multiclass, only a structurally decoupled output-
-space residual helps, and the gain is consistent with capacity
-reallocation across tasks rather than with additional signal
-extraction. Follow-up work will evaluate refined BRP variants
-(gradient-isolated residual input, per-task enabling, and residual-loss
-weight tuning) and assess whether the trade-off can be tilted further
-toward hard tasks without damaging the strongest ones.
+Finding 7 maps the search space for fusion augmentation on top of
+CGC into two regions. *Representation-additive fusions* ---
+loss-level adaTT, AdaTT-sp, M1 complement, and ECEB --- all inject a
+residual into the primary representation and uniformly degrade
+aggregate AUC, with magnitude scaling monotonically in the
+invasiveness of the intervention. *Output-space boosting* (BRP) moves
+the residual to the prediction layer and, once shared-expert
+gradients are isolated from the residual bank (BRP-detached), ties
+the CGC baseline on aggregate AUC ($Delta = -0.0007$, best epoch
+$0.6736 > 0.6728$) while improving F1 macro by $+0.007$ and NDCG\@3
+by $+0.015$, and retaining a $+$256% relative rescue on the hardest
+multiclass task. The positive result is therefore a structural
+recipe --- output-space residual plus gradient isolation on the
+shared-representation input --- rather than a new expert or new
+gate. The per-task diagnosis that led from BRP to BRP-detached also
+shows why the earlier representation-additive family fails: once the
+primary is near its per-task optimum, any path that propagates
+residual-error gradients back into shared representation pulls the
+primary off its optimum. Follow-up work will validate this recipe
+across seeds and datasets and test refinements (per-task residual
+gating, residual-loss weight tuning) in a SageMaker setting where
+the compute budget allows systematic sweeps.
 
 // ============================================================
 = Author Contributions

@@ -1101,6 +1101,7 @@ def save_eval_report(
                 "residual_hidden_dims": ple_config.brp.residual_hidden_dims,
                 "residual_weight_init": ple_config.brp.residual_weight_init,
                 "residual_loss_weight": ple_config.brp.residual_loss_weight,
+                "detach_input": getattr(ple_config.brp, "detach_input", False),
             }
             if hasattr(ple_config, "brp") else None
         ),

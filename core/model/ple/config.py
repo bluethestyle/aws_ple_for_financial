@@ -97,6 +97,13 @@ class BRPConfig:
     residual_weight_init: float = -2.0   # sigmoid(-2) ≈ 0.12: residual starts suppressed
     residual_loss_weight: float = 0.1    # weight of residual-error loss in total
     dropout: float = 0.1
+    # When true, detach ``shared_concat`` before feeding it into the
+    # residual expert bank. This fully isolates shared-expert gradients
+    # from the residual MSE loss and was introduced to test whether the
+    # easy-task AUC loss observed in the MV-BRP experiment is caused by
+    # residual-MSE gradients pulling shared experts off their primary-
+    # supporting optimum.
+    detach_input: bool = False
 
 
 @dataclass

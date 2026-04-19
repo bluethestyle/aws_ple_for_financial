@@ -217,6 +217,11 @@ def build_ple_config(
         model_config.setdefault("brp", {})["enabled"] = bool(
             parse_bool_hp(use_brp_raw)
         )
+    brp_detach_raw = hp.get("brp_detach_input")
+    if brp_detach_raw is not None:
+        model_config.setdefault("brp", {})["detach_input"] = bool(
+            parse_bool_hp(brp_detach_raw)
+        )
 
     # --- Loss weighting ---
     lw_cfg = model_config.get("loss_weighting", {})
@@ -427,6 +432,7 @@ def build_ple_config(
         residual_weight_init=float(brp_raw.get("residual_weight_init", -2.0)),
         residual_loss_weight=float(brp_raw.get("residual_loss_weight", 0.1)),
         dropout=float(brp_raw.get("dropout", 0.1)),
+        detach_input=bool(brp_raw.get("detach_input", False)),
     )
 
     # GroupTaskExpert config
