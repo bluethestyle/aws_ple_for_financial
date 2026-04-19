@@ -60,6 +60,12 @@ model:
     causal:
       dag_hidden_dims: [128, 64]
       lambda_dag: 0.01
+      # NOTEARS reconstruction loss weight. Without this, the residual
+      # SCM design `z_hat = z + z @ W^2` lets the task loss bypass W
+      # entirely and W collapses to zero (verified empirically on all
+      # pre-patch checkpoints). Restoring ||z - z W^2||^2 as in the
+      # original NOTEARS paper gives W a load-bearing gradient path.
+      recon_lambda: 0.5
     lightgcn:
       embedding_dim: 64
       n_layers: 3

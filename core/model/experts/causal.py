@@ -68,6 +68,12 @@ class CausalExpert(AbstractExpert):
         self.n_causal_vars: int = config.get("n_causal_vars", 32)
         self.dag_lambda: float = config.get("dag_lambda", 0.01)
         self.sparsity_lambda: float = config.get("sparsity_lambda", 0.001)
+        # NOTEARS-style reconstruction penalty: enforces that W actually
+        # describes how each latent variable is a linear function of the
+        # others. Without this, W has no gradient incentive beyond the
+        # sparsity penalty and collapses to zero.
+        # Reference: Zheng et al. (NeurIPS 2018) min ||X - X W||_F^2.
+        self.recon_lambda: float = config.get("recon_lambda", 0.5)
         dropout: float = config.get("dropout", 0.2)
 
         # -- Feature compressor: input_dim -> n_causal_vars --------------------
@@ -85,6 +91,11 @@ class CausalExpert(AbstractExpert):
         self.W = nn.Parameter(
             torch.randn(self.n_causal_vars, self.n_causal_vars) * 0.01
         )
+
+        # Cache of the last feature_compressor output (z), used by the
+        # reconstruction loss in ``get_dag_regularization``. Populated on
+        # every forward call so the most recent batch's z is available.
+        self._last_z: torch.Tensor | None = None
 
         # -- Causal encoder: n_causal_vars -> output_dim -----------------------
         self.causal_encoder = nn.Sequential(
@@ -124,6 +135,11 @@ class CausalExpert(AbstractExpert):
             ``[batch, output_dim]`` causally-informed representation.
         """
         z = self.feature_compressor(x)
+        # Keep z accessible to get_dag_regularization so the NOTEARS-
+        # style reconstruction loss ||z - z W^2||^2 can be computed.
+        # Stored as a live (with-grad) tensor; gets overwritten every
+        # forward, so only the most recent batch contributes.
+        self._last_z = z
         z_hat = self._apply_causal_mechanism(z)
         return self.causal_encoder(z_hat)
 
@@ -145,16 +161,31 @@ class CausalExpert(AbstractExpert):
 
     def get_dag_regularization(self) -> torch.Tensor:
         """
-        Compute the NOTEARS acyclicity + sparsity regularisation loss.
+        Compute the NOTEARS acyclicity + sparsity + reconstruction
+        regularisation loss.
 
-        The acyclicity constraint uses a 10-term Taylor approximation::
+        Three terms:
 
-            h(W) = tr(exp(W . W)) - d
-                 ~= sum_{k=1}^{10} tr((W.W)^k / k!)
+          1. Acyclicity (10-term Taylor approximation of
+             ``h(W) = tr(exp(W . W)) - d``)
+          2. Sparsity (L1-like, ``||W . W||_1``)
+          3. *Reconstruction* (NOTEARS-style ``||z - z W^2||_F^2``):
+             ensures ``W`` has a load-bearing gradient path. Without
+             this, the residual connection
+             ``z_hat = z + z W^2`` lets task loss flow entirely through
+             ``z``, W has no learning incentive beyond the sparsity
+             penalty, and collapses to zero (observed empirically on
+             all checkpoints before this patch).
 
         Total loss::
 
-            dag_loss = dag_lambda * h(W) + sparsity_lambda * ||W.W||_1
+            dag_loss = dag_lambda    * h(W)
+                     + sparsity_lambda * ||W.W||_1
+                     + recon_lambda   * ||z - z W^2||_F^2
+
+        The reconstruction term is a safeguard against degenerate
+        ``W = 0`` and restores the standard NOTEARS gradient signal that
+        the original paper relies on.
 
         Returns
         -------
@@ -166,14 +197,27 @@ class CausalExpert(AbstractExpert):
             W_sq = W_f32 * W_f32
             d = self.n_causal_vars
 
-            # Taylor expansion for tr(exp(W_sq)) in FP32 to avoid overflow
+            # 1. Taylor expansion for tr(exp(W_sq)) in FP32 to avoid overflow
             h = torch.tensor(0.0, device=self.W.device)
             M_power = torch.eye(d, device=self.W.device)
             for i in range(1, 11):
                 M_power = M_power @ W_sq / i
                 h = h + torch.trace(M_power)
 
-            return self.dag_lambda * h + self.sparsity_lambda * W_sq.sum()
+            # 2. Sparsity (existing)
+            sparsity = W_sq.sum()
+
+            # 3. NOTEARS-style reconstruction on the most recent z.
+            # Guards against missing cache (e.g. called before forward)
+            # and against recon_lambda == 0 (skip MSE compute entirely).
+            recon = torch.tensor(0.0, device=self.W.device)
+            if self.recon_lambda > 0.0 and self._last_z is not None:
+                z = self._last_z.float()
+                recon = torch.mean((z - z @ W_sq) ** 2)
+
+            return (self.dag_lambda * h
+                    + self.sparsity_lambda * sparsity
+                    + self.recon_lambda * recon)
 
     def get_causal_graph(self) -> torch.Tensor:
         """
