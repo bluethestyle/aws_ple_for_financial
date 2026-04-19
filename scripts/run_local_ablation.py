@@ -248,6 +248,29 @@ SCENARIOS: List[Dict[str, Any]] = [
          "use_hmm_projectors": "false",
      }},
 
+    # Paper 3 follow-up --- NEAS (Neglected-Expert Auxiliary Supervision).
+    # Adds an auxiliary training-time head per task that consumes the
+    # inverse-gate-weighted aggregation of the last CGC layer's expert
+    # outputs and predicts the primary target. Mitigates expert collapse
+    # (observed entropy ratio as low as 0.30 on segment_prediction) by
+    # forcing neglected experts to retain useful representations.
+    # Inference is unaffected — aux head is training-only.
+    {"name": "struct_13_neas",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "use_adatt_sp": "false",
+         "use_residual_recovery": "false",
+         "use_eceb": "false",
+         "use_brp": "false",
+         "use_neas": "true",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
     # Paper 3 MV+ --- BRP with detached shared_concat input.
     # Identical to struct_13_brp but shared_concat is detached before
     # entering the residual bank, so residual-MSE gradients cannot
@@ -263,6 +286,31 @@ SCENARIOS: List[Dict[str, Any]] = [
          "use_eceb": "false",
          "use_brp": "true",
          "brp_detach_input": "true",
+         "gate_type": "sigmoid",
+         "use_cgc_gate": "true",
+         "use_group_task_expert": "false",
+         "use_logit_transfer": "false",
+         "use_hmm_projectors": "false",
+     }},
+
+    # Paper 3 follow-up --- NEAS + BRP-detached combined.
+    # NEAS (training-time load balance regularizer on inverse-gate
+    # aggregation) and BRP-detached (output-space error boosting with
+    # gradient-isolated residual bank) are structurally independent:
+    # NEAS targets expert collapse, BRP-detached targets primary
+    # prediction errors. Tests whether the two positive mechanisms
+    # combine additively (NEAS's uniform small lift + BRP-detached's
+    # hard-task rescue) or interfere with each other.
+    {"name": "struct_13_neas_brp_detached",
+     "hp": {
+         "use_ple": "true",
+         "use_adatt": "false",
+         "use_adatt_sp": "false",
+         "use_residual_recovery": "false",
+         "use_eceb": "false",
+         "use_brp": "true",
+         "brp_detach_input": "true",
+         "use_neas": "true",
          "gate_type": "sigmoid",
          "use_cgc_gate": "true",
          "use_group_task_expert": "false",

@@ -1105,6 +1105,14 @@ def save_eval_report(
             }
             if hasattr(ple_config, "brp") else None
         ),
+        "neas": (
+            {
+                "enabled": ple_config.neas.enabled,
+                "aux_weight": ple_config.neas.aux_weight,
+                "aux_hidden_dims": ple_config.neas.aux_hidden_dims,
+            }
+            if hasattr(ple_config, "neas") else None
+        ),
         "gate_type": getattr(ple_config, "gate_type", "softmax"),
         "total_params": sum(p.numel() for p in model.parameters()),
         "trainable_params": sum(p.numel() for p in model.parameters() if p.requires_grad),

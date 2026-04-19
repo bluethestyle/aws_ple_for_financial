@@ -67,6 +67,32 @@ class AdaTTSPConfig:
 
 
 @dataclass
+class NEASConfig:
+    """Neglected-Expert Auxiliary Supervision (Paper 3 follow-up).
+
+    Motivation: BRP-detached shows a positive finding when the residual
+    path is decoupled from shared-expert gradients. A remaining concern is
+    *expert collapse* --- the CGC gate can concentrate on 1--2 experts per
+    task (observed entropy ratio as low as 0.30 on segment_prediction),
+    which could leave the neglected experts under-trained. NEAS adds an
+    auxiliary supervision path that *only sees* the inverse-gate-weighted
+    aggregation of expert outputs and must still predict the primary
+    target. This forces the neglected experts to maintain useful
+    representations even when the gate de-emphasises them.
+
+    Training only (no inference use). The aux head is a per-task MLP on
+    the last CGC layer's inverse-gate aggregation of ``all_outs``; its
+    loss uses the same task loss as the primary, scaled by
+    ``aux_weight``. Off by default. Orthogonal to the residual_recovery /
+    ECEB / BRP families (can be combined).
+    """
+    enabled: bool = False
+    aux_weight: float = 0.05
+    aux_hidden_dims: List[int] = field(default_factory=lambda: [128, 64])
+    dropout: float = 0.1
+
+
+@dataclass
 class BRPConfig:
     """Boosting-Residual Path (Paper 3, MV).
 
@@ -471,6 +497,9 @@ class PLEConfig:
 
     # -- BRP (boosting-residual path, Paper 3 MV) ---------------------------
     brp: BRPConfig = field(default_factory=BRPConfig)
+
+    # -- NEAS (neglected-expert auxiliary supervision, Paper 3 follow-up) ---
+    neas: NEASConfig = field(default_factory=NEASConfig)
 
     # -- Gradient Surgery (PCGrad) ------------------------------------------
     grad_surgery: GradSurgeryConfig = field(default_factory=GradSurgeryConfig)

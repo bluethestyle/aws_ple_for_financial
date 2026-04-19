@@ -188,6 +188,22 @@ brp:
                                     # experts from residual-MSE gradient).
 
 # ---------------------------------------------------------------------------
+# NEAS (Paper 3 follow-up) — Neglected-Expert Auxiliary Supervision.
+# Auxiliary training-time regulariser. Per task, an auxiliary MLP head
+# consumes the inverse-gate-weighted aggregation of the last CGC layer's
+# expert outputs (experts the gate de-emphasised) and is trained against
+# the primary target. Forces neglected experts to maintain useful
+# representations even under gate concentration, mitigating expert
+# collapse. Training only — inference uses the primary path alone. Can be
+# combined with BRP / adatt_sp / residual_recovery / eceb.
+# ---------------------------------------------------------------------------
+neas:
+  enabled: false                    # toggle via HP override
+  aux_weight: 0.05                  # weight of aux loss in total loss
+  aux_hidden_dims: [128, 64]        # aux head MLP widths
+  dropout: 0.1                      # aux head dropout
+
+# ---------------------------------------------------------------------------
 # Gradient Surgery — PCGrad task-type projection (alternative to adaTT)
 # ---------------------------------------------------------------------------
 grad_surgery:

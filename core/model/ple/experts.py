@@ -266,6 +266,11 @@ class CGCLayer(nn.Module):
         self.expert_hidden_dim = expert_hidden_dim
         self.feature_router = feature_router
         self._last_gate_weights: Dict[int, torch.Tensor] = {}
+        # NEAS training-time state: live (with-grad) gate_weights and
+        # all_outs per task. Populated only when self._neas_store is set
+        # from outside (typically on the last CGC layer).
+        self._neas_store: bool = False
+        self._neas_last_state: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
 
         _valid_fusion = ("cgc", "adatt_sp", "residual_complement", "eceb")
         if fusion_type not in _valid_fusion:
@@ -469,6 +474,11 @@ class CGCLayer(nn.Module):
             outputs.append(gated)
             if not self.training:
                 self._last_gate_weights[task_idx] = gate_weights.detach()
+            # NEAS: keep live tensors with grad for auxiliary supervision
+            # at the PLEModel level. Only populated on the layer flagged
+            # via _neas_store (the final CGC layer in current usage).
+            if self._neas_store:
+                self._neas_last_state[task_idx] = (gate_weights, all_outs)
 
         return outputs, shared_concat
 

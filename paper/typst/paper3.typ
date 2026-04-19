@@ -134,21 +134,26 @@ Our contributions:
   to uniform averaging; and a demonstration that val-loss is a misleading
   checkpoint criterion when regression and classification tasks coexist
   (Section 4.6).
-- A 7-way comparison of fusion augmentations on top of the CGC
-  baseline that maps out two structural boundaries. *Representation-
-  additive fusions* (loss-level adaTT, AdaTT-sp, complementary-gate
-  recovery, uncertainty-conditioned expert bank) all degrade AUC
+- A 9-way comparison of fusion augmentations on top of the CGC
+  baseline that identifies *two positive recipes on disjoint axes* and
+  shows that they are *not additive*. Five representation-additive
+  fusions (loss-level adaTT, AdaTT-sp, complementary-gate recovery,
+  uncertainty-conditioned expert bank, and MV BRP) all degrade AUC
   monotonically with intervention invasiveness. *Output-space
-  boosting* (BRP) reverses the sign on F1 macro and NDCG\@3 but
-  initially still degrades AUC; per-task diagnosis attributes the AUC
-  loss to residual-MSE gradients leaking into shared experts through
-  a shared-representation input. Detaching that input (BRP-detached)
-  ties CGC on AUC ($Delta = -0.0007$; best epoch exceeds baseline
-  by $+0.0008$) while preserving the F1/NDCG gains and $+$256%
-  relative rescue on the hardest multiclass task. The positive
-  finding is therefore a structural recipe, not a new mechanism:
-  output-space residual plus shared-expert gradient isolation
-  (Section 4.7).
+  boosting with shared-expert gradient isolation* (BRP-detached) ties
+  CGC on aggregate AUC ($Delta = -0.0007$; best epoch exceeds baseline
+  by $+0.0008$) while lifting F1 macro $+0.007$ and NDCG\@3 $+0.015$
+  and retaining $+$256% relative rescue on the hardest multiclass
+  task. *Training-time load-balancing regularisation* (NEAS ---
+  auxiliary supervision on the inverse-gate aggregation) is the first
+  mechanism of the family to actually raise aggregate AUC
+  ($Delta = +0.0011$), with a monotone-increasing trajectory and near-
+  uniform per-task lifts. Stacking the two positive recipes collapses
+  NEAS's AUC gain because the shared experts cannot simultaneously be
+  generalists (NEAS) and primary-supporting specialists
+  (BRP-detached). The guidance is per-objective: NEAS for aggregate
+  AUC and cross-task robustness, BRP-detached for hard-task rescue,
+  do not stack (Section 4.7).
 
 The system, data generator, and ablation scripts are publicly available.#footnote[
   https://github.com/bluethestyle/aws\_ple\_for\_financial
@@ -678,23 +683,31 @@ minimizes val loss.
 and (3) treat val loss as a diagnostic (indicating regression progress) rather
 than as the primary stopping criterion.
 
-== Finding 7: Representation-Additive Fusion Fails; Output-Space Boosting with Gradient Isolation Succeeds <find7>
+== Finding 7: Two Positive Fusion Recipes on Disjoint Axes, Non-Additive Under Composition <find7>
 
 After Finding 2 established that the loss-level `adaTT` variant does not
-affect aggregate AUC at the 13-task scale ($Delta = -0.001$, null), six
-further mechanisms were evaluated on the same benchmark to test which
-forms of fusion augmentation (if any) can extract useful signal beyond
-CGC's gated selection. Six of the seven experiments (including adaTT)
-share a structural property --- they inject a residual additively into
-the primary representation --- and all six degrade aggregate AUC, with a
-monotone relationship between intervention invasiveness and degradation
-magnitude. The seventh experiment moves the residual into output space,
-trains it as a boosting correction on the primary's detached error, and
---- with one additional modification to isolate shared-expert gradients
---- preserves AUC while meaningfully improving F1 macro and NDCG\@3.
-Paper 3's practical reading is therefore: representation-additive fusion
-is empirically dead on this benchmark; output-space boosting is alive,
-conditional on gradient isolation.
+affect aggregate AUC at the 13-task scale ($Delta = -0.001$, null),
+eight further mechanisms were evaluated on the same benchmark to map out
+which forms of fusion augmentation (if any) can extract useful signal
+beyond CGC's gated selection. The nine-way comparison resolves into
+three regions. *Representation-additive fusions* (five variants: loss-
+level adaTT, AdaTT-sp, M1 complement, ECEB, and BRP-MV) all inject a
+residual into the primary representation or propagate residual-error
+gradients into shared experts; all five degrade aggregate AUC with a
+magnitude that scales monotonically with the invasiveness of the
+intervention. *Output-space boosting with gradient isolation* (BRP-
+detached) preserves AUC ($Delta = -0.0007$, tied) while lifting F1 macro
+by $+0.007$ and NDCG\@3 by $+0.015$. *Training-time load-balancing
+regularisation* (NEAS --- an inverse-gate auxiliary supervision) is the
+first mechanism of the family to *raise* aggregate AUC ($Delta = +0.0011$),
+with near-uniform small lifts across most tasks. The two positive
+recipes act on disjoint axes --- error correction in output space vs.
+expert-collapse prevention at the gate --- yet a ninth experiment
+stacking them produces a *non-additive* outcome: NEAS's AUC lift
+vanishes while BRP-detached's hard-task rescue partially survives,
+because the shared experts cannot simultaneously generalise for NEAS
+and specialise for the primary-supporting optimum that BRP-detached
+relies on.
 
 === Five Mechanisms, One Aggregate-AUC Conclusion
 
@@ -742,6 +755,21 @@ into the shared experts while leaving the primary pathway, parameter
 count, and training schedule unchanged. The modification was motivated
 by the per-task analysis of BRP below.
 
+*NEAS (Neglected-Expert Auxiliary Supervision)* adds a per-task
+auxiliary head consuming the *inverse-gate-weighted aggregation* of the
+last CGC layer's expert outputs. The auxiliary target is the primary
+task label, and the auxiliary loss (scaled by `aux_weight = 0.05`) is
+added to the total loss during training only; inference does not use
+the auxiliary head at all. The mechanism explicitly forces neglected
+experts --- those the gate de-emphasises for a given task --- to retain
+predictive representations, mitigating expert collapse. NEAS is
+structurally independent of all residual mechanisms above; it neither
+injects a residual nor modifies the primary output.
+
+*NEAS + BRP-detached* stacks the two positive mechanisms, testing
+additivity. Both are enabled with their standalone settings; no other
+modification.
+
 Results on the 13-task benchmark (10 epochs, seed=42):
 
 #figure(
@@ -753,27 +781,28 @@ Results on the 13-task benchmark (10 epochs, seed=42):
     table.header(
       [*Fusion*], [*Final AUC*], [*F1 macro*], [*NDCG\@3*], [*$Delta$ AUC*]
     ),
-    [CGC gate (baseline)],  [*0.6728*], [0.2002],   [0.6820],   [---],
-    [Loss-level adaTT],     [0.6717],   [0.2013],   [0.6646],   [$-$0.0011],
-    [AdaTT-sp (Li 2023)],   [0.6696],   [0.1998],   [0.6570],   [$-$0.0032],
-    [M1 complement],        [0.6675],   [0.1998],   [0.6611],   [$-$0.0053],
-    [ECEB (MV)],            [0.6665],   [0.1998],   [0.6549],   [$-$0.0063],
-    [BRP (MV)],             [0.6650],   [*0.2117*], [*0.7039*], [$-$0.0078],
-    [*BRP-detached*],       [*0.6721*], [0.2075],   [0.6965],   [*$-$0.0007 (tied)*],
+    [CGC gate (baseline)],   [0.6728],   [0.2002],   [0.6820],   [---],
+    [Loss-level adaTT],      [0.6717],   [0.2013],   [0.6646],   [$-$0.0011],
+    [AdaTT-sp (Li 2023)],    [0.6696],   [0.1998],   [0.6570],   [$-$0.0032],
+    [M1 complement],         [0.6675],   [0.1998],   [0.6611],   [$-$0.0053],
+    [ECEB (MV)],             [0.6665],   [0.1998],   [0.6549],   [$-$0.0063],
+    [BRP (MV)],              [0.6650],   [*0.2117*], [*0.7039*], [$-$0.0078],
+    [BRP-detached],          [0.6721],   [0.2075],   [0.6965],   [$-$0.0007 (tied)],
+    [*NEAS*],                [*0.6739*], [0.2019],   [0.6896],   [*$+$0.0011 (positive)*],
+    [NEAS + BRP-detached],   [0.6722],   [0.2062],   [0.6864],   [$-$0.0006 (non-additive)],
   ),
-  caption: [7-way comparison of fusion mechanisms on the 13-task benchmark.
-  The five representation-additive variants (rows 2--6) degrade aggregate
-  AUC below the CGC baseline, with magnitude growing monotonically in the
-  invasiveness of the intervention. BRP (row 6) breaks the pattern by
-  placing the residual in output space and training it as a boosting
-  correction: it produces the largest AUC drop of the six augmented
-  variants but simultaneously the highest F1 macro and NDCG\@3 --- a
-  task-balance trade-off driven by gradient entanglement at the
-  `shared_concat` input. BRP-detached (row 7) severs that entanglement by
-  detaching `shared_concat` before the residual bank; AUC returns to
-  baseline ($Delta = -0.0007$, best $= 0.6736$ at epoch 8, $+$0.0008 over
-  CGC) while F1 macro and NDCG\@3 remain above the baseline.]
-) <tab:fusion7way>
+  caption: [9-way comparison of fusion mechanisms on the 13-task
+  benchmark. The five representation-additive variants (rows 2--6)
+  degrade aggregate AUC below CGC, with magnitude growing monotonically
+  in the invasiveness of the intervention. BRP-detached (row 7) ties CGC
+  on AUC ($Delta = -0.0007$, best $= 0.6736$ at epoch 8, $+$0.0008 over
+  the baseline final) and lifts F1/NDCG\@3. NEAS (row 8) is the first
+  mechanism of the family to *raise* aggregate AUC ($Delta = +0.0011$),
+  with a monotone-increasing trajectory through all 10 epochs and near-
+  uniform small per-task lifts. The combined scenario (row 9) collapses
+  NEAS's AUC gain --- the two mechanisms exert opposing pressures on the
+  shared experts and do not stack.]
+) <tab:fusion9way>
 
 M1's best AUC at epoch 1 (pre-training) with monotone decline thereafter
 indicates that training the learnable recovery weight actively degrades
@@ -818,7 +847,7 @@ factors (label construction for churn_signal, near-floor base rate for
 next_mcc) than by gate entropy. Gate entropy cannot therefore be claimed
 as a structural predictor of recovery benefit on this benchmark.
 
-=== BRP and BRP-detached: Diagnosing the Mechanism
+=== BRP, BRP-detached, and NEAS: Diagnosing the Mechanisms
 
 The first four augmented variants (loss-level adaTT, AdaTT-sp, M1, ECEB)
 all inject a residual additively into the primary representation and
@@ -886,38 +915,105 @@ shared experts; detaching the input cuts that channel, shared experts
 remain on the primary-supporting optimum, and the residual bank uses
 only its own parameters to learn the hard-task correction.
 
-=== Conclusion: Two Structural Boundaries
+*NEAS* takes a different path. Rather than a residual, it attaches an
+auxiliary supervision signal to the *inverse-gate-weighted
+aggregation* of expert outputs: each task's aux head must predict the
+primary label using mostly the experts the gate de-emphasised. This
+creates gradient pressure on every shared expert to remain predictive
+even when the task-level gate concentrates. The effect is a training-
+time regulariser against expert collapse. NEAS's trajectory rises
+monotonically through all 10 epochs, and its per-task lift is spread
+across 11 of 13 tasks (six of seven binaries improve by $+$0.0004 to
+$+$0.0029; nba_primary lifts F1 by $+0.0056$). Unlike BRP, NEAS does
+not produce a large rescue on any single hard task --- next_mcc's F1
+moves only from 0.0100 to 0.0107 under NEAS alone, against $+$0.0256
+under BRP-detached --- because its mechanism is prevention-of-loss
+rather than targeted-correction.
 
-Across the seven runs, two structural boundaries organize the space of
+The two positive recipes therefore act on *disjoint axes*:
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    align: (left, center, center),
+    stroke: 0.5pt,
+    inset: 5pt,
+    table.header(
+      [*Dimension*], [*BRP-detached*], [*NEAS*]
+    ),
+    [Where it acts],                 [Output-space residual],           [Shared-expert gradients via aux loss],
+    [Training signal],               [MSE on primary's detached error], [Task loss on inverse-gate aggregation],
+    [Inference overhead],            [Non-zero (residual expert)],       [Zero (training-only regulariser)],
+    [Parameter addition],            [0.36M (residual bank)],            [0.17M (aux heads)],
+    [Aggregate $Delta$ AUC],         [$-0.0007$ (tied)],                 [$+0.0011$ (positive)],
+    [Typical per-task pattern],      [One big rescue ($+$256% next_mcc)], [Many small lifts ($plus.minus 0.003$)],
+    [Failure mode if stacked],       [Retains next_mcc rescue],          [AUC lift erased],
+  ),
+  caption: [Structural comparison of the two positive fusion recipes
+  identified on this benchmark.]
+) <tab:two-recipes>
+
+=== Conclusion: Three Structural Regions, Non-Additive Composition
+
+Across the nine runs, three structural regions organise the space of
 fusion augmentations on top of a heterogeneous-expert PLE with CGC
 gating:
 
-+ *Representation-additive fusions fail on aggregate AUC.* Four
-  variants --- loss-level adaTT, AdaTT-sp, M1 complement, and ECEB ---
-  all inject a residual additively into the primary representation.
-  All four degrade AUC, with a monotone relationship between
-  intervention invasiveness and degradation magnitude
-  ($-0.001$ to $-0.006$). The residual's definition (gate inverse, own
-  expert, uncertainty-gated consensus) does not change this.
-+ *Output-space boosting succeeds, conditional on gradient isolation.*
-  BRP places the residual in output space and is trained as a boosting
-  correction on the primary's detached prediction error. In its MV
-  form, residual-MSE gradients still leak into shared experts through
-  the `shared_concat` input, producing the largest aggregate AUC drop
-  ($-0.008$) despite the best F1/NDCG scores. Detaching that input
-  closes the leak: BRP-detached ties CGC on aggregate AUC
-  ($Delta = -0.0007$; best epoch exceeds baseline by $+0.0008$) and
-  improves F1 macro by $+0.007$ and NDCG\@3 by $+0.015$, while
-  preserving $+256$% relative rescue on the hardest multiclass task.
++ *Representation-additive fusions fail on aggregate AUC.* Five
+  variants --- loss-level adaTT, AdaTT-sp, M1 complement, ECEB, and
+  BRP-MV (whose `shared_concat` input propagates residual gradients
+  into shared experts) --- all inject or propagate residual-error
+  signal into the primary-representation path. All five degrade AUC,
+  with a monotone relationship between intervention invasiveness and
+  degradation magnitude ($-0.001$ to $-0.008$). The residual's
+  definition (gate inverse, own expert, uncertainty-gated consensus,
+  boosting error) does not change this; what matters is whether the
+  mechanism reaches into the primary-supporting representation.
++ *Output-space boosting with gradient isolation succeeds as a tie-
+  plus-ranking-gain recipe.* BRP-detached places the residual in
+  output space and trains it as a boosting correction on the primary's
+  detached error, while detaching the `shared_concat` input to the
+  residual bank so residual-MSE gradients never reach the shared
+  experts. The result ties CGC on aggregate AUC ($Delta = -0.0007$;
+  best epoch exceeds baseline by $+0.0008$) and lifts F1 macro by
+  $+0.007$ and NDCG\@3 by $+0.015$, with $+256$% relative rescue on
+  the hardest multiclass task.
++ *Training-time load-balancing regularisation succeeds as an AUC-
+  positive recipe.* NEAS attaches a per-task auxiliary head to the
+  inverse-gate-weighted aggregation of expert outputs, trained against
+  the primary label. It is the first mechanism in this family to
+  actually raise aggregate AUC ($Delta = +0.0011$), with a monotone-
+  increasing trajectory over 10 epochs and near-uniform per-task
+  lifts. The mechanism is zero-overhead at inference (training-only
+  regulariser) and adds only 0.17M parameters.
 
-Taken together, the findings define what a successful fusion
-augmentation on this kind of architecture must structurally avoid
-(representation-additive injection at the primary's fusion point,
-especially when the primary is near-optimal) and what it must include
-(output-space residual + isolation of shared-expert gradients). BRP-
-detached is a positive-result structural recipe, not a universal
-improvement; the following section discusses its scope and the open
-questions it leaves unanswered.
+*The two positive recipes act on disjoint axes* (error correction in
+output space vs. expert-collapse prevention at the gate) and are
+independently reproducible. A ninth experiment stacking them produces
+a *non-additive* outcome: NEAS's aggregate AUC lift vanishes
+($Delta = -0.0006$), while BRP-detached's hard-task rescue partially
+survives (next_mcc F1 $+0.0250$ vs. $+0.0256$ standalone). The
+mechanism-level explanation is that NEAS pushes shared experts toward
+*generalists* (each must predict under inverse-gate reweighting),
+whereas BRP-detached holds shared experts on the *primary-supporting
+optimum* via the primary task loss. The shared experts are a finite
+resource and cannot simultaneously satisfy both pressures.
+
+The practical reading is therefore per-objective rather than stack-
+everything:
+
+- If aggregate AUC and uniform cross-task robustness matter most,
+  use *NEAS* (zero inference overhead, $+0.0011$ AUC, monotone
+  training trajectory).
+- If rescue of a near-random multiclass task matters most, use
+  *BRP-detached* (ties AUC, $+$256% relative F1 rescue on the hardest
+  task).
+- Do *not* stack them as-is; doing so erases NEAS's AUC gain without
+  producing the hoped-for additive lift. A mechanism that resolves
+  the shared-expert conflict (e.g., a scheduler that alternates NEAS
+  and BRP-detached pressure across training phases, or a parameter-
+  sharing adapter between the two heads) is a natural follow-up but
+  not studied here.
 
 = Discussion
 
@@ -1014,28 +1110,31 @@ These findings are not novel algorithms but practical diagnostics.
 We hope they prevent other practitioners from re-discovering the same pitfalls
 when scaling MTL to real-world heterogeneous task portfolios.
 
-Finding 7 maps the search space for fusion augmentation on top of
-CGC into two regions. *Representation-additive fusions* ---
-loss-level adaTT, AdaTT-sp, M1 complement, and ECEB --- all inject a
-residual into the primary representation and uniformly degrade
-aggregate AUC, with magnitude scaling monotonically in the
-invasiveness of the intervention. *Output-space boosting* (BRP) moves
-the residual to the prediction layer and, once shared-expert
-gradients are isolated from the residual bank (BRP-detached), ties
-the CGC baseline on aggregate AUC ($Delta = -0.0007$, best epoch
-$0.6736 > 0.6728$) while improving F1 macro by $+0.007$ and NDCG\@3
-by $+0.015$, and retaining a $+$256% relative rescue on the hardest
-multiclass task. The positive result is therefore a structural
-recipe --- output-space residual plus gradient isolation on the
-shared-representation input --- rather than a new expert or new
-gate. The per-task diagnosis that led from BRP to BRP-detached also
-shows why the earlier representation-additive family fails: once the
-primary is near its per-task optimum, any path that propagates
-residual-error gradients back into shared representation pulls the
-primary off its optimum. Follow-up work will validate this recipe
-across seeds and datasets and test refinements (per-task residual
-gating, residual-loss weight tuning) in a SageMaker setting where
-the compute budget allows systematic sweeps.
+Finding 7 maps the search space for fusion augmentation on top of CGC
+into three regions. *Representation-additive fusions* --- loss-level
+adaTT, AdaTT-sp, M1 complement, ECEB, and MV BRP --- all propagate
+residual-error signal into the primary-representation path and
+uniformly degrade aggregate AUC, with magnitude scaling monotonically
+in the invasiveness of the intervention. *Output-space boosting with
+shared-expert gradient isolation* (BRP-detached) ties CGC on
+aggregate AUC ($Delta = -0.0007$, best epoch $0.6736 > 0.6728$) while
+improving F1 macro by $+0.007$ and NDCG\@3 by $+0.015$ and retaining
+a $+$256% relative rescue on the hardest multiclass task.
+*Training-time load-balancing regularisation* (NEAS) is the first
+mechanism of the family to actually raise aggregate AUC
+($Delta = +0.0011$), with a monotone-increasing trajectory and near-
+uniform per-task lifts. The two positive recipes act on disjoint
+axes (error correction in output space vs. expert-collapse prevention
+at the gate) and are *not additive*: stacking them collapses NEAS's
+AUC gain because the shared experts cannot simultaneously be
+generalists (NEAS) and primary-supporting specialists (BRP-detached).
+The practical guidance is per-objective: NEAS for aggregate AUC and
+uniform cross-task robustness, BRP-detached for hard-task rescue.
+Follow-up work will validate both recipes across seeds and datasets
+and evaluate mechanisms that could resolve the NEAS $times$ BRP-
+detached conflict (phased-schedule training, parameter-shared heads)
+in a SageMaker setting where the compute budget allows systematic
+sweeps.
 
 // ============================================================
 = Author Contributions

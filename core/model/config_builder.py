@@ -56,7 +56,7 @@ def build_ple_config(
         PLEConfig, ExpertConfig, ExpertBasketConfig,
         LossWeightingConfig, LogitTransferDef,
         GroupTaskExpertConfig, AdaTTConfig, AdaTTSPConfig,
-        ResidualRecoveryConfig, ECEBConfig, BRPConfig, TaskGroupDef,
+        ResidualRecoveryConfig, ECEBConfig, BRPConfig, NEASConfig, TaskGroupDef,
         CGCConfig, ExpertInputConfig,
     )
 
@@ -221,6 +221,15 @@ def build_ple_config(
     if brp_detach_raw is not None:
         model_config.setdefault("brp", {})["detach_input"] = bool(
             parse_bool_hp(brp_detach_raw)
+        )
+
+    # NEAS (Paper 3 follow-up: auxiliary supervision on inverse-gate
+    # aggregation to prevent expert collapse). Off by default; enable via
+    # HP ``use_neas=true`` in ablation scenarios.
+    use_neas_raw = hp.get("use_neas")
+    if use_neas_raw is not None:
+        model_config.setdefault("neas", {})["enabled"] = bool(
+            parse_bool_hp(use_neas_raw)
         )
 
     # --- Loss weighting ---
@@ -433,6 +442,21 @@ def build_ple_config(
         residual_loss_weight=float(brp_raw.get("residual_loss_weight", 0.1)),
         dropout=float(brp_raw.get("dropout", 0.1)),
         detach_input=bool(brp_raw.get("detach_input", False)),
+    )
+
+    # NEAS (Paper 3 follow-up: auxiliary supervision on inverse-gate
+    # aggregation to mitigate expert collapse).
+    neas_raw = (
+        model_config.get("neas")
+        or label_schema.get("neas")
+        or config.get("neas")
+        or {}
+    )
+    ple_config.neas = NEASConfig(
+        enabled=bool(neas_raw.get("enabled", False)),
+        aux_weight=float(neas_raw.get("aux_weight", 0.05)),
+        aux_hidden_dims=list(neas_raw.get("aux_hidden_dims", [128, 64])),
+        dropout=float(neas_raw.get("dropout", 0.1)),
     )
 
     # GroupTaskExpert config

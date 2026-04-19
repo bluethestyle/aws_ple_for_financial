@@ -442,6 +442,7 @@ class PLEModel(nn.Module):
         self._build_evidential_layers()
         self._build_sae()
         self._build_brp_bank()
+        self._build_neas_heads()
         self._build_task_loss_fns()
         self._build_loss_weighting()
 
@@ -1043,6 +1044,60 @@ class PLEModel(nn.Module):
             self._brp_detach_input,
         )
 
+    def _build_neas_heads(self) -> None:
+        """Build per-task auxiliary heads for NEAS (Paper 3 follow-up).
+
+        NEAS (Neglected-Expert Auxiliary Supervision) adds a training-time
+        regulariser: each task gets an auxiliary prediction from the
+        *inverse-gate-weighted* aggregation of the last CGC layer's expert
+        outputs, and is trained against the primary target. This forces
+        the neglected experts to maintain useful representations even when
+        the CGC gate de-emphasises them, mitigating expert collapse.
+
+        The auxiliary head is a plain per-task MLP operating on an
+        ``expert_hidden_dim``-sized input (inverse-gate aggregation);
+        it produces raw logits so the task loss can consume them with
+        sensible activation handling. Inference uses only the primary
+        predictions — the auxiliary head never contributes at test time.
+        """
+        cfg = self.config
+        neas_cfg = getattr(cfg, "neas", None)
+        if neas_cfg is None or not neas_cfg.enabled:
+            self.neas_heads = None
+            return
+
+        expert_hidden_dim = cfg.shared_expert.output_dim
+        task_output_dims = {
+            tn: int(cfg.get_task_output_dim(tn)) for tn in self.task_names
+        }
+
+        self.neas_heads = nn.ModuleDict()
+        for tn in self.task_names:
+            out_dim = int(task_output_dims[tn])
+            layers: List[nn.Module] = []
+            prev = expert_hidden_dim
+            for h in neas_cfg.aux_hidden_dims:
+                layers.append(nn.Linear(prev, h))
+                layers.append(nn.ReLU())
+                layers.append(nn.Dropout(neas_cfg.dropout))
+                prev = h
+            layers.append(nn.Linear(prev, out_dim))
+            self.neas_heads[tn] = nn.Sequential(*layers)
+
+        self._neas_aux_weight = float(neas_cfg.aux_weight)
+
+        # Flag the LAST extraction layer to store per-task gate_weights
+        # and all_outs with gradient, so NEAS can re-aggregate them here.
+        if len(self.extraction_layers) > 0:
+            self.extraction_layers[-1]._neas_store = True
+
+        logger.info(
+            "NEAS heads built: tasks=%d, hidden=%s, aux_weight=%.3f",
+            len(self.task_names),
+            neas_cfg.aux_hidden_dims,
+            neas_cfg.aux_weight,
+        )
+
     def _build_task_loss_fns(self) -> None:
         """Build per-task loss functions from config.
 
@@ -1450,6 +1505,25 @@ class PLEModel(nn.Module):
                 evidential_info[task_name] = ev_info
                 predictions[task_name] = ev_pred.unsqueeze(-1)
 
+        # 3a. NEAS --- compute per-task auxiliary logits from the
+        # inverse-gate-weighted aggregation of the last CGC layer's expert
+        # outputs. These are used only to form an auxiliary training loss
+        # below; the primary predictions stored in ``predictions`` are
+        # unchanged. Inference ignores NEAS (aux_logits is None outside
+        # training or when the heads are not built).
+        neas_aux_logits: Optional[Dict[str, torch.Tensor]] = None
+        if self.training and getattr(self, "neas_heads", None) is not None:
+            last_layer = self.extraction_layers[-1]
+            neas_aux_logits = {}
+            for i, task_name in enumerate(self.task_names):
+                if i not in last_layer._neas_last_state:
+                    continue
+                gate_weights, all_outs = last_layer._neas_last_state[i]
+                inv_gate = (1.0 - gate_weights).clamp(min=0.0)
+                inv_gate = inv_gate / (inv_gate.sum(dim=-1, keepdim=True) + 1e-6)
+                inv_aggregated = (inv_gate.unsqueeze(-1) * all_outs).sum(dim=1)
+                neas_aux_logits[task_name] = self.neas_heads[task_name](inv_aggregated)
+
         # 3b. BRP --- compute per-task residual logits from shared_concat and
         # combine with primary predictions in output space. Primary
         # predictions are preserved so the task loss can train the primary
@@ -1594,6 +1668,22 @@ class PLEModel(nn.Module):
                     weighted_brp = self._brp_residual_loss_weight * brp_loss
                     total_loss = total_loss + weighted_brp
                     aux_losses["brp_residual"] = weighted_brp.item()
+
+            # NEAS auxiliary loss (auxiliary, same target y as primary, but
+            # computed on the inverse-gate-weighted aggregation so the
+            # neglected experts must retain useful representations).
+            if (self.training
+                    and getattr(self, "neas_heads", None) is not None
+                    and neas_aux_logits is not None
+                    and neas_aux_logits):
+                with torch.cuda.amp.autocast(enabled=False):
+                    neas_loss = self._compute_neas_aux_loss(
+                        neas_aux_logits, inputs.targets,
+                    )
+                if neas_loss is not None:
+                    weighted_neas = self._neas_aux_weight * neas_loss
+                    total_loss = total_loss + weighted_neas
+                    aux_losses["neas_aux"] = weighted_neas.item()
 
             # TemporalEnsemble gate entropy monitoring (logging only, no reg)
             # Skip when task representation dim != expert input_dim (post-CGC)
@@ -1907,6 +1997,72 @@ class PLEModel(nn.Module):
             return None
         # Average across contributing tasks so residual_loss_weight is
         # calibrated per-task, independent of task count.
+        return total / float(n_contrib)
+
+    def _compute_neas_aux_loss(
+        self,
+        aux_logits: Dict[str, torch.Tensor],
+        targets: Dict[str, torch.Tensor],
+    ) -> Optional[torch.Tensor]:
+        """NEAS auxiliary loss — same task loss as primary, but computed
+        on the inverse-gate-weighted expert aggregation's prediction.
+
+        Uses raw logits with ``binary_cross_entropy_with_logits`` (with
+        primary's ``pos_weight`` if available) for binary, ``cross_entropy``
+        (with primary's ``class_weights`` if available) for multiclass, and
+        ``mse_loss`` for regression, matching the primary loss setup.
+
+        Skips degenerate batches (all-positive / all-negative binaries, or
+        all-invalid multiclass labels) to stay consistent with
+        ``_compute_task_losses``.
+        """
+        total: Optional[torch.Tensor] = None
+        n_contrib = 0
+        for task_name in self.task_names:
+            if task_name not in aux_logits or task_name not in targets:
+                continue
+            task_type = self.config.get_task_type(task_name)
+            logit = aux_logits[task_name].float()
+            target = targets[task_name]
+
+            if task_type == "binary":
+                p = logit.squeeze(-1) if logit.dim() > 1 else logit
+                y = target.float().view_as(p)
+                n_pos = (y > 0.5).sum().item()
+                if n_pos == 0 or n_pos == len(y):
+                    continue
+                if task_name in self._pos_weights:
+                    pw = self._pos_weights[task_name].to(p.device)
+                    loss = F.binary_cross_entropy_with_logits(p, y, pos_weight=pw)
+                else:
+                    loss = F.binary_cross_entropy_with_logits(p, y)
+            elif task_type == "multiclass":
+                if logit.dim() != 2:
+                    continue
+                y_long = target.long()
+                valid = y_long >= 0
+                if valid.sum().item() == 0:
+                    continue
+                if not valid.all():
+                    logit = logit[valid]
+                    y_long = y_long[valid]
+                if task_name in self._class_weights:
+                    cw = self._class_weights[task_name].to(logit.device)
+                    loss = F.cross_entropy(
+                        logit, y_long, weight=cw, ignore_index=-1,
+                    )
+                else:
+                    loss = F.cross_entropy(logit, y_long, ignore_index=-1)
+            else:  # regression
+                p = logit.squeeze(-1) if logit.dim() > 1 else logit
+                y = target.float().view_as(p)
+                loss = F.mse_loss(p, y)
+
+            total = loss if total is None else total + loss
+            n_contrib += 1
+
+        if total is None or n_contrib == 0:
+            return None
         return total / float(n_contrib)
 
     def _iter_shared_experts(self):

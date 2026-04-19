@@ -490,7 +490,7 @@ The resolution was to migrate to a Lambda Container Image (10GB limit, Python 3.
 
 The initial Paper 2 design stored all 349-dimensional raw feature vectors × 1M customers in LanceDB. Runtime footprint hit 1.4GB per snapshot, growing linearly with each periodic refresh.
 
-User feedback was direct: "Why are you storing every customer in Lance?" The diagnosis was clean. LanceDB's value is in *accumulating outcome-bearing cases over time* --- not in mirroring population-wide feature state as a snapshot. The correct unit is "one recommendation case = one inference log entry."
+The blunt self-challenge --- "why are you storing every customer in Lance?" --- forced the diagnosis into focus. LanceDB's value is in *accumulating outcome-bearing cases over time* --- not in mirroring population-wide feature state as a snapshot. The correct unit is "one recommendation case = one inference log entry."
 
 The redesign had three parts. First, a `recommendation_cases` table is written after each Lambda invocation: user_id, timestamp, 13 task probabilities, L1 reasons, FDTVS scores. Second, DiagnosticCaseStore and TemporalFactStore were consolidated onto the same LanceDB instance, introducing no new database dependency. Third, the raw feature matrix dump was removed --- it can always be recomputed from the source parquet on demand.
 
@@ -746,6 +746,86 @@ PLE's val_loss froze at 3.702 in Phase 2, while shared_bottom (1 MLP) paradoxica
 
 *Robustness caveat*: single seed, single dataset. Multi-seed and cross-dataset validation is reserved for the SageMaker path.
 
+=== NEAS (Neglected-Expert Auxiliary Supervision) --- The First AUC-Positive Finding
+
+*Background*: BRP-detached tied the CGC baseline on aggregate AUC and improved F1/NDCG, but $Delta$ AUC $approx 0$. For Paper 3 to claim a *positive AUC effect* at all, a different mechanism was needed. The seed came from a brainstorm: "the softmax gate sharpens expert preferences — what if we use the inverse-gate-weighted aggregation of the neglected experts for training?" Among three interpretations, the one chosen was *load-balancing auxiliary supervision* --- an explicit regulariser against expert collapse rather than another residual path.
+
+*Design (NEAS)*: the last CGC layer stores its per-task `gate_weights` and `all_outs` live. An inverse-gate aggregation $"inv_agg"_t = sum (1 - g_t)/"sum" dot "all_outs"$ is computed per task and passed through a per-task auxiliary MLP head (128-64-output) that is trained against the primary target $y$, reusing the primary's loss functions (pos_weight / class_weight). The auxiliary loss is scaled by `aux_weight = 0.05` and added to the total loss. Inference ignores the auxiliary head entirely --- NEAS is a training-time regulariser only. `NEASConfig` added, HP flag `use_neas`, $+0.17$M parameters (aux heads only).
+
+*Result (10 epochs, seed=42)*: `struct_13_neas` reached final AUC *0.6739* against CGC's 0.6728 --- $Delta = +0.0011$, *positive*. The trajectory was *monotone increasing* for all 10 epochs (crossed baseline at epoch 5, rose steadily thereafter). F1 macro 0.2019 ($+0.0017$), NDCG\@3 0.6896 ($+0.0076$), MAE 0.9605 (essentially tied with CGC's 0.9601). val_loss 25.73 was the lowest among all eight scenarios. Best AUC 0.6739 at epoch 10 --- still rising, no overfit.
+
+*Per-task pattern --- uniform small lift*: 11 of 13 tasks improved over CGC. Six of seven binary tasks improved ($+$0.0004 to $+$0.0029), churn_signal tied, top_mcc_shift a tiny loss. Multiclass: nba_primary $+0.0056$ (meaningful), the other two roughly flat. Regression: two of three improved slightly.
+
+*Character contrast with BRP-detached*:
+
+#table(
+  columns: (auto, auto, auto),
+  align: (left, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*Trait*], [*NEAS*], [*BRP-detached*]
+  ),
+  [Aggregate $Delta$ AUC], [*$+0.0011$ (positive)*], [$-0.0007$ (tied)],
+  [Mechanism], [Training-time load-balance regulariser], [Output-space error boosting],
+  [Effect pattern], [Uniform small lift across most tasks], [One big hard-task rescue ($+$256% next_mcc)],
+  [Trade-off], [Near-zero], [Small loss on most tasks],
+  [Added parameters], [0.17M (aux heads only)], [0.36M (residual bank)],
+  [Inference overhead], [*0 (training-only)*], [non-zero (residual expert forward)],
+)
+
+=== NEAS + BRP-detached --- Non-Additive
+
+*Background*: NEAS and BRP-detached succeed on *different axes* (expert-collapse prevention vs. primary-error correction), so their combination might be additive. Hypothesis: NEAS's uniform small lift + BRP-detached's next_mcc rescue in a single model.
+
+*Design*: a new scenario `struct_13_neas_brp_detached` with `use_neas=true` + `use_brp=true` + `brp_detach_input=true`. Both mechanisms activate; no structural change.
+
+*Result (10 epochs)*: final AUC *0.6722* ($Delta = -0.0006$), best AUC 0.6733 at epoch 7. *NEAS's $+0.0011$ gain vanished.* F1 0.2062 and NDCG\@3 0.6864 are both below BRP-detached alone. The trajectory peaks at ep7 and oscillates through ep8--10, erasing the monotone-rise pattern of NEAS alone.
+
+*Per-task analysis --- locating the conflict*: what survives the combination is *BRP-detached's next_mcc rescue* ($+$0.0250 vs $+$0.0256 standalone). What disappears is *NEAS's entire uniform binary lift*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  align: (left, center, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*task*], [*CGC*], [*NEAS*], [*BRP-d*], [*Combined*]
+  ),
+  [will_acquire_deposits], [0.6534], [$+$0.0029], [$+$0.0002], [*$-$0.0005 (lost)*],
+  [will_acquire_lending], [0.6549], [$+$0.0021], [$+$0.0004], [*$-$0.0000 (lost)*],
+  [will_acquire_payments], [0.6923], [$+$0.0009], [$-$0.0017], [*$-$0.0000 (lost)*],
+  [nba_primary], [0.1876], [$+$0.0056], [$-$0.0035], [*$-$0.0071 (worse than both)*],
+  [next_mcc], [0.0100], [$+$0.0007], [*$+$0.0256*], [*$+$0.0250 (BRP retained)*],
+  [top_mcc_shift], [0.6312], [$-$0.0002], [$-$0.0011], [*$-$0.0031 (additively worse)*],
+)
+
+*Mechanism of the conflict*: NEAS's aux loss pushes shared experts toward *generalists* (every expert must remain useful for every task under inverse-gate reweighting). BRP-detached keeps shared experts on the *primary-supporting optimum* via the primary task loss, while shielding its residual bank from shared-expert gradients with `.detach()`. The two pressures collide on the shared experts: NEAS asks them to generalise, BRP-detached asks them to stay specialised. The shared experts oscillate between the two targets --- NEAS's regularisation benefit is erased, while BRP-detached's residual-bank error-correction partially survives because its path is isolated from the shared-expert gradient.
+
+*Paper 3's final shape*: the 9-way result cleanly defines three regions:
+
+#table(
+  columns: (auto, auto, auto),
+  align: (left, left, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header(
+    [*Region*], [*Structure*], [*$Delta$ AUC*]
+  ),
+  [*Failure (5 variants)*], [Representation-additive fusion (adaTT family + M1 + ECEB)], [$-0.001$ to $-0.008$],
+  [*Positive (BRP-detached)*], [Output-space boosting + gradient isolation], [$-0.0007$ (tied, large F1/NDCG gain)],
+  [*Positive (NEAS)*], [Training-time load-balancing regulariser], [*$+0.0011$ (actual positive)*],
+  [*Non-additive*], [NEAS + BRP-detached combined], [$-0.0006$ (NEAS gain lost)],
+)
+
+The two positive regions *solve different problems* --- NEAS prevents expert collapse, BRP-detached corrects primary errors --- and they are *independent positive findings* that *cannot be stacked*. Operationally, the choice is per-objective:
+- Aggregate AUC lift with uniform per-task improvement $arrow$ NEAS
+- Hard-task (near-random baseline) rescue $arrow$ BRP-detached
+
+The non-additivity itself is a Paper 3 side lesson: *positive mechanisms that act on different axes of a shared-representation model do not compound, because the shared representation is a finite resource that each mechanism pulls toward its own preferred configuration.*
+
+*Natural close of the local experimentation phase*: nine scenarios map out the structural boundary of fusion augmentation on this benchmark. Multi-seed robustness, cross-dataset reproduction, and variants aimed at resolving the NEAS $times$ BRP-detached conflict are reserved for the SageMaker path.
+
 #section-break()
 
 
@@ -908,7 +988,7 @@ The name was inspired by the film _Minority Report_: one of three precogs makes 
 
 When we built the 3-agent consensus pipeline as three parallel Bedrock Claude Sonnet 4.6 calls, the initial `ConsensusArbiter` classified verdicts by simple majority: 2/3 PASS meant PASS, 1/3 meant FAIL. It looked like common sense.
 
-User feedback broke that premise. "2 PASS + 1 WARN --- that one also has to surface as a minority report." If majority voting silently absorbs the WARN, there is no way to answer "why was that warning buried?" at regulatory reporting time. Dissent must not be absorbed --- it must *surface*.
+One line broke that premise: "2 PASS + 1 WARN --- that one also has to surface as a minority report." If majority voting silently absorbs the WARN, there is no way to answer "why was that warning buried?" at regulatory reporting time. Dissent must not be absorbed --- it must *surface*.
 
 The redesign is three lines:
 
@@ -928,7 +1008,7 @@ During Paper 2 / Lambda end-to-end verification, the same pattern surfaced again
 - *FDTVSScorer, SelfChecker*: built, but never wired into Lambda `predict.py`.
 - *`recommendation_cases` LanceDB table*: schema defined; Lambda never appended a row.
 
-The trigger was two short questions. The user asked "Did you do Paper 2 §5.10?" and "Do the Ops/Audit agents actually reference LanceDB?" An audit followed, and *seven unlinked features* surfaced. The fix was a single commit: `feat: Connect all 7 unlinked features to Lambda + agents`.
+The trigger was two short questions: "Did you do Paper 2 §5.10?" and "Do the Ops/Audit agents actually reference LanceDB?" Answering them meant running an audit, and *seven unlinked features* surfaced. The fix was a single commit: `feat: Connect all 7 unlinked features to Lambda + agents`.
 
 Lesson: *Implementation is not integration.* AI-augmented development produces modules quickly but routinely skips the wiring phase. Every new module needs a checklist entry --- "who calls this, and is the path actually exercised by end-to-end tests?" And a periodic *module inventory vs.~runtime call-graph* audit is non-negotiable. The faster the generation rhythm, the shorter the wiring-audit cycle has to be. "Built" is a weaker claim than it feels; only "wired and exercised" counts.
 
