@@ -87,9 +87,15 @@ class CausalExpert(AbstractExpert):
 
         # -- Learnable weighted adjacency matrix [d, d] -----------------------
         # W[i, j] encodes the causal influence j -> i.
-        # Small init for stable early training.
+        # Init scale 0.1 (was 0.01) so gradient on W escapes the W=0 saddle
+        # point: both task loss and the reconstruction loss have a W factor
+        # in their gradient (d(z @ W^2)/dW ∝ 2zW), so a near-zero init
+        # gives near-zero gradient, and sparsity then pulls W all the way
+        # to exactly 0. A 10× larger init keeps W² on the O(0.01) scale
+        # initially, which is small enough not to disrupt early forward
+        # passes but large enough to carry meaningful gradient.
         self.W = nn.Parameter(
-            torch.randn(self.n_causal_vars, self.n_causal_vars) * 0.01
+            torch.randn(self.n_causal_vars, self.n_causal_vars) * 0.1
         )
 
         # Cache of the last feature_compressor output (z), used by the
