@@ -846,6 +846,60 @@ Attribution head bias (초기 0) 가 layer 0 에서 $0.08 plus.minus 0.08$, laye
 
 *Paper 3 narrative 업데이트*: Finding 8 (W 붕괴 patch) 이 "DAG 가 존재하게 만들었다" 였다면, Finding 9 (CEH MV) 는 "그 DAG 에서 per-prediction output 을 *뽑아낼* 수 있음을 최소 scope 로 확인" --- 3단계 (존재 $arrow$ routing $arrow$ benefit) 의 2단계 진입. 3단계 (실제 benefit) 는 audit 통합 + cross-dataset + human eval 후에 기재.
 
+=== CEH Attribution 품질 평가 --- 전역 중요도 붕괴 발견
+
+MV 이후 바로 따라붙은 질문: "head 가 학습은 했는데, 그 출력이 실제로 *per-sample 설명* 인가, 아니면 모든 샘플에 대해 거의 똑같은 전역 중요도 벡터인가?" Post-hoc 평가로 검증 --- SageMaker teacher_ceh checkpoint 에서 causal expert 를 추출, validation 5,000 건 에 대해 네 가지 지표를 측정.
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    align: (left, left, left),
+    stroke: 0.5pt,
+    table.header([*측정*], [*값*], [*해석*]),
+    [Spearman (CEH vs. grad $times$ input)], [평균 $0.259$, 중앙값 $0.252$], [훈련 타겟에 약~중간 정도 적합],
+    [샘플간 / 샘플내 분산비], [$0.055$], [샘플 내 피처간 차이가 샘플 간 차이보다 훨씬 큼],
+    [상위 10개 피처 중복도 (샘플 간)], [$0.791$], [서로 다른 샘플이 상위 피처의 약 $80%$ 공유],
+    [입력 노이즈 대비 안정성 ($sigma = 0.05$)], [Spearman $0.985$], [매우 안정적 --- 전역 패턴이면 당연한 결과],
+  ),
+  caption: [CEH attribution 품질 평가 결과. 낮은 분산비 + 높은 중복도 의 조합 이 핵심 --- head 가 per-sample 설명이 아니라 평탄화된 *전역 중요도 벡터* 에 수렴했다는 증거.],
+)
+
+피처 그룹별 귀인 분포도 같은 얘기를 한다. CEH 는 txn\_behavior 에 $32.1%$ 를 할당 (grad $times$ input 은 $44.7%$), product\_holdings 에 $12.6%$ vs. $5.5%$, product\_hierarchy 에 $11.3%$ vs. $3.8%$. 학습된 분포가 *자기 훈련 타겟* 보다도 평탄하다.
+
+*추정 메커니즘*: 훈련 타겟 (causal-encoder 출력 합의 grad $times$ input) 자체에 큰 샘플-불변 성분이 있고, 64-hidden 단층 MLP 가 그 전역 성분을 낮은 loss 로 잡으면서 샘플 특이적 잔차는 거의 버린 것으로 보인다. Head 가 고장난 게 아니라 타겟이 너무 평탄해서 얇은 MLP 가 per-sample 학습으로 강제되지 않는 상황.
+
+*무엇이 확인 / 반증 되었는가*:
+- 확인: Finding 9 MV 가 검증한 인프라 (DAG $arrow$ attribution 소비자) 는 정상.
+- 반증: 현재 타겟 설계만으로는 규제기관이 쓸 수 있는 per-sample 설명 생성이 불가능. CEH 에 의존하는 후속 Axis 3 후보 (특히 CRCG) 는 타겟 재설계 없이 이 baseline 에 쌓으면 안 됨.
+
+*다음 반복 (v2)*: `ceh.target_mode: "demeaned"` 도입. `grad × input − batch mean(grad × input)` 을 supervision 으로 사용, head 가 전역 패턴 대신 *샘플별 편차* 만 학습하도록 강제. 코드 변경량 최소 (3줄 + config 플래그 1개). "타겟이 평탄해서 붕괴" 가설을 직접 검증. 성공 시 분산비가 올라가고 top-K 중복도가 떨어져야 함. 실패 시 2차 안 (primary task gradient 타겟, 헤드 확대) 로 이행.
+
+=== v2 결과 --- 가설 확증, 전역 붕괴 해소
+
+SageMaker teacher_ceh_demeaned (10 epoch, 나머지 조건 v1 MV 와 동일) 을 돌리고 동일한 post-hoc 평가를 적용한 결과:
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, left, left, left),
+    stroke: 0.5pt,
+    table.header([*측정*], [*Raw (v1)*], [*Demeaned (v2)*], [*변화*]),
+    [샘플간 / 샘플내 분산비], [$0.055$], [$0.719$], [$13 times$],
+    [Top-10 피처 중복도 (샘플 간)], [$0.791$], [$0.281$], [$65%$ 감소],
+    [노이즈 안정성 ($sigma = 0.05$)], [$0.985$], [$0.953$], [여전히 안정],
+    [Primary AUC (churn\_signal)], [$0.6866$], [$0.6870$], [noise 범위],
+  ),
+  caption: [CEH attribution 품질 v1 vs. v2. 두 discriminative-power 지표가 한 자릿수 이상 개선되면서 primary AUC 는 그대로 --- head 가 전역 패턴 재생산이 아니라 per-sample 편차 학습으로 전환됐고, downstream 태스크 손해 없음.],
+)
+
+가설 검증 완료: 붕괴는 *타겟 설계의 artefact* 였지 head 용량이나 아키텍처 한계 가 아니었다. 3줄 + config 플래그 하나의 최소 개입 으로 per-sample 변별력 회복.
+
+피처 그룹별 분포도 크게 재균형. txn\_behavior 는 $32.1% arrow 18.3%$, gmm\_clustering 은 $28.5% arrow 21.4%$ 로 빠지고, product\_hierarchy 는 $11.3% arrow 30.3%$, product\_holdings 는 $12.6% arrow 21.3%$ 로 올라감. Demeaned head 는 전역 고분산 그룹 대신 *샘플별 변별 신호* 를 담은 그룹 (상품 분류 체계) 을 선호.
+
+*주의*: raw grad $times$ input 과의 Spearman 은 $0.259 arrow 0.096$ 으로 떨어지는데, 이는 당연 --- v2 는 demeaned 타겟을 학습하므로 raw 는 더 이상 훈련 타겟이 아님. 품질 평가는 타겟-독립 지표 (분산비, top-K 중복도, 안정성) 로 해야 함. 또한 per-sample 변별력 확보는 규제용 설명성을 *필요*로 할 뿐 *충분*하지 않다 --- 도메인 검증, 사람 평가, audit log 통합은 여전히 미완.
+
+*남은 후보*: primary task gradient 타겟 (causal encoder 합 대신 특정 task logit 의 gradient 사용, "이 고객의 churn score 가 왜 높은가?" 라는 downstream 질문 과 정렬). Demeaned 인프라는 유지 하고 gradient 대상만 교체.
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.

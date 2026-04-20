@@ -244,6 +244,17 @@ def build_ple_config(
             parse_bool_hp(use_ceh_raw)
         )
 
+    # CEH target_mode (Paper 3 Section 4.9.3 iteration v2). Accepts
+    # "raw" or "demeaned"; applied only when CEH is enabled. Quality eval
+    # on the Finding 9 MV checkpoint showed near-global collapse, so the
+    # demeaned variant forces the attribution head to learn per-sample
+    # deviation rather than reproduce the global importance pattern.
+    ceh_target_mode_raw = hp.get("ceh_target_mode")
+    if ceh_target_mode_raw is not None:
+        causal_cfg = (model_config.setdefault("expert_config", {})
+                      .setdefault("causal", {}))
+        causal_cfg.setdefault("ceh", {})["target_mode"] = str(ceh_target_mode_raw)
+
     # --- Loss weighting ---
     lw_cfg = model_config.get("loss_weighting", {})
     loss_weighting = LossWeightingConfig(

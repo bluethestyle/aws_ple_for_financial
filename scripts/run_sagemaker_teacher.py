@@ -138,6 +138,22 @@ SCENARIOS = [
             "use_ceh": "true",
         },
     },
+    # Paper 3 Section 4.9.3 iteration v2: demeaned attribution target.
+    # Post-hoc quality eval on teacher_ceh (5,000 val samples) showed
+    # near-global collapse (between/within variance 0.055, top-10
+    # overlap 0.79). The demeaned variant subtracts the batch mean of
+    # grad × input before MSE, forcing the head to learn per-sample
+    # deviation rather than re-learn the global pattern. Everything
+    # else identical to teacher_ceh so any quality-metric delta is
+    # attributable to the target change alone.
+    {
+        "name": "teacher_ceh_demeaned",
+        "job_name": "teacher-ceh-dmn-10ep",
+        "hp": {
+            "use_ceh": "true",
+            "ceh_target_mode": "demeaned",
+        },
+    },
 ]
 
 

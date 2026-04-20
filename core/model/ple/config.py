@@ -90,6 +90,12 @@ class CEHConfig:
     hidden_dim: int = 64
     loss_weight: float = 0.1
     dropout: float = 0.1
+    # target_mode:
+    #   "raw"      = grad × input of causal-encoder output sum (Finding 9 MV).
+    #   "demeaned" = grad × input minus its batch mean; forces per-sample
+    #                deviation after quality eval revealed near-global
+    #                collapse (Section 4.9.3 iteration v2).
+    target_mode: str = "raw"
 
 
 @dataclass
