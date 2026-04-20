@@ -88,6 +88,20 @@ class CausalExpert(AbstractExpert):
         self.ceh_input_dim: int = int(input_dim)  # cached for head output shape
         ceh_hidden: int = int(ceh_cfg.get("hidden_dim", 64))
         ceh_dropout: float = float(ceh_cfg.get("dropout", 0.1))
+        # target_mode controls what supervision signal the attribution
+        # head tries to reproduce.
+        #   - "raw":      grad × input of causal-encoder output sum (Finding 9 MV).
+        #   - "demeaned": grad × input minus its batch mean; forces the head
+        #                 to learn per-sample deviation from the global pattern
+        #                 after the MV quality eval showed near-global collapse
+        #                 (between/within variance ratio 0.055, top-10 overlap
+        #                 0.79). Paper 3 Section 4.9.3, iteration v2.
+        self.ceh_target_mode: str = str(ceh_cfg.get("target_mode", "raw")).lower()
+        if self.ceh_target_mode not in ("raw", "demeaned"):
+            raise ValueError(
+                f"Unknown ceh.target_mode '{self.ceh_target_mode}'. "
+                "Expected 'raw' or 'demeaned'."
+            )
 
         # -- Feature compressor: input_dim -> n_causal_vars --------------------
         self.feature_compressor = nn.Sequential(
@@ -219,7 +233,13 @@ class CausalExpert(AbstractExpert):
             if grad_x is None:
                 self._last_attr_target = None
                 return
-            self._last_attr_target = (grad_x * x_clone).detach()
+            target = (grad_x * x_clone).detach()
+            if self.ceh_target_mode == "demeaned":
+                # Subtract per-feature batch mean so the head is forced to
+                # learn sample-specific deviation rather than the global
+                # importance pattern that dominates the raw target.
+                target = target - target.mean(dim=0, keepdim=True)
+            self._last_attr_target = target
         except RuntimeError:
             # Fall back silently: attribution loss becomes 0 this step
             self._last_attr_target = None

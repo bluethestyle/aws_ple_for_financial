@@ -930,6 +930,34 @@ Attribution head biases (init $= 0$) moved to $||bold(b)|| approx 0.08 plus.minu
 
 *Paper 3 narrative update*: Finding 8 (W-collapse patch) made the DAG *exist*. Finding 9 (CEH MV) demonstrates, at minimum scope, that a *per-prediction output* can be extracted from it --- stepping from stage 1 (existence) into stage 2 (routing) of the three-stage progression (existence $arrow$ routing $arrow$ benefit). Stage 3 (benefit) requires audit-log integration, cross-dataset reproduction, and a human-eval pass on the attributions; positive claims are deferred until those land.
 
+=== CEH Attribution Quality Evaluation --- A Global-Importance Collapse
+
+The question that immediately followed MV: "the head trained, but does its output actually carry *per-sample signal*, or does it produce an almost-identical global importance vector for every sample?" A dedicated post-hoc evaluation --- 5,000 validation samples, the trained teacher_ceh checkpoint, four measurements:
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    align: (left, left, left),
+    stroke: 0.5pt,
+    table.header([*Measurement*], [*Value*], [*Interpretation*]),
+    [Spearman corr. (CEH vs. grad $times$ input)], [mean $0.259$, median $0.252$], [Partial fit to training target],
+    [Between-sample / within-sample variance], [$0.055$], [Attribution varies much more within a sample than across samples],
+    [Top-10 feature overlap (across samples)], [$0.791$], [Different samples share $~80%$ of their top features],
+    [Stability under input noise ($sigma = 0.05$)], [Spearman $0.985$], [Very stable --- trivially consistent with a near-global output],
+  ),
+  caption: [CEH attribution quality on the Finding 9 MV checkpoint. The low between-over-within ratio combined with high top-10 overlap is the key finding: the head has largely collapsed to a global importance vector with only small per-sample perturbations.],
+)
+
+Per-group mass corroborates the flatness. CEH allocates $32.1%$ of mass to txn\_behavior versus $44.7%$ under grad $times$ input, and overweights product\_holdings ($12.6%$ vs. $5.5%$) and product\_hierarchy ($11.3%$ vs. $3.8%$). The learned distribution is demonstrably flatter than its own training target.
+
+*Most likely mechanism*: the target itself (grad $times$ input of the causal encoder's summed output) has a large sample-invariant component, and a 64-hidden single-layer MLP can capture that component with low loss while ignoring the sample-specific residual. The head is not broken; the target is too flat for a thin MLP to be forced into per-sample discrimination.
+
+*What this confirms / rules out*:
+- Confirms: the infrastructure path validated by Finding 9 MV (functional DAG feeding an attribution consumer) is correct.
+- Rules out: the current target design alone cannot produce a regulator-usable per-sample explanation. Downstream Axis-3 candidates that depend on per-sample attribution quality (CRCG in particular) cannot be evaluated against this baseline without target refinement.
+
+*Next iteration (v2)*: introduce `ceh.target_mode: "demeaned"`. Supervision becomes `grad × input − batch mean(grad × input)`, forcing the head to learn *per-sample deviation* from the global pattern rather than re-learn the pattern itself. Minimal code change (three lines plus a config flag). Directly tests the "target is too flat" hypothesis. Success means the between/within variance ratio increases and top-K overlap decreases; failure routes us to secondary candidates (primary-task gradient target, larger head).
+
 #section-break()
 
 

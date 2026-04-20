@@ -846,6 +846,34 @@ Attribution head bias (초기 0) 가 layer 0 에서 $0.08 plus.minus 0.08$, laye
 
 *Paper 3 narrative 업데이트*: Finding 8 (W 붕괴 patch) 이 "DAG 가 존재하게 만들었다" 였다면, Finding 9 (CEH MV) 는 "그 DAG 에서 per-prediction output 을 *뽑아낼* 수 있음을 최소 scope 로 확인" --- 3단계 (존재 $arrow$ routing $arrow$ benefit) 의 2단계 진입. 3단계 (실제 benefit) 는 audit 통합 + cross-dataset + human eval 후에 기재.
 
+=== CEH Attribution 품질 평가 --- 전역 중요도 붕괴 발견
+
+MV 이후 바로 따라붙은 질문: "head 가 학습은 했는데, 그 출력이 실제로 *per-sample 설명* 인가, 아니면 모든 샘플에 대해 거의 똑같은 전역 중요도 벡터인가?" Post-hoc 평가로 검증 --- SageMaker teacher_ceh checkpoint 에서 causal expert 를 추출, validation 5,000 건 에 대해 네 가지 지표를 측정.
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    align: (left, left, left),
+    stroke: 0.5pt,
+    table.header([*측정*], [*값*], [*해석*]),
+    [Spearman (CEH vs. grad $times$ input)], [평균 $0.259$, 중앙값 $0.252$], [훈련 타겟에 약~중간 정도 적합],
+    [샘플간 / 샘플내 분산비], [$0.055$], [샘플 내 피처간 차이가 샘플 간 차이보다 훨씬 큼],
+    [상위 10개 피처 중복도 (샘플 간)], [$0.791$], [서로 다른 샘플이 상위 피처의 약 $80%$ 공유],
+    [입력 노이즈 대비 안정성 ($sigma = 0.05$)], [Spearman $0.985$], [매우 안정적 --- 전역 패턴이면 당연한 결과],
+  ),
+  caption: [CEH attribution 품질 평가 결과. 낮은 분산비 + 높은 중복도 의 조합 이 핵심 --- head 가 per-sample 설명이 아니라 평탄화된 *전역 중요도 벡터* 에 수렴했다는 증거.],
+)
+
+피처 그룹별 귀인 분포도 같은 얘기를 한다. CEH 는 txn\_behavior 에 $32.1%$ 를 할당 (grad $times$ input 은 $44.7%$), product\_holdings 에 $12.6%$ vs. $5.5%$, product\_hierarchy 에 $11.3%$ vs. $3.8%$. 학습된 분포가 *자기 훈련 타겟* 보다도 평탄하다.
+
+*추정 메커니즘*: 훈련 타겟 (causal-encoder 출력 합의 grad $times$ input) 자체에 큰 샘플-불변 성분이 있고, 64-hidden 단층 MLP 가 그 전역 성분을 낮은 loss 로 잡으면서 샘플 특이적 잔차는 거의 버린 것으로 보인다. Head 가 고장난 게 아니라 타겟이 너무 평탄해서 얇은 MLP 가 per-sample 학습으로 강제되지 않는 상황.
+
+*무엇이 확인 / 반증 되었는가*:
+- 확인: Finding 9 MV 가 검증한 인프라 (DAG $arrow$ attribution 소비자) 는 정상.
+- 반증: 현재 타겟 설계만으로는 규제기관이 쓸 수 있는 per-sample 설명 생성이 불가능. CEH 에 의존하는 후속 Axis 3 후보 (특히 CRCG) 는 타겟 재설계 없이 이 baseline 에 쌓으면 안 됨.
+
+*다음 반복 (v2)*: `ceh.target_mode: "demeaned"` 도입. `grad × input − batch mean(grad × input)` 을 supervision 으로 사용, head 가 전역 패턴 대신 *샘플별 편차* 만 학습하도록 강제. 코드 변경량 최소 (3줄 + config 플래그 1개). "타겟이 평탄해서 붕괴" 가설을 직접 검증. 성공 시 분산비가 올라가고 top-K 중복도가 떨어져야 함. 실패 시 2차 안 (primary task gradient 타겟, 헤드 확대) 로 이행.
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.

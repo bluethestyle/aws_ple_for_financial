@@ -1275,10 +1275,9 @@ CEH MV confirms that:
 CEH MV does *not* yet verify:
 
 - *Attribution quality.* The head fits the gradient $times$ input
-  target by construction; whether that target is a good explanation
-  for regulators / branch staff / customers requires a human eval
-  pass on sample cases and a comparison against alternatives
-  (Integrated Gradients, DAG-path traversal).
+  target by construction; whether the learned output carries
+  per-sample signal or merely reproduces a global importance pattern
+  required a dedicated post-hoc evaluation (Section 4.9.3).
 - *Audit-log utility.* The per-sample vector is now available but
   has not yet been routed into an HMAC-signed, append-only audit log
   record that regulators can query. That integration is Paper 2 v2
@@ -1286,6 +1285,79 @@ CEH MV does *not* yet verify:
 - *Downstream metric impact.* CEH's small AUC lift is $+0.0015$
   over post-patch softmax, within the noise band of the 9-way
   comparison. We do not claim it as a significant improvement.
+
+=== Attribution Quality Evaluation (Post-hoc)
+
+Because the MV alone only shows the head *trains*, we ran a
+dedicated post-hoc evaluation on 5,000 validation samples to ask
+whether the trained head produces meaningful per-sample explanations
+or merely a smoothed global pattern. Four measurements:
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    align: (left, left, left),
+    stroke: 0.5pt,
+    [*Measurement*], [*Value*], [*Interpretation*],
+    [Spearman corr. (CEH vs. grad $times$ input)], [mean $0.259$, median $0.252$], [Partial fit to training target],
+    [Between-sample / within-sample variance], [$0.055$], [Attribution varies much more within a sample than across samples],
+    [Mean top-10 feature overlap across samples], [$0.791$], [Different samples share $~80%$ of their top features],
+    [Stability under input noise ($sigma = 0.05$)], [Spearman $0.985$], [Very stable (trivially consistent with near-global output)],
+  ),
+  caption: [CEH attribution quality measurements on the post-patch
+  CEH checkpoint. Taken together, the low between-over-within ratio
+  ($0.055$) and high top-10 overlap ($0.791$) indicate the head has
+  largely collapsed to a global importance vector with only small
+  per-sample perturbations --- the opposite of what a per-prediction
+  attribution head should produce.],
+)<tbl:ceh-quality>
+
+Per-group attribution mass corroborates the flatness. CEH allocates
+$32.1%$ to txn\_behavior versus $44.7%$ under grad $times$ input on
+the same samples, and overweights product\_holdings ($12.6%$ vs.
+$5.5%$) and product\_hierarchy ($11.3%$ vs. $3.8%$). The learned
+distribution is demonstrably flatter than its own training target.
+
+*Interpretation.* The head fits its target only weakly
+($rho approx 0.26$) and discards the per-sample component of that
+target almost entirely. The most likely mechanism: the target itself
+---  grad $times$ input of the causal encoder's summed output --- has a
+large sample-invariant component, and a 64-hidden single-layer MLP
+can capture that global component with low loss while ignoring the
+sample-specific residual. The head is not broken; the target is too
+flat for a thin MLP to be forced into per-sample discrimination.
+
+*What this rules in/out.*
+
+- Rules in: infrastructure path (Finding 9 MV) is correct --- a
+  functional DAG feeds an attribution consumer without destabilising
+  primary prediction or the DAG itself.
+- Rules out: the current target design (grad $times$ input of
+  causal-encoder output sum) is *not* sufficient to produce a
+  regulator-usable per-sample explanation. Additional Axis-3 candidates
+  that depend on per-sample attribution quality (CRCG in particular)
+  should not be evaluated against this baseline without target refinement.
+
+*Target refinement candidates (not yet run).*
+
++ *Demeaned target:* subtract the batch mean of grad $times$ input
+  before using it as supervision. Forces the head to learn per-sample
+  deviation from the global pattern rather than re-learning the
+  pattern itself. Smallest code change; tests the "target is too flat"
+  hypothesis directly.
++ *Primary-prediction target:* replace grad of the causal encoder
+  output with grad of a specific task logit (e.g., churn\_signal).
+  Aligns the attribution with what downstream consumers actually ask
+  explanations for, at the cost of per-task heads.
++ *Larger / deeper head:* doubled hidden dim and an extra layer, to
+  test whether the 64-hidden bottleneck is the limiting factor rather
+  than the target.
++ *DAG-path target:* use the learned $bold(W)$ to construct
+  feature-to-output influence paths as supervision, shifting from
+  local gradient-based to structural-graph-based attribution.
+
+Candidate 1 (demeaned target) is the minimum-intervention test and
+the natural next iteration.
 
 === Why CEH First (Not CG / CTGR / CRCG / CCP)
 
