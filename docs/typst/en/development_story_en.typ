@@ -958,6 +958,32 @@ Per-group mass corroborates the flatness. CEH allocates $32.1%$ of mass to txn\_
 
 *Next iteration (v2)*: introduce `ceh.target_mode: "demeaned"`. Supervision becomes `grad × input − batch mean(grad × input)`, forcing the head to learn *per-sample deviation* from the global pattern rather than re-learn the pattern itself. Minimal code change (three lines plus a config flag). Directly tests the "target is too flat" hypothesis. Success means the between/within variance ratio increases and top-K overlap decreases; failure routes us to secondary candidates (primary-task gradient target, larger head).
 
+=== v2 Result --- Hypothesis Confirmed, Collapse Resolved
+
+SageMaker `teacher_ceh_demeaned` (10 epochs, everything else identical to the v1 MV run) followed by the same post-hoc evaluation produces:
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, left, left, left),
+    stroke: 0.5pt,
+    table.header([*Measurement*], [*Raw (v1)*], [*Demeaned (v2)*], [*Change*]),
+    [Between-sample / within-sample variance], [$0.055$], [$0.719$], [$13 times$ larger],
+    [Top-10 feature overlap across samples], [$0.791$], [$0.281$], [$65%$ smaller],
+    [Stability under input noise ($sigma = 0.05$)], [$0.985$], [$0.953$], [Still stable],
+    [Primary AUC (churn\_signal)], [$0.6866$], [$0.6870$], [Within noise],
+  ),
+  caption: [CEH attribution quality, v1 vs. v2. Two discriminative-power metrics move by more than an order of magnitude while primary AUC is unchanged --- the head now learns per-sample deviation rather than reproducing a global importance vector, at no cost to the downstream task.],
+)
+
+Hypothesis confirmed: the collapse was a *training-target artefact*, not a head-capacity or architectural limitation. A three-line change plus a config flag restores per-sample discrimination.
+
+Per-group attribution mass also rebalances substantially. txn\_behavior drops from $32.1%$ to $18.3%$, gmm\_clustering from $28.5%$ to $21.4%$, while product\_hierarchy jumps from $11.3%$ to $30.3%$ and product\_holdings from $12.6%$ to $21.3%$. The demeaned head prefers feature groups that carry per-sample distinguishing signal (product taxonomy) over globally high-variance groups that dominated the raw head.
+
+*Caveats*: Spearman against *raw* grad $times$ input falls from $0.259$ to $0.096$ between v1 and v2, but this is expected --- v2 trains against *demeaned* grad $times$ input, so raw is no longer its target. Quality must be assessed with target-independent metrics. Also, per-sample discrimination is *necessary but not sufficient* for regulator-usable explanations; domain validation, human evaluation, and audit-log integration remain outside scope.
+
+*Remaining candidate*: primary-task-gradient target (replace the causal-encoder sum with a specific task logit gradient, aligning attribution with downstream questions like "why did this customer receive a high churn score?"). The demeaned infrastructure carries over; only the scalar the gradient is taken against changes.
+
 #section-break()
 
 

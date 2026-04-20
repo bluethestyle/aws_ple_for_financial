@@ -176,8 +176,17 @@ Our contributions:
   the post-patch softmax baseline), marginally strengthens the DAG
   itself ($bold(W)$ Frobenius $0.338 arrow 0.366$, sparse edges
   $7.3% arrow 8.5%$), and produces a live attribution vector for
-  downstream audit-log persistence. Attribution quality and audit
-  utility remain to be verified in follow-up work (Section 4.9).
+  downstream audit-log persistence. A post-hoc quality evaluation
+  revealed that under the raw grad $times$ input target the head
+  collapsed to a near-global importance vector (between/within-sample
+  variance ratio $0.055$, top-10 feature overlap $0.791$ across
+  samples). A minimum-intervention iteration (v2, "demeaned target")
+  subtracts the batch mean from the supervision signal and restores
+  per-sample discrimination without disturbing the primary task
+  (variance ratio $0.055 arrow 0.719$, top-10 overlap
+  $0.791 arrow 0.281$, primary AUC unchanged within noise,
+  Section 4.9.4). Audit-log integration and cross-dataset reproduction
+  remain deferred.
 
 The system, data generator, and ablation scripts are publicly available.#footnote[
   https://github.com/bluethestyle/aws\_ple\_for\_financial
@@ -1277,7 +1286,10 @@ CEH MV does *not* yet verify:
 - *Attribution quality.* The head fits the gradient $times$ input
   target by construction; whether the learned output carries
   per-sample signal or merely reproduces a global importance pattern
-  required a dedicated post-hoc evaluation (Section 4.9.3).
+  required a dedicated post-hoc evaluation. That evaluation
+  (Section 4.9.3) showed a near-global collapse under the raw target
+  and motivated the v2 iteration (Section 4.9.4), which resolved the
+  collapse.
 - *Audit-log utility.* The per-sample vector is now available but
   has not yet been routed into an HMAC-signed, append-only audit log
   record that regulators can query. That integration is Paper 2 v2
@@ -1338,13 +1350,13 @@ flat for a thin MLP to be forced into per-sample discrimination.
   that depend on per-sample attribution quality (CRCG in particular)
   should not be evaluated against this baseline without target refinement.
 
-*Target refinement candidates (not yet run).*
+*Target refinement candidates.*
 
 + *Demeaned target:* subtract the batch mean of grad $times$ input
   before using it as supervision. Forces the head to learn per-sample
   deviation from the global pattern rather than re-learning the
   pattern itself. Smallest code change; tests the "target is too flat"
-  hypothesis directly.
+  hypothesis directly. *Run; see Section 4.9.4 below.*
 + *Primary-prediction target:* replace grad of the causal encoder
   output with grad of a specific task logit (e.g., churn\_signal).
   Aligns the attribution with what downstream consumers actually ask
@@ -1356,8 +1368,70 @@ flat for a thin MLP to be forced into per-sample discrimination.
   feature-to-output influence paths as supervision, shifting from
   local gradient-based to structural-graph-based attribution.
 
-Candidate 1 (demeaned target) is the minimum-intervention test and
-the natural next iteration.
+=== Iteration v2: Demeaned Target Resolves the Collapse
+
+We ran candidate 1 (demeaned target) as a minimal-intervention test
+of the "target is too flat" hypothesis. Config flag
+`ceh.target_mode: "demeaned"` subtracts the per-feature batch mean
+from the grad $times$ input supervision before MSE; everything else
+identical to the v1 MV run (same architecture, same hyperparameters,
+same data, same 10 epochs on SageMaker g4dn.xlarge). The same
+post-hoc evaluation on 5,000 validation samples produces:
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, left, left, left),
+    stroke: 0.5pt,
+    [*Measurement*], [*Raw (v1)*], [*Demeaned (v2)*], [*Change*],
+    [Between-sample / within-sample variance], [$0.055$], [$0.719$], [$13 times$ larger],
+    [Top-10 feature overlap across samples], [$0.791$], [$0.281$], [$65%$ smaller],
+    [Stability under input noise ($sigma = 0.05$)], [Spearman $0.985$], [Spearman $0.953$], [Still stable],
+    [Primary AUC (churn\_signal)], [$0.6866$], [$0.6870$], [Within noise],
+  ),
+  caption: [CEH attribution quality, v1 (raw grad $times$ input
+  target) vs. v2 (demeaned target). The two discriminative-power
+  measurements move by more than an order of magnitude while primary
+  AUC is unchanged --- the head now learns per-sample deviation
+  rather than reproducing a global importance vector, at no cost to
+  the downstream task.],
+)<tbl:ceh-v1-v2>
+
+The result confirms the hypothesis from Section 4.9.3: the collapse
+was a training-target artefact, not a head-capacity or
+architectural limitation. Minimum intervention (three lines plus a
+config flag) restores per-sample discrimination.
+
+Per-group attribution mass also rebalances substantially under the
+demeaned target. txn\_behavior drops from $32.1%$ to $18.3%$ and
+gmm\_clustering from $28.5%$ to $21.4%$, while product\_hierarchy
+jumps from $11.3%$ to $30.3%$ and product\_holdings from $12.6%$ to
+$21.3%$. The demeaned head prefers feature groups that carry per-
+sample distinguishing signal (product taxonomy) over the globally
+high-variance groups that dominated the raw head.
+
+*Caveats.*
+
+- Spearman correlation against *raw* grad $times$ input falls from
+  $0.259$ to $0.096$ between v1 and v2. This is expected and not a
+  regression: the v2 head is supervised against demeaned
+  grad $times$ input, so the raw version is no longer its training
+  target. Quality is measured by the target-independent metrics
+  in @tbl:ceh-v1-v2 (variance ratio, top-K overlap, stability).
+- Per-sample discrimination is necessary but not sufficient for
+  regulator-usable explanations. Human evaluation on sample cases,
+  alignment with domain expectations, and audit-log integration
+  remain outside this paper's scope.
+- We report v2 as a single-seed 10-epoch run on Santander. Cross-seed
+  stability and cross-dataset reproduction are not verified here.
+
+*Next iteration directions (not run).* Primary-task-gradient target
+remains the natural next test: replacing the causal-encoder output
+sum with a specific task logit aligns the attribution with what
+downstream consumers actually ask about ("why did this customer
+receive a high churn score?"). The demeaned infrastructure stays,
+only the scalar the gradient is taken against changes. Larger head
+and DAG-path targets remain as lower-priority alternatives.
 
 === Why CEH First (Not CG / CTGR / CRCG / CCP)
 
