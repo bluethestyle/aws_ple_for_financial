@@ -1635,6 +1635,17 @@ class PLEModel(nn.Module):
                         dag_reg = expert.get_dag_regularization()
                         total_loss = total_loss + dag_reg
                         aux_losses["dag_regularization"] = dag_reg.item()
+                    # CEH attribution loss (Paper 3 Axis-3 A). Training-
+                    # time regulariser that aligns the attribution head
+                    # with gradient × input of the causal expert's output.
+                    # Primary prediction path is unaffected; inference
+                    # consumes ``expert._last_attribution`` directly.
+                    if hasattr(expert, "get_attribution_loss") \
+                            and getattr(expert, "ceh_enabled", False):
+                        attr_loss = expert.get_attribution_loss()
+                        weighted = expert.ceh_loss_weight * attr_loss
+                        total_loss = total_loss + weighted
+                        aux_losses["ceh_attribution"] = weighted.item()
 
             # Evidential NIG loss for regression tasks (auxiliary)
             if self.training and self.evidential_layers is not None:

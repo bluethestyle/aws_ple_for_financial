@@ -232,6 +232,18 @@ def build_ple_config(
             parse_bool_hp(use_neas_raw)
         )
 
+    # CEH (Paper 3 Axis-3 A: per-prediction attribution head on causal
+    # expert). Nested under ``model_config.expert_config.causal.ceh`` so
+    # the CausalExpert constructor picks it up via ``config.get('ceh',{})``.
+    # Off by default; enable via HP ``use_ceh=true``.
+    use_ceh_raw = hp.get("use_ceh")
+    if use_ceh_raw is not None:
+        causal_cfg = (model_config.setdefault("expert_config", {})
+                      .setdefault("causal", {}))
+        causal_cfg.setdefault("ceh", {})["enabled"] = bool(
+            parse_bool_hp(use_ceh_raw)
+        )
+
     # --- Loss weighting ---
     lw_cfg = model_config.get("loss_weighting", {})
     loss_weighting = LossWeightingConfig(

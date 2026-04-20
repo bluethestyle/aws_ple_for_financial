@@ -126,6 +126,18 @@ SCENARIOS = [
             "use_hmm_projectors": "false",
         },
     },
+    # Paper 3 Axis-3 A: CEH (Causal Explainability Head) on top of
+    # teacher_full. Identical to teacher_full except ``use_ceh=true``
+    # which nests ``ceh.enabled=true`` under ``expert_config.causal`` so
+    # the CausalExpert builds an attribution head and routes its loss
+    # through ``get_attribution_loss``.
+    {
+        "name": "teacher_ceh",
+        "job_name": "teacher-ceh-10ep",
+        "hp": {
+            "use_ceh": "true",
+        },
+    },
 ]
 
 
