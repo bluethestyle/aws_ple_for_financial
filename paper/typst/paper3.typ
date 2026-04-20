@@ -168,6 +168,16 @@ Our contributions:
   but aggregate task metrics are unchanged --- the DAG exists
   structurally but is not routed into prediction by the current
   architecture (Section 4.8).
+- A first Axis-3 candidate that *routes* the now-functional DAG into
+  a consumable output: Causal Explainability Head (CEH), a small MLP
+  mapping the causal expert's output to a per-sample per-feature
+  attribution vector trained via MSE against gradient $times$ input.
+  MV result preserves the primary AUC within noise ($+0.0015$ over
+  the post-patch softmax baseline), marginally strengthens the DAG
+  itself ($bold(W)$ Frobenius $0.338 arrow 0.366$, sparse edges
+  $7.3% arrow 8.5%$), and produces a live attribution vector for
+  downstream audit-log persistence. Attribution quality and audit
+  utility remain to be verified in follow-up work (Section 4.9).
 
 The system, data generator, and ablation scripts are publicly available.#footnote[
   https://github.com/bluethestyle/aws\_ple\_for\_financial
@@ -1187,6 +1197,107 @@ consumes the DAG directly, a routing signal from the causal expert
 to the per-task gate, and a counterfactual probe head. The W-
 collapse patch reported here is a pre-condition for any of those
 explorations --- without it, the DAG is not there to be routed.
+
+== Finding 9: Causal Explainability Head (CEH) — First Axis-3 Attempt <find9>
+
+As the first of several Axis-3 candidates that re-wire the causal
+expert's role (CEH / CG / CTGR / CRCG / CCP), CEH adds a per-sample
+per-feature attribution vector on top of the causal expert. The
+motivation is explicit: now that Finding 8 gives the expert a real
+DAG, the DAG needs to leave the expert's internals and reach a
+consumer. CEH is the shortest path from "DAG exists" to "DAG has a
+per-prediction output that an audit log can persist."
+
+=== Design
+
+A small MLP head maps the expert's 64-dim output back to an
+$"input_dim"$-wide attribution vector, and is trained via MSE to
+align with the gradient $times$ input saliency baseline of the
+expert's own scalar output w.r.t. the input:
+
+$ cal(L)_"attr" = "mean"(abs("head"("output") - (gradient_x "output".sum() dot.o x))^2) $
+
+Gradient $times$ input is computed with one extra forward pass on a
+cloned, `requires_grad=True` copy of the input, so the main forward
+graph is untouched. Cost is $approx$ 14% extra compute inside the
+causal expert (about $1 slash 7$ of shared-expert time). Primary
+prediction path is unchanged; CEH is a training-time regulariser
+plus an inference-time side output.
+
+Inference: `expert._last_attribution` exposes a per-sample vector of
+length $"input_dim"$. The pipeline-side integration with the audit
+log (HMAC-signed persistence, SR 11-7 MRM) is Paper 2 v2 scope.
+
+=== MV Result (SageMaker teacher_full + CEH, 10 epochs, softmax gate)
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, center, center, center),
+    stroke: 0.5pt,
+    inset: 5pt,
+    table.header(
+      [*Metric*], [*Pre-patch (W ≈ 0)*], [*Post-patch (no CEH)*], [*Post-patch + CEH*]
+    ),
+    [Primary AUC],                [0.6729], [0.6719], [*0.6734*],
+    [F1 macro],                   [0.2009], [0.2042], [0.1994],
+    [NDCG\@3],                    [0.6814], [0.6875], [0.6842],
+    [MAE],                        [0.9598], [0.9597], [0.9609],
+    [$bold(W)$ Frobenius],        [0.0001], [0.338],  [*0.366*],
+    [$abs(W) > 0.01$ sparse edges], [0%], [7.3%], [*8.5%*],
+    [Attribution head trained],   [n/a],   [n/a],    [*yes*],
+  ),
+  caption: [CEH MV result. Primary AUC is preserved within noise;
+  $bold(W)$ Frobenius and sparse-edge share are both slightly higher
+  than the post-patch no-CEH run, suggesting the attribution-head
+  gradient provides an additional structural signal that reinforces
+  the DAG. Attribution head training was verified by post-hoc
+  inspection of the head's weights and biases (non-zero biases
+  starting from zero-init).]
+) <tab:ceh-mv>
+
+The attribution head's layer-3 bias (init = $bold(0)$) moved to
+$||bold(b)|| = 0.03 plus.minus 0.04$ per element and layer-0 bias to
+$0.08 plus.minus 0.08$, which is straightforward evidence that the
+MSE alignment loss was contributing gradient to the head.
+
+=== What the MV Does Not Verify
+
+CEH MV confirms that:
+
++ The head trains without disrupting the primary pathway.
++ The W-collapse patch (Finding 8) remains intact under the extra
+  attribution-training signal --- in fact the DAG's Frobenius norm
+  and sparse-edge count both increase marginally.
++ The per-prediction attribution vector exists and can be consumed
+  downstream.
+
+CEH MV does *not* yet verify:
+
+- *Attribution quality.* The head fits the gradient $times$ input
+  target by construction; whether that target is a good explanation
+  for regulators / branch staff / customers requires a human eval
+  pass on sample cases and a comparison against alternatives
+  (Integrated Gradients, DAG-path traversal).
+- *Audit-log utility.* The per-sample vector is now available but
+  has not yet been routed into an HMAC-signed, append-only audit log
+  record that regulators can query. That integration is Paper 2 v2
+  scope.
+- *Downstream metric impact.* CEH's small AUC lift is $+0.0015$
+  over post-patch softmax, within the noise band of the 9-way
+  comparison. We do not claim it as a significant improvement.
+
+=== Why CEH First (Not CG / CTGR / CRCG / CCP)
+
+Of the five Axis-3 candidates, CEH has the smallest structural
+footprint: a single MLP head with an MSE supervision signal, no
+change to task routing (vs. CTGR), no serving-time path branching
+(vs. CG), no cross-module wiring (vs. CRCG tying into Paper 2's
+reason generator). This lets us confirm the basic premise --- that
+downstream consumers can extract something meaningful from the now-
+functional DAG --- with the cleanest possible test before committing
+to a heavier redesign. Follow-up candidates are evaluated against
+CEH's baseline rather than against no-causal-routing-at-all.
 
 = Discussion
 

@@ -806,6 +806,46 @@ $ bold(z)_"hat" = bold(z) + bold(z) bold(W)^2 $
 
 *Axis 3 재해석 탐색의 사전 조건 역할*: CEH (causal explainability head), CRCG (causal reason-code generator), CTGR (causal task-group router) 같은 후속 설계들은 모두 *학습된 DAG 가 있다* 는 전제 위에서 작동한다. Patch 이전에는 그 전제가 성립하지 않았다. 지금은 성립하지만, *DAG 가 존재 $arrow$ prediction 경로에 연결 $arrow$ 지표 개선* 이라는 세 단계 중 첫 단계만 해결된 상태다. 두 번째/세 번째 단계 (routing + benefit) 는 Axis 3 실험에서 확인될 것이고, 그 결과가 positive로 나올 때 이 patch 의 *가치* 가 증명된다. 현재로서는 "구조적으로 꼭 필요한 선행 조치" 수준으로 기록한다.
 
+=== Axis 3 첫 실험 — CEH (Causal Explainability Head)
+
+*선택 근거*: 5개 Axis 3 후보 중 CEH 를 먼저 간다. 이유는 *구조 변화가 가장 작다* --- MLP head 하나 + MSE supervision 신호 하나. Task routing 변경 없음 (CTGR 와 대비), serving 경로 분기 없음 (CG 와 대비), Paper 2 쪽 reason generator 연동 불필요 (CRCG 와 대비). "Finding 8 이후 학습된 DAG 에서 의미 있는 per-prediction 출력을 뽑을 수 있는가" 라는 가장 기본 명제를 가장 깨끗한 조건에서 검증한다.
+
+*설계*: Causal expert 의 64-dim output 을 작은 MLP ($64 arrow.r 64 arrow.r "input_dim"$) 로 받아 per-sample per-feature attribution 벡터 생성. 학습 target 은 causal expert 자체 출력의 gradient $times$ input saliency baseline:
+
+$ cal(L)_"attr" = "MSE"("attribution_head"("output"), nabla_x "output".sum() dot.o bold(x)) $
+
+Gradient $times$ input 계산은 `requires_grad=True` 로 clone 한 입력에 한번 더 forward 돌려서 획득 --- 메인 forward graph 건드리지 않음. Causal expert 내부에서 $approx$14% 추가 compute (7개 shared expert 중 1개의 부분).
+
+Primary prediction 경로 그대로 유지, CEH 는 학습 시 regularizer + 추론 시 side output. `expert._last_attribution` 을 inference 때 꺼내 감사 로그 persist --- HMAC 서명 포함 audit integration 은 Paper 2 v2 범위.
+
+*MV 실험 (SageMaker teacher_full + CEH, 10 epoch, softmax gate)*:
+
+#table(
+  columns: (auto, auto, auto, auto),
+  align: (left, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header([*지표*], [*Pre-patch ($W approx 0$)*], [*Post-patch (CEH 없음)*], [*Post-patch + CEH*]),
+  [Primary AUC],                  [0.6729], [0.6719], [*0.6734*],
+  [F1 macro],                     [0.2009], [0.2042], [0.1994],
+  [NDCG\@3],                      [0.6814], [0.6875], [0.6842],
+  [MAE],                          [0.9598], [0.9597], [0.9609],
+  [$W$ Frobenius],                [0.0001], [0.338],  [*0.366*],
+  [$abs(W) > 0.01$ sparse edges], [0%],     [7.3%],   [*8.5%*],
+  [Attribution head 학습],        [n/a],    [n/a],    [*확인됨*],
+)
+
+Attribution head bias (초기 0) 가 layer 0 에서 $0.08 plus.minus 0.08$, layer 3 에서 $0.03 plus.minus 0.04$ 로 이동 --- MSE alignment loss 가 실제 gradient 를 head 로 전달 중.
+
+*관찰 --- CEH 가 DAG 학습을 조금 강화*: $W$ Frobenius 가 no-CEH 대비 $0.338 arrow 0.366$, sparse edge 비율 $7.3% arrow 8.5%$. Attribution head 의 gradient 가 causal expert 의 representation 을 거쳐 $W$ 에도 추가 신호로 작용한 것으로 보임. Primary AUC 는 +0.0015 로 noise 범위 안, 그러나 Post-patch (no-CEH) 의 $-0.001$ 감소 와 대비하면 CEH 가 오히려 primary 를 유지시키는 경향.
+
+*MV 가 *검증하지 못한* 것*:
+- *Attribution 품질*: head 가 gradient $times$ input target 에 fit 한 것은 당연. 그 target 이 규제기관/상담원/고객 에게 실제로 유용한 설명인지는 sample 감사 + 다른 attribution method (Integrated Gradients, DAG path traversal) 대비 비교 필요.
+- *Audit log 통합 효용*: per-sample attribution 벡터가 생산됐지만 HMAC 서명 + append-only 감사 로그에 연결되지 않음. Paper 2 v2 scope.
+- *지표 개선 정당성*: AUC $+0.0015$ 는 9-way 비교의 noise 대역 안. Significant improvement 로 주장하지 않음.
+
+*Paper 3 narrative 업데이트*: Finding 8 (W 붕괴 patch) 이 "DAG 가 존재하게 만들었다" 였다면, Finding 9 (CEH MV) 는 "그 DAG 에서 per-prediction output 을 *뽑아낼* 수 있음을 최소 scope 로 확인" --- 3단계 (존재 $arrow$ routing $arrow$ benefit) 의 2단계 진입. 3단계 (실제 benefit) 는 audit 통합 + cross-dataset + human eval 후에 기재.
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.

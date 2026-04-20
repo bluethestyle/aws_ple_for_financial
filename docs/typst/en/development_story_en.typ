@@ -889,6 +889,47 @@ Every delta is within the noise band from the 9-way fusion comparison above. The
 
 The honest accounting: a real structural bug was fixed, two full-stack projects received the same patch, and the baseline claim "the causal expert learns a DAG" is now correct. The rest --- whether any of this translates into a measurable benefit --- is deferred to the Axis-3 studies.
 
+=== Axis 3 First Experiment — CEH (Causal Explainability Head)
+
+*Why CEH first*: five Axis-3 candidates are on the table (CEH / CG / CTGR / CRCG / CCP); CEH is the smallest structural footprint of the five --- one MLP head plus one MSE supervision signal, no change to task routing (unlike CTGR), no serving-time branching (unlike CG), no cross-module wiring into Paper 2's reason generator (unlike CRCG). It tests the most basic claim --- "now that the DAG exists post-Finding 8, can a downstream consumer extract something meaningful from it?" --- under the cleanest possible conditions.
+
+*Design*: a small MLP (64 $arrow$ 64 $arrow$ input_dim) on the causal expert's output produces a per-sample per-feature attribution vector. The training target is the gradient-$times$-input saliency baseline of the expert's own output:
+
+$ cal(L)_"attr" = "MSE"("attribution_head"("output"), nabla_x "output".sum() dot.o bold(x)) $
+
+Gradient $times$ input is computed with one extra forward pass on a cloned, `requires_grad=True` copy of the input, so the main forward graph is undisturbed. Compute overhead is $approx$14% inside the causal expert (one of seven shared experts, so $approx$2% model-wide).
+
+The primary prediction path is unchanged. CEH is a training-time regulariser and an inference-time side output: `expert._last_attribution` is accessible at inference for downstream consumers. The audit-log integration (HMAC signing, append-only persistence) is Paper 2 v2 scope.
+
+*MV result (SageMaker teacher_full + CEH, 10 epochs, softmax gate)*:
+
+#table(
+  columns: (auto, auto, auto, auto),
+  align: (left, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header([*Metric*], [*Pre-patch ($W approx 0$)*], [*Post-patch (no CEH)*], [*Post-patch + CEH*]),
+  [Primary AUC],                  [0.6729], [0.6719], [*0.6734*],
+  [F1 macro],                     [0.2009], [0.2042], [0.1994],
+  [NDCG\@3],                      [0.6814], [0.6875], [0.6842],
+  [MAE],                          [0.9598], [0.9597], [0.9609],
+  [$W$ Frobenius],                [0.0001], [0.338],  [*0.366*],
+  [$abs(W) > 0.01$ sparse edges], [0%],     [7.3%],   [*8.5%*],
+  [Attribution head trained],     [n/a],    [n/a],    [*yes*],
+)
+
+Attribution head biases (init $= 0$) moved to $||bold(b)|| approx 0.08 plus.minus 0.08$ at layer 0 and $0.03 plus.minus 0.04$ at layer 3 --- direct evidence the MSE alignment loss was contributing gradient to the head during training.
+
+*Observation --- CEH slightly reinforces the DAG*: $W$ Frobenius grew from $0.338$ (no CEH) to $0.366$ with CEH, and sparse-edge share from $7.3%$ to $8.5%$. The attribution head's gradient appears to flow back through the expert's representation and provide additional structural signal to $W$ itself. Primary AUC moved $+0.0015$ vs the post-patch no-CEH baseline (within noise but in the opposite direction of the earlier $-0.001$ drift).
+
+*What the MV does not verify*:
+
+- *Attribution quality*. The head fits its gradient-$times$-input target by construction; whether that target is actually a good explanation for regulators / branch staff / customers requires human evaluation on sample cases and comparison against alternatives (Integrated Gradients, DAG-path traversal).
+- *Audit-log utility*. The per-sample vector exists at inference but has not yet been routed into an HMAC-signed, append-only audit record that regulators can query. Paper 2 v2 scope.
+- *Metric significance*. $+0.0015$ on AUC sits inside the noise band from the 9-way fusion comparison. We do not claim it as a significant improvement.
+
+*Paper 3 narrative update*: Finding 8 (W-collapse patch) made the DAG *exist*. Finding 9 (CEH MV) demonstrates, at minimum scope, that a *per-prediction output* can be extracted from it --- stepping from stage 1 (existence) into stage 2 (routing) of the three-stage progression (existence $arrow$ routing $arrow$ benefit). Stage 3 (benefit) requires audit-log integration, cross-dataset reproduction, and a human-eval pass on the attributions; positive claims are deferred until those land.
+
 #section-break()
 
 
