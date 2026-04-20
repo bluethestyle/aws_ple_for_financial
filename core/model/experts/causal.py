@@ -31,6 +31,7 @@ from typing import Any, Dict
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .base import AbstractExpert
 from .registry import ExpertRegistry
@@ -76,6 +77,18 @@ class CausalExpert(AbstractExpert):
         self.recon_lambda: float = config.get("recon_lambda", 0.5)
         dropout: float = config.get("dropout", 0.2)
 
+        # CEH (Causal Explainability Head, Paper 3 Axis-3 A) --------------
+        # Per-prediction attribution vector produced from the causal
+        # expert's output, trained against gradient × input of the same
+        # output (training-time regulariser, inference-time audit log).
+        # Primary prediction path is untouched.
+        ceh_cfg = config.get("ceh", {}) or {}
+        self.ceh_enabled: bool = bool(ceh_cfg.get("enabled", False))
+        self.ceh_loss_weight: float = float(ceh_cfg.get("loss_weight", 0.1))
+        self.ceh_input_dim: int = int(input_dim)  # cached for head output shape
+        ceh_hidden: int = int(ceh_cfg.get("hidden_dim", 64))
+        ceh_dropout: float = float(ceh_cfg.get("dropout", 0.1))
+
         # -- Feature compressor: input_dim -> n_causal_vars --------------------
         self.feature_compressor = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -102,6 +115,21 @@ class CausalExpert(AbstractExpert):
         # reconstruction loss in ``get_dag_regularization``. Populated on
         # every forward call so the most recent batch's z is available.
         self._last_z: torch.Tensor | None = None
+
+        # CEH (Paper 3 Axis-3 A) head + caches for attribution training.
+        # Head: output_dim -> ceh_hidden -> input_dim (per-feature score).
+        # Caches populated on every forward; used by get_attribution_loss().
+        if self.ceh_enabled:
+            self.attribution_head = nn.Sequential(
+                nn.Linear(self._output_dim, ceh_hidden),
+                nn.SiLU(),
+                nn.Dropout(ceh_dropout),
+                nn.Linear(ceh_hidden, input_dim),
+            )
+        else:
+            self.attribution_head = None
+        self._last_attribution: torch.Tensor | None = None
+        self._last_attr_target: torch.Tensor | None = None
 
         # -- Causal encoder: n_causal_vars -> output_dim -----------------------
         self.causal_encoder = nn.Sequential(
@@ -147,7 +175,70 @@ class CausalExpert(AbstractExpert):
         # forward, so only the most recent batch contributes.
         self._last_z = z
         z_hat = self._apply_causal_mechanism(z)
-        return self.causal_encoder(z_hat)
+        output = self.causal_encoder(z_hat)
+
+        # CEH: compute per-sample per-feature attribution + alignment
+        # target. One extra forward pass on a cloned input is used so
+        # gradient × input of causal-output can be extracted cleanly
+        # without mutating the main forward's computational graph.
+        if self.attribution_head is not None:
+            self._last_attribution = self.attribution_head(output)
+            if self.training:
+                self._compute_attr_target(x)
+            else:
+                self._last_attr_target = None
+        else:
+            self._last_attribution = None
+            self._last_attr_target = None
+
+        return output
+
+    def _compute_attr_target(self, x: torch.Tensor) -> None:
+        """Compute gradient × input of causal output w.r.t. input x.
+
+        Uses a separate forward pass on a detached+grad-enabled clone of
+        ``x`` so the main forward's autograd graph is undisturbed. The
+        resulting target tensor is the classic saliency baseline
+        (gradient × input) and is stored in ``self._last_attr_target``.
+        Compute cost is one extra CausalExpert forward per training
+        step; no impact at inference (self.training is False).
+        """
+        try:
+            with torch.amp.autocast('cuda', enabled=False):
+                x_clone = x.detach().clone().float().requires_grad_(True)
+                with torch.enable_grad():
+                    z_a = self.feature_compressor(x_clone)
+                    z_hat_a = self._apply_causal_mechanism(z_a)
+                    out_a = self.causal_encoder(z_hat_a)
+                    scalar = out_a.sum()
+                grad_x = torch.autograd.grad(
+                    scalar, x_clone,
+                    create_graph=False, retain_graph=False,
+                    allow_unused=True,
+                )[0]
+            if grad_x is None:
+                self._last_attr_target = None
+                return
+            self._last_attr_target = (grad_x * x_clone).detach()
+        except RuntimeError:
+            # Fall back silently: attribution loss becomes 0 this step
+            self._last_attr_target = None
+
+    def get_attribution_loss(self) -> torch.Tensor:
+        """Return MSE loss between attribution_head output and its target.
+
+        Returns a zero tensor when CEH is disabled or when a target was
+        not computed this step (e.g. eval mode or first call before
+        forward). Multiply by ``self.ceh_loss_weight`` at the call site;
+        the bare loss is returned here for flexibility.
+        """
+        device = self.W.device
+        if (not self.ceh_enabled
+                or self._last_attribution is None
+                or self._last_attr_target is None):
+            return torch.tensor(0.0, device=device)
+        return F.mse_loss(self._last_attribution.float(),
+                          self._last_attr_target.float())
 
     def _apply_causal_mechanism(self, z: torch.Tensor) -> torch.Tensor:
         """

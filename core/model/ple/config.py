@@ -67,6 +67,32 @@ class AdaTTSPConfig:
 
 
 @dataclass
+class CEHConfig:
+    """Causal Explainability Head (Paper 3 Axis-3 A).
+
+    Adds a per-prediction attribution head on top of the causal expert.
+    The head maps the expert's `output_dim` representation back to an
+    `input_dim` attribution vector, trained to align with
+    `gradient × input` of the causal expert's own output w.r.t. input.
+    Primary prediction path is untouched — CEH is a training-time
+    regulariser + inference-time audit log producer.
+
+    Motivation: now that the causal expert's DAG actually learns (see
+    Finding 8), we route it into explanations. The attribution head
+    gives the expert a per-sample per-feature explanation vector that
+    can be HMAC-signed and persisted in the audit log for SR 11-7 MRM.
+
+    Mutually orthogonal with adatt_sp / residual_recovery / eceb / brp
+    / neas — all of those operate elsewhere in the model. CEH only
+    adds an output head to the existing causal expert. Off by default.
+    """
+    enabled: bool = False
+    hidden_dim: int = 64
+    loss_weight: float = 0.1
+    dropout: float = 0.1
+
+
+@dataclass
 class NEASConfig:
     """Neglected-Expert Auxiliary Supervision (Paper 3 follow-up).
 
@@ -500,6 +526,9 @@ class PLEConfig:
 
     # -- NEAS (neglected-expert auxiliary supervision, Paper 3 follow-up) ---
     neas: NEASConfig = field(default_factory=NEASConfig)
+
+    # -- CEH (causal explainability head, Paper 3 Axis-3 A) -----------------
+    ceh: CEHConfig = field(default_factory=CEHConfig)
 
     # -- Gradient Surgery (PCGrad) ------------------------------------------
     grad_surgery: GradSurgeryConfig = field(default_factory=GradSurgeryConfig)

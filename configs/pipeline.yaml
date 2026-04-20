@@ -66,6 +66,15 @@ model:
       # pre-patch checkpoints). Restoring ||z - z W^2||^2 as in the
       # original NOTEARS paper gives W a load-bearing gradient path.
       recon_lambda: 0.5
+      # CEH (Paper 3 Axis-3 A) — per-prediction attribution head on
+      # causal expert. Training-time regulariser aligning attribution
+      # with gradient × input of causal output. Primary prediction path
+      # unchanged. Off by default; enable via HP `use_ceh=true`.
+      ceh:
+        enabled: false
+        hidden_dim: 64
+        loss_weight: 0.1
+        dropout: 0.1
     lightgcn:
       embedding_dim: 64
       n_layers: 3
