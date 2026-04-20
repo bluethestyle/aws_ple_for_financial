@@ -1383,6 +1383,47 @@ invoked after a challenger has accumulated sufficient DynamoDB
 prediction records to apply a two-proportion z-test on realized
 traffic; this gate is scaffolded but not yet scheduler-wired, and
 activates once real traffic volume justifies the comparison.
+
+=== Per-Prediction Attribution Audit (CEH Integration)
+<ceh-audit>
+
+Model-promotion events cover *which model* is in production. A
+distinct requirement, emphasized by GDPR Art. 22 ("right to a
+meaningful explanation of automated decisions") and the EU AI Act
+Art. 13 (transparency to affected persons), is audit coverage of
+*individual decisions*: if a customer asks "why did the model
+recommend this, and why at this time?", the system must be able to
+reconstruct the feature attributions that drove that specific
+prediction, unaltered, from a tamper-evident record.
+
+The Causal Explainability Head (CEH) introduced in the companion
+paper produces a per-prediction attribution vector on every
+inference. `AuditLogger` exposes `log_attribution(model_id,
+sample_id, top_features, attribution_hash, input_dim)`, which records
+for each prediction: (i) the top-$K$ most influential features with
+their signed weights (a compact summary for human review), (ii) a
+SHA256 hash of the complete float32 attribution vector (for
+cryptographic replay verification), and (iii) the same HMAC signature
++ hash-chain linkage used for promotion events. The audit record is
+therefore:
+
+$ "entry"_i = ("timestamp", "op", "sample_id", "top_K features",
+  "hash"("attr"_i), "prev_hash", "HMAC") $
+
+An auditor can reproduce the decision by re-running inference on the
+archived input and recomputing the attribution vector hash; matching
+the stored hash proves the record is authentic; mismatching hashes
+prove tampering. The hash-chain verifier (`verify_chain`) detects
+insertion, deletion, or modification of any intermediate record, so
+selective suppression of inconvenient decisions is detectable even
+by adversaries with write access to the storage medium.
+
+The integration is intentionally minimal: CEH exposes a public
+accessor (`get_last_attribution`) on the causal expert, the PLE
+model surfaces it via `get_ceh_attribution`, and the serving path
+pairs each prediction with one `log_attribution` event. No model
+surgery; the attribution vector is a by-product of the training-time
+regulariser described in the companion paper.
 When the drift detector fires on consecutive monitoring windows
 (configurable threshold, default 3 consecutive days),
 the retrain stage is triggered automatically,

@@ -296,6 +296,59 @@ class AuditLogger:
             status="SUCCESS",
         )
 
+    def log_attribution(
+        self,
+        model_id: str,
+        sample_id: str,
+        top_features: List[Dict[str, Any]],
+        attribution_hash: str,
+        input_dim: int,
+        user: str = "system",
+    ) -> Optional[Dict[str, Any]]:
+        """Log a per-prediction causal attribution event (Paper 2 v2 / CEH).
+
+        Records a compact summary of the Causal Explainability Head's
+        attribution vector for one prediction, plus a hash of the full
+        vector so regulators can verify forensic replay without the
+        audit store having to persist the full float array.
+
+        Args:
+            model_id: Identifier of the model (or model version) that
+                produced the attribution.
+            sample_id: Identifier of the prediction subject
+                (e.g., ``customer_id`` or a request-scoped UUID).
+            top_features: Ordered list of the most influential features,
+                each a dict with keys ``{"feature": str, "weight": float}``.
+                Typically top 5-10; caller decides K. Kept compact so a
+                single audit entry fits regulator query workflows.
+            attribution_hash: SHA256 hex digest of the full attribution
+                vector (raw float32 bytes). Lets an auditor verify that
+                a later-reconstructed vector matches what was signed at
+                inference time.
+            input_dim: Dimensionality of the full attribution vector
+                (i.e., number of features the causal expert saw).
+            user: Identity string of the caller (operator, service,
+                scheduled job, etc.).
+
+        The HMAC + hash chain from ``log_operation`` apply as usual; an
+        auditor receives: top-K summary for human reading, full-vector
+        hash for cryptographic replay, and chain linkage for tamper
+        evidence.
+        """
+        return self.log_operation(
+            operation=f"attribution:{model_id}",
+            user=user,
+            status="SUCCESS",
+            metadata={
+                "model_id": model_id,
+                "sample_id": sample_id,
+                "top_features": top_features,
+                "attribution_hash": attribution_hash,
+                "input_dim": input_dim,
+                "operation_type": "attribution",
+            },
+        )
+
     def log_model_promotion(
         self,
         champion_version: Optional[str],

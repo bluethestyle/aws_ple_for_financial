@@ -2086,6 +2086,24 @@ class PLEModel(nn.Module):
             if hasattr(layer, "shared_experts"):
                 yield from layer.shared_experts
 
+    def get_ceh_attribution(self) -> Optional[torch.Tensor]:
+        """Return the CEH attribution from the most recent forward.
+
+        Finds the causal expert in extraction layer 0 (the only layer
+        with the full attribution_head) and returns its cached
+        ``_last_attribution`` tensor. Returns ``None`` when CEH is
+        disabled or no forward has been run.
+
+        Intended for the Paper 2 v2 audit-log path — callers pair this
+        with ``AuditLogger.log_attribution`` to emit per-sample audit
+        records post-inference.
+        """
+        for expert in self._iter_shared_experts():
+            if hasattr(expert, "get_last_attribution") \
+                    and getattr(expert, "ceh_enabled", False):
+                return expert.get_last_attribution()
+        return None
+
     def _extract_task_gradients(
         self,
         task_losses: Dict[str, torch.Tensor],

@@ -984,6 +984,28 @@ Per-group attribution mass also rebalances substantially. txn\_behavior drops fr
 
 *Remaining candidate*: primary-task-gradient target (replace the causal-encoder sum with a specific task logit gradient, aligning attribution with downstream questions like "why did this customer receive a high churn score?"). The demeaned infrastructure carries over; only the scalar the gradient is taken against changes.
 
+=== Audit-Log Integration (Paper 2 v2) --- CEH Becomes Regulatory Infrastructure
+
+A per-sample attribution vector is only a training metric in isolation. To become regulatory infrastructure it has to answer *"why was this decision made for this customer?"* --- GDPR Art. 22's meaningful-explanation requirement and EU AI Act Art. 13's transparency obligation. Model-promotion records only track *which model* was in production; individual-prediction audit requires a separate path.
+
+The existing `AuditLogger` (HMAC-SHA256 signatures + SHA256 hash chain + S3 Object Lock WORM storage) already used for promotion decisions gains a `log_attribution` method. One audit entry per prediction:
+
+```
+entry = {
+  timestamp, operation: "attribution:{model_id}",
+  sample_id,          # customer / request UUID
+  top_features,       # [{feature, weight}, ...] top-K for human review
+  attribution_hash,   # SHA256 of full float32 vector
+  prev_hash, hmac     # existing chain linkage
+}
+```
+
+Three layers of explainability: **top-K** (human-readable summary), **full-vector hash** (forensic replay verification), **chain linkage** (tamper evidence). An auditor re-runs inference on the archived input, recomputes the attribution hash; matching hashes prove authenticity, mismatches prove tampering. The chain verifier also detects selective deletion of inconvenient records.
+
+Code surface is minimal: `CausalExpert.get_last_attribution()` public accessor, `PLEModel.get_ceh_attribution()` to locate the causal expert, and a single `AuditLogger.log_attribution()` method. Five unit tests + an end-to-end smoke test (HMAC emission + chain verification + tamper detection) all pass.
+
+*Completeness at this point*: CEH infrastructure (Paper 3 Finding 9 v2) + audit-log integration (Paper 2 v2 addition) = a minimal-viable evidence set for per-prediction explainability. What remains is (a) wiring the call into the live serving path (`core/serving/predict.py`), (b) an auditor query UI, (c) domain-expert human evaluation. All of these are infrastructure work rather than Paper 3 follow-up experiments.
+
 #section-break()
 
 
