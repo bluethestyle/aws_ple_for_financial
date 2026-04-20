@@ -274,6 +274,46 @@ class CausalExpert(AbstractExpert):
             return None
         return self._last_attribution.detach()
 
+    @torch.no_grad()
+    def get_causal_latent(self, x: torch.Tensor) -> torch.Tensor:
+        """Return the compressed causal latent ``z = feature_compressor(x)``.
+
+        Public accessor for Axis-3 B diagnostics and any downstream
+        consumer that wants to reason about the causal expert's latent
+        state without duplicating the compressor forward pass. Detached.
+        """
+        return self.feature_compressor(x).detach()
+
+    @torch.no_grad()
+    def get_causal_coherence_score(
+        self, x: torch.Tensor
+    ) -> torch.Tensor:
+        """Per-sample residual against the learned DAG (Paper 3 Axis-3 B).
+
+        Computes ``||z - z W^2||^2 / (||z||^2 + eps)`` per sample, where
+        ``z = feature_compressor(x)``. This is the same residual used by
+        the NOTEARS reconstruction loss during training (Finding 8); at
+        inference it serves as a Causal Guardrail score.
+
+        - Low score = the input's compressed causal state agrees with the
+          learned DAG structure (``z approx z W^2``) -- prediction is
+          in-distribution with respect to causal coherence.
+        - High score = the compressed state does not fit the learned
+          causal structure -- out-of-distribution warning signal, intended
+          to trigger fallback routing or human review rather than silently
+          pass through.
+
+        Returns a ``[batch]`` tensor of non-negative floats. Fully
+        detached; intended for serving-time use alongside
+        ``get_last_attribution()``.
+        """
+        z = self.feature_compressor(x)
+        W_sq = self.W * self.W
+        residual = z - z @ W_sq
+        num = (residual * residual).sum(dim=-1)
+        den = (z * z).sum(dim=-1) + 1e-8
+        return (num / den).detach()
+
     def _apply_causal_mechanism(self, z: torch.Tensor) -> torch.Tensor:
         """
         Linear SCM intervention::

@@ -2104,6 +2104,25 @@ class PLEModel(nn.Module):
                 return expert.get_last_attribution()
         return None
 
+    def get_causal_coherence(
+        self, causal_input: torch.Tensor
+    ) -> Optional[torch.Tensor]:
+        """Return per-sample DAG coherence scores (Paper 3 Axis-3 B).
+
+        Finds the causal expert and delegates to
+        ``get_causal_coherence_score``. ``causal_input`` must already
+        be sliced to the causal expert's feature subset — callers hold
+        the feature router and the causal routing config, so they can
+        produce that slice.
+
+        Returns a ``[batch]`` tensor (non-negative) or ``None`` when no
+        causal expert is present.
+        """
+        for expert in self._iter_shared_experts():
+            if hasattr(expert, "get_causal_coherence_score"):
+                return expert.get_causal_coherence_score(causal_input)
+        return None
+
     def _extract_task_gradients(
         self,
         task_losses: Dict[str, torch.Tensor],

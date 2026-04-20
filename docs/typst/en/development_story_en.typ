@@ -1006,6 +1006,38 @@ Code surface is minimal: `CausalExpert.get_last_attribution()` public accessor, 
 
 *Completeness at this point*: CEH infrastructure (Paper 3 Finding 9 v2) + audit-log integration (Paper 2 v2 addition) = a minimal-viable evidence set for per-prediction explainability. What remains is (a) wiring the call into the live serving path (`core/serving/predict.py`), (b) an auditor query UI, (c) domain-expert human evaluation. All of these are infrastructure work rather than Paper 3 follow-up experiments.
 
+=== Axis 3 Second Experiment --- CG (Causal Guardrail): A Negative-to-Positive Pivot
+
+Where CEH answers "why did the model recommend this?", CG answers the adjacent question "can we trust this recommendation?" --- a per-prediction reliability flag that routes suspicious inputs to a fallback or to human review instead of silently passing them through. SR 11-7 known-limitations reporting and EU AI Act Art. 9 risk management both need this. We ran CG as post-hoc analysis on the existing teacher_ceh_demeaned checkpoint, no new SageMaker training.
+
+*v1 (W-reconstruction) fails*: The first formulation reuses the NOTEARS reconstruction residual from Finding 8. Serving-time score $= ||z - z W^2||^2 / ||z||^2$ --- low for inputs that fit the learned DAG, high for OOD. Evaluated on 5,000 validation samples plus three synthetic OOD probes (uniform random in [-3,3], column-permuted, extreme-tail percentiles).
+
+Result: all distributions compressed near $1.0$ (in-dist median 0.9995, OOD medians 0.9998--0.9972). At $"p95"$ threshold TPR was 6.8% / 8.1% / 0% vs. the 5% FPR baseline --- chance-level discrimination.
+
+Cause: the learned $W$ is too small ($||W||_F approx 0.36$ on a $32 times 32$ matrix; $W^2$ is $O(0.13)$ in Frobenius) so $z W^2$ barely perturbs $z$. The residual ratio $approx 1.0$ regardless of whether the input fits the DAG. Finding 8's "decorative DAG" observation propagates directly into CG.
+
+*v2 (z-space Mahalanobis) works*: If $W$ is too weak, use the causal latent $z$ itself. Compute per-dimension $mu, sigma$ from an in-distribution batch; score $= sum_j ((z_(i,j) - mu_j) / sigma_j)^2$.
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, right, right, right),
+    stroke: 0.5pt,
+    table.header([*Probe*], [*median*], [*p95*], [*p99*]),
+    [In-distribution], [$23.6$], [$62.8$], [$268.1$],
+    [Uniform random], [$749.5$], [$1200.9$], [$1458.5$],
+    [Column-permuted], [$537.4$], [$1076.0$], [$1336.1$],
+    [Extreme-tail], [$479.3$], [$479.3$], [$479.3$],
+  ),
+  caption: [CG v2 z-space Mahalanobis score distributions. Every OOD median lies above the in-dist $"p99"$ --- near-perfect separation.],
+)
+
+At the $"p95"$ threshold (62.8), all three OOD types hit *TPR 100%, FPR 5%*. A single formulation switch makes the guardrail functional.
+
+*CG works via the causal latent, not the learned DAG weights.* This has implications for the remaining Axis-3 candidates: both CTGR (task-group router) and CRCG (reason-code generator) assume the *learned $W$* carries useful structure. Finding 10 is direct evidence that $W$ is present but not strong enough for structural downstream uses. CTGR/CRCG will inherit the same weakness unless either $W$ is amplified first (larger init, stronger recon lambda, DAG-routed residual path) or the candidates are redesigned to draw from the latent --- mirroring the v1$arrow.r$v2 pivot here.
+
+*Cost*: \$0 (post-hoc analysis, no training).
+
 #section-break()
 
 
