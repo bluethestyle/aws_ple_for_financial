@@ -64,7 +64,15 @@
   and compliance reports in natural language, enabling regulation-compliant MLOps
   for small teams without dedicated MLOps staff;
   (4) regulatory compliance by design, with built-in drift monitoring, fairness auditing,
-  and governance reporting aligned to Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act.
+  and governance reporting aligned to Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act;
+  (5) a *per-prediction causal audit surface* that pairs explanation
+  (Causal Explainability Head attribution) with reliability (Causal
+  Guardrail coherence score) in a shared HMAC-signed hash-chained
+  audit log, producing a regulator-usable per-decision record that
+  satisfies GDPR Art.~22 meaningful-explanation and EU AI Act Art.~13
+  transparency requirements --- the companion paper produces the
+  attribution vector and the coherence score as Paper 3 Findings 9
+  and 10--11; this paper routes both into the audit infrastructure.
   We evaluate distillation quality (AUC gap $<$ 3.6 percentage points across 7 binary tasks, mean 2.6 pp),
   reason generation quality via automated compliance validation
   (L1 template coverage 100%, 13/13 tasks; compliance rules applied: suitability, consent, opt-out, profiling, disclosure),
@@ -123,6 +131,16 @@ We propose a full-chain solution from prediction to persuasion:
 + *5-Agent Architecture (3 Serving + 2 Ops)*: Beyond the 3 serving agents, two operational agents (OpsAgent, AuditAgent) interpret monitoring and compliance outputs in natural language, enabling small-team MLOps without dedicated MLOps staff.
 
 + *Regulatory Compliance Architecture*: Explicit mapping of system components to Korean FSS guidelines, EU AI Act articles, and the Korean AI Basic Act.
+
++ *Per-Prediction Causal Audit Pair*: An HMAC-signed, hash-chained
+  audit record per decision that pairs *what* the model recommended
+  (CEH attribution: top-$K$ influential features plus full-vector
+  SHA256) with *whether* it should be trusted (CG coherence score and
+  threshold). Both flow through the same `AuditLogger` infrastructure
+  (`log_attribution`, `log_guardrail`), and the hash-chain verifier
+  detects tampering or selective deletion of either record class.
+  Produces the concrete per-decision audit evidence that Art.~13
+  transparency and GDPR Art.~22 meaningful-explanation call for.
 
 + *Human Evaluation Protocol*: A systematic protocol designed for post-deployment expert evaluation, with automated compliance validation reported in this paper as an interim measure.
 
@@ -1638,7 +1656,7 @@ and generates alerts when any metric exceeds configurable thresholds.
 
 == Findings Summary
 
-Three findings emerge from the end-to-end pipeline evaluation.
+Five findings emerge from the end-to-end pipeline evaluation.
 
 *Finding 1: Tree-based distillation works without temperature scaling.*
 Contrary to the standard Hinton distillation recipe ($T = 3$--$20$),
@@ -1681,6 +1699,23 @@ The monitoring dashboard surfaces these tasks as requiring teacher improvement
 at the next retraining cycle,
 creating a closed feedback loop between distillation quality
 and teacher development priorities.
+
+*Finding 5: Per-prediction causal audit pair closes the Art.~13 /
+GDPR Art.~22 gap.* Model-promotion records track *which* model is
+in production but do not answer the adjacent per-decision questions
+*why did the model recommend this* and *can we trust this
+recommendation*. Combining the Causal Explainability Head attribution
+(companion paper, Finding 9) with the Causal Guardrail coherence
+score (companion paper, Findings 10--11) and routing both through
+the same HMAC-signed hash-chained `AuditLogger` produces a
+per-prediction record that reconstructs both questions forensically.
+Three layers of evidence per entry --- top-$K$ feature summary for
+human reading, SHA256 hash of the full attribution vector for
+cryptographic replay, and hash-chain linkage for tamper detection
+--- let an auditor distinguish authentic records, altered records,
+and selectively deleted records without trusting the storage medium.
+The integration required no model surgery; both primitives were
+existing by-products of the causal expert's forward pass.
 
 == The Dual Role of Features
 
@@ -1748,6 +1783,25 @@ contribution to both predictive performance and explanation quality.
 - Human evaluation scale limited by expert availability.
 - Korean/EU regulatory focus; other jurisdictions not yet analyzed.
 - Template fallback quality is inherently limited.
+- *Per-prediction causal audit runs on the PLE teacher, not the
+  LGBM student.* The serving path at
+  `core/serving/predict.py` uses distilled LGBM models; CEH
+  attribution and CG coherence live on the teacher's causal expert.
+  A periodic teacher-path inference or a parallel teacher monitor is
+  therefore required to emit per-prediction audit events for
+  production traffic. A direct teacher-in-serving path is future
+  work.
+- *Synthetic OOD probes only for CG.* The Causal Guardrail was
+  validated on three synthetic out-of-distribution probes (uniform
+  random, column-permuted, extreme-tail). Real-world distribution
+  drift (temporal shift, subgroup imbalance, adversarial) is expected
+  to differ in structure and is not yet evaluated.
+- *Attribution meaningfulness not human-evaluated.* CEH v2 produces
+  per-sample attributions that discriminate across samples (Paper 3
+  Finding 9 post-hoc eval), but whether the top-$K$ features align
+  with domain-expert expectations or with alternative attribution
+  methods (Integrated Gradients, DAG-path traversal) has not been
+  assessed. A human-evaluation pass is planned.
 
 == Future Work
 
@@ -1755,6 +1809,17 @@ contribution to both predictive performance and explanation quality.
 - Multi-lingual reason generation (Korean, English, Chinese).
 - Automated regulatory update pipeline (regulation change → compliance check update).
 - Fine-tuned domain-specific small LLM to replace general-purpose API.
+- *Auditor query UI* over the HMAC-signed audit store, with regulator-
+  facing views for attribution records, guardrail triggers, and
+  model-promotion history under a unified query interface.
+- *Teacher-in-serving monitor* that runs the PLE teacher in parallel
+  with the LGBM student and emits per-prediction `log_attribution`
+  + `log_guardrail` events, closing the gap identified in the
+  limitation above.
+- *Extension to remaining Axis-3 candidates* (CTGR / CRCG / CCP from
+  the companion paper) once their MV work lands, plus a primary-task-
+  gradient CEH variant that aligns attribution with specific task
+  logits rather than the causal-encoder's aggregate output.
 
 == Ethics and Data Statement
 
@@ -1774,7 +1839,7 @@ with automated fairness monitoring across 5 protected attributes.
 We presented a full-chain system that bridges the gap
 between model prediction and human persuasion in financial product recommendation.
 
-Four key contributions define this work:
+Five key contributions define this work:
 
 + *Adaptive knowledge distillation with three-layer fallback*: teacher threshold gating routes each of 13 tasks to DISTILL (7), DIRECT (3), or SKIP (3) based on teacher quality, ensuring service continuity per SR 11-7 model risk management. LGBM gain-based feature selection aligns with the serving model perspective, replacing OOM-prone teacher IG attribution.
 
@@ -1783,6 +1848,16 @@ Four key contributions define this work:
 + *Two operational agents* (OpsAgent and AuditAgent) interpret monitoring and compliance outputs in natural language, eliminating dashboard fatigue and enabling regulation-compliant MLOps for small teams without dedicated MLOps staff --- extending the architecture to a 5-agent system (3 serving + 2 ops).
 
 + *Regulatory compliance embedded by design* --- Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act are explicitly mapped to system architecture components, with automated monitoring (drift, fairness, herding) and human-in-the-loop oversight at critical decision points.
+
++ *Per-prediction causal audit pair* --- the Causal Explainability
+  Head attribution (companion paper Finding 9) and the Causal
+  Guardrail coherence score (companion paper Findings 10--11) flow
+  into the same HMAC-signed hash-chained audit store via
+  `log_attribution` and `log_guardrail`, producing a per-decision
+  record that pairs *what* the model recommended with *whether* that
+  recommendation can be trusted. Satisfies GDPR Art.~22 meaningful-
+  explanation and EU AI Act Art.~13 transparency obligations with
+  cryptographic tamper-evidence.
 
 The fundamental insight is that features serve a dual role in financial AI:
 they contribute to prediction _and_ to the explanation vocabulary
