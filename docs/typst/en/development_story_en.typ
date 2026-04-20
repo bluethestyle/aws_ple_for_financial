@@ -826,6 +826,69 @@ The non-additivity itself is a Paper 3 side lesson: *positive mechanisms that ac
 
 *Natural close of the local experimentation phase*: nine scenarios map out the structural boundary of fusion augmentation on this benchmark. Multi-seed robustness, cross-dataset reproduction, and variants aimed at resolving the NEAS $times$ BRP-detached conflict are reserved for the SageMaker path.
 
+=== Causal Expert $W = 0$ Collapse --- The DAG Was Dead Weight
+
+*Background*: preparing for an Axis-3 study that reinterprets the causal expert's role, a simple 20-second diagnostic inspected `get_causal_graph()` on existing baseline checkpoints. The expected output was a sparse DAG adjacency matrix learned by NOTEARS regularisation. The actual output was the reason the whole Axis-3 plan paused.
+
+*Diagnostic*: loading `extraction_layers.0.shared_experts.4.W` from five checkpoints (four local, two upstream on-prem) returned a matrix with Frobenius norm $approx 0.0001$ in every case --- smaller than the random-init scale (`randn` $times$ $0.01$, expected Frobenius $approx 0.32$). Zero off-diagonal entries exceeded magnitude $0.01$. Training was consistently *driving $bold(W)$ below its init*, not learning structure:
+
+#table(
+  columns: (auto, auto, auto),
+  align: (left, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header([*Checkpoint*], [*$W$ Frobenius*], [*$abs(W) > 0.01$ ratio*]),
+  [struct_13_ple_sigmoid (CGC baseline)], [0.0001], [0%],
+  [struct_13_residual_complement (M1)],  [0.0001], [0%],
+  [struct_13_eceb (MV)],                 [0.0003], [0%],
+  [struct_13_brp_detached],              [0.0001], [0%],
+  [upstream on-prem best.pt],            [0.0001], [0%],
+)
+
+That the upstream on-prem project also reproduced the collapse ruled out a porting bug: this was a shared structural failure in the original implementation. Paper 1 and Paper 2 claims that "the causal expert learns a DAG" had been inaccurate for over a year.
+
+*Root cause --- the residual bypasses the DAG*: the expert's forward is
+
+$ bold(z)_"hat" = bold(z) + bold(z) bold(W)^2 $
+
+with $bold(z)$ flowing to a downstream `causal_encoder` MLP. The residual $bold(z)$ carries the full latent content regardless of $bold(W)$. The task loss therefore has *no structural incentive* to push $bold(W)$ away from zero. The NOTEARS acyclicity and sparsity regularisers penalise $bold(W)$ away from dense and toward sparse, but neither penalises $bold(W) = 0$ --- in fact, sparsity is *minimised* there. The global optimum of the combined objective is exactly $bold(W) = 0$, and training converges to it reliably.
+
+The gradient also vanishes at the same point. Both the task-loss path via $partial bold(z)_"hat" slash partial bold(W)$ and the NOTEARS reconstruction gradient (added later) have a $bold(W)$ factor:
+$partial (bold(z) bold(W)^2) slash partial bold(W) tilde 2 bold(z) bold(W)$. Near $bold(W) approx 0$, gradient is near zero, and $bold(W) = 0$ is a *saddle point* with no escape velocity at small init scales.
+
+*Patch --- both parts load-bearing*:
+
++ *NOTEARS reconstruction term*. Zheng et al. (NeurIPS 2018) rely on $||bold(X) - bold(X) bold(W)||_F^2$. The compressed-latent analogue goes as a third term in `get_dag_regularization()`:
+  $ cal(L)_"recon" = "mean"((bold(z) - bold(z) bold(W)^2)^2), quad lambda_"recon" = 0.5 $
+  `forward()` caches the current batch's $bold(z)$ in `_last_z` so the regulariser has a live tensor to consume.
+
++ *Init rescale*. `randn` $times$ $0.01$ sits at a gradient scale of $approx 10^(-4)$ after the $partial W^2 slash partial W = 2W$ factor --- effectively zero. Rescaling to `randn` $times$ $0.1$ puts $bold(W)^2$ entries on an $O(10^(-2))$ scale (small enough not to disrupt the residual forward) with non-vanishing gradient.
+
+Either change alone is insufficient: a SageMaker verification run with reconstruction only and init $0.01$ returned $bold(W) = 0$ after ten epochs. The second run, with both patches applied, was the first to produce a real DAG on this codebase.
+
+*Post-patch verification (SageMaker teacher_full, 10 epochs, softmax gate)*: $bold(W)$ Frobenius *0.338*, $abs(W) > 0.01$ ratio *7.3%* (within the 5--15% range recommended by the NOTEARS paper), $h(bold(W)) = 0$ (exact DAG), diagonal suppressed (no self-loops). Top edges by $W^2$: `var_23 -> var_13` ($0.019$), `var_9 -> var_13` ($0.009$), `var_15 -> var_11` ($0.007$). `var_13` behaves as a sink hub --- the kind of structure a latent DAG is expected to learn.
+
+*But task metrics are unchanged*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  align: (left, center, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header([*Run*], [*AUC*], [*F1*], [*NDCG\@3*], [*MAE*]),
+  [Pre-patch local softmax ($W approx 0$)],         [0.6729], [0.2009], [0.6814], [0.9598],
+  [Post-patch SageMaker softmax ($W$ learned)],     [0.6719], [0.2042], [0.6875], [0.9597],
+  [$Delta$],                                        [$-0.001$], [$+0.003$], [$+0.006$], [$0$],
+)
+
+Every delta is within the noise band from the 9-way fusion comparison above. The structural bug was real, but its resolution does not, by itself, produce any task metric change.
+
+*Interpretation*:
+- Until now the causal expert was contributing to predictions via `causal_encoder` alone --- a perfectly capable non-linear transform whose performance does not require a meaningful $bold(W)$. Adding a meaningful $bold(W)$ perturbs $bold(z)_"hat"$ by $O(10^(-2))$, which the downstream MLP easily absorbs. *The DAG is decorative in the current architecture*, not functionally routed into prediction.
+- Claims that depend on `get_causal_graph()` --- attribution, counterfactual probes, reason-code generation --- were retrieving essentially random noise before the patch. They are now retrieving a real DAG, but until the prediction path is re-wired to *use* the DAG, the Axis-3 explainability agenda cannot produce a measurable gain. This patch is the precondition for Axis 3, not a standalone improvement.
+
+The honest accounting: a real structural bug was fixed, two full-stack projects received the same patch, and the baseline claim "the causal expert learns a DAG" is now correct. The rest --- whether any of this translates into a measurable benefit --- is deferred to the Axis-3 studies.
+
 #section-break()
 
 

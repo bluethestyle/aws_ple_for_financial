@@ -744,6 +744,68 @@ Ablation 필터가 텐서에서 피처를 제거하는 데 성공했지만, `fea
 
 *로컬 실험의 자연스러운 종결*: 9개 시나리오로 이 벤치마크에서의 fusion augmentation 구조적 boundary가 완성. Multi-seed robustness, cross-dataset 재현, 조합 conflict 해소 variants 탐색은 SageMaker 경로에서 진행.
 
+=== Causal Expert W=0 붕괴 진단과 수정 --- DAG가 사실은 죽어있었다
+
+*배경*: Axis 3 (causal expert 재해석) 탐색의 사전 준비로 기존 baseline checkpoint의 causal expert가 실제로 DAG를 학습했는지 확인하기로 했다. `get_causal_graph()` 가 반환하는 $W circle.tiny W$ 를 simple하게 statistics 측정하는 20초짜리 진단. 결과가 예상 밖이었다.
+
+*진단*: 체크포인트 5개 (로컬 4개 + 온프렘 2개) 에서 `extraction_layers.0.shared_experts.4.W` 를 모두 측정한 결과 --- *전부 W frobenius $approx$ 0.0001*. 초기 랜덤 init 스케일 (`randn $times$ 0.01`, 기대값 frobenius $approx$ 0.32) 보다도 작다. 즉 학습을 거치면서 오히려 0 에 더 가깝게 *수렴했음*. 비대각 성분 중 $abs(W) > 0.01$ 인 entry가 *0%*. 어떤 의미 있는 DAG 구조도 학습되지 않았음.
+
+#table(
+  columns: (auto, auto, auto),
+  align: (left, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header([*체크포인트*], [*$W$ frobenius*], [*$abs(W) > 0.01$ 비율*]),
+  [struct_13_ple_sigmoid (CGC baseline)], [0.0001], [0%],
+  [struct_13_residual_complement (M1)],  [0.0001], [0%],
+  [struct_13_eceb (MV)],                 [0.0003], [0%],
+  [struct_13_brp_detached],              [0.0001], [0%],
+  [온프렘 gotothemoon best.pt],          [0.0001], [0%],
+)
+
+온프렘에서도 같은 현상이라는 것은 이게 AWS 포팅 버그가 아니라 *두 프로젝트가 공유하는 원래 구현의 구조적 문제* 임을 뜻한다. 1년 넘게 Paper 1/2 에서 "causal expert가 DAG를 학습한다"고 서술해왔지만 실제로는 $W$가 죽어 있었다.
+
+*근본 원인 --- 잔차가 DAG를 우회한다*: Expert의 forward는
+
+$ bold(z)_"hat" = bold(z) + bold(z) bold(W)^2 $
+
+잔차 $bold(z)$ 가 latent 정보를 그대로 다음 단계 (`causal_encoder` MLP) 로 전달한다. Task loss 입장에서 $bold(W)$ 를 0이 아닌 값으로 밀어낼 *구조적 동기* 가 없다. NOTEARS 비순환성 + sparsity 정규화는 $bold(W)$ 를 dense에서 멀어지게 하고 sparse를 선호하므로, *전역 최적이 정확히 $bold(W) = 0$*. 거기에 안착하는 게 optimizer 입장에선 당연하다.
+
+더 나쁜 건 gradient도 같이 죽는다: task loss와 (추후 추가한) NOTEARS 재구성 loss 양쪽 모두 gradient가 $bold(W)$ 자신에 비례 --- $partial (bold(z) bold(W)^2) slash partial bold(W) tilde 2 bold(z) bold(W)$. $bold(W) approx 0$ 이면 gradient도 0. 즉 $bold(W) = 0$ 은 *saddle point* 이고, 작은 init 스케일에서는 optimizer가 빠져나올 gradient 크기가 없다.
+
+*수정 --- 두 부분 모두 필요*:
+
+1. *NOTEARS 재구성 loss 추가*. Zheng et al. (NeurIPS 2018) 원 논문이 의존하는 신호 ($||bold(X) - bold(X) bold(W)||_F^2$) 를 compressed latent 공간 버전으로:
+   $ cal(L)_"recon" = "mean"((bold(z) - bold(z) bold(W)^2)^2), quad lambda_"recon" = 0.5 $
+   `get_dag_regularization()` 에 세 번째 항으로 추가, forward에서 $bold(z)$ 를 `_last_z` 로 캐시.
+
+2. *init 스케일 rescale*. 기존 `randn $times$ 0.01` 은 너무 작아서 saddle에서 gradient가 정확히 0. `randn $times$ 0.1` 로 10배 키움 --- $bold(W)^2$ 엔트리 scale이 $10^(-4) arrow 10^(-2)$, forward의 residual 경로를 방해하지 않으면서 gradient가 의미 있는 크기로 전파.
+
+한쪽만으로는 부족하다. SageMaker 검증에서 "recon loss만 추가, init은 0.01 그대로" 구성이 10 epoch 학습 후에도 여전히 $W = 0$ 을 반환했다. init까지 0.1로 올린 두 번째 시도에서 처음으로 W 가 살아있었다.
+
+*검증 결과 (SageMaker teacher_full, 10 epoch, softmax gate)*: $W$ frobenius *0.338*, $abs(W) > 0.01$ 비율 *7.3%* (paper 권장 5--15% 범위), $h(bold(W)) = 0$ (완벽한 DAG), self-loop 0. Top edges: `var_23 -> var_13` ($W^2 = 0.019$), `var_9 -> var_13` ($0.009$), `var_15 -> var_11` ($0.007$). `var_13` 이 sink 허브 역할 --- 잠재 DAG가 있으면 기대되는 패턴이다.
+
+*그러나 task metric 에는 변화 없음*:
+
+#table(
+  columns: (auto, auto, auto, auto, auto),
+  align: (left, center, center, center, center),
+  stroke: 0.5pt + anthropic-rule,
+  inset: 6pt,
+  table.header([*Run*], [*AUC*], [*F1*], [*NDCG\@3*], [*MAE*]),
+  [Pre-patch (local softmax, $W approx 0$)],         [0.6729], [0.2009], [0.6814], [0.9598],
+  [Post-patch (SageMaker softmax, $W$ 학습됨)],       [0.6719], [0.2042], [0.6875], [0.9597],
+  [$Delta$],                                         [$-0.001$], [$+0.003$], [$+0.006$], [$0$],
+)
+
+모두 noise 범위 안쪽. 구조적 버그 해결과 aggregate 성능 변화는 별개였다.
+
+*해석*:
+- Causal expert는 지금까지 `causal_encoder` MLP 단독으로 예측에 기여했고, $bold(W)$ 는 죽은 parameter 였다. $bold(W)$ 가 살아나도 $bold(z)_"hat"$ 변화 폭이 $bold(W)^2 tilde 10^(-2)$ scale 이라서 downstream MLP가 쉽게 흡수. *DAG 는 현 아키텍처에서 장식품* 이다.
+- Paper 1/2 의 "causal expert 가 DAG 를 학습한다" 주장은 patch 이후에야 *사실* 이 됐다. 이전에는 `get_causal_graph()` 가 noise 수준의 행렬을 반환하고 있었다. 설명력 claim이 이 함수에 의존했다면 patch는 pre-condition 이다.
+
+*Axis 3 재해석 탐색의 사전 조건 역할*: CEH (causal explainability head), CRCG (causal reason-code generator), CTGR (causal task-group router) 같은 후속 설계들은 모두 *학습된 DAG 가 있다* 는 전제 위에서 작동한다. Patch 이전에는 그 전제가 성립하지 않았다. 지금은 성립하지만, *DAG 가 존재 $arrow$ prediction 경로에 연결 $arrow$ 지표 개선* 이라는 세 단계 중 첫 단계만 해결된 상태다. 두 번째/세 번째 단계 (routing + benefit) 는 Axis 3 실험에서 확인될 것이고, 그 결과가 positive로 나올 때 이 patch 의 *가치* 가 증명된다. 현재로서는 "구조적으로 꼭 필요한 선행 조치" 수준으로 기록한다.
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.

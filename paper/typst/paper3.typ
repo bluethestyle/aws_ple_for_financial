@@ -154,6 +154,20 @@ Our contributions:
   (BRP-detached). The guidance is per-objective: NEAS for aggregate
   AUC and cross-task robustness, BRP-detached for hard-task rescue,
   do not stack (Section 4.7).
+- A structural diagnostic showing that the causal expert's learnable
+  adjacency matrix $bold(W)$ collapsed to zero across every trained
+  checkpoint we examined (four local, two upstream on-prem),
+  rendering the expert's forward pass equivalent to a plain MLP in
+  spite of its NOTEARS regularisation. The failure is a saddle-point
+  problem (both task-loss and reconstruction gradients have a $bold(W)$
+  factor that vanishes at the initialisation scale) and resolves
+  under a two-part patch: add the original-paper reconstruction term
+  ($||bold(z) - bold(z) bold(W)^2||_F^2$) and rescale initialisation
+  from $0.01$ to $0.1$. Post-patch the expert learns a valid sparse
+  DAG ($bold(W)$ Frobenius $0.34$, $7.3%$ edges active, $h(bold(W)) = 0$),
+  but aggregate task metrics are unchanged --- the DAG exists
+  structurally but is not routed into prediction by the current
+  architecture (Section 4.8).
 
 The system, data generator, and ablation scripts are publicly available.#footnote[
   https://github.com/bluethestyle/aws\_ple\_for\_financial
@@ -1014,6 +1028,165 @@ everything:
   and BRP-detached pressure across training phases, or a parameter-
   sharing adapter between the two heads) is a natural follow-up but
   not studied here.
+
+== Finding 8: The Causal Expert's Adjacency Matrix Was a Dead Parameter <find8>
+
+During preparatory diagnostics for a follow-up study reinterpreting
+the role of the causal expert, an unexpected failure surfaced in the
+baseline architecture itself: the causal expert's learnable adjacency
+matrix $bold(W) in RR^(32 times 32)$ --- the DAG structure the expert
+is supposed to learn --- had collapsed to essentially zero across every
+checkpoint we inspected. The effect is general, not an artefact of any
+particular scenario:
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    align: (left, center, center),
+    stroke: 0.5pt,
+    inset: 5pt,
+    table.header([*Checkpoint*], [*$bold(W)$ Frobenius*], [*Entries* $abs(W) > 0.01$]),
+    [struct_13_ple_sigmoid (CGC baseline)], [0.0001], [0%],
+    [struct_13_residual_complement (M1)],  [0.0001], [0%],
+    [struct_13_eceb (MV)],                 [0.0003], [0%],
+    [struct_13_brp_detached],              [0.0001], [0%],
+    [upstream on-prem implementation],     [0.0001], [0%],
+  ),
+  caption: [Causal expert's adjacency matrix across five independently
+  trained checkpoints, including two from the upstream on-prem
+  implementation that predates the port. In every case the Frobenius
+  norm of $bold(W)$ is below its random init scale, and not a single
+  off-diagonal entry exceeds 0.01 in magnitude. The DAG the expert is
+  supposed to learn does not exist after training.]
+) <tab:W-collapse>
+
+=== Root Cause: A Residual That Bypasses the DAG
+
+The expert's forward pass is
+
+$ bold(z)_"hat" = bold(z) + bold(z) bold(W)^2 $
+
+where $bold(z) = "feature_compressor"(bold(x))$ and
+$bold(z)_"hat"$ feeds a downstream `causal_encoder` MLP. The residual
+term $bold(z)$ carries the full latent content regardless of
+$bold(W)$, so the task loss has no structural incentive to push
+$bold(W)$ away from zero. The NOTEARS acyclicity and sparsity
+regularisers both penalise $bold(W)$ away from being dense, but
+neither penalises $bold(W) = 0$ --- in fact the sparsity term is
+*minimised* there. The global optimum of the combined objective is
+therefore $bold(W) = 0$, and training converges to it reliably.
+
+The learned gradient carries the same problem. Both the task-loss
+contribution via $partial bold(z)_"hat" slash partial bold(W)$ and
+the NOTEARS reconstruction gradient (when added) are proportional to
+$bold(W)$ itself:
+
+$ (partial) / (partial bold(W)) "trace" ((bold(W) dot.circle bold(W))^k)
+    thin prop thin bold(W) $
+
+Any near-zero initialisation produces a near-zero gradient, so
+$bold(W) = 0$ is a *saddle point* that the optimiser cannot escape on
+its own.
+
+=== Patch: Reconstruction Loss + Initialisation Rescale
+
+Two changes, both load-bearing:
+
++ *Reconstruction regulariser.* The original NOTEARS paper
+  minimises $||bold(X) - bold(X) bold(W)||_F^2$ --- an
+  explicit reconstruction signal. We adopt the compressed-latent
+  analogue as a third term in `get_dag_regularization()`:
+
+  $ cal(L)_"recon" = "mean" ((bold(z) - bold(z) bold(W)^2)^2), quad
+    lambda_"recon" = 0.5 $
+
+  This re-introduces the direct pressure on $bold(W)$ that the
+  original paper relies on.
+
++ *Initialisation rescale.* The initial $bold(W) tilde cal(N)(0, 0.01^2)$
+  was too small: its $bold(W)^2$ entries sit at $10^(-4)$, a scale at
+  which the gradient of either task or reconstruction loss is
+  effectively zero. Rescaling the init to $cal(N)(0, 0.1^2)$ keeps
+  $bold(W)^2$ on an $O(10^(-2))$ scale (still a small perturbation to
+  the residual path) while carrying enough magnitude to propagate
+  gradient during early training.
+
+Either change alone is insufficient. Reconstruction without init
+rescale was verified on a 10-epoch SageMaker run and left
+$bold(W) approx 0$; init rescale without reconstruction would restore
+the standard NOTEARS pressure but leave the gradient vanishing
+problem.
+
+=== Post-Patch Verification
+
+A 10-epoch SageMaker run with both changes produces a non-trivial DAG
+for the first time on this codebase:
+
+- $bold(W)$ Frobenius: $bold(0.338)$ (init scale was 0.1)
+- $abs(W)$-threshold sparsity at 0.01: 7.3%
+- Acyclicity $h(bold(W)) = 0$ (valid DAG)
+- Mean self-loop strength: $0.000$ (diagonal suppressed as intended)
+- Top edges by $W_(i j)^2$: `var_23 -> var_13` (0.019),
+  `var_9 -> var_13` (0.009), `var_15 -> var_11` (0.007)
+
+The sparsity ratio is in the target range (paper-recommended 5--15%)
+and the top edges show a consistent sink (`var_13`), which is the
+kind of hub structure a latent DAG ought to exhibit.
+
+=== Aggregate Task Metrics Are Unchanged
+
+Patching the collapse does *not* change downstream task performance.
+On the same SageMaker softmax-gate 10-epoch run, aggregate metrics
+are within noise of the pre-patch softmax baseline:
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    align: (left, center, center, center, center),
+    stroke: 0.5pt,
+    inset: 5pt,
+    table.header(
+      [*Run*], [*AUC*], [*F1 macro*], [*NDCG\@3*], [*MAE*]
+    ),
+    [Pre-patch local (softmax, $bold(W) approx 0$)],  [0.6729], [0.2009], [0.6814], [0.9598],
+    [Post-patch SageMaker (softmax, $bold(W)$ learned)], [0.6719], [0.2042], [0.6875], [0.9597],
+    [$Delta$],                                        [$-0.001$], [$+0.003$], [$+0.006$], [$0$],
+  ),
+  caption: [Task metric change after the W-collapse patch. Differences
+  across AUC, F1 macro, NDCG\@3, and MAE are within the noise band
+  observed across the 9-way fusion comparison (Finding 7). The
+  structural bug was real, but its resolution does not, by itself,
+  translate into task improvement.]
+) <tab:W-patch-metrics>
+
+=== Implication
+
+The diagnostic finding is structural but the metric finding is null.
+Two readings:
+
++ The causal expert has been contributing to prediction primarily
+  through its `causal_encoder` MLP, which is a regular non-linear
+  transform that does not require a meaningful $bold(W)$ to fit.
+  Adding a meaningful $bold(W)$ changes the latent pathway
+  ($bold(z)_"hat" = bold(z) + bold(z) bold(W)^2$) by a small amount,
+  but the downstream encoder adapts and the ensemble's final
+  prediction looks the same. The DAG is, in the current architecture,
+  *decorative* rather than functionally used by the prediction.
++ For explainability claims that depend on the DAG (attribution,
+  counterfactual probes, reason-code generation), this matters.
+  Pre-patch the DAG was absent --- so any such claim built on
+  `get_causal_graph()` was retrieving essentially noise at init
+  scale. Post-patch the DAG exists and is structured, but is not
+  itself routed into the prediction path.
+
+This motivates a separate structural study (beyond this paper's
+scope) that redefines the causal expert's role so the learned DAG
+has a load-bearing route to prediction, not just to the expert's own
+internal representation. Candidates include an attribution head that
+consumes the DAG directly, a routing signal from the causal expert
+to the per-task gate, and a counterfactual probe head. The W-
+collapse patch reported here is a pre-condition for any of those
+explorations --- without it, the DAG is not there to be routed.
 
 = Discussion
 
