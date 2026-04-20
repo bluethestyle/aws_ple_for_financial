@@ -1642,6 +1642,18 @@ class PLEModel(nn.Module):
                     # consumes ``expert._last_attribution`` directly.
                     if hasattr(expert, "get_attribution_loss") \
                             and getattr(expert, "ceh_enabled", False):
+                        # CEH v3: when target_mode is "primary_task",
+                        # the target cannot be computed inside the
+                        # causal expert (needs access to the task
+                        # towers). Inject it here via an extra
+                        # forward on a grad-enabled clone of the
+                        # input, isolating the specific task logit's
+                        # gradient × input and demeaning per-column
+                        # across the batch for per-sample deviation
+                        # learning. Guarded against re-entry via
+                        # self._in_ceh_v3_compute.
+                        if getattr(expert, "ceh_target_mode", None) == "primary_task":
+                            self._inject_ceh_v3_target(expert, inputs, predictions)
                         attr_loss = expert.get_attribution_loss()
                         weighted = expert.ceh_loss_weight * attr_loss
                         total_loss = total_loss + weighted
@@ -2122,6 +2134,79 @@ class PLEModel(nn.Module):
             if hasattr(expert, "get_causal_coherence_score"):
                 return expert.get_causal_coherence_score(causal_input)
         return None
+
+    def _inject_ceh_v3_target(
+        self,
+        expert,
+        inputs,
+        predictions: Dict[str, torch.Tensor],
+    ) -> None:
+        """Compute the CEH v3 primary-task-gradient target (Paper 3 Finding 13).
+
+        An extra forward pass on a grad-enabled clone of the input
+        isolates ``d task_logit / d x`` for the chosen task, times the
+        cloned input for the grad × input saliency form. The causal
+        expert's input subset is extracted via the feature router and
+        demeaned per column across the batch. Re-entrancy is guarded
+        so the extra forward does not trigger v3 target computation
+        again. Failures degrade gracefully (target stays unset; the
+        attribution loss for this step becomes 0).
+        """
+        if getattr(self, "_in_ceh_v3_compute", False):
+            return  # re-entry guard
+        task_name = getattr(expert, "ceh_primary_task_name", "churn_signal")
+        if task_name not in predictions:
+            return
+        # Save main-forward attribution so the extra forward below,
+        # which overwrites ``expert._last_attribution``, does not leave
+        # the attribution-loss pointing into the extra forward's graph
+        # (the extra forward's graph is freed by ``autograd.grad`` and
+        # the subsequent main ``total_loss.backward()`` would then try
+        # to traverse already-freed intermediates).
+        saved_attribution = expert._last_attribution
+        try:
+            from dataclasses import replace
+            self._in_ceh_v3_compute = True
+            features_clone = (
+                inputs.features.detach().clone().float().requires_grad_(True)
+            )
+            inputs_clone = replace(inputs, features=features_clone)
+            with torch.enable_grad():
+                with torch.amp.autocast("cuda", enabled=False):
+                    clone_out = self.forward(inputs_clone, compute_loss=False)
+                    task_pred = clone_out.predictions.get(task_name)
+                    if task_pred is None:
+                        return
+                    scalar = task_pred.float().sum()
+                grad_x = torch.autograd.grad(
+                    scalar, features_clone,
+                    retain_graph=False, create_graph=False,
+                    allow_unused=True,
+                )[0]
+            if grad_x is None:
+                return
+            target_full = (grad_x * features_clone).detach()
+            idx = getattr(self.feature_router, "_idx_causal", None) \
+                if self.feature_router is not None else None
+            if idx is not None:
+                target = target_full[:, idx]
+            else:
+                target = target_full[:, : expert.ceh_input_dim]
+            # Demean per column for per-sample deviation learning
+            # (matches v2's "demeaned" formulation).
+            target = target - target.mean(dim=0, keepdim=True)
+            expert.set_attr_target_external(target)
+        except Exception:
+            logger.debug(
+                "CEH v3 target injection failed; step loss will be 0",
+                exc_info=True,
+            )
+        finally:
+            # Restore the main-forward attribution. The attribution-
+            # loss MSE uses this, so it must point into the main
+            # graph that ``total_loss.backward()`` will traverse.
+            expert._last_attribution = saved_attribution
+            self._in_ceh_v3_compute = False
 
     def _extract_task_gradients(
         self,

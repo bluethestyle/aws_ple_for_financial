@@ -56,10 +56,10 @@
   --- 7 binary, 3 multiclass, 3 regression ---
   in a financial product recommendation system with 7 structurally distinct experts
   and 1M synthetic customers.
-  Eleven findings organize into three themes.
+  Thirteen findings organize into three themes.
   *Loss dynamics and gating* (Findings 1--6): an uncertainty-weighting implementation bug silently suppresses minority-type tasks (+0.018 NDCG\@3 when fixed); softmax gating outperforms sigmoid for heterogeneous task mixes, *reversing* the homogeneous-setting advantage; learned uncertainty weights converge identically across architectures; 10-epoch budgets may be insufficient for structural comparisons; GroupTaskExpert pre-gating degrades multiclass performance in mixed-type groups; gate entropy analysis shows extraction-layer specialization (entropy ratios 0.33--0.88) while attention-level aggregation collapses to uniform averaging (ratio 1.00), and composite val-loss is an unreliable checkpoint signal once regression tasks are present.
   *Fusion augmentation trade-offs* (Finding 7): a 9-way comparison isolates two positive recipes on disjoint axes --- output-space boosting with gradient isolation (BRP-detached, hard-task rescue) and inverse-gate auxiliary supervision (NEAS, aggregate-AUC gain) --- that do *not* compose additively.
-  *Causal expert reinterpretation* (Findings 8--12): the causal expert's adjacency matrix $bold(W)$ collapses to zero in every trained checkpoint examined, rendering its forward equivalent to a plain MLP; a two-part patch (NOTEARS reconstruction loss + initialisation rescale) restores DAG learning at zero task-metric cost; routing the functional DAG into consumable outputs yields a Causal Explainability Head (CEH, per-sample attribution, Pearl Rung 1) and a Causal Guardrail (CG, z-space-Mahalanobis OOD detection at 100% TPR / 5% FPR on three synthetic probes); W-amplification via init $0.1 arrow 0.3$ + $lambda_"recon" 0.5 arrow 2.0$ grows the adjacency matrix $14 times$ in Frobenius norm with zero primary-task cost, establishing that the "decorative DAG" is a training-choice artefact, not an architectural constraint; and a counterfactual probe (CCP, Pearl Rung 3) shows that at baseline W scale the DAG carries $0.16%$ of the counterfactual effect but at the amplified scale the mediation ratio rises to $32%$ at median and $61%$ at the 95th percentile, establishing that Pearl's Rung 3 is viable on top of the amplified teacher.
+  *Causal expert reinterpretation* (Findings 8--13): the causal expert's adjacency matrix $bold(W)$ collapses to zero in every trained checkpoint examined, rendering its forward equivalent to a plain MLP; a two-part patch (NOTEARS reconstruction loss + initialisation rescale) restores DAG learning at zero task-metric cost; routing the functional DAG into consumable outputs yields a Causal Explainability Head (CEH, per-sample attribution, Pearl Rung 1) and a Causal Guardrail (CG, z-space-Mahalanobis OOD detection at 100% TPR / 5% FPR on three synthetic probes); W-amplification via init $0.1 arrow 0.3$ + $lambda_"recon" 0.5 arrow 2.0$ grows the adjacency matrix $14 times$ in Frobenius norm with zero primary-task cost, establishing that the "decorative DAG" is a training-choice artefact, not an architectural constraint; and a counterfactual probe (CCP, Pearl Rung 3) shows that at baseline W scale the DAG carries $0.16%$ of the counterfactual effect but at the amplified scale the mediation ratio rises to $32%$ at median and $61%$ at the 95th percentile, establishing that Pearl's Rung 3 is viable on top of the amplified teacher; and a CEH v3 variant replacing the causal-encoder-output target with a specific task-logit gradient target is an honest negative result --- the head re-collapses to a global importance pattern despite training signal, showing that target design for attribution is more sensitive than the v1$arrow$v2 pivot suggested.
   We distill these observations into practical guidelines for
   practitioners scaling MTL beyond the homogeneous-task regime.
 
@@ -100,10 +100,10 @@ The result is a regime that large-scale CTR teams have no reason to enter
 (they can afford model-per-task) but that resource-constrained regulated
 industries are forced into.
 
-This paper reports twelve empirical findings from this scaling
+This paper reports thirteen empirical findings from this scaling
 experience, organised into three themes: loss dynamics and gating
 (Findings 1--6), fusion augmentation trade-offs (Finding 7), and
-causal expert reinterpretation (Findings 8--12). We make no claims
+causal expert reinterpretation (Findings 8--13). We make no claims
 of state-of-the-art performance; instead, we document *phenomena
 and practical guidelines* that emerge when MTL is pushed beyond the
 homogeneous-task regime. Our contributions:
@@ -1787,11 +1787,118 @@ CCP ran entirely as a post-hoc analysis on the existing two
 checkpoints; the MV cost is zero SageMaker spend on top of
 Findings 9--11.
 
+== Finding 13: CEH v3 Primary-Task-Gradient Target --- Negative Result <find13>
+
+Finding 9's "not-yet-verified" list closed with a candidate we
+did not run: replace the attribution target's scalar from the
+causal encoder's aggregate output to a specific task logit. The
+motivation was that downstream consumers ask explanations in task
+terms ("why did this customer receive a high churn score?"), so
+a target aligned with the task should give a more useful per-sample
+signal than a target aligned with the expert's internal output.
+
+=== Implementation
+
+A new `target_mode = "primary_task"` on CausalExpert. Target is
+computed by the PLE training loop rather than the causal expert:
+an extra forward pass on a grad-enabled clone of the input yields
+the task logit, its gradient with respect to the input's causal
+subset is computed with `torch.autograd.grad`, multiplied by the
+input, and demeaned per column across the batch (matching v2). The
+attribution head's main-forward output is preserved so the
+attribution loss integrates cleanly into the main backward pass.
+
+The configuration also keeps W-amplification on (init $0.3$,
+$lambda_"recon" = 2.0$) so the learned DAG is structurally
+meaningful (Finding 11). The specific task is ``churn\_signal``,
+the project's regulator-anchoring binary task.
+
+=== Result: Head Re-Collapses to Near-Global
+
+Running the same post-hoc quality evaluation on 5,000 validation
+samples:
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, right, right, right),
+    stroke: 0.5pt,
+    [*Metric*], [*v1 raw*], [*v2 demeaned*], [*v3 primary-task*],
+    [Spearman (CEH vs. raw grad $times$ input)], [$0.259$], [$0.096$], [$-0.035$],
+    [Between-sample / within-sample variance], [$0.055$], [$0.719$], [$0.043$],
+    [Top-10 feature overlap across samples], [$0.791$], [$0.281$], [$0.799$],
+    [Stability under noise ($sigma = 0.05$)], [$0.985$], [$0.953$], [$0.998$],
+    [Primary AUC (churn\_signal)], [$0.6866$], [$0.6870$], [$0.6873$],
+  ),
+  caption: [CEH v1, v2 (demeaned), and v3 (primary-task-gradient,
+  demeaned) on the same evaluation. v3 trains to a different target
+  without hurting the primary task, but its per-sample discrimination
+  collapses back to v1 levels --- top-10 overlap $0.799$ and variance
+  ratio $0.043$ indicate the attribution head re-learned a global
+  importance pattern rather than sample-specific deviation.],
+)<tbl:ceh-v3-comparison>
+
+Head parameter norms do grow between v2 and v3 ($||"head".0||_F =
+3.42 arrow.r 4.54$; $||"head".3||_F = 4.15 arrow.r 5.78$), so
+training signal was flowing; the head is not untrained. Nor is
+primary task performance sacrificed. The failure is in the target
+design, not the infrastructure.
+
+=== Why the Task-Logit Target Failed Where the Expert-Output Target Succeeded
+
+A plausible mechanism: the task logit is produced by a final linear
+layer $bold(W)_"task" dot bold("repr") + bold(b)_"task"$. Its
+gradient with respect to the input is $bold(W)_"task" dot
+(partial bold("repr") / partial bold(x))$. The linear layer's
+weight $bold(W)_"task"$ is a constant direction; the per-sample
+variation comes only from the Jacobian of the representation with
+respect to the input. When this gradient is multiplied by $bold(x)$
+and demeaned across the batch, the surviving per-sample signal
+appears to be too small relative to the head's capacity to produce
+a meaningful per-sample output. The head converges to a flat
+pattern that best explains the global structure of the demeaned
+target.
+
+The v2 target, by contrast, is the gradient of the *causal
+encoder*'s aggregate output --- a much wider representational
+bottleneck with richer per-sample interaction terms. Its demeaned
+version retains enough sample-specific structure for the head to
+learn from.
+
+=== What This Rules In / Out
+
+Rules in: the CEH infrastructure (attribution head + target
+injection + demeaning) is agnostic to target origin; v3 infra
+works mechanically.
+
+Rules out: *task-logit gradient is not automatically a better
+CEH target than expert-output gradient.* The demean step that
+rescued v2 does not generalise to this target. Target design is
+more sensitive than the v1$arrow.r$v2 pivot suggested; v2's
+success is a specific sweet spot rather than a general recipe.
+
+=== Candidate Next Steps (Not Run)
+
++ *Task logit without demeaning.* The demean step may be over-
+  subtracting structure specific to task gradients. A non-demeaned
+  task target (with L2 regularisation against global collapse)
+  is the obvious next iteration.
++ *Multi-task gradient aggregation.* $sum_t w_t nabla_bold(x) text("logit")_t$
+  with $w_t$ a task-weighting vector. Spreads supervision across
+  multiple task logits to avoid any single logit's global
+  structure dominating.
++ *Integrated Gradients as target.* A path-integrated attribution
+  is known to be more discriminative than single-point grad $times$
+  input.
+
+Cost: one SageMaker job (\$0.13). Negative result treated as an
+honest closed branch of the target-design search space.
+
 = Discussion
 
 == Practical Guidelines Summary
 
-We distill the twelve findings into ten guidelines for practitioners,
+We distill the thirteen findings into ten guidelines for practitioners,
 grouped by the three themes.
 
 === Loss Dynamics and Gating (Findings 1--6)
@@ -1837,7 +1944,7 @@ grouped by the three themes.
   experts cannot simultaneously be generalists (NEAS) and primary-
   supporting specialists (BRP-detached).
 
-=== Causal Expert Reinterpretation (Findings 8--11)
+=== Causal Expert Reinterpretation (Findings 8--13)
 
 + *Verify the causal DAG is actually learning before consuming it.*
   A $bold(W)$ that drifts to zero during training is a silent failure
@@ -1909,7 +2016,7 @@ at 30 epochs remain pending.
 *Single dataset scale*: While 1M customers is representative of
 mid-sized financial institutions, the findings may not generalize to
 internet-scale datasets (100M+ users) where task gradient dynamics differ.
-Findings 8--11 in particular are reported on a single seed and a
+Findings 8--13 in particular are reported on a single seed and a
 single dataset (Santander); cross-seed stability and cross-dataset
 reproduction are deferred.
 
@@ -1946,7 +2053,7 @@ feature+expert ablation. *Paper 2* (serving and ops) covers knowledge
 distillation, recommendation reason generation, and regulatory
 compliance. The present paper focuses specifically on *loss dynamics
 and gating behavior* (Findings 1--6), *fusion augmentation trade-offs*
-(Finding 7), and *causal expert reinterpretation* (Findings 8--11)
+(Finding 7), and *causal expert reinterpretation* (Findings 8--13)
 that emerged during the ablation study but warranted deeper analysis
 than Paper 1's scope allowed.
 
@@ -2000,7 +2107,7 @@ the shared experts cannot simultaneously be generalists (NEAS) and
 primary-supporting specialists (BRP-detached). The practical
 guidance is per-objective.
 
-*Causal expert reinterpretation* (Findings 8--11): the causal
+*Causal expert reinterpretation* (Findings 8--13): the causal
 expert's adjacency matrix $bold(W)$ collapsed to zero in every
 trained checkpoint we examined, rendering the expert equivalent to
 a plain MLP. A two-part patch (NOTEARS reconstruction loss +
@@ -2042,7 +2149,7 @@ additional seeds and datasets.
 
 *Seonkyu Jeong* (PM / Lead Architect / Data Scientist):
 Conceived the study, designed the ablation framework, identified all
-twelve findings, wrote the manuscript. Led AI-augmented development
+thirteen findings, wrote the manuscript. Led AI-augmented development
 methodology.
 
 *Euncheol Sim*: Data pipeline, feature engineering, ablation execution.

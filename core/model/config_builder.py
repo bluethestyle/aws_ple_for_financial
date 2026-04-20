@@ -255,6 +255,17 @@ def build_ple_config(
                       .setdefault("causal", {}))
         causal_cfg.setdefault("ceh", {})["target_mode"] = str(ceh_target_mode_raw)
 
+    # CEH v3 primary-task-gradient target (Paper 3 Finding 13). Accepts
+    # any task name present in pipeline.yaml's task list; defaults to
+    # ``churn_signal`` when not set and target_mode is "primary_task".
+    ceh_primary_task_raw = hp.get("ceh_primary_task")
+    if ceh_primary_task_raw is not None:
+        causal_cfg = (model_config.setdefault("expert_config", {})
+                      .setdefault("causal", {}))
+        causal_cfg.setdefault("ceh", {})["primary_task_name"] = str(
+            ceh_primary_task_raw
+        )
+
     # W-amplification HPs (Paper 3 Finding 11 follow-up to Finding 10).
     # Finding 10 established the learned W is too weak at init 0.1 and
     # recon_lambda 0.5 for structural downstream uses (CG v1 TPR = FPR

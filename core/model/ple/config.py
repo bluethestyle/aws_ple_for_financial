@@ -91,11 +91,20 @@ class CEHConfig:
     loss_weight: float = 0.1
     dropout: float = 0.1
     # target_mode:
-    #   "raw"      = grad × input of causal-encoder output sum (Finding 9 MV).
-    #   "demeaned" = grad × input minus its batch mean; forces per-sample
-    #                deviation after quality eval revealed near-global
-    #                collapse (Section 4.9.3 iteration v2).
+    #   "raw"          = grad × input of causal-encoder output sum (Finding 9 MV).
+    #   "demeaned"     = grad × input minus its batch mean; forces per-sample
+    #                    deviation after quality eval revealed near-global
+    #                    collapse (Section 4.9.3 iteration v2).
+    #   "primary_task" = grad × input of a specific task logit (default
+    #                    churn_signal), demeaned. Target is computed by
+    #                    PLEModel._inject_ceh_v3_target via an extra forward
+    #                    pass; the causal expert never runs the task path
+    #                    itself. Paper 3 Finding 13 (v3).
     target_mode: str = "raw"
+    # Name of the task whose logit's grad × input becomes the target when
+    # target_mode == "primary_task". Ignored otherwise. Must match a task
+    # name in pipeline.yaml's task list.
+    primary_task_name: str = "churn_signal"
 
 
 @dataclass
