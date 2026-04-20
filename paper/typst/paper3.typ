@@ -56,24 +56,10 @@
   --- 7 binary, 3 multiclass, 3 regression ---
   in a financial product recommendation system with 7 structurally distinct experts
   and 1M synthetic customers.
-  Six findings challenge conventional MTL wisdom:
-  (1) a subtle implementation bug in Kendall et al.'s uncertainty weighting
-  --- omitting per-task loss weights --- silently suppresses minority-type tasks,
-  producing a +0.018 NDCG\@3 gain when fixed;
-  (2) softmax gating outperforms sigmoid for heterogeneous task mixes,
-  *reversing* the sigmoid advantage reported in homogeneous settings;
-  (3) learned uncertainty weights converge to *identical* values regardless
-  of architecture (shared-bottom vs.\ PLE), revealing that uncertainty weighting
-  acts as loss-scale normalization rather than structural protection;
-  (4) 10-epoch budgets may be insufficient for complex structures to differentiate
-  from simpler baselines;
-  (5) GroupTaskExpert (GTE) pre-gating *degrades* multiclass performance
-  when groups contain mixed task types;
-  and (6) gate entropy analysis reveals that CGC extraction-layer gating
-  specializes meaningfully (entropy ratios 0.33--0.88 across tasks) while
-  attention-level aggregation remains uniformly diffuse (entropy ratio 1.00),
-  and composite val-loss is an *unreliable* checkpoint signal because
-  regression tasks continue improving after classification/ranking metrics peak.
+  Eleven findings organize into three themes.
+  *Loss dynamics and gating* (Findings 1--6): an uncertainty-weighting implementation bug silently suppresses minority-type tasks (+0.018 NDCG\@3 when fixed); softmax gating outperforms sigmoid for heterogeneous task mixes, *reversing* the homogeneous-setting advantage; learned uncertainty weights converge identically across architectures; 10-epoch budgets may be insufficient for structural comparisons; GroupTaskExpert pre-gating degrades multiclass performance in mixed-type groups; gate entropy analysis shows extraction-layer specialization (entropy ratios 0.33--0.88) while attention-level aggregation collapses to uniform averaging (ratio 1.00), and composite val-loss is an unreliable checkpoint signal once regression tasks are present.
+  *Fusion augmentation trade-offs* (Finding 7): a 9-way comparison isolates two positive recipes on disjoint axes --- output-space boosting with gradient isolation (BRP-detached, hard-task rescue) and inverse-gate auxiliary supervision (NEAS, aggregate-AUC gain) --- that do *not* compose additively.
+  *Causal expert reinterpretation* (Findings 8--11): the causal expert's adjacency matrix $bold(W)$ collapses to zero in every trained checkpoint examined, rendering its forward equivalent to a plain MLP; a two-part patch (NOTEARS reconstruction loss + initialisation rescale) restores DAG learning at zero task-metric cost; routing the functional DAG into consumable outputs yields a Causal Explainability Head (CEH, per-sample attribution) and a Causal Guardrail (CG, z-space-Mahalanobis OOD detection at 100% TPR / 5% FPR on three synthetic probes); and W-amplification via init $0.1 arrow 0.3$ + $lambda_"recon" 0.5 arrow 2.0$ grows the adjacency matrix $14 times$ in Frobenius norm with zero primary-task cost, establishing that the "decorative DAG" is a training-choice artefact, not an architectural constraint.
   We distill these observations into practical guidelines for
   practitioners scaling MTL beyond the homogeneous-task regime.
 
@@ -114,11 +100,13 @@ The result is a regime that large-scale CTR teams have no reason to enter
 (they can afford model-per-task) but that resource-constrained regulated
 industries are forced into.
 
-This paper reports six empirical findings from this scaling experience.
-We make no claims of state-of-the-art performance;
-instead, we document *phenomena and practical guidelines*
-that emerge when MTL is pushed beyond the homogeneous-task regime.
-Our contributions:
+This paper reports eleven empirical findings from this scaling
+experience, organised into three themes: loss dynamics and gating
+(Findings 1--6), fusion augmentation trade-offs (Finding 7), and
+causal expert reinterpretation (Findings 8--11). We make no claims
+of state-of-the-art performance; instead, we document *phenomena
+and practical guidelines* that emerge when MTL is pushed beyond the
+homogeneous-task regime. Our contributions:
 
 - A diagnosis of how Kendall et al.'s uncertainty weighting
   silently fails when per-task loss weights are omitted (Section 4.1).
@@ -1714,7 +1702,10 @@ CRCG / CCP is therefore:
 
 == Practical Guidelines Summary
 
-We distill six findings into five guidelines for practitioners:
+We distill the eleven findings into nine guidelines for practitioners,
+grouped by the three themes.
+
+=== Loss Dynamics and Gating (Findings 1--6)
 
 + *Gate selection depends on task-type mix, not on architecture.*
   Use softmax for heterogeneous task mixes (different loss types);
@@ -1745,6 +1736,57 @@ We distill six findings into five guidelines for practitioners:
   Audit entropy ratios at both the extraction and attention levels before
   attributing performance gains to gating mechanisms.
 
+=== Fusion Augmentation (Finding 7)
+
++ *Match the fusion recipe to the objective; do not stack them.*
+  For aggregate-AUC gains with uniform per-task lift, prefer inverse-gate
+  auxiliary supervision (NEAS). For hard-task rescue at the cost of
+  aggregate AUC parity, prefer output-space boosting with shared-expert
+  gradient isolation (BRP-detached). The two recipes operate on disjoint
+  axes --- gate-level load balancing vs. output-level error correction ---
+  and stacking them collapses the aggregate-AUC gain because shared
+  experts cannot simultaneously be generalists (NEAS) and primary-
+  supporting specialists (BRP-detached).
+
+=== Causal Expert Reinterpretation (Findings 8--11)
+
++ *Verify the causal DAG is actually learning before consuming it.*
+  A $bold(W)$ that drifts to zero during training is a silent failure
+  mode: NOTEARS acyclicity and sparsity penalties are satisfied
+  trivially at $bold(W) = 0$, and an SCM residual forward
+  ($bold(z) + bold(z) bold(W)^2$) still propagates the primary signal
+  through $bold(z)$. Monitor Frobenius norm, active-edge count, and
+  acyclicity value $h(bold(W))$ at training time, not just final
+  task metrics.
+
++ *Decorative DAG is a training choice, not an architectural constraint.*
+  With init scale $0.1$ and reconstruction-loss weight $0.5$, $bold(W)$
+  lands at Frobenius ~$0.36$ on an $8 times 8$ matrix --- "present but
+  too weak to matter". Raising init to $0.3$ and $lambda_"recon"$ to
+  $2.0$ amplifies the learned matrix $14 times$ with zero primary-task
+  cost. Downstream uses that rely on $bold(W)$ carrying structural
+  information should be evaluated against an amplified training run,
+  not the default.
+
++ *Check attribution-head target design for sample-variance collapse.*
+  A target with large sample-invariant content (e.g., raw gradient $times$
+  input of an aggregate output) lets a thin MLP re-learn the global
+  pattern and ignore the per-sample residual. Verify that attribution
+  varies sample-to-sample (between/within variance ratio, top-$K$
+  overlap across samples) before claiming per-prediction
+  explainability. A minimal fix --- subtract the batch mean of the
+  target --- forces per-sample deviation learning and (in our case)
+  raised the variance ratio from $0.055$ to $0.719$ at no task cost.
+
++ *Prefer latent-space over weight-space formulations for guardrails.*
+  A per-sample W-reconstruction residual has no distribution awareness:
+  if every sample produces an identical latent, the residual is a
+  point and the guardrail cannot fire. Mahalanobis-style distance
+  from a cached in-distribution reference batch is distribution-aware
+  by construction and hit 100% OOD TPR at 5% FPR across three probes
+  in our setup. Default to the latent formulation; use the
+  weight-space version only as a supplement.
+
 == Limitations
 
 *Synthetic data*: All experiments use a synthetic benchmark with controlled
@@ -1764,79 +1806,136 @@ at 30 epochs remain pending.
 *Single dataset scale*: While 1M customers is representative of
 mid-sized financial institutions, the findings may not generalize to
 internet-scale datasets (100M+ users) where task gradient dynamics differ.
+Findings 8--11 in particular are reported on a single seed and a
+single dataset (Santander); cross-seed stability and cross-dataset
+reproduction are deferred.
+
+*Synthetic OOD probes for CG (Finding 10--11)*: The Causal Guardrail
+evaluation uses three synthetic out-of-distribution probes (uniform
+random, column-permuted, extreme-tail). Real-world distribution drift
+(temporal shift, subgroup imbalance, adversarial perturbation) is
+expected to differ in both structure and difficulty. CG v2's 100%
+TPR at 5% FPR on synthetic probes is a sanity-check ceiling, not a
+production-ready number.
+
+*Attribution meaningfulness not human-evaluated*: CEH v2 (Finding 9)
+produces per-sample attributions that discriminate across samples
+(variance ratio 0.719, top-10 overlap 0.281), but we have not
+assessed whether the resulting top-$K$ features agree with domain-
+expert expectations or with alternative attribution methods
+(Integrated Gradients, DAG-path traversal). A human-evaluation pass
+is future work.
+
+*Remaining Axis-3 candidates (CTGR, CRCG, CCP)*: Findings 10--11
+establish the precondition for the three unexplored candidates ---
+$bold(W)$ is trainable --- but the candidates themselves are not yet
+evaluated. CG's v1$arrow.r$v2 pivot also introduces a concrete
+prediction (latent-based formulations should be evaluated alongside
+weight-based ones), which has not been tested on the remaining
+candidates.
 
 == Relationship to Companion Papers
 
 This paper complements two companion papers from the same project:
-*Paper 1* (architecture and ablation) establishes the heterogeneous expert
-PLE design and validates expert specialization via joint feature+expert ablation.
-*Paper 2* (serving and ops) covers knowledge distillation, recommendation reason
-generation, and regulatory compliance.
-The present paper focuses specifically on *loss dynamics and gating behavior*
+*Paper 1* (architecture and ablation) establishes the heterogeneous
+expert PLE design and validates expert specialization via joint
+feature+expert ablation. *Paper 2* (serving and ops) covers knowledge
+distillation, recommendation reason generation, and regulatory
+compliance. The present paper focuses specifically on *loss dynamics
+and gating behavior* (Findings 1--6), *fusion augmentation trade-offs*
+(Finding 7), and *causal expert reinterpretation* (Findings 8--11)
 that emerged during the ablation study but warranted deeper analysis
 than Paper 1's scope allowed.
 
+Findings 9--11 are directly consumed by Paper 2's v2 audit
+infrastructure: the CEH attribution vector feeds
+`AuditLogger.log_attribution`, and the CG z-space coherence score
+feeds `AuditLogger.log_guardrail`, producing a complete
+HMAC-signed hash-chained per-prediction record (explanation +
+reliability). The training-time machinery that makes the DAG
+learnable (Finding 8) and the amplification knobs that make $bold(W)$
+structurally meaningful (Finding 11) are therefore not standalone
+curiosities in Paper 3 but prerequisites for the regulator-usable
+audit surface delivered in Paper 2 v2.
+
 = Conclusion
 
-Scaling multi-task learning from 2--4 homogeneous tasks to 13 heterogeneous tasks
-reveals dynamics that existing literature, evaluated primarily on
-homogeneous setups, does not address.
-The gate type choice --- softmax vs.\ sigmoid --- depends not on
-architectural preference but on whether tasks share the same loss type.
-Uncertainty weighting normalizes scales but does not isolate gradients.
-Pre-gating mechanisms like GTE require type-homogeneous groups.
-Training budgets must account for cosine restart cycles before structural
-comparisons are meaningful.
+Scaling multi-task learning from 2--4 homogeneous tasks to 13
+heterogeneous tasks surfaces three families of dynamics that
+existing literature, evaluated primarily on homogeneous setups,
+does not address.
 
-Gate entropy analysis adds further precision to this picture:
-PLE extraction-layer gating demonstrably specializes (entropy ratios 0.33--0.88),
-with simple-pattern tasks concentrating on 1--2 experts and complex tasks
-distributing weight across all 7.
-Attention-level aggregation, however, collapses to uniform averaging
-(entropy ratio 1.00 for all tasks), suggesting that this component
-does not perform routing in practice.
-Finally, composite val loss is an unreliable checkpoint signal once
-regression tasks are present --- their continuous improvement masks
-classification and ranking metric degradation,
-and cosine learning-rate restarts amplify this divergence by disproportionately
-disrupting the ranking-optimal parameter region.
+*Loss dynamics and gating* (Findings 1--6): gate type choice ---
+softmax vs.\ sigmoid --- depends on whether tasks share a loss
+type, not on architectural preference; uncertainty weighting
+normalizes scales but does not isolate gradients and converges
+identically across architectures; pre-gating mechanisms like GTE
+require type-homogeneous groups; training budgets must absorb cosine
+restart cycles before structural comparisons are meaningful; gate
+entropy analysis shows that extraction-layer gating specializes
+(entropy ratios $0.33$--$0.88$) while attention-level aggregation
+collapses to uniform averaging (ratio $1.00$); and composite val
+loss is an unreliable checkpoint signal once regression tasks are
+present, because their continuous improvement masks classification
+and ranking degradation.
 
-These findings are not novel algorithms but practical diagnostics.
-We hope they prevent other practitioners from re-discovering the same pitfalls
-when scaling MTL to real-world heterogeneous task portfolios.
+*Fusion augmentation trade-offs* (Finding 7): a 9-way comparison of
+representation-level and output-level fusions on top of CGC maps the
+design space into three regions. Representation-additive fusions ---
+loss-level adaTT, AdaTT-sp, M1 complement, ECEB, and MV BRP ---
+propagate residual-error signal into the primary-representation path
+and uniformly degrade aggregate AUC, with magnitude scaling in the
+invasiveness of the intervention. Output-space boosting with shared-
+expert gradient isolation (BRP-detached) ties CGC on aggregate AUC
+while lifting F1 macro and NDCG\@3 and retaining a +256% relative
+rescue on the hardest multiclass task. Training-time load-balancing
+regularisation (NEAS) is the first mechanism of the family to
+actually raise aggregate AUC ($Delta = +0.0011$) with near-uniform
+per-task lifts. The two positive recipes act on disjoint axes and
+are not additive --- stacking them collapses NEAS's AUC gain because
+the shared experts cannot simultaneously be generalists (NEAS) and
+primary-supporting specialists (BRP-detached). The practical
+guidance is per-objective.
 
-Finding 7 maps the search space for fusion augmentation on top of CGC
-into three regions. *Representation-additive fusions* --- loss-level
-adaTT, AdaTT-sp, M1 complement, ECEB, and MV BRP --- all propagate
-residual-error signal into the primary-representation path and
-uniformly degrade aggregate AUC, with magnitude scaling monotonically
-in the invasiveness of the intervention. *Output-space boosting with
-shared-expert gradient isolation* (BRP-detached) ties CGC on
-aggregate AUC ($Delta = -0.0007$, best epoch $0.6736 > 0.6728$) while
-improving F1 macro by $+0.007$ and NDCG\@3 by $+0.015$ and retaining
-a $+$256% relative rescue on the hardest multiclass task.
-*Training-time load-balancing regularisation* (NEAS) is the first
-mechanism of the family to actually raise aggregate AUC
-($Delta = +0.0011$), with a monotone-increasing trajectory and near-
-uniform per-task lifts. The two positive recipes act on disjoint
-axes (error correction in output space vs. expert-collapse prevention
-at the gate) and are *not additive*: stacking them collapses NEAS's
-AUC gain because the shared experts cannot simultaneously be
-generalists (NEAS) and primary-supporting specialists (BRP-detached).
-The practical guidance is per-objective: NEAS for aggregate AUC and
-uniform cross-task robustness, BRP-detached for hard-task rescue.
-Follow-up work will validate both recipes across seeds and datasets
-and evaluate mechanisms that could resolve the NEAS $times$ BRP-
-detached conflict (phased-schedule training, parameter-shared heads)
-in a SageMaker setting where the compute budget allows systematic
-sweeps.
+*Causal expert reinterpretation* (Findings 8--11): the causal
+expert's adjacency matrix $bold(W)$ collapsed to zero in every
+trained checkpoint we examined, rendering the expert equivalent to
+a plain MLP. A two-part patch (NOTEARS reconstruction loss +
+initialisation rescale) restores DAG learning at zero primary-task
+cost, but the DAG is initially "decorative" --- structurally valid
+and not routed into prediction. We report two Axis-3 candidates that
+route the functional DAG into consumable per-prediction outputs:
+a Causal Explainability Head (CEH) producing a per-sample attribution
+vector, and a Causal Guardrail (CG) producing a reliability flag.
+CEH's first formulation collapsed to a global importance pattern;
+a minimum-intervention "demeaned target" variant restored per-sample
+discrimination. CG's first formulation failed at chance-level
+discrimination; a z-space Mahalanobis formulation hit $100%$ TPR
+at $5%$ FPR on three synthetic OOD probes. A W-amplification
+experiment then established that the decorative DAG is a
+training-choice artefact, not an architectural constraint ---
+init $0.1 arrow.r 0.3$ and $lambda_"recon" 0.5 arrow.r 2.0$ grows
+$||bold(W)||_F$ 14-fold at zero task cost. Combined with the
+HMAC-signed hash-chained audit trail described in the companion
+paper, CEH + CG produce a regulator-usable per-prediction record
+that pairs *what* the model recommended (attribution) with
+*whether* that recommendation can be trusted (reliability).
+
+These findings are not novel algorithms but practical diagnostics
+and minimum-viable candidates on top of them. We hope they prevent
+other practitioners from re-discovering the same pitfalls when
+scaling MTL to real-world heterogeneous task portfolios, and that
+they motivate later work to validate the positive recipes
+(NEAS, BRP-detached, CEH v2, CG v2, W-amplified teachers) across
+additional seeds and datasets.
 
 // ============================================================
 = Author Contributions
 
 *Seonkyu Jeong* (PM / Lead Architect / Data Scientist):
-Conceived the study, designed the ablation framework, identified all five findings,
-wrote the manuscript. Led AI-augmented development methodology.
+Conceived the study, designed the ablation framework, identified all
+eleven findings, wrote the manuscript. Led AI-augmented development
+methodology.
 
 *Euncheol Sim*: Data pipeline, feature engineering, ablation execution.
 
