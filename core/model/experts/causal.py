@@ -121,8 +121,16 @@ class CausalExpert(AbstractExpert):
         # to exactly 0. A 10× larger init keeps W² on the O(0.01) scale
         # initially, which is small enough not to disrupt early forward
         # passes but large enough to carry meaningful gradient.
+        #
+        # Config-driven via ``w_init_scale`` for Paper 3 Finding 11
+        # (W-amplification): Finding 10 showed the learned W at scale
+        # 0.1 is too weak for structural downstream uses (CG v1, CTGR,
+        # CRCG). Raising init + recon_lambda together tests whether
+        # W can be pushed out of the "decorative" regime.
+        self.w_init_scale: float = float(config.get("w_init_scale", 0.1))
         self.W = nn.Parameter(
-            torch.randn(self.n_causal_vars, self.n_causal_vars) * 0.1
+            torch.randn(self.n_causal_vars, self.n_causal_vars)
+            * self.w_init_scale
         )
 
         # Cache of the last feature_compressor output (z), used by the

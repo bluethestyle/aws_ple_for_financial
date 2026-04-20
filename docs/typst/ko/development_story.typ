@@ -957,6 +957,56 @@ p95 threshold (62.8) 에서 세 OOD 유형 모두 **TPR 100%, FPR 5%**. 이 한 
 
 *비용*: \$0 (SageMaker 재학습 없음, 기존 체크포인트 post-hoc 분석).
 
+=== Finding 11 W-증폭 실험 --- "decorative DAG" 는 학습 선택의 결과
+
+Finding 10 결과가 두 가설을 낳았다. (a) W 가 작아서 CG v1 이 망한 것인지, (b) $||z - z W^2||$ formulation 자체가 구조적으로 한계인지. (a) 를 검증하기 위해 `w_init_scale: 0.1 → 0.3`, `recon_lambda: 0.5 → 2.0` 로 재학습 (`teacher_ceh_w_amp`, 10 epoch, 나머지 baseline 과 동일).
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, right, right, right),
+    stroke: 0.5pt,
+    table.header([*지표*], [*Baseline*], [*W-amp*], [*배수*]),
+    [$||W||_F$], [$0.363$], [$5.028$], [$13.9 times$],
+    [Active edges ($|W| > 0.01$)], [$8.5%$], [$59.5%$], [$7.0 times$],
+    [Max $|W_(i j)|$], [$0.11$], [$0.77$], [$7.0 times$],
+    [Primary AUC], [$0.6870$], [$0.6865$], [noise],
+  ),
+  caption: [W-증폭 훈련 결과. 증폭은 공짜 --- W 가 한 자릿수 이상 커졌는데 primary metric 은 변화 없음. Finding 8 의 "decorative DAG" 는 *아키텍처 제약* 이 아니라 *학습 선택 의 artefact* 이었음이 확인.],
+)
+
+*CG v1 재측정*: 같은 체크포인트에 Finding 10 의 동일 eval 을 돌렸다.
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    align: (left, right, right),
+    stroke: 0.5pt,
+    table.header([*Probe*], [*Baseline TPR*], [*W-amp TPR*]),
+    [Uniform random], [$6.8%$], [$22.7%$],
+    [Column-permuted], [$8.1%$], [$18.6%$],
+    [Extreme-tail], [$0.0%$], [$0.0%$],
+  ),
+  caption: [CG v1 OOD 검출률 (FPR 5% 고정). 증폭 후 두 probe 는 chance 에서 약한 신호로 올라오지만 extreme-tail 은 여전히 0% --- W 크기가 아니라 formulation 자체의 한계.],
+)
+
+*Extreme-tail 0% 의 의미*: 모든 샘플을 동일 벡터로 만들면 z 도 동일, 잔차도 동일 --- per-sample 지표는 *분포 감각* 이 없다. W 크기 무관. CG v2 (Mahalanobis) 는 참조 분포로부터의 거리라서 이 경우도 100% 처리.
+
+*CG v2 영향 없음*: W 증폭 여부와 무관하게 세 probe 모두 100% TPR 유지. 즉 z latent 은 W 와 독립적으로 discriminative 정보를 담음.
+
+*정리된 것*:
+1. W 는 학습 가능 --- 적절한 init + recon 으로 한 자릿수 이상 증폭 가능, primary 비용 없음.
+2. Finding 10 의 CG v1 실패는 *부분적으로* W 크기 문제 (증폭 시 ~15-20 TPR 점 회복), *부분적으로* formulation 한계.
+3. Latent-space CG 는 여전히 지배적. W 기반 가드레일은 보완재, 대체재 아님.
+
+*남은 질문*:
+- 증폭된 W 가 CTGR / CRCG / CCP 를 *작동* 시키는가? Finding 11 은 그 후보들이 돌아갈 *전제 조건* (W 가 의미 있음) 을 확보했을 뿐, 직접 답은 아직.
+- 더 공격적 증폭 (init 0.5, recon_lambda 5.0) 이 v1 을 쓸 만한 수준으로 올리는가 아니면 primary 를 깨는가? 현재 config (0.3 / 2.0) 는 최소 개입 버전.
+
+*업데이트된 권고*: 남은 Axis 3 후보 (CTGR / CRCG / CCP) 는 *amplified W teacher 위에서* 돌리되, 각각 *latent-기반 대안* 과 나란히 평가. 모든 비교에서 latent 버전을 이겨야 할 baseline 으로 보고 W 버전이 자동 우위라고 가정하지 않는다.
+
+*비용*: \$0.13 (10ep spot g4dn, 985s billable).
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.

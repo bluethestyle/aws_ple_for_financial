@@ -1038,6 +1038,56 @@ At the $"p95"$ threshold (62.8), all three OOD types hit *TPR 100%, FPR 5%*. A s
 
 *Cost*: \$0 (post-hoc analysis, no training).
 
+=== Finding 11 W-Amplification --- "Decorative DAG" Is a Training-Choice Artefact
+
+Finding 10 left two hypotheses open: (a) the learned $W$ is simply too small to drive reconstruction-based discrimination, or (b) the $||z - z W^2||$ formulation is structurally limited regardless of $W$'s magnitude. Hypothesis (a) is cheap to test --- retrain the single `teacher_ceh_w_amp` scenario with `w_init_scale: 0.1 -> 0.3` and `recon_lambda: 0.5 -> 2.0`, everything else identical to the demeaned baseline.
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, right, right, right),
+    stroke: 0.5pt,
+    table.header([*Metric*], [*Baseline*], [*W-amp*], [*Change*]),
+    [$||W||_F$], [$0.363$], [$5.028$], [$13.9 times$],
+    [Active edges ($|W| > 0.01$)], [$8.5%$], [$59.5%$], [$7.0 times$],
+    [Max $|W_(i j)|$], [$0.11$], [$0.77$], [$7.0 times$],
+    [Primary AUC], [$0.6870$], [$0.6865$], [within noise],
+  ),
+  caption: [W-amplification training result. Every structural measure of the adjacency matrix grows by roughly an order of magnitude at zero primary-task cost. Finding 8's "decorative DAG" is a training-choice artefact, not an architectural constraint.],
+)
+
+*CG v1 re-evaluated* on the amplified checkpoint (identical OOD probes):
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    align: (left, right, right),
+    stroke: 0.5pt,
+    table.header([*Probe*], [*Baseline TPR*], [*W-amp TPR*]),
+    [Uniform random], [$6.8%$], [$22.7%$],
+    [Column-permuted], [$8.1%$], [$18.6%$],
+    [Extreme-tail], [$0.0%$], [$0.0%$],
+  ),
+  caption: [CG v1 OOD detection (FPR fixed at 5%). The two variable probes improve from chance to weak-but-nonzero; extreme-tail stays at zero regardless of W magnitude.],
+)
+
+*Extreme-tail's stubborn 0%* reveals the real structural limit. That probe sets every sample to the same vector, so $z$ is identical across samples and so is the residual --- a per-sample score has no vantage point on the input *distribution*. No amount of W scaling fixes this; the formulation itself has no distribution awareness. CG v2's Mahalanobis is explicitly a distance from a reference distribution and therefore handles this case trivially (100% TPR).
+
+*CG v2 unchanged* at 100% TPR for all three probes --- latent-space discrimination doesn't depend on W and is unaffected by amplification.
+
+*Settled*:
+1. W is not architecturally doomed. Init $0.3$ + $lambda_"recon" = 2.0$ grows it an order of magnitude with zero primary-task cost.
+2. Finding 10's CG v1 failure was *partly* small-W (now contributes ~15-20 TPR points) and *partly* a formulation ceiling.
+3. Latent-space CG remains dominant; W-based guardrails are a supplement, not a replacement.
+
+*Open*:
+- Does amplified W actually enable CTGR / CRCG / CCP, or do they hit similar formulation ceilings? Finding 11 only establishes the *precondition* (W is usable), not the answer.
+- Does more aggressive amplification (init $0.5$, $lambda_"recon" = 5$, removed sparsity) push v1 to usability or crash primary AUC? Not tested here.
+
+*Updated recommendation*: run the remaining Axis-3 candidates *on a W-amplified teacher* and in each case evaluate a latent-based alternative alongside. Treat the latent version as the baseline to beat; do not assume W-based variants are preferable.
+
+*Cost*: \$0.13 (10-epoch spot g4dn, 985s billable).
+
 #section-break()
 
 
