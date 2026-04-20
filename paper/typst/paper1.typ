@@ -642,6 +642,13 @@ in financial customer understanding that no other expert type addresses:
   injecting discovered causal structure into the representation
   without re-running the optimization.
   This enables "A causes B" explanations rather than "A correlates with B" @pearl2009causality.
+  (The companion loss-dynamics paper reports empirical findings on
+  this expert, including a silent $W arrow.r 0$ collapse under the
+  default initialisation and a two-part patch --- NOTEARS
+  reconstruction loss plus initialisation rescale --- that restores
+  DAG learning; a follow-up W-amplification experiment grows
+  $||W||_F$ 14$times$ at zero primary-task cost. Paper 3
+  Findings 8 and 11.)
 
 - *LightGCN* @he2020lightgcn: Collaborative filtering via neighborhood aggregation
   on the customer-product bipartite graph. This expert is stripped to its essentials --- no feature transformation and no activation --- which has been shown to outperform more complex GCN variants for recommendation.
@@ -1637,9 +1644,20 @@ a result we attribute to softmax's protective isolation
 of minority-type tasks (multiclass) from majority-type gradients (binary).
 
 The architecture, benchmark data, and ablation framework are released as open source.#footnote[https://github.com/bluethestyle/aws\_ple\_for\_financial]
-A companion paper addresses the downstream pipeline:
-knowledge distillation @hinton2015 to LGBM @ke2017lightgbm, multi-agent recommendation reason generation,
-and regulatory compliance mapping for Korean FSS and EU AI Act requirements.
+Two companion papers address the remaining scope.
+*Paper 2* covers the downstream serving pipeline: knowledge
+distillation @hinton2015 to LGBM @ke2017lightgbm, multi-agent
+recommendation reason generation, regulatory compliance mapping for
+Korean FSS and EU AI Act requirements, and an HMAC-signed hash-chained
+per-prediction audit surface that pairs attribution (CEH) with
+reliability (CG).
+*Paper 3* reports empirical findings from scaling PLE to 13
+heterogeneous tasks --- loss dynamics and gate selection behaviour
+(Findings 1--6), a 9-way comparison of fusion augmentations that
+identifies two non-additive positive recipes (Finding 7), and a
+causal expert reinterpretation arc from dead-parameter diagnosis
+through CEH attribution and CG guardrail to W-amplification
+(Findings 8--11) whose outputs feed Paper 2's audit surface.
 
 // ============================================================
 // ============================================================
