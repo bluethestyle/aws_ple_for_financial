@@ -175,6 +175,26 @@ SCENARIOS = [
             "recon_lambda": "2.0",
         },
     },
+    # Paper 3 Finding 13 (CEH v3 primary-task-gradient target). The v2
+    # demeaned variant aligns the attribution head with the causal
+    # encoder's *aggregate output*; v3 aligns it with a specific task
+    # logit (default churn_signal), so the resulting top-K attribution
+    # answers "why did this task prediction fire?" rather than "which
+    # features light up the causal encoder?". W-amplification is kept
+    # on (matches teacher_ceh_w_amp) so the DAG carries meaningful
+    # mediation. Uses ~2x the compute per step due to the extra
+    # forward pass for the grad × input target.
+    {
+        "name": "teacher_ceh_primary",
+        "job_name": "teacher-ceh-pri-10ep",
+        "hp": {
+            "use_ceh": "true",
+            "ceh_target_mode": "primary_task",
+            "ceh_primary_task": "churn_signal",
+            "w_init_scale": "0.3",
+            "recon_lambda": "2.0",
+        },
+    },
 ]
 
 

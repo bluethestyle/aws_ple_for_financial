@@ -90,18 +90,30 @@ class CausalExpert(AbstractExpert):
         ceh_dropout: float = float(ceh_cfg.get("dropout", 0.1))
         # target_mode controls what supervision signal the attribution
         # head tries to reproduce.
-        #   - "raw":      grad × input of causal-encoder output sum (Finding 9 MV).
-        #   - "demeaned": grad × input minus its batch mean; forces the head
-        #                 to learn per-sample deviation from the global pattern
-        #                 after the MV quality eval showed near-global collapse
-        #                 (between/within variance ratio 0.055, top-10 overlap
-        #                 0.79). Paper 3 Section 4.9.3, iteration v2.
+        #   - "raw":          grad × input of causal-encoder output sum
+        #                     (Finding 9 MV).
+        #   - "demeaned":     grad × input minus its batch mean; forces the
+        #                     head to learn per-sample deviation from the
+        #                     global pattern (Paper 3 Section 4.9.3, v2).
+        #   - "primary_task": grad × input of a specific PLE task logit
+        #                     (e.g. ``churn_signal``), demeaned.
+        #                     Computed externally in ``PLEModel`` and
+        #                     injected via ``set_attr_target_external``;
+        #                     the expert itself does not run the task
+        #                     forward. Paper 3 Finding 13 (v3).
         self.ceh_target_mode: str = str(ceh_cfg.get("target_mode", "raw")).lower()
-        if self.ceh_target_mode not in ("raw", "demeaned"):
+        if self.ceh_target_mode not in ("raw", "demeaned", "primary_task"):
             raise ValueError(
                 f"Unknown ceh.target_mode '{self.ceh_target_mode}'. "
-                "Expected 'raw' or 'demeaned'."
+                "Expected 'raw' | 'demeaned' | 'primary_task'."
             )
+        # Task whose logit's gradient is used when target_mode == 'primary_task'.
+        # Caller (PLEModel training loop) is responsible for producing the
+        # gradient; this attribute is exposed so the caller can look up which
+        # task to take the gradient against.
+        self.ceh_primary_task_name: str = str(
+            ceh_cfg.get("primary_task_name", "churn_signal")
+        )
 
         # -- Feature compressor: input_dim -> n_causal_vars --------------------
         self.feature_compressor = nn.Sequential(
@@ -206,7 +218,15 @@ class CausalExpert(AbstractExpert):
         if self.attribution_head is not None:
             self._last_attribution = self.attribution_head(output)
             if self.training:
-                self._compute_attr_target(x)
+                if self.ceh_target_mode == "primary_task":
+                    # Target is computed externally by the PLE training
+                    # loop (it needs access to the task towers). Reset
+                    # so stale values from a prior step can't be reused;
+                    # ``set_attr_target_external`` will populate it
+                    # after the main forward completes.
+                    self._last_attr_target = None
+                else:
+                    self._compute_attr_target(x)
             else:
                 self._last_attr_target = None
         else:
@@ -251,6 +271,29 @@ class CausalExpert(AbstractExpert):
         except RuntimeError:
             # Fall back silently: attribution loss becomes 0 this step
             self._last_attr_target = None
+
+    def set_attr_target_external(self, target: torch.Tensor) -> None:
+        """Inject a target computed outside the causal expert (Paper 3 v3).
+
+        Used when ``target_mode == "primary_task"``: the PLEModel
+        training loop computes ``grad x input`` of a specific task
+        logit (after the main forward pass), demeans per-feature across
+        the batch, and calls this setter so ``get_attribution_loss``
+        can MSE the head output against it. The incoming tensor must
+        match the head output shape ``[batch, input_dim]``.
+        """
+        if target.shape[0] != (self._last_attribution.shape[0] if
+                                self._last_attribution is not None else
+                                target.shape[0]):
+            raise ValueError(
+                "external target batch size does not match last forward"
+            )
+        if target.shape[-1] != self.ceh_input_dim:
+            raise ValueError(
+                f"external target last dim {target.shape[-1]} must equal "
+                f"ceh_input_dim {self.ceh_input_dim}"
+            )
+        self._last_attr_target = target.detach()
 
     def get_attribution_loss(self) -> torch.Tensor:
         """Return MSE loss between attribution_head output and its target.
