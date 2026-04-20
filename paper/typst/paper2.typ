@@ -1424,6 +1424,36 @@ model surfaces it via `get_ceh_attribution`, and the serving path
 pairs each prediction with one `log_attribution` event. No model
 surgery; the attribution vector is a by-product of the training-time
 regulariser described in the companion paper.
+
+=== Causal Guardrail Audit (CG Integration)
+<cg-audit>
+
+CEH answers "why did the model recommend this?"; the Causal
+Guardrail answers the adjacent question "can we trust this
+recommendation?". In the companion paper's Findings 10--11 we
+established that a z-space Mahalanobis score on the causal expert's
+latent detects three synthetic OOD probe types at $100%$ TPR with
+$5%$ FPR --- a regulator-usable reliability signal at no training
+cost. The audit path mirrors the attribution path.
+
+`AuditLogger.log_guardrail(model_id, sample_id, coherence_score,
+threshold, triggered)` records, for each evaluated prediction: the
+score, the threshold in force at that time, and a boolean flag for
+whether the guardrail fired. Combined with the CEH attribution
+record, an auditor now has a complete per-prediction trail:
+explanation (what drove this prediction) and reliability (should
+this prediction be acted on at all). Both records sit in the same
+HMAC-signed hash-chained store, so tampering with either is
+detectable under the same verification path.
+
+Operationally, a `CausalGuardrail` helper (`core/monitoring/
+causal_guardrail.py`) encapsulates the calibration and per-sample
+check. A caller computes a reference $bold(mu), bold(sigma)$ batch
+once (e.g., at deployment, from a held-out in-distribution sample),
+stores it, and then emits one `log_guardrail` event per prediction.
+Threshold drift is handled by periodic re-calibration; the stored
+threshold field in each audit record lets auditors reconstruct
+exactly which threshold was in force at decision time.
 When the drift detector fires on consecutive monitoring windows
 (configurable threshold, default 3 consecutive days),
 the retrain stage is triggered automatically,

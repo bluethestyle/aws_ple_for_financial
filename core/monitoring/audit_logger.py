@@ -349,6 +349,35 @@ class AuditLogger:
             },
         )
 
+    def log_guardrail(
+        self,
+        model_id: str,
+        sample_id: str,
+        coherence_score: float,
+        threshold: float,
+        triggered: bool,
+        user: str = "system",
+    ) -> Optional[Dict[str, Any]]:
+        """Log a per-prediction causal guardrail check (Paper 3 Finding 10 / 11).
+
+        Records one entry per prediction for which the Causal Guardrail
+        was evaluated. Pairs with ``log_attribution`` for a complete
+        per-prediction audit trail (reliability + explanation).
+        """
+        return self.log_operation(
+            operation=f"guardrail:{model_id}",
+            user=user,
+            status="TRIGGERED" if triggered else "SUCCESS",
+            metadata={
+                "model_id": model_id,
+                "sample_id": sample_id,
+                "coherence_score": float(coherence_score),
+                "threshold": float(threshold),
+                "triggered": bool(triggered),
+                "operation_type": "guardrail",
+            },
+        )
+
     def log_model_promotion(
         self,
         champion_version: Optional[str],
