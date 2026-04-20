@@ -283,6 +283,67 @@ class CausalExpert(AbstractExpert):
         return self._last_attribution.detach()
 
     @torch.no_grad()
+    def get_counterfactual(
+        self,
+        x: torch.Tensor,
+        feature_idx: int,
+        intervention_value: float,
+    ) -> Dict[str, torch.Tensor]:
+        """Counterfactual Probe (Paper 3 Axis-3 E / Pearl Rung 3).
+
+        Computes two counterfactual outputs for a ``do(z_j = v)``
+        intervention and one factual baseline, letting callers isolate
+        how much of the intervention's effect is mediated by the
+        learned DAG versus how much is a direct feed-through.
+
+        Three forward-pass variants, all running through the same
+        trained ``causal_encoder``:
+
+        - ``factual``:       ``encoder(z + z W^2)`` --- the original
+          forward pass; the output the model actually produces.
+        - ``direct_only``:   ``encoder(z' + z W^2)`` --- the intervened
+          latent ``z'`` (with ``z'_j = v``) goes straight to the encoder,
+          but the DAG-mediated residual ``z W^2`` is kept at its
+          pre-intervention value. Measures the effect of changing a
+          feature *without* letting the causal structure propagate.
+        - ``full_cf``:       ``encoder(z' + z' W^2)`` --- both the
+          direct and mediated terms see the intervened latent. Measures
+          the *total* effect including DAG mediation.
+
+        The Pearl-ladder Rung 3 signal is the gap between ``full_cf``
+        and ``direct_only`` --- if the DAG meaningfully mediates, the
+        two differ; if $bold(W)$ is decoratively small, they collapse.
+
+        Args:
+            x: ``(batch, input_dim)`` input batch.
+            feature_idx: Causal-latent dimension to intervene on
+                (``0 <= feature_idx < n_causal_vars``).
+            intervention_value: The ``v`` in ``do(z_j = v)``. All
+                samples in the batch receive the same intervention.
+
+        Returns:
+            Dict with keys ``factual``, ``direct_only``, ``full_cf``
+            --- each a ``(batch, output_dim)`` detached tensor.
+        """
+        if not 0 <= feature_idx < self.n_causal_vars:
+            raise ValueError(
+                f"feature_idx {feature_idx} outside [0, {self.n_causal_vars})"
+            )
+        z = self.feature_compressor(x)
+        z_prime = z.clone()
+        z_prime[:, feature_idx] = float(intervention_value)
+        W_sq = self.W * self.W
+
+        factual = self.causal_encoder(z + z @ W_sq)
+        direct_only = self.causal_encoder(z_prime + z @ W_sq)
+        full_cf = self.causal_encoder(z_prime + z_prime @ W_sq)
+        return {
+            "factual": factual.detach(),
+            "direct_only": direct_only.detach(),
+            "full_cf": full_cf.detach(),
+        }
+
+    @torch.no_grad()
     def get_causal_latent(self, x: torch.Tensor) -> torch.Tensor:
         """Return the compressed causal latent ``z = feature_compressor(x)``.
 

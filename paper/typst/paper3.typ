@@ -59,7 +59,7 @@
   Eleven findings organize into three themes.
   *Loss dynamics and gating* (Findings 1--6): an uncertainty-weighting implementation bug silently suppresses minority-type tasks (+0.018 NDCG\@3 when fixed); softmax gating outperforms sigmoid for heterogeneous task mixes, *reversing* the homogeneous-setting advantage; learned uncertainty weights converge identically across architectures; 10-epoch budgets may be insufficient for structural comparisons; GroupTaskExpert pre-gating degrades multiclass performance in mixed-type groups; gate entropy analysis shows extraction-layer specialization (entropy ratios 0.33--0.88) while attention-level aggregation collapses to uniform averaging (ratio 1.00), and composite val-loss is an unreliable checkpoint signal once regression tasks are present.
   *Fusion augmentation trade-offs* (Finding 7): a 9-way comparison isolates two positive recipes on disjoint axes --- output-space boosting with gradient isolation (BRP-detached, hard-task rescue) and inverse-gate auxiliary supervision (NEAS, aggregate-AUC gain) --- that do *not* compose additively.
-  *Causal expert reinterpretation* (Findings 8--11): the causal expert's adjacency matrix $bold(W)$ collapses to zero in every trained checkpoint examined, rendering its forward equivalent to a plain MLP; a two-part patch (NOTEARS reconstruction loss + initialisation rescale) restores DAG learning at zero task-metric cost; routing the functional DAG into consumable outputs yields a Causal Explainability Head (CEH, per-sample attribution) and a Causal Guardrail (CG, z-space-Mahalanobis OOD detection at 100% TPR / 5% FPR on three synthetic probes); and W-amplification via init $0.1 arrow 0.3$ + $lambda_"recon" 0.5 arrow 2.0$ grows the adjacency matrix $14 times$ in Frobenius norm with zero primary-task cost, establishing that the "decorative DAG" is a training-choice artefact, not an architectural constraint.
+  *Causal expert reinterpretation* (Findings 8--12): the causal expert's adjacency matrix $bold(W)$ collapses to zero in every trained checkpoint examined, rendering its forward equivalent to a plain MLP; a two-part patch (NOTEARS reconstruction loss + initialisation rescale) restores DAG learning at zero task-metric cost; routing the functional DAG into consumable outputs yields a Causal Explainability Head (CEH, per-sample attribution, Pearl Rung 1) and a Causal Guardrail (CG, z-space-Mahalanobis OOD detection at 100% TPR / 5% FPR on three synthetic probes); W-amplification via init $0.1 arrow 0.3$ + $lambda_"recon" 0.5 arrow 2.0$ grows the adjacency matrix $14 times$ in Frobenius norm with zero primary-task cost, establishing that the "decorative DAG" is a training-choice artefact, not an architectural constraint; and a counterfactual probe (CCP, Pearl Rung 3) shows that at baseline W scale the DAG carries $0.16%$ of the counterfactual effect but at the amplified scale the mediation ratio rises to $32%$ at median and $61%$ at the 95th percentile, establishing that Pearl's Rung 3 is viable on top of the amplified teacher.
   We distill these observations into practical guidelines for
   practitioners scaling MTL beyond the homogeneous-task regime.
 
@@ -100,10 +100,10 @@ The result is a regime that large-scale CTR teams have no reason to enter
 (they can afford model-per-task) but that resource-constrained regulated
 industries are forced into.
 
-This paper reports eleven empirical findings from this scaling
+This paper reports twelve empirical findings from this scaling
 experience, organised into three themes: loss dynamics and gating
 (Findings 1--6), fusion augmentation trade-offs (Finding 7), and
-causal expert reinterpretation (Findings 8--11). We make no claims
+causal expert reinterpretation (Findings 8--12). We make no claims
 of state-of-the-art performance; instead, we document *phenomena
 and practical guidelines* that emerge when MTL is pushed beyond the
 homogeneous-task regime. Our contributions:
@@ -1698,11 +1698,100 @@ CRCG / CCP is therefore:
   latent version as the baseline to beat rather than assuming the
   W-based version is preferable.
 
+== Finding 12: Counterfactual Probe (CCP) --- Pearl Rung 3 Viability <find12>
+
+The causal expert's original motivation --- "A causes B" explanations
+rather than "A correlates with B" @pearl2009causality --- requires
+access to Pearl's Rung 3 of the causal hierarchy: counterfactuals,
+"what would the output have been if feature $j$ had been different?"
+Finding 9 (CEH attribution) sits on Rung 1 (observation). Finding 10
+(CG) is off-ladder (safety monitoring). CCP, in contrast, directly
+tests whether the learned DAG mediates counterfactual queries.
+
+=== Formulation
+
+Given a sample with causal latent $bold(z) = "compressor"(x)$ and the
+SCM residual $bold(z) bold(W)^2$, the factual output is
+$"encoder"(bold(z) + bold(z) bold(W)^2)$. An intervention
+$"do"(z_j = v)$ produces $bold(z)'$ where $z'_j = v$ and $z'_k = z_k$
+for $k eq.not j$. We compute three outputs:
+
+- *Factual*: $"encoder"(bold(z) + bold(z) bold(W)^2)$.
+- *Direct-only*: $"encoder"(bold(z)' + bold(z) bold(W)^2)$ ---
+  intervened latent direct-fed, but the $bold(W)^2$-mediated term
+  is held at its pre-intervention value. This isolates the
+  non-causal ("just change the feature") effect.
+- *Full-CF*: $"encoder"(bold(z)' + bold(z)' bold(W)^2)$ ---
+  intervention propagates through both paths. This is the
+  counterfactual prediction under the learned DAG.
+
+The *mediation ratio* $||"full CF" - "direct only"|| / ||"full CF"
+- "factual"||$ measures what fraction of the counterfactual effect
+is carried by the DAG. Pearl's Rung 3 is viable exactly when this
+ratio is bounded away from zero.
+
+=== Evaluation: Pearl Rung 3 Viable Only After W-Amplification
+
+Running the probe over 1,000 validation samples, all 32 causal-latent
+dimensions, and three intervention values ($v in {-2, 0, 2}$)
+yields:
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, right, right, right),
+    stroke: 0.5pt,
+    [*Metric (median over $32 times 3$ cells)*],
+    [*Baseline (demeaned)*], [*W-amp*], [*Ratio*],
+    [$||bold(W)||_F$], [$0.363$], [$5.028$], [$14 times$],
+    [Direct effect $||bold(y)' - bold(y)||$], [$3.66$], [$3.45$], [similar],
+    [Total effect $||bold(y)_"cf" - bold(y)||$], [$3.66$], [$3.54$], [similar],
+    [Mediated effect $||bold(y)_"cf" - bold(y)'||$], [$0.003$], [$0.887$], [$269 times$],
+    [*Mediation ratio*], [$0.16%$], [$32.1%$], [$200 times$],
+  ),
+  caption: [CCP evaluation on both checkpoints. At the baseline
+  W scale, mediation is $0.16%$ of the total counterfactual effect
+  --- the DAG carries essentially nothing, matching the decorative-
+  DAG observation from Findings 10--11. With W amplified, mediation
+  rises to $32%$ at median and $61%$ at the 95th percentile, establishing
+  that the learned DAG can serve counterfactual queries when
+  trained under Finding 11's amplification recipe.],
+)<tbl:ccp-mediation>
+
+=== Interpretation
+
+The baseline result is a direct operational consequence of the
+"decorative DAG" observation: with $bold(W)^2$ small, changing one
+latent value barely perturbs the mediated term $bold(z) bold(W)^2$,
+so the counterfactual collapses to "just change one feature in
+direct-feed" --- a degenerate Rung 1 operation, not a Rung 3 query.
+The amplified checkpoint routes $32%$ of the effect through the
+DAG at median; the direct effect still dominates, as partial
+mediation predicts from Pearl's theory, but Rung 3 is no longer
+blocked.
+
+Finding 12 therefore completes the Pearl-ladder picture for the
+causal expert under this project's Axis-3 candidates:
+
+- Rung 1 (observation / association): CEH attribution (Finding 9).
+- Off-ladder (safety): CG coherence (Findings 10--11).
+- Rung 3 (counterfactuals): CCP mediation via W-amplified DAG
+  (Finding 12, this section).
+- Rung 2 (interventions / treatment effect): not yet evaluated.
+  A natural next step would be mini-batch intervention experiments
+  on the teacher (e.g. counterfactual product-offer effects), but
+  this requires causally-interpretable training data beyond the
+  synthetic benchmark used here.
+
+CCP ran entirely as a post-hoc analysis on the existing two
+checkpoints; the MV cost is zero SageMaker spend on top of
+Findings 9--11.
+
 = Discussion
 
 == Practical Guidelines Summary
 
-We distill the eleven findings into nine guidelines for practitioners,
+We distill the twelve findings into ten guidelines for practitioners,
 grouped by the three themes.
 
 === Loss Dynamics and Gating (Findings 1--6)
@@ -1786,6 +1875,20 @@ grouped by the three themes.
   by construction and hit 100% OOD TPR at 5% FPR across three probes
   in our setup. Default to the latent formulation; use the
   weight-space version only as a supplement.
+
++ *Amplify $bold(W)$ before relying on causal mediation at inference.*
+  Pearl's Rung 3 counterfactuals --- "what would the output have
+  been if feature $j$ had been different?" --- require the learned
+  DAG to actually propagate the intervention through $bold(W)^2$.
+  At the default training recipe the DAG carries under $1%$ of the
+  counterfactual effect (Finding 12 baseline); under Finding 11's
+  amplification recipe the mediation ratio rises to a median of
+  $32%$ and a 95th-percentile of $61%$. Any downstream feature that
+  advertises counterfactual reasoning (regulator-facing
+  explanations, treatment-effect estimates, what-if simulations)
+  must be evaluated on an amplified teacher; evaluating on the
+  default teacher silently reduces the claim to a direct-feed
+  observational probe.
 
 == Limitations
 
@@ -1915,7 +2018,12 @@ at $5%$ FPR on three synthetic OOD probes. A W-amplification
 experiment then established that the decorative DAG is a
 training-choice artefact, not an architectural constraint ---
 init $0.1 arrow.r 0.3$ and $lambda_"recon" 0.5 arrow.r 2.0$ grows
-$||bold(W)||_F$ 14-fold at zero task cost. Combined with the
+$||bold(W)||_F$ 14-fold at zero task cost.
+Building on the amplified teacher, a counterfactual probe (CCP)
+measures that the learned DAG carries a median of $32%$ and a 95th
+percentile of $61%$ of the counterfactual effect under $"do"(z_j = v)$
+interventions, versus $0.16%$ on the baseline teacher --- establishing
+Pearl Rung 3 viability at zero additional SageMaker spend. Combined with the
 HMAC-signed hash-chained audit trail described in the companion
 paper, CEH + CG produce a regulator-usable per-prediction record
 that pairs *what* the model recommended (attribution) with
@@ -1934,7 +2042,7 @@ additional seeds and datasets.
 
 *Seonkyu Jeong* (PM / Lead Architect / Data Scientist):
 Conceived the study, designed the ablation framework, identified all
-eleven findings, wrote the manuscript. Led AI-augmented development
+twelve findings, wrote the manuscript. Led AI-augmented development
 methodology.
 
 *Euncheol Sim*: Data pipeline, feature engineering, ablation execution.
