@@ -255,6 +255,20 @@ def build_ple_config(
                       .setdefault("causal", {}))
         causal_cfg.setdefault("ceh", {})["target_mode"] = str(ceh_target_mode_raw)
 
+    # W-amplification HPs (Paper 3 Finding 11 follow-up to Finding 10).
+    # Finding 10 established the learned W is too weak at init 0.1 and
+    # recon_lambda 0.5 for structural downstream uses (CG v1 TPR = FPR
+    # at chance). Raising both lets W grow into a usable magnitude;
+    # primary AUC must stay within noise for the amplification to be
+    # free of collateral damage.
+    for hp_key, cfg_key in (("w_init_scale", "w_init_scale"),
+                             ("recon_lambda", "recon_lambda")):
+        raw = hp.get(hp_key)
+        if raw is not None:
+            causal_cfg = (model_config.setdefault("expert_config", {})
+                          .setdefault("causal", {}))
+            causal_cfg[cfg_key] = float(raw)
+
     # --- Loss weighting ---
     lw_cfg = model_config.get("loss_weighting", {})
     loss_weighting = LossWeightingConfig(

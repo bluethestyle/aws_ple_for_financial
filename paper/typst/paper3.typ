@@ -168,8 +168,10 @@ Our contributions:
   but aggregate task metrics are unchanged --- the DAG exists
   structurally but is not routed into prediction by the current
   architecture (Section 4.8).
-- A first Axis-3 candidate that *routes* the now-functional DAG into
-  a consumable output: Causal Explainability Head (CEH), a small MLP
+- Two Axis-3 candidates that *route* the now-functional DAG into
+  consumable outputs:
+
+  Causal Explainability Head (CEH), a small MLP
   mapping the causal expert's output to a per-sample per-feature
   attribution vector trained via MSE against gradient $times$ input.
   MV result preserves the primary AUC within noise ($+0.0015$ over
@@ -187,6 +189,20 @@ Our contributions:
   $0.791 arrow 0.281$, primary AUC unchanged within noise,
   Section 4.9.4). Audit-log integration and cross-dataset reproduction
   remain deferred.
+
+  Causal Guardrail (CG), a per-prediction reliability flag derived
+  from the causal expert's latent $bold(z)$. A W-reconstruction
+  formulation (CG v1) fails at chance-level discrimination because
+  the learned $bold(W)$ is too small; a z-space Mahalanobis
+  formulation (CG v2) detects three types of synthetic OOD at $100%$
+  TPR with $5%$ FPR (Section 4.10). A follow-up W-amplification
+  experiment (W init $0.1 arrow 0.3$, $lambda_"recon"
+  0.5 arrow 2.0$) grows the adjacency matrix $14 times$ in
+  Frobenius norm and from $8.5%$ to $59.5%$ active edges with zero
+  primary-task cost, partially fixing CG v1 but leaving
+  latent-space CG v2 dominant (Section 4.11). Finding 11's settled
+  result: the "decorative DAG" from Finding 8 is a training-choice
+  artefact, not an architectural constraint.
 
 The system, data generator, and ablation scripts are publicly available.#footnote[
   https://github.com/bluethestyle/aws\_ple\_for\_financial
@@ -1559,7 +1575,7 @@ Not yet verified:
 
 === Implications for Remaining Axis-3 Candidates
 
-The v1/v2 contrast also clarifies what to expect for CTGR and CRCG.
+The v1/v2 contrast clarifies what to expect for CTGR and CRCG.
 Both depend on the *learned causal structure* ($bold(W)$) being
 informative in the current architecture, not merely present. The
 Finding 10 experiment is direct evidence that $bold(W)$ is not
@@ -1569,7 +1585,130 @@ CG v1. Either W needs to be amplified (larger init, stronger
 recon lambda, or DAG-routed residual path) before those candidates
 are worth running, or CTGR/CRCG should be redesigned to draw from
 the latent rather than the weights --- mirroring the v1$arrow.r$v2
-pivot here.
+pivot here. Finding 11 (below) runs the amplification experiment
+and produces a partially mixed answer.
+
+== Finding 11: W-Amplification Test <find11>
+
+Finding 10 identified two hypotheses for why CG v1 fails: (a) the
+learned $bold(W)$ is simply too small to drive meaningful
+reconstruction, or (b) the $||bold(z) - bold(z) bold(W)^2||^2$
+formulation is structurally limited regardless of $bold(W)$'s
+magnitude. We tested (a) by re-training one scenario
+(teacher_ceh_w_amp) with two amplification knobs: $bold(W)$ init
+scale $0.1 arrow.r 0.3$ and $lambda_"recon"$ $0.5 arrow.r 2.0$. All
+other hyperparameters identical to teacher_ceh_demeaned.
+
+=== Training-Side Result: W Amplifies, Primary Unharmed
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, right, right, right),
+    stroke: 0.5pt,
+    [*Metric*], [*Baseline*], [*W-amp*], [*Change*],
+    [$||bold(W)||_F$], [$0.363$], [$5.028$], [$13.9 times$],
+    [Active edges ($|W| > 0.01$)], [$8.5%$], [$59.5%$], [$7.0 times$],
+    [Max $|W_(i j)|$], [$0.11$], [$0.77$], [$7.0 times$],
+    [Primary AUC (churn\_signal)], [$0.6870$], [$0.6865$], [within noise],
+    [Loss], [$25.62$], [$25.61$], [within noise],
+  ),
+  caption: [W-amplification training-side outcome. The learned
+  adjacency matrix grows by an order of magnitude in every
+  structural measure while primary task metrics are preserved.
+  Finding 8's "decorative DAG" observation is directly and
+  cheaply reversed.],
+)<tbl:wamp-training>
+
+The amplification is free in task-metric terms: the larger $bold(W)$
+pushes $bold(W)^2$ from Frobenius $0.13$ to $2.19$, so the SCM
+residual $bold(z) + bold(z) bold(W)^2$ now contributes a
+meaningfully non-trivial perturbation, yet primary AUC shifts by
+only $0.0005$ (within noise). The decorative-DAG regime was a
+training choice (too-small init + too-weak recon term), not an
+architectural constraint.
+
+=== CG v1 Improves but Remains Architecturally Limited
+
+With a 14$times$ larger $bold(W)$, CG v1's discriminative power
+does increase but does not approach v2's ceiling:
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    align: (left, right, right),
+    stroke: 0.5pt,
+    [*Probe*], [*Baseline TPR @ ID p95*], [*W-amp TPR @ ID p95*],
+    [Uniform random], [$6.8%$], [$22.7%$],
+    [Column-permuted], [$8.1%$], [$18.6%$],
+    [Extreme-tail], [$0.0%$], [$0.0%$],
+  ),
+  caption: [CG v1 OOD detection before and after W-amplification
+  (FPR fixed at $5%$). Discrimination improves from chance to
+  weak-but-nonzero for two probe types; extreme-tail stays at zero
+  regardless, exposing a structural limit.],
+)<tbl:wamp-v1>
+
+The extreme-tail result is the key signal. That probe sets every
+sample to the same 99th-percentile vector, so every sample has an
+identical $bold(z)$ and therefore an identical residual ---
+$||bold(z) - bold(z) bold(W)^2||$ is a point estimate, unable to
+discriminate by construction. No amount of W amplification fixes
+this because the formulation is a *per-sample* measure that offers
+no vantage point on the *distribution* of inputs. CG v2's z-space
+Mahalanobis, by contrast, is explicitly a distance from a reference
+distribution, so it handles the degenerate-OOD case trivially
+($100%$ TPR).
+
+=== CG v2 Unaffected
+
+v2's discrimination is unchanged after amplification: $100%$ TPR
+across the three probes at the recommended $"p95"$ threshold. The
+z-space pathway does not depend on $bold(W)$'s magnitude;
+amplification neither helps nor hurts it.
+
+=== What Finding 11 Settles / Leaves Open
+
+Settled:
++ $bold(W)$ is *not* architecturally doomed. With init $0.3$ +
+  $lambda_"recon" = 2.0$, it grows to a non-trivial sparse structure
+  in $10$ epochs, with zero primary-task cost.
++ CG v1's failure in Finding 10 was *partly* due to small $bold(W)$
+  (now contributes ~$15$--$20$ TPR points) and *partly* due to a
+  formulation ceiling (extreme-tail probe exposes a structural
+  limit).
++ Latent-space CG (v2) remains dominant for OOD detection; W-based
+  guardrails are a supplement at best, not a replacement.
+
+Open:
+- Does amplified $bold(W)$ unlock CTGR and CRCG, or do those
+  candidates hit similar structural ceilings? Finding 11 answers
+  only the CG question directly; the training-side amplification
+  means CTGR/CRCG can now at least be *tried* without the Finding
+  10 preconditions blocking them.
+- Does an even more aggressive amplification (init $0.5$,
+  $lambda_"recon" = 5$, removed sparsity) push v1 to a usable level
+  or crash primary AUC? Not tested; the $0.3 / 2.0$ setting was
+  chosen as a single-job minimum-intervention.
+- Does latent-space CG's $100%$ TPR survive *realistic* drift
+  (temporal, subgroup, adversarial) rather than synthetic probes?
+  Paper 2 monitoring scope, not tested here.
+
+=== Updated Recommendation for Remaining Axis-3 Candidates
+
+Finding 10 recommended either amplifying $bold(W)$ or redesigning
+the siblings around the latent. Finding 11 chooses the first
+option and shows it partially works: $bold(W)$ is now meaningful,
+but the latent-based formulation still ceiling-beats a W-based one
+when both are available. The practical recommendation for CTGR /
+CRCG / CCP is therefore:
+
++ Run them on a W-amplified teacher, so W is *capable* of carrying
+  structural information.
++ Simultaneously evaluate a latent-based alternative for each
+  candidate. In every case where both are measurable, treat the
+  latent version as the baseline to beat rather than assuming the
+  W-based version is preferable.
 
 = Discussion
 

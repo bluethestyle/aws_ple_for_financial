@@ -154,6 +154,27 @@ SCENARIOS = [
             "ceh_target_mode": "demeaned",
         },
     },
+    # Paper 3 Finding 11 (W-amplification). Finding 10 showed the
+    # learned W (init 0.1, recon_lambda 0.5) is too small to drive
+    # W-based structural downstream uses (CG v1, CTGR/CRCG): ||W||_F
+    # ~ 0.36, W^2 ~ 0.13, z W^2 barely perturbs z. This variant
+    # triples the init scale and quadruples the reconstruction-loss
+    # weight so W has both (a) a warmer starting point and (b) a
+    # stronger gradient pulling it toward a non-trivial structure.
+    # Everything else identical to teacher_ceh_demeaned so any
+    # delta is attributable to the W-amplification alone. Expected
+    # outcomes: ||W||_F roughly doubles or more, primary AUC within
+    # noise, CG v1 residual ratio begins to discriminate OOD.
+    {
+        "name": "teacher_ceh_w_amp",
+        "job_name": "teacher-ceh-wamp-10ep",
+        "hp": {
+            "use_ceh": "true",
+            "ceh_target_mode": "demeaned",
+            "w_init_scale": "0.3",
+            "recon_lambda": "2.0",
+        },
+    },
 ]
 
 
