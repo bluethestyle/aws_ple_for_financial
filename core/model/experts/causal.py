@@ -27,7 +27,7 @@ Learning*, NeurIPS 2018.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -259,6 +259,20 @@ class CausalExpert(AbstractExpert):
             return torch.tensor(0.0, device=device)
         return F.mse_loss(self._last_attribution.float(),
                           self._last_attr_target.float())
+
+    def get_last_attribution(self) -> Optional[torch.Tensor]:
+        """Return the attribution from the most recent forward (or ``None``).
+
+        Public accessor intended for the Paper 2 v2 audit-log path
+        (``AuditLogger.log_attribution``). Populated at both training and
+        inference time when CEH is enabled; returns ``None`` when CEH is
+        disabled or when no forward has been run yet. Detached from the
+        graph so callers can safely move to CPU / hash without pulling
+        gradients.
+        """
+        if self._last_attribution is None:
+            return None
+        return self._last_attribution.detach()
 
     def _apply_causal_mechanism(self, z: torch.Tensor) -> torch.Tensor:
         """

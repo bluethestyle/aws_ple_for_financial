@@ -900,6 +900,28 @@ SageMaker teacher_ceh_demeaned (10 epoch, 나머지 조건 v1 MV 와 동일) 을
 
 *남은 후보*: primary task gradient 타겟 (causal encoder 합 대신 특정 task logit 의 gradient 사용, "이 고객의 churn score 가 왜 높은가?" 라는 downstream 질문 과 정렬). Demeaned 인프라는 유지 하고 gradient 대상만 교체.
 
+=== Audit Log 통합 (Paper 2 v2) --- CEH 을 규제 가능 인프라로 연결
+
+CEH v2 가 만든 per-sample attribution 벡터는 단독으로는 학습 지표일 뿐. 규제 관점에서 의미 있는 인프라가 되려면 *"이 고객의 이 결정을 왜 내렸는가"* 라는 질문에 답변할 수 있어야 함 --- GDPR Art. 22 의 meaningful explanation 요구 + EU AI Act Art. 13 의 transparency 의무. Model promotion 은 "어떤 모델을 썼는가" 만 추적 가능, 개별 prediction 의 근거는 별도 경로 필요.
+
+Paper 2 의 기존 `AuditLogger` (HMAC-SHA256 서명 + SHA256 hash chain + S3 Object Lock WORM 저장) 에 `log_attribution` 메서드 추가. 한 prediction 마다 1개 audit 엔트리 생성:
+
+```
+entry = {
+  timestamp, operation: "attribution:{model_id}",
+  sample_id,          # customer / request UUID
+  top_features,       # [{feature, weight}, ...] top-K for human review
+  attribution_hash,   # SHA256 of full float32 vector
+  prev_hash, hmac     # 기존 chain linkage 재사용
+}
+```
+
+3단 설명성: **top-K** (사람이 읽는 요약) + **full-vector hash** (forensic replay 검증) + **chain linkage** (tamper evidence). 감사관이 원본 입력을 재실행해 같은 attribution 벡터를 얻고 hash 가 일치하면 기록이 진짜, 불일치하면 변조 증거. Hash chain 은 특정 기록만 선택적 삭제 시도도 탐지.
+
+코드 변경 최소화: `CausalExpert.get_last_attribution()` public accessor 추가, `PLEModel.get_ceh_attribution()` 으로 expert 찾기 캡슐화, `AuditLogger.log_attribution()` 한 메서드. 5개 단위테스트 + end-to-end smoke test (HMAC 생성 + chain 검증 + 변조 탐지) 모두 통과.
+
+*지금 시점 완성도*: CEH 인프라 (Paper 3 Finding 9 v2) + audit log 통합 (Paper 2 v2 추가) = per-prediction 설명성 에 대한 최소 가능 증거 세트. 남은 것은 (a) 실제 서빙 경로 (`core/serving/predict.py`) 에서 호출 삽입, (b) 감사관 쿼리 UI, (c) 도메인 전문가 human eval. 모두 infra 단위 작업이며 Paper 3 의 후속 실험 스코프가 아님.
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.
