@@ -1445,6 +1445,132 @@ functional DAG --- with the cleanest possible test before committing
 to a heavier redesign. Follow-up candidates are evaluated against
 CEH's baseline rather than against no-causal-routing-at-all.
 
+== Finding 10: Causal Guardrail (CG) --- Second Axis-3 Attempt <find10>
+
+Where CEH answers "why did the model recommend this?", CG
+(Causal Guardrail) answers the adjacent question "can we trust
+this recommendation?" --- a per-prediction reliability signal
+that routes suspicious inputs to a fallback or to human review
+rather than silently passing them through. SR 11-7 "known
+limitations" reporting and EU AI Act Art. 9 risk-management both
+require a runtime mechanism for this; the natural hook on the
+causal expert is its DAG structure.
+
+=== MV Formulation v1 (W-Reconstruction) Fails
+
+The first formulation reused the NOTEARS reconstruction residual
+from Finding 8. Training optimises
+$||bold(z) - bold(z) bold(W)^2||_F^2$ to keep $bold(W)$ out of the
+zero saddle; at serving time the per-sample version
+$||bold(z)_i - bold(z)_i bold(W)^2||^2 / ||bold(z)_i||^2$ is a
+direct measure of how well the *learned DAG* reconstructs the
+input's compressed causal state. A well-fit input reconstructs
+cleanly; an OOD input should not.
+
+We evaluated on the teacher_ceh_demeaned checkpoint with 5,000
+validation samples plus three synthetic OOD probes (uniform random
+in [-3,3], column-permuted, extreme-tail percentiles). All
+distributions concentrated within a narrow window near 1.0
+(in-dist median 0.9995, p99 1.0055; OOD medians 0.9998--0.9972).
+At the p95 threshold calibrated on the in-distribution set, TPR on
+OOD probes was 6.8% / 8.1% / 0% --- effectively chance-level versus
+the 5% FPR baseline.
+
+The failure mechanism is the same "decorative DAG" observation
+from Finding 8: the learned $bold(W)$ is small enough ($||bold(W)||_F
+approx 0.36$ on an $8 times 8$ matrix, so $bold(W)^2$ is
+$O(0.13)$ in Frobenius) that $bold(z) bold(W)^2$ barely perturbs
+$bold(z)$. The residual ratio $approx 1.0$ regardless of whether
+the input fits the DAG, so the signal is degenerate.
+
+=== MV Formulation v2 (z-Space Mahalanobis) Works
+
+Since $bold(W)$ itself is too weak to drive discrimination, we
+tested whether the *causal latent* $bold(z)$ carries
+distributional signal independently. Let $bold(mu), bold(sigma)$ be
+the per-dimension mean and standard deviation of $bold(z)$ over the
+in-distribution batch; the score is the standardised-sum-of-squares
+$d_i = sum_j ((z_(i,j) - mu_j) / sigma_j)^2$.
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    align: (left, right, right, right, right),
+    stroke: 0.5pt,
+    [*Probe*], [*median*], [*p95*], [*p99*], [*max*],
+    [In-distribution], [$23.6$], [$62.8$], [$268.1$], [$983.6$],
+    [Uniform random], [$749.5$], [$1200.9$], [$1458.5$], [$1936.7$],
+    [Column-permuted], [$537.4$], [$1076.0$], [$1336.1$], [$1873.9$],
+    [Extreme-tail], [$479.3$], [$479.3$], [$479.3$], [$479.3$],
+  ),
+  caption: [z-space Mahalanobis CG v2 score distributions on 5,000
+  validation samples and three synthetic OOD probes. Every OOD
+  median lies above the in-distribution $"p99"$, giving near-perfect
+  separation.],
+)<tbl:cg-v2-dists>
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    align: (left, right, right),
+    stroke: 0.5pt,
+    [*Probe*], [*TPR @ ID p95*], [*FPR @ ID p95*],
+    [Uniform random], [$100.0%$], [$5.0%$],
+    [Column-permuted], [$100.0%$], [$5.0%$],
+    [Extreme-tail], [$100.0%$], [$5.0%$],
+  ),
+  caption: [OOD detection rates at the recommended CG v2 threshold
+  (in-distribution $"p95" = 62.8$). All three probe types flag at the
+  expected false-positive rate.],
+)<tbl:cg-v2-rates>
+
+CG is therefore operational via the causal latent even though it
+fails via the DAG weights. The latent carries structure the
+W-reconstruction does not expose. Serving integration: a caller
+computes $bold(mu), bold(sigma)$ once from a reference population,
+caches them, and at inference time thresholds the per-sample score
+to decide pass-through vs. fallback.
+
+=== What CG MV Verifies / Does Not
+
+Verified:
++ The z-space formulation detects three qualitatively different OOD
+  probes at effectively $100%$ TPR with $5%$ FPR --- the primitive
+  works.
++ v1 vs v2 comparison isolates *where* the signal actually lives:
+  the causal latent, not the learned DAG weights. Reinforces the
+  Finding-8 observation that $bold(W)$ is structurally present but
+  under-utilised by the current architecture.
++ Zero training cost: CG is a post-hoc analysis on the existing
+  teacher_ceh_demeaned checkpoint. No new SageMaker job.
+
+Not yet verified:
+- *Real-world OOD*: the three probes are synthetic. A production
+  guardrail also needs to fire on realistic distribution drift
+  (temporal shift, subgroup imbalance, adversarial perturbation).
+  These are Paper 2 monitoring responsibilities, not tested here.
+- *Downstream metric impact*: CG produces a flag; we have not yet
+  measured whether routing flagged predictions to a fallback
+  improves end-to-end task metrics or calibration. Demands an
+  integration with the 3-layer fallback router.
+- *Threshold drift*: $bold(mu), bold(sigma)$ computed on a
+  reference batch will need periodic recalibration as the input
+  distribution evolves. Not tested here.
+
+=== Implications for Remaining Axis-3 Candidates
+
+The v1/v2 contrast also clarifies what to expect for CTGR and CRCG.
+Both depend on the *learned causal structure* ($bold(W)$) being
+informative in the current architecture, not merely present. The
+Finding 10 experiment is direct evidence that $bold(W)$ is not
+currently strong enough for structural uses: CTGR's routing and
+CRCG's reason paths would inherit the same weak signal that doomed
+CG v1. Either W needs to be amplified (larger init, stronger
+recon lambda, or DAG-routed residual path) before those candidates
+are worth running, or CTGR/CRCG should be redesigned to draw from
+the latent rather than the weights --- mirroring the v1$arrow.r$v2
+pivot here.
+
 = Discussion
 
 == Practical Guidelines Summary

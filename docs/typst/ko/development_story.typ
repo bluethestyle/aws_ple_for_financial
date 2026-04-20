@@ -922,6 +922,41 @@ entry = {
 
 *지금 시점 완성도*: CEH 인프라 (Paper 3 Finding 9 v2) + audit log 통합 (Paper 2 v2 추가) = per-prediction 설명성 에 대한 최소 가능 증거 세트. 남은 것은 (a) 실제 서빙 경로 (`core/serving/predict.py`) 에서 호출 삽입, (b) 감사관 쿼리 UI, (c) 도메인 전문가 human eval. 모두 infra 단위 작업이며 Paper 3 의 후속 실험 스코프가 아님.
 
+=== Axis 3 두 번째 실험 --- CG (Causal Guardrail), 음성→양성 피벗
+
+CEH 가 "왜" 라면 CG 는 "이 예측 믿을 만한가" --- per-prediction 신뢰도 플래그. SR 11-7 "known limitations" + EU AI Act Art. 9 위험관리 관점에서 필수. 기존 causal expert 체크포인트에 추가 학습 없이 post-hoc 분석으로 진행.
+
+*v1 (W-recon) 실패*: 첫 formulation 은 Finding 8 의 NOTEARS reconstruction 잔차를 그대로 가드레일 점수로 쓰는 것. $||z - z W^2||^2 / ||z||^2$ 가 낮으면 학습된 DAG 에 잘 맞는 입력, 높으면 OOD 라는 가설. 5,000 validation + 3종 합성 OOD (uniform random / column permute / extreme tail) 로 평가.
+
+결과: 모든 분포가 $1.0$ 주변에 압축됨 (in-dist median 0.9995, OOD medians 0.9998~0.9972). p95 threshold 에서 TPR 6.8% / 8.1% / 0% --- FPR 5% 와 구분 불가, **사실상 랜덤**.
+
+원인: 학습된 $W$ 가 너무 작아서 ($||W||_F approx 0.36$ on $32 times 32$, 따라서 $W^2$ 는 Frobenius $O(0.13)$) $z W^2$ 가 $z$ 를 거의 안 건드림. 잔차비가 입력 무관하게 $approx 1.0$. Finding 8 의 "decorative DAG" 관찰이 CG 로 직접 전파된 셈.
+
+*v2 (z-space Mahalanobis) 성공*: $W$ 자체가 약하면 causal latent $z$ 의 분포 구조만 쓰면 어떨까? In-distribution batch 로부터 per-dim $mu, sigma$ 를 뽑고 score $= sum_j ((z_(i,j) - mu_j) / sigma_j)^2$.
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, right, right, right),
+    stroke: 0.5pt,
+    table.header([*Probe*], [*median*], [*p95*], [*p99*]),
+    [In-distribution], [$23.6$], [$62.8$], [$268.1$],
+    [Uniform random], [$749.5$], [$1200.9$], [$1458.5$],
+    [Column-permuted], [$537.4$], [$1076.0$], [$1336.1$],
+    [Extreme-tail], [$479.3$], [$479.3$], [$479.3$],
+  ),
+  caption: [CG v2 z-space Mahalanobis 점수 분포. 모든 OOD median 이 in-dist p99 보다 큼 → 거의 완벽한 분리.],
+)
+
+p95 threshold (62.8) 에서 세 OOD 유형 모두 **TPR 100%, FPR 5%**. 이 한 formulation 전환으로 가드레일이 작동함.
+
+*CG 는 DAG 구조 가 아니라 causal latent 로 성립*. 이 결과가 CTGR / CRCG 설계에 중요한 방향 제시:
+- 두 후보 모두 *학습된 $W$* 가 강한 신호를 담는다고 가정 → 현재 $W$ 는 존재만 하고 사용 불가
+- 따라서 CTGR / CRCG 를 바로 돌리면 CG v1 과 같은 이유로 실패 예상
+- 해법: (a) $W$ 를 증폭 (큰 init, 더 강한 recon lambda, DAG-routed residual), (b) 혹은 $W$ 대신 latent 기반으로 재설계
+
+*비용*: \$0 (SageMaker 재학습 없음, 기존 체크포인트 post-hoc 분석).
+
 == 수치 안정성 (Numerical Stability)
 
 Mixed precision 학습은 속도를 2배 높이지만, FP16/BFloat16의 좁은 표현 범위가 NaN 전파를 유발한다. 4건의 underflow와 2건의 변환 오류가 발생했다.
