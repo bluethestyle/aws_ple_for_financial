@@ -606,6 +606,46 @@ serving_prep:
     human_review_sample_rate: 0.05  # 5% sampled for human review
 
 # ---------------------------------------------------------------------------
+# Serving — Sprint 3 (M1 review queue, M2 kill switch, M10 item universe)
+# ---------------------------------------------------------------------------
+serving:
+  # M1 Human Review Queue
+  review:
+    tier_1_sample_rate: 0.05      # 5% post-hoc random sample
+    tier_2_review_required: true  # 100% mandatory agent review
+    tier_3_human_fallback: true   # mandatory human fallback path
+    queue_backend: in_memory      # in_memory | dynamodb
+    dynamodb_table: ple-review-queue
+    region: ap-northeast-2
+    sla_hours: 24
+
+  # M2 Kill Switch (extends existing table-based switch with config)
+  kill_switch:
+    backend: dynamodb             # dynamodb | in_memory
+    table_name: ple-kill-switch
+    fallback_strategy: rule_based # rule_based | previous_model | disable
+    region: ap-northeast-2
+
+  # M10 Dynamic Item Universe Loader
+  item_universe:
+    enabled: false                # enable once Parquet tables are provided
+    campaign_parquet: s3://aiops-ple-financial/universe/campaigns.parquet
+    product_parquet: s3://aiops-ple-financial/universe/products.parquet
+    active_statuses: [approved, running]
+    cache_ttl_seconds: 3600
+
+  # Sprint 2 S15: Champion-Challenger promotion policy. auto_promote MUST be
+  # false in production per EU AI Act Art. 14 (human oversight) and SR 11-7
+  # effective-challenge principle. Challenger metrics are logged for review
+  # but promotion requires an explicit --force-promote operator action.
+  competition:
+    auto_promote: false
+    primary_metric: avg_auc
+    min_improvement: 0.005        # 0.5%
+    max_degradation: 0.02         # 2%
+    significance_level: 0.05
+
+# ---------------------------------------------------------------------------
 # Data — backend preferences and split strategy structure
 # ---------------------------------------------------------------------------
 data:
@@ -635,6 +675,95 @@ aws:
   use_spot: true
   max_run_seconds: 43200              # 12 hours
   role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole
+
+# ---------------------------------------------------------------------------
+# Compliance / Regulatory Foundation (Sprint 0)
+# ---------------------------------------------------------------------------
+# Backs M1~M12 (onprem → AWS port, see docs/aws_build_plan.md).
+# Legal basis:
+#   AI기본법 §31 (AI 거부권), §34 (고지), §35 (FRIA 5년 보존)
+#   개보법 §22 (동의), §37의2 (자동화 결정 거부권)
+#   개보법 시행령 §44의2~4 (설명요구권 10일 SLA)
+#   신정법 §36의2 (프로파일링 권리)
+#   금소법 §17 (적합성)
+# ---------------------------------------------------------------------------
+compliance:
+  store:
+    backend: in_memory                       # in_memory | dynamodb | s3_parquet
+    requests_table: ple-compliance-requests  # DynamoDB table name (prod)
+    events_table: ple-compliance-events
+    s3_bucket: aiops-ple-financial
+    s3_prefix: compliance
+    region: ap-northeast-2
+
+  retention:
+    default_days: 1825       # 5년 (AI기본법 §35 FRIA 보존)
+    rights_request_days: 2555  # 7년 (개보법 권리 요청)
+    audit_event_days: 2555   # 7년 (감사 이력)
+
+  sla:
+    # 10-day SLA per 개보법 시행령 §44의2~4
+    explanation_response_days: 10
+    explanation_warning_days_before: 2
+    # 30-day SLA per 개보법 §37의2 (operator response to opt-out)
+    opt_out_response_days: 30
+    opt_out_warning_days_before: 5
+    # Profiling access/correction/deletion (신정법 §36의2)
+    profiling_response_days: 30
+    profiling_warning_days_before: 5
+
+  # M3 Consent config (populated in Sprint 1)
+  consent:
+    channels: [SMS, EMAIL, APP_PUSH, PHONE, MAIL]
+    night_hours_kst: [21, 8]    # [start_hour, end_hour_next_day]
+    default_retention_days: 365
+    dnc_registry_enabled: true
+
+  # M4 Opt-out config (Sprint 1)
+  opt_out:
+    default_fallback: rule_based    # rule_based | human_review | disable
+    explanation_sla_days: 10        # mirrors sla.explanation_response_days
+
+  # M7 FRIA config (Sprint 2)
+  fria:
+    operator_type: "국가기관등"  # 국가기관등 | 민간
+    retention_days: 1825        # 5년
+    warning_before_expiry_days: 180
+    dimensions:
+      - data_sensitivity
+      - automation_level
+      - scope_of_impact
+      - model_complexity
+      - external_dependency
+      - fairness_risk
+      - explainability_gap
+
+  # M9 AI Risk Classifier (Sprint 2)
+  ai_risk:
+    dimensions:
+      data_sensitivity: 0.25
+      automation_level: 0.20
+      scope_of_impact: 0.20
+      model_complexity: 0.15
+      external_dependency: 0.10
+      fairness_risk: 0.10
+    grade_thresholds:
+      high: 0.70    # total_score >= 0.70
+      medium: 0.40  # total_score >= 0.40
+
+  # M12 LLM marker (Sprint 3)
+  llm_marker:
+    enabled: true
+    marker_text: "※ 본 추천 사유는 AI가 생성하였습니다. (AI기본법 §31)"
+
+  # Sprint 2 promotion gate (layered on top of ModelCompetition)
+  # Enable once per-model dimension score providers are wired up; until
+  # then conservative default 0.5 is used and the gate behaves as a
+  # smoke test, not a safety floor.
+  promotion_gate:
+    enabled: false
+    require_approval_on_escalation: true
+    default_score: 0.5
 
 # ---------------------------------------------------------------------------
 # Rule Engine — Layer 3 rule-based fallback (ML-free)

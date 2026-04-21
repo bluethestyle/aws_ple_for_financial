@@ -34,21 +34,76 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ConsentRecord", "ConsentManager"]
+__all__ = ["ConsentRecord", "ConsentConfig", "ConsentManager"]
 
 # KST = UTC+9
 _KST = timezone(timedelta(hours=9))
 
-_VALID_CHANNELS = {"sms", "email", "app_push", "third_party"}
-_VALID_SOURCES = {"customer_portal", "call_center", "branch", "auto"}
+# Legacy defaults (backward compatibility when no ConsentConfig is supplied).
+_LEGACY_CHANNELS = ("sms", "email", "app_push", "third_party")
+_LEGACY_SOURCES = ("customer_portal", "call_center", "branch", "auto")
+_LEGACY_NIGHT_HOURS = (21, 8)      # start=21:00, end_next_day=08:00 KST
+_LEGACY_RETENTION_DAYS = 365
 
-# Night-time restriction window (KST)
-_NIGHT_START_HOUR = 21  # 21:00
-_NIGHT_END_HOUR = 8     # 08:00
+
+@dataclass
+class ConsentConfig:
+    """
+    Channel-level marketing-consent configuration (M3).
+
+    Consumes `compliance.consent` block from pipeline.yaml; supports both the
+    legacy 4-channel set ("sms"/"email"/"app_push"/"third_party") and the
+    5-channel set ("SMS"/"EMAIL"/"APP_PUSH"/"PHONE"/"MAIL") from the build
+    plan. Case is preserved as supplied.
+    """
+
+    channels: Tuple[str, ...] = _LEGACY_CHANNELS
+    night_hours_kst: Tuple[int, int] = _LEGACY_NIGHT_HOURS
+    valid_sources: Tuple[str, ...] = _LEGACY_SOURCES
+    default_retention_days: int = _LEGACY_RETENTION_DAYS
+    dnc_registry_enabled: bool = True
+    # Channels exempt from the night-time block (KST 21~08).
+    night_exempt_channels: Tuple[str, ...] = ("third_party",)
+
+    def __post_init__(self) -> None:
+        if not self.channels:
+            raise ValueError("ConsentConfig.channels must be non-empty")
+        start, end = self.night_hours_kst
+        if not (0 <= start <= 23 and 0 <= end <= 23):
+            raise ValueError(
+                f"night_hours_kst must be [0,23] hours; got {self.night_hours_kst}"
+            )
+        if self.default_retention_days <= 0:
+            raise ValueError("default_retention_days must be > 0")
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ConsentConfig":
+        if not data:
+            return cls()
+        channels_raw: Iterable[str] = data.get("channels", _LEGACY_CHANNELS)
+        night_raw: Iterable[int] = data.get(
+            "night_hours_kst", _LEGACY_NIGHT_HOURS
+        )
+        sources_raw: Iterable[str] = data.get(
+            "valid_sources", _LEGACY_SOURCES
+        )
+        night_exempt_raw: Iterable[str] = data.get(
+            "night_exempt_channels", ("third_party",)
+        )
+        return cls(
+            channels=tuple(channels_raw),
+            night_hours_kst=tuple(night_raw),  # type: ignore[arg-type]
+            valid_sources=tuple(sources_raw),
+            default_retention_days=int(
+                data.get("default_retention_days", _LEGACY_RETENTION_DAYS)
+            ),
+            dnc_registry_enabled=bool(data.get("dnc_registry_enabled", True)),
+            night_exempt_channels=tuple(night_exempt_raw),
+        )
 
 
 @dataclass
@@ -83,12 +138,14 @@ class ConsentManager:
         region: str = "ap-northeast-2",
         audit_store: Any = None,
         use_dynamo: bool = True,
+        config: Optional[ConsentConfig] = None,
     ) -> None:
         self._table_name = table_name
         self._region = region
         self._audit_store = audit_store
         self._table = None
         self._memory: Dict[str, Dict[str, Any]] = {}  # fallback store
+        self._config = config or ConsentConfig()
 
         if use_dynamo:
             try:
@@ -97,15 +154,18 @@ class ConsentManager:
                 dynamodb = boto3.resource("dynamodb", region_name=region)
                 self._table = dynamodb.Table(table_name)
                 logger.info(
-                    "ConsentManager: DynamoDB table=%s, region=%s",
-                    table_name, region,
+                    "ConsentManager: DynamoDB table=%s, region=%s, channels=%s",
+                    table_name, region, self._config.channels,
                 )
             except Exception:
                 logger.warning(
                     "ConsentManager: boto3 unavailable, using in-memory store",
                 )
         else:
-            logger.info("ConsentManager: using in-memory store")
+            logger.info(
+                "ConsentManager: using in-memory store, channels=%s",
+                self._config.channels,
+            )
 
     # ------------------------------------------------------------------
     # Read operations
@@ -140,25 +200,37 @@ class ConsentManager:
                 )
         return True
 
-    def check_nighttime(self, channel: str) -> bool:
+    def check_nighttime(
+        self, channel: str, now: Optional[datetime] = None,
+    ) -> bool:
         """Check if current KST time is within night restriction window.
 
-        The restriction applies to outbound marketing channels (sms, email,
-        app_push).  Returns ``True`` if sending is **BLOCKED**.
+        The restriction applies to outbound marketing channels, except any
+        channel listed in ``config.night_exempt_channels``. Returns ``True``
+        if sending is **BLOCKED**.
         """
-        # Third-party is not subject to night-time restriction in this impl
-        if channel == "third_party":
+        if channel in self._config.night_exempt_channels:
             return False
 
-        now_kst = datetime.now(_KST)
+        now_kst = (now.astimezone(_KST) if now is not None
+                   else datetime.now(_KST))
         hour = now_kst.hour
-        return hour >= _NIGHT_START_HOUR or hour < _NIGHT_END_HOUR
+        start, end = self._config.night_hours_kst
+        # Window wraps midnight (e.g. 21 -> 08): blocked if >= start OR < end.
+        if start > end:
+            return hour >= start or hour < end
+        return start <= hour < end
 
     def check_dnc(self, customer_id: str) -> bool:
         """Check if customer is on the Do-Not-Contact list.
 
-        Returns ``True`` if the customer is **BLOCKED**.
+        Returns ``True`` if the customer is **BLOCKED**. When the DNC registry
+        is disabled via ``ConsentConfig.dnc_registry_enabled=False``, always
+        returns ``False``.
         """
+        if not self._config.dnc_registry_enabled:
+            return False
+
         if self._table is not None:
             return self._dynamo_check_dnc(customer_id)
 
@@ -199,7 +271,7 @@ class ConsentManager:
         Returns a dict keyed by channel name.
         """
         result: Dict[str, ConsentRecord] = {}
-        for channel in _VALID_CHANNELS:
+        for channel in self._config.channels:
             record = self._get_consent_record(customer_id, channel)
             if record is not None:
                 result[channel] = record
@@ -214,7 +286,7 @@ class ConsentManager:
         customer_id: str,
         channel: str,
         source: str,
-        expires_days: int = 365,
+        expires_days: Optional[int] = None,
     ) -> None:
         """Grant marketing consent for *channel*.
 
@@ -225,6 +297,8 @@ class ConsentManager:
             expires_days: Days until consent auto-expires.
         """
         self._validate_channel(channel)
+        if expires_days is None:
+            expires_days = self._config.default_retention_days
         now = datetime.now(timezone.utc)
         expires_at = (now + timedelta(days=expires_days)).isoformat()
 
@@ -413,11 +487,11 @@ class ConsentManager:
     def _mem_key(customer_id: str, record_key: str) -> str:
         return f"{customer_id}##{record_key}"
 
-    @staticmethod
-    def _validate_channel(channel: str) -> None:
-        if channel not in _VALID_CHANNELS:
+    def _validate_channel(self, channel: str) -> None:
+        if channel not in self._config.channels:
             raise ValueError(
-                f"Invalid channel '{channel}'. Must be one of {_VALID_CHANNELS}"
+                f"Invalid channel '{channel}'. "
+                f"Must be one of {tuple(self._config.channels)}"
             )
 
     def _audit(self, action: str, customer_id: str, **kwargs: Any) -> None:
