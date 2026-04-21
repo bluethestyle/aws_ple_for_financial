@@ -10,7 +10,8 @@
 - ✅ **Phase 1 Must (M1~M12) 완료** — 모든 규제 핵심 모듈 AWS 이식.
 - ✅ **Phase 2 Should 15/15 완료** — S1~S15 전체 완료.
 - ✅ **Phase 3 Could 4/5 완료** — C1, C3, C4, C5. C2는 Won't (AWS SageMaker 네이티브).
-- 누적 테스트: **447/447 PASS**, 하드코딩 0건.
+- 누적 테스트: **606/606 PASS** (PR #1~#3 반영), 하드코딩 0건 (`ap-northeast-2` repo-wide 0 hits).
+- **PromotionGate Live Wiring (PR #2/#3)**: `core/compliance/metadata_aggregator.py` (신규) 로 lineage / fairness / review queue / model registry / LLM config / static overrides 6 source 를 composite 하여 차원 점수 공급. `GateVerdict.details` 가 per-dimension 유도 트레일을 `AuditLogger.log_model_promotion` 의 HMAC + hash-chain 레코드에 임베드하고, 동시에 SageMakerComplianceTracker 에 `promotion_gate_verdict` artifact 로 기록. 이로써 `compliance.promotion_gate.enabled: true` 가 pipeline.yaml 기본값으로 전환 (conservative LIMITED collapse 리스크 해소).
 - **S5 재정의**: 온프렘 MLflow+DVC 를 그대로 이식하지 않고, AWS 네이티브 서비스 (SageMaker Experiments + Model Registry + Lineage + S3 versioning) 기반으로 재설계. `core/compliance/sagemaker_compliance_tracker.py` 가 4개 규제 산출물 유형 (FRIA / AI Risk / Compliance Sweep / Promotion Gate) 을 Experiments TrialComponent 로 자동 기록.
 - **S6 재정의**: Athena 도입은 과잉. DuckDB httpfs 확장이 s3:// URI 를 네이티브로 읽으므로, `core/compliance/audit_sql.py::ComplianceSQLHelper` 로 온프렘 DuckDB 경험을 AWS 에서 0 인프라 비용으로 유지 (regulator 쿼리 + cross-view JOIN).
 - **C1 신규**: `core/evaluation/uplift_learner.py` (T-Learner + X-Learner + 평가 지표) — Paper 2 v2 Pearl Rung 2 공백 해소.
@@ -81,6 +82,8 @@ AWS 로 이식할 때는 **AWS 의 config-중심 / 모듈화 패턴** 에 맞게
 | **S15** | auto_promote=False 인적 감독 강제 | ✅ 완료 | `core/evaluation/model_competition.py::CompetitionConfig.auto_promote` + `pipeline.yaml serving.competition` | EU AI Act Art.14 |
 
 **Phase 2 Should 15/15 완료** (105 tests PASS). S5 는 SageMaker Experiments 네이티브, S6 는 Athena 대신 DuckDB-over-Parquet. 두 항목 모두 온프렘 스택을 그대로 이식하지 않고 AWS 에 더 맞는 접근으로 재설계했지만 기능은 동등.
+
+**Phase 3 Could + PromotionGate Live Wiring 후속 (PR #1~#3)**: 447 → 606 tests. 상세는 `docs/pipeline_comparison_matrix.md` §5.10.
 
 ### 1.3 Could (v2 Optional 보강)
 

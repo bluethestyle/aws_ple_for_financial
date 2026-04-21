@@ -228,7 +228,7 @@ M1~M12 (원래 "온프렘만" 표에 있던 항목들) 은 **`aws_build_plan.md`
 | M12 | LLM Generation Marker (idempotent) | `core/recommendation/reason/marker_applier.py` | `tests/test_sprint3_serving.py` (56 cases 통합) |
 
 **통합**:
-- `core/evaluation/promotion_gate.py`: FRIA + AI Risk 게이트가 `scripts/submit_pipeline.py::_decide_promotion` 에 optional post-check 로 연결 (`compliance.promotion_gate.enabled`=false 기본).
+- `core/evaluation/promotion_gate.py`: FRIA + AI Risk 게이트가 `scripts/submit_pipeline.py::_decide_promotion` 에 post-check 로 연결. **§5.10 PR #2/#3 반영 후 `compliance.promotion_gate.enabled: true` 가 pipeline.yaml 기본값** (MetadataAggregator + 6 source 가 기본 wiring 되어 conservative LIMITED collapse 리스크 해소).
 - `core/serving/predict.py`: 위 모든 hook 이 `RecommendationService.__init__` 의 optional 인자로 주입. 기본 None (기존 동작 보존). 주입 시 non-blocking metadata annotation 또는 (tier 2/3) blocking queue enqueue 로 동작.
 
 **양쪽 구현 현황**:
@@ -321,6 +321,36 @@ Paper 2 v2 의 Pearl causal ladder 전체 커버 + LLM 보안 강화를 위해 P
 C2 Airflow DAG 는 AWS SageMaker managed orchestration 로 대체 (이식 불필요).
 
 **누적 테스트 (2026-04-21 전량 완료, Phase 3 포함)**: 349 + 39 (C1+C4) + dimension_scores 27 + policy_evaluation 32 = **447/447 PASS**. **Phase 1 Must 12/12 + Phase 2 Should 15/15 + Phase 3 Could 4/5 (+ C2 Won't) 완료**.
+
+### 5.10 PromotionGate Live Wiring (2026-04-21, PR #1~#3)
+
+§5.9 이후 후속 PR 3건으로 PromotionGate 가 실제 작동 가능 상태로 전환. §1.16 "provider 연결 전에 enabled=true 금지" 조건 해소.
+
+| PR | 항목 | AWS 구현 위치 |
+|---|---|---|
+| #1 (3cb7e06) | Pre-existing test 2건 수정 (multiclass forward + all-16-tasks) | `tests/fixtures/generate_financial_data.py`, `tests/test_e2e_local.py`, `tests/test_task_registry.py` — helper 만 수정, 프로덕션 코드 미변경 |
+| #2 (706ec3d) | MetadataAggregator + 6 source + composite provider 자동 wiring | `core/compliance/metadata_aggregator.py` (신규, 491줄), `core/evaluation/promotion_gate.py::build_promotion_gate`, `scripts/submit_pipeline.py::_build_metadata_aggregator` |
+| #2 (706ec3d) | `aws.region` / `aws.s3_bucket` from_dict fallback 전파 | `core/compliance/store.py`, `core/compliance/audit_store.py`, `core/serving/cold_start.py`, `core/serving/kill_switch.py`, `core/serving/feature_store.py`, `core/serving/model_monitor.py`, `core/serving/model_registry.py`, `core/serving/review/human_review_queue.py` |
+| #3 (0e0322d) | GateVerdict audit trail (HMAC+hash-chain 임베드) | `core/evaluation/promotion_gate.py::GateVerdict.details`, `core/monitoring/audit_logger.py::log_model_promotion(gate_details=)`, `scripts/submit_pipeline.py::_audit_promotion` |
+| #3 (0e0322d) | SageMakerComplianceTracker `promotion_gate_verdict` artifact 자동 기록 | `scripts/submit_pipeline.py::_run_promotion_gate` |
+| #3 (0e0322d) | Archive-backed source (lineage YAML / fairness Parquet) | `core/compliance/metadata_aggregator.py::build_lineage_yaml_source, build_fairness_archive_source` |
+| #3 (0e0322d) | `ap-northeast-2` config default 로서의 하드코딩 전량 purge | `core/agent/*`, `core/data/*`, `core/monitoring/*`, `core/pipeline/config.py`, `core/recommendation/audit_archiver.py`, `core/recommendation/reason/async_orchestrator.py`, `core/recommendation/reason/reason_cache.py`, `core/security/salt_manager.py`, `core/training/checkpoint.py`, `core/training/experiment.py`. 잔존 2건 (`core/feature/group.py:110` docstring 예시, `core/monitoring/pia_evaluator.py:129` region→country 참조 매핑) 은 config default 가 아니므로 §1.1 대상 외. |
+
+**신규 테스트 파일** (5종 1,541줄):
+- `tests/test_metadata_aggregator.py` — 444줄
+- `tests/test_promotion_gate_live.py` — 300줄
+- `tests/test_promotion_gate_audit_trail.py` — 282줄
+- `tests/test_promotion_gate_tracker.py` — 194줄
+- `tests/test_metadata_archive_sources.py` — 321줄
+
+**누적 테스트 (2026-04-21 최종, PR #1~#3 반영)**: 447 + 34 (audit+tracker+archive) + 75 (metadata aggregator + live wiring) + 50 (기타 regression) = **606/606 PASS**.
+
+**운영 전환 체크리스트** (`compliance.promotion_gate.enabled: true` 를 프로덕션 활성화하기 전):
+1. ❌ **미결** — `monitoring.fairness.archive_parquet_path` 미설정. `compliance.promotion_gate.providers.aggregator.sources.fairness_archive_parquet_path: null`. fairness source 가 빈 결과 반환 → `fairness_risk` 차원이 heuristic fallback(0.5) 로 수렴. 프로덕션 활성화 전 fairness monitor 가 실제로 append 하는 경로 설정 필수.
+2. ✅ lineage YAML (`configs/financial/feature_groups.yaml`) 존재 확인. 피처 스키마 최신화 여부는 주기적 점검 필요.
+3. ⚠️ `compliance.tracking.backend: in_memory` — 개발 환경 기본값. 프로덕션 전환 시 `sagemaker` 로 변경 + IAM 권한 (CreateExperiment / CreateTrialComponent) 부여 필요.
+4. `manual_overrides: {}` 비어있음 — critical model version override 는 선택사항 (heuristic 으로 충분한 경우 불필요).
+5. Dry-run: `--force-promote` 없이 테스트 환경에서 챌린저 1회 제출하여 게이트가 accept/reject 판정을 audit log + SageMaker TrialComponent 양쪽에 남기는지 확인.
 
 ---
 
