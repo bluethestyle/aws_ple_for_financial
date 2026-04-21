@@ -270,3 +270,165 @@ AWS 의 `config_builder.py` 에 해당하는 온프렘 위치 확인 필요. HP 
 - Phase 1 + 2 완료 + 온프렘 smoke test 통과 → **논문 v2 준비 진입 상태**
 - Phase 3 완료 + 실데이터 1~2 개 Finding 재현 → **논문 v2 초안 작성 가능**
 - `docs/onprem_v2_validation_checklist.md` Tier 3 진입 → **v2 submission 가시화**
+
+---
+
+## 10. 비-Causal Gap 분석 (2026-04-21 추가)
+
+상위 섹션들은 Causal expert + CEH / CG / CCP 중심이었음. 전체 AWS 코드베이스를 스캔한 결과 causal 외에도 온프렘에 없는 항목들이 상당수 확인됨. 우선순위별 정리:
+
+### 10.1 반드시 이식 필요 (Finding 7 관련)
+
+Paper 3 Finding 7 의 9-way fusion 비교에서 나온 기법들. 온프렘 `src/models/` 에서 grep 결과 **모두 없음**.
+
+| 기법 | AWS 위치 | Finding 7 결과 | 온프렘 이식 우선순위 |
+|---|---|---|---|
+| **NEAS** | `core/model/ple/config.py::NEASConfig`, model.py | Aggregate AUC +0.0011 (positive) | **High** |
+| **BRP-detached** | `core/model/ple/config.py::BRPConfig`, model.py | F1-macro +0.007, NDCG@3 +0.015 (positive) | **High** |
+| **BRP (기본)** | 동 | 검증 baseline | Medium |
+| **ECEB** | `core/model/ple/config.py::ECEBConfig` | Negative (AUC 하락) | Low (negative 재확인용) |
+| **AdaTT-sp** | 동 (adatt_sp_enabled flag) | Negative | Low |
+| **ResidualComplement (M1)** | 동 | Negative | Low |
+
+**근거**: Finding 7 의 핵심 메시지는 "두 positive recipe (NEAS + BRP-detached) 가 disjoint axis, non-additive". 실데이터에서 이 관계가 유지되는지 확인하려면 최소 **NEAS + BRP-detached + 조합** 3개 시나리오가 필요.
+
+### 10.2 이식 권장 (Distillation / Serving 인프라)
+
+| 컴포넌트 | AWS 위치 | 온프렘 상태 | 역할 | 우선순위 |
+|---|---|---|---|---|
+| **FallbackRouter** (3-layer) | `core/recommendation/fallback_router.py` | ❌ 없음 | DISTILL→DIRECT→SKIP 라우팅 | **High** (Paper 2 핵심 서비스 연속성 메커니즘) |
+| **teacher_threshold gating** | 위와 동일 파일 | ❌ 없음 | task 별 증류 품질 기반 라우팅 | **High** |
+| **PlattScaling calibration** | `core/evaluation/propensity.py` | ❌ 없음 | 확률값 필요 task 의 post-hoc calibration | Medium |
+| **ModelCompetition API** | `core/evaluation/model_competition.py` | ✅ 있음 (`src/evaluation/model_competition.py`) | Champion-Challenger 오프라인 게이트 | ⚠️ API 정합성 점검 필요 |
+
+### 10.3 인프라 정렬 (Consistency)
+
+| 컴포넌트 | AWS | 온프렘 | 차이 |
+|---|---|---|---|
+| **Normalizer 3-stage** | `core/pipeline/normalizer.py` (PowerLawNormalizer + StandardScaler + raw 보존) | ❌ 확인 안 됨 | 온프렘에 3-stage 정규화가 있는지, 다른 방식인지 재조사 필요 |
+| **LeakageValidator** | `core/pipeline/leakage_validator.py` (standalone class) | `_validate_leakage` method in runner.py | 기능은 있으나 구조 다름. Class 로 분리 권장 |
+| **FeatureRouter** | `core/model/ple/feature_router.py` | ❌ 없음 (ple_cluster_adatt.py 안에서 직접 처리?) | 온프렘 라우팅 경로 확인 필요 — CEH/CG accessor 가 찾는 `_idx_causal` 가 있는지 |
+| **GradSurgery (PCGrad)** | `core/model/ple/grad_surgery.py` | ❌ 없음 (task_correlation_analysis.py 는 별도) | 메모리상 "미채택" 결정이라 필수 아님 |
+
+### 10.4 차이가 의도적 (이식 불필요)
+
+| 영역 | AWS | 온프렘 | 비고 |
+|---|---|---|---|
+| **Agent framework** | `core/agent/` (OpsAgent, AuditAgent, bedrock_dialog, case_store, consensus) | `src/grounding/` (agentic_reason_orchestrator, l2a_rewrite_engine) | 온프렘은 service-oriented 다른 구조 |
+| **Compliance module** | `core/compliance/` (ai_opt_out, consent_manager, profiling_rights, regulatory_checker) | 대부분 `src/recommendation/` 아래 (ai_decision_opt_out, marketing_consent, profiling_rights_manager) | 기능 동등, 구조 차이 |
+| **Orchestration** | SageMaker 순차 | Airflow DAGs | AWS vs 온프렘 의도적 분리 (CLAUDE.md 명시) |
+| **Data store** | S3 Parquet | DuckDB + files | 동일 |
+
+### 10.5 온프렘 전용 (AWS 로 역수입 검토 대상)
+
+참고: 반대 방향 gap 도 있음. AWS 에 없고 온프렘에만 있는 것들. 필요 시 일부는 AWS 로 역수입 가능.
+
+| 컴포넌트 | 온프렘 위치 | AWS 역수입 가치 |
+|---|---|---|
+| FD-TVS scoring (dna_modifier, fatigue_decay, risk_penalty, segment_classifier) | `src/scoring/` | 금감원 스토리 강화 시 AWS Paper 2 에도 이식 고려 |
+| Human review queue + kill switch | `src/recommendation/` | AWS 에는 compliance/human_review 로 대체 가능 |
+| Explanation SLA tracker | `src/recommendation/explanation_sla_tracker.py` | AWS Paper 2 에 없는 운영 지표 |
+| EU AI Act mapper (운영 관점) | `src/monitoring/eu_ai_act_mapper.py`, `fria_evaluator.py` | AWS 도 Paper 2 에 eu_ai_act 매핑 있으나 코드 레벨은 온프렘이 더 상세 |
+| 다학제 피처 (TDA, HGCN 그래프 라이브러리 포함) | `src/graph/`, `src/timeseries/`, `src/domain_features/` | AWS 는 expert 내부에서만 처리; 온프렘은 별도 모듈 |
+
+---
+
+## 11. 확장된 Phase 1 체크리스트 (Causal + Non-Causal)
+
+기존 섹션 4 의 Phase 1 은 causal 중심. 아래는 비-causal 포함 확장판.
+
+### Phase 1A: Causal Axis (기존)
+→ 섹션 4 Phase 1 참조. 약 1~2주.
+
+### Phase 1B: Finding 7 Fusion 이식 (신규, ~3~5일)
+
+1. **ECEBConfig / BRPConfig / NEASConfig dataclass 이식** (0.5일)
+   - `src/models/ple_config.py` (or equivalent) 에 3개 dataclass 추가
+2. **ECEB layer 이식** (0.5일, negative 재확인용이라 후순위)
+3. **BRP / BRP-detached 학습 루프 추가** (1~2일)
+   - Residual expert 분기 + primary 예측 detach
+   - per-task BRP lambda config
+4. **NEAS 학습 루프 추가** (1일)
+   - Inverse-gate 가중 aggregation + 보조 supervision loss
+5. **config_mutator 에 fusion HP 지원** (0.5일)
+6. **단위 테스트 이식** (0.5~1일)
+
+### Phase 1C: Distillation 인프라 (신규, ~2~3일)
+
+1. **FallbackRouter 이식** (1일)
+   - 3-layer (teacher → direct → rule) 라우팅 클래스
+   - teacher_threshold 비교 로직
+2. **teacher_threshold gating 적용 경로 연결** (0.5일)
+3. **PlattScaling wrapper 이식** (0.5일)
+   - 확률-필요 task (e.g. churn) 에만 적용
+4. **configs/distillation 블록 정렬** (0.5일)
+5. **End-to-end smoke: teacher → distill → LGBM student → calibration** (1일)
+
+### Phase 1D: Infra Consistency (신규, ~1~2일)
+
+1. **LeakageValidator 를 standalone class 로 리팩터링** (0.5일)
+2. **Normalizer 3-stage 확인 + 필요 시 이식** (0.5~1일)
+3. **FeatureRouter 이식 (or 동등 기능 확인)** (0.5일)
+4. **ModelCompetition API 정합성 점검** (0.5일)
+
+---
+
+## 12. 우선순위 재정리 (v2 submission 관점)
+
+### Must (v2 논문 핵심)
+- Phase 1A (Causal Axis) — F8~F12
+- Phase 1B 의 NEAS + BRP-detached (F7 positive recipes)
+- Phase 1C 의 FallbackRouter + teacher_threshold (Paper 2 서비스 연속성)
+- Phase 2 (신규 ablation 시나리오 + post-hoc 스크립트)
+
+### Should (v2 논문 보강)
+- Phase 1B 의 BRP 기본 + NEAS×BRP-detached 조합
+- Phase 1C 의 PlattScaling
+- Phase 1D (infra consistency)
+- Phase 3 (문서 동기화)
+
+### Could (v2 논문 optional)
+- Phase 1B 의 ECEB / AdaTT-sp / M1 (negative 재확인)
+- F13 (CEH v3) 재확인 — 이미 negative, skip 권장
+- GradSurgery — 이미 "미채택" 결정, skip
+
+### Won't (온프렘 로컬 결정)
+- AWS agent framework 이식
+- AWS compliance 모듈 이식 (온프렘 상응 기능 있음)
+
+---
+
+## 13. 예상 공수 합계
+
+| Phase | 범위 | 예상 기간 |
+|---|---|---|
+| 1A | Causal Axis 이식 | 1~2주 |
+| 1B | Fusion 이식 (Must 만) | 2~3일 |
+| 1B | Fusion 이식 (전체) | 1주 |
+| 1C | Distillation 인프라 | 2~3일 |
+| 1D | Infra consistency | 1~2일 |
+| 2 | Ablation 프레임워크 + post-hoc 스크립트 | 0.5~1주 |
+| 3 | 설계서 / 문서 동기화 | 1~2일 |
+| **총계 (Must 기준)** | | **약 3~4주** |
+| **총계 (Must + Should)** | | **약 5~6주** |
+
+---
+
+## 14. 검증 로그 확장 (비-Causal 포함)
+
+섹션 7 의 체크박스에 추가:
+
+| 항목 | 상태 | 비고 |
+|---|---|---|
+| NEAS 이식 + 학습 검증 | ☐ | |
+| BRP-detached 이식 + 학습 검증 | ☐ | |
+| FallbackRouter 이식 + 3-layer 라우팅 작동 | ☐ | |
+| teacher_threshold gating 작동 | ☐ | |
+| PlattScaling calibration 적용 | ☐ | |
+| LeakageValidator 독립 class 화 | ☐ | |
+| Normalizer 3-stage 정렬 | ☐ | |
+| ModelCompetition API 정합성 | ☐ | |
+| Finding 7 재현 (NEAS 개별 positive) | ☐ | |
+| Finding 7 재현 (BRP-detached 개별 positive) | ☐ | |
+| Finding 7 재현 (NEAS × BRP-detached non-additive) | ☐ | |
+
