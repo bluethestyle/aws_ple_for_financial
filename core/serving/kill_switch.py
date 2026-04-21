@@ -80,14 +80,16 @@ class KillSwitch:
     Args:
         table_name: DynamoDB table name.
         fallback_strategy: Default fallback when the switch fires.
-        region: AWS region.
+        region: AWS region. ``None`` lets boto3 resolve from env /
+            credentials; :meth:`from_config` injects
+            ``pipeline.yaml::aws.region`` when the kill_switch block omits it.
     """
 
     def __init__(
         self,
         table_name: str = "ple-kill-switch",
         fallback_strategy: str = "rule_based",
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
         audit_store=None,
         use_dynamo: bool = True,
     ) -> None:
@@ -129,18 +131,25 @@ class KillSwitch:
     ) -> "KillSwitch":
         """Build from the ``serving.kill_switch`` block of pipeline.yaml.
 
+        ``region`` falls back to the top-level ``aws.region`` block so
+        changing ``aws.region`` propagates to the kill switch table.
         Unknown / missing block falls back to defaults (DynamoDB on AWS,
         in-memory elsewhere).
         """
-        serving = (pipeline_config or {}).get("serving") or {}
+        pc = pipeline_config or {}
+        serving = pc.get("serving") or {}
+        aws_cfg = pc.get("aws") or {}
         ks_cfg = serving.get("kill_switch") or {}
+
+        region = ks_cfg.get("region") or aws_cfg.get("region")
+
         backend = str(ks_cfg.get("backend", "dynamodb"))
         return cls(
             table_name=str(ks_cfg.get("table_name", "ple-kill-switch")),
             fallback_strategy=str(
                 ks_cfg.get("fallback_strategy", "rule_based")
             ),
-            region=str(ks_cfg.get("region", "ap-northeast-2")),
+            region=region,
             audit_store=audit_store,
             use_dynamo=(backend == "dynamodb"),
         )

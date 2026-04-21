@@ -74,7 +74,9 @@ class ColdStartHandler:
             are routed to ANONYMOUS instead of COLDSTART.  0 = disabled.
         registry: :class:`TaskColdStartRegistry` for per-task strategies.
             Auto-built from config when not provided.
-        region: AWS region for S3 access.
+        region: AWS region for S3 access. ``None`` lets boto3 resolve from
+            env / credentials; :meth:`from_config` injects
+            ``pipeline.yaml::aws.region`` when the cold_start block omits it.
     """
 
     def __init__(
@@ -83,7 +85,7 @@ class ColdStartHandler:
         coldstart_features: Optional[List[str]] = None,
         anonymous_threshold_days: int = 0,
         registry: Optional[TaskColdStartRegistry] = None,
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
     ) -> None:
         self._catalog_map: Dict[str, List[Dict[str, Any]]] = catalog_map or {}
         self._coldstart_features = coldstart_features or []
@@ -153,11 +155,19 @@ class ColdStartHandler:
         if flat_catalog and "engagement" not in catalog_map:
             catalog_map["engagement"] = flat_catalog
 
+        # Region fallback: cold_start.region → config.region → aws.region
+        aws_cfg = config.get("aws") or {}
+        region = (
+            cs_cfg.get("region")
+            or config.get("region")
+            or aws_cfg.get("region")
+        )
+
         # S3 catalog override
         s3_uri = cs_cfg.get("popularity_catalog_s3_uri", "")
         if s3_uri:
             s3_items = cls._load_catalog_from_s3_static(
-                s3_uri, region=config.get("region", "ap-northeast-2"),
+                s3_uri, region=region,
             )
             if s3_items:
                 catalog_map["engagement"] = s3_items
@@ -169,7 +179,7 @@ class ColdStartHandler:
             coldstart_features=cs_cfg.get("coldstart_features", []),
             anonymous_threshold_days=cs_cfg.get("anonymous_threshold_days", 0),
             registry=registry,
-            region=config.get("region", "ap-northeast-2"),
+            region=region,
         )
 
     # ------------------------------------------------------------------
@@ -348,7 +358,7 @@ class ColdStartHandler:
     @staticmethod
     def _load_catalog_from_s3_static(
         s3_uri: str,
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Download a flat popularity catalog JSON from S3."""
         try:

@@ -100,14 +100,16 @@ class ComplianceAuditStore:
     ----------
     table_prefix : str
         Prefix for DynamoDB table names (e.g. ``"ple-audit"``).
-    region : str
-        AWS region for DynamoDB.
+    region : Optional[str]
+        AWS region for DynamoDB. ``None`` lets boto3 resolve from
+        ``AWS_REGION`` / shared credentials. Callers should read
+        ``pipeline.yaml::aws.region`` and pass it in explicitly.
     """
 
     def __init__(
         self,
         table_prefix: str = "ple-audit",
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
     ) -> None:
         self._prefix = table_prefix
         self._region = region
@@ -431,7 +433,7 @@ class InMemoryAuditStore(ComplianceAuditStore):
     def __init__(self, **kwargs: Any) -> None:  # noqa: ARG002
         # Intentionally skip parent __init__ (no boto3 needed)
         self._prefix = kwargs.get("table_prefix", "ple-audit")
-        self._region = kwargs.get("region", "ap-northeast-2")
+        self._region = kwargs.get("region")
         self._dynamo = None
         self._tables: Dict[str, Any] = {}
         self._store: Dict[str, List[Dict[str, Any]]] = {

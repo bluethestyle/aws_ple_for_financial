@@ -123,7 +123,8 @@ class ConsentManager:
 
     Args:
         table_name: DynamoDB table name.
-        region: AWS region.
+        region: AWS region. ``None`` lets boto3 resolve from env /
+            credentials; callers should pass ``pipeline.yaml::aws.region``.
         audit_store: Optional callable ``(event_dict) -> None`` for audit
             logging.  When ``None``, audit events are only written to the
             Python logger.
@@ -135,7 +136,7 @@ class ConsentManager:
     def __init__(
         self,
         table_name: str = "ple-consent",
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
         audit_store: Any = None,
         use_dynamo: bool = True,
         config: Optional[ConsentConfig] = None,

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from core.compliance.ai_risk_classifier import (
     AIRiskAssessment,
@@ -193,8 +193,23 @@ def build_promotion_gate(
     store: Optional[ComplianceStore] = None,
     fria_scores_provider: Optional[DimensionScoresFn] = None,
     ai_risk_scores_provider: Optional[DimensionScoresFn] = None,
+    metadata_aggregator: Optional[Callable[[str], Dict[str, Any]]] = None,
 ) -> PromotionGate:
-    """Build a PromotionGate from the top-level pipeline config."""
+    """Build a PromotionGate from the top-level pipeline config.
+
+    Dimension-score provider wiring (in precedence order, earliest wins):
+
+    1. Explicit ``fria_scores_provider`` / ``ai_risk_scores_provider``
+       kwargs — callers can fully override the auto-wired chain.
+    2. ``compliance.promotion_gate.providers.manual_overrides`` — operator
+       override block in pipeline.yaml, keyed by model_version.
+    3. ``metadata_aggregator`` — real metadata pulled from lineage /
+       fairness / registry / LLM config. When omitted the heuristics
+       fall back to per-rule defaults (0.5) and the gate behaves as
+       conservative LIMITED.
+
+    See ``core.compliance.metadata_aggregator`` for aggregator wiring.
+    """
     compliance_cfg = (config.get("compliance") or {})
     gate_cfg = compliance_cfg.get("promotion_gate") or {}
     enabled = bool(gate_cfg.get("enabled", False))
@@ -222,12 +237,78 @@ def build_promotion_gate(
     ai_cfg = AIRiskConfig.from_dict(compliance_cfg.get("ai_risk"))
     ai_risk = AIRiskClassifier(store=store, config=ai_cfg)
 
+    fria_provider, ai_provider = _auto_compose_providers(
+        compliance_cfg,
+        metadata_aggregator=metadata_aggregator,
+        explicit_fria=fria_scores_provider,
+        explicit_ai=ai_risk_scores_provider,
+        fria_dimensions=fria_cfg.dimensions,
+        ai_dimensions=list(ai_cfg.dimensions.keys()),
+    )
+
     return PromotionGate(
         fria_assessor=fria,
         ai_risk_classifier=ai_risk,
         enabled=enabled,
         require_approval_on_escalation=require_approval,
-        fria_scores_provider=fria_scores_provider,
-        ai_risk_scores_provider=ai_risk_scores_provider,
+        fria_scores_provider=fria_provider,
+        ai_risk_scores_provider=ai_provider,
         default_score=default_score,
+    )
+
+
+def _auto_compose_providers(
+    compliance_cfg: Dict[str, Any],
+    *,
+    metadata_aggregator: Optional[Callable[[str], Dict[str, Any]]],
+    explicit_fria: Optional[DimensionScoresFn],
+    explicit_ai: Optional[DimensionScoresFn],
+    fria_dimensions: Sequence[str],
+    ai_dimensions: Sequence[str],
+) -> tuple[Optional[DimensionScoresFn], Optional[DimensionScoresFn]]:
+    """Compose Manual + MetricsDerived providers from config + aggregator.
+
+    Precedence: explicit kwarg → (manual_overrides + aggregator-backed
+    heuristic). Returns ``(fria_provider, ai_risk_provider)``.
+    """
+    from core.compliance.dimension_scores import (
+        CompositeProvider,
+        ManualScoreProvider,
+        MetricsDerivedScoreProvider,
+    )
+
+    gate_cfg = compliance_cfg.get("promotion_gate") or {}
+    providers_cfg = gate_cfg.get("providers") or {}
+    manual_overrides = providers_cfg.get("manual_overrides") or {}
+
+    def _compose(
+        explicit: Optional[DimensionScoresFn],
+        dimensions: Sequence[str],
+    ) -> Optional[DimensionScoresFn]:
+        if explicit is not None:
+            return explicit
+        layers: List[DimensionScoresFn] = []
+        if manual_overrides:
+            layers.append(
+                ManualScoreProvider(
+                    overrides=manual_overrides,
+                    dimensions=dimensions,
+                )
+            )
+        if metadata_aggregator is not None:
+            layers.append(
+                MetricsDerivedScoreProvider(
+                    metadata_lookup=metadata_aggregator,
+                    dimensions=dimensions,
+                )
+            )
+        if not layers:
+            return None
+        if len(layers) == 1:
+            return layers[0]
+        return CompositeProvider(layers)
+
+    return (
+        _compose(explicit_fria, fria_dimensions),
+        _compose(explicit_ai, ai_dimensions),
     )

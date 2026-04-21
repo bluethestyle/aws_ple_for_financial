@@ -42,7 +42,7 @@ Usage::
     monitor = ModelMonitor(
         table_name="ple-prediction-log",
         cw_namespace="PLE/Serving",
-        region="ap-northeast-2",
+        region=config.aws.region,   # inject from pipeline.yaml::aws.region
     )
 
     # Called from the serving Lambda after inference
@@ -150,7 +150,8 @@ class ModelMonitor:
     Args:
         table_name: DynamoDB table name for prediction logs.
         cw_namespace: CloudWatch custom namespace.
-        region: AWS region.
+        region: AWS region. ``None`` lets boto3 resolve from env /
+            credentials; callers should pass ``pipeline.yaml::aws.region``.
         min_samples: Minimum per-version sample count before evaluation.
         alpha: Statistical significance threshold for Champion-Challenger.
         lookback_days: How many days of prediction logs to pull for evaluation.
@@ -160,7 +161,7 @@ class ModelMonitor:
         self,
         table_name: str = "ple-prediction-log",
         cw_namespace: str = "PLE/Serving",
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
         min_samples: int = 5_000,
         alpha: float = 0.05,
         lookback_days: int = 7,

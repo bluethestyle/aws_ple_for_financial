@@ -367,9 +367,77 @@ def _audit_promotion(**kwargs) -> None:
         logger.warning("Audit log for promotion failed (non-fatal): %s", exc)
 
 
+def _build_metadata_aggregator(
+    pipeline_config: dict,
+    registry: Optional[object] = None,
+) -> Optional[object]:
+    """Build a MetadataAggregator from the pipeline config.
+
+    The aggregator merges real-metadata sources (lineage, fairness, LLM
+    config, registry manifest, static overrides) into a
+    ``(model_version) -> dict`` callable suitable for
+    MetricsDerivedScoreProvider.
+
+    Returns ``None`` if the compliance module cannot be imported (CI,
+    truncated install) — the downstream gate factory will fall back to
+    conservative 0.5 for every dimension in that case.
+    """
+    try:
+        from core.compliance.metadata_aggregator import (
+            MetadataAggregatorConfig,
+            build_metadata_aggregator_from_config,
+        )
+    except Exception:
+        logger.exception("Could not import metadata_aggregator module")
+        return None
+
+    gate_cfg = (
+        (pipeline_config.get("compliance") or {}).get("promotion_gate") or {}
+    )
+    agg_cfg = (gate_cfg.get("providers") or {}).get("aggregator") or {}
+
+    cfg = MetadataAggregatorConfig(
+        cache_ttl_seconds=float(agg_cfg.get("cache_ttl_seconds", 300.0)),
+        max_cache_entries=int(agg_cfg.get("max_cache_entries", 256)),
+    )
+    static_overrides = agg_cfg.get("static_overrides") or {}
+    agent_slot_baseline = agg_cfg.get("agent_slot_baseline")
+
+    # Lineage / fairness / review-queue objects are created lazily here
+    # so a minimal ``python -m submit_pipeline --dry-run`` import does not
+    # require a full runtime stack.
+    lineage_tracker = None
+    fairness_monitor = None
+    try:
+        from core.monitoring.lineage_tracker import DataLineageTracker
+        lineage_tracker = DataLineageTracker()
+    except Exception:
+        logger.debug("Lineage tracker unavailable; pii_ratio will fallback")
+    try:
+        from core.monitoring.fairness_monitor import FairnessMonitor
+        fairness_monitor = FairnessMonitor(config=pipeline_config)
+    except Exception:
+        logger.debug(
+            "Fairness monitor unavailable; disparate_impact_min will fallback",
+        )
+
+    return build_metadata_aggregator_from_config(
+        pipeline_config,
+        lineage_tracker=lineage_tracker,
+        fairness_monitor=fairness_monitor,
+        model_registry=registry,
+        review_queue=None,
+        total_predictions_fn=None,
+        static_overrides=static_overrides,
+        aggregator_config=cfg,
+        agent_slot_baseline=agent_slot_baseline,
+    )
+
+
 def _run_promotion_gate(
     new_version: str,
     pipeline_config: Optional[dict],
+    registry: Optional[object] = None,
 ) -> Optional["object"]:
     """Optional Sprint 2 FRIA + AI Risk gate.
 
@@ -387,7 +455,10 @@ def _run_promotion_gate(
         return None
     try:
         from core.evaluation.promotion_gate import build_promotion_gate
-        gate = build_promotion_gate(pipeline_config)
+        aggregator = _build_metadata_aggregator(pipeline_config, registry)
+        gate = build_promotion_gate(
+            pipeline_config, metadata_aggregator=aggregator,
+        )
         verdict = gate.evaluate(model_version=new_version)
         logger.info(
             "Promotion gate verdict: %s - %s", verdict.decision, verdict.reason,
@@ -527,7 +598,9 @@ def _decide_promotion(
         # Sprint 2 post-gate: FRIA + AI Risk (safety floor layered on top
         # of ModelCompetition). Disabled by default; enable via
         # compliance.promotion_gate.enabled in pipeline.yaml.
-        gate_verdict = _run_promotion_gate(new_version, pipeline_config)
+        gate_verdict = _run_promotion_gate(
+            new_version, pipeline_config, registry=registry,
+        )
         if gate_verdict is not None and gate_verdict.blocks_promotion:
             logger.warning(
                 "Model %s rejected by promotion gate: %s",

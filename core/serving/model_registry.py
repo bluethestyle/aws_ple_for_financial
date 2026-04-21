@@ -12,7 +12,7 @@ Storage: S3 with versioned directory structure.
 
 Usage::
 
-    registry = ModelRegistry(s3_base="s3://bucket/models/", region="ap-northeast-2")
+    registry = ModelRegistry(s3_base="s3://bucket/models/", region=config.aws.region)
 
     # Package a new model version
     version = registry.package(
@@ -132,14 +132,16 @@ class ModelRegistry:
         s3_base: S3 URI prefix (e.g. ``"s3://bucket/models/"``).
             Leave empty for local-only operation.
         local_base: Local directory for storing version artifacts.
-        region: AWS region for boto3 S3 client.
+        region: AWS region for boto3 S3 client. ``None`` lets boto3 resolve
+            from env / credentials; callers should pass
+            ``pipeline.yaml::aws.region``.
     """
 
     def __init__(
         self,
         s3_base: str = "",
         local_base: str = "models/",
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
     ) -> None:
         self._s3_base = s3_base.rstrip("/")
         self._local_base = local_base
