@@ -344,6 +344,28 @@ Paper 3 Finding 7 의 9-way fusion 비교에서 나온 기법들. 온프렘 `src
 | 다학제 피처 모듈 (graph/timeseries/domain_features) | `src/graph/`, `src/timeseries/`, `src/domain_features/` | AWS 는 expert 내부에서만 처리; 온프렘은 별도 모듈화 |
 | Airflow DAG 운영 정책 | `src/airflow_dags/`, `CLAUDE.md` (execution_timeout 금지 등) | AWS 는 SageMaker 순차 실행이라 해당 없음 |
 
+### 10.7 PromotionGate Live Wiring 역이식 (2026-04-21 PR #1~#3 반영)
+
+AWS 측 PR #1~#3 에서 PromotionGate 가 "이름뿐인 게이트"에서 실제 작동하는 구조로 전환됨 (`docs/pipeline_comparison_matrix.md` §5.10 참조). 온프렘에도 동등 배선이 필요하지만 현재 온프렘 work plan 에 명시된 항목이 없어 공백 상태. 아래는 우선순위별 역이식 대상.
+
+| # | AWS 구현 | 온프렘 대응 필요사항 | 우선순위 |
+|---|---|---|---|
+| 1 | `core/compliance/metadata_aggregator.py` (6 source 조합: lineage / fairness / review queue / registry / LLM config / static overrides) | 온프렘 `src/compliance/` 아래에 MetadataAggregator 이식. 온프렘의 DuckDB 기반 lineage + FairnessMonitor + audit store 를 source adapter 로 wrap. | **High** |
+| 2 | `core/evaluation/promotion_gate.py::GateVerdict.details` per-dim derivation trail (path / raw_value / transform / fallback_used / score) + `AuditLogger.log_model_promotion(gate_details=...)` HMAC+hash-chain 임베드 | 온프렘 `AuditLogger.log_model_promotion` 시그니처에 `gate_details=` 추가. GateVerdict 에 details dict 확장. | **High** |
+| 3 | `core/compliance/dimension_scores.py` (ManualScoreProvider + MetricsDerivedScoreProvider + 7 HEURISTIC_RULES + CompositeProvider earliest-wins) | 온프렘에 동일한 provider 계층 추가. HEURISTIC_RULES 의 metadata path 는 온프렘 config schema 에 맞게 조정 필요. | **High** |
+| 4 | `core/monitoring/fairness_monitor.py::archive_metrics` 를 실제로 호출하는 production path (`containers/lambda/fairness_evaluation.py`) + `monitoring.fairness.archive_parquet_path` config | 온프렘 Airflow DAG 의 fairness 태스크가 `FairnessMonitor.archive_metrics()` 를 호출하는지 확인. 없으면 DAG 수정 + 아카이브 경로 설정. | Medium |
+| 5 | `core/compliance/metadata_aggregator.py::build_lineage_yaml_source, build_fairness_archive_source` (archive-backed source — 프로세스 재시작 survival) | 온프렘도 Airflow scheduler 재기동 시 메타데이터가 날아가지 않도록 file-backed source 이식. | Medium |
+
+**이식 시 주의사항**:
+- AWS 의 `GateVerdict.details` 구조를 그대로 따르되, SageMakerComplianceTracker 관련 부분(artifact upload)은 온프렘 MLflow 또는 DuckDB archive 로 치환.
+- AWS 의 `ap-northeast-2` purge 는 AWS-specific. 온프렘은 "환경 상수 하드코딩 금지" 원칙을 별도로 유지 (e.g. DuckDB file path, MLflow tracking URI).
+- Dimension score provider의 `transform="log10_ratio"` 등 변환 종류는 감사 가능성 유지 위해 그대로 유지.
+
+**추적 링크**:
+- AWS PR #2 (`706ec3d`): MetadataAggregator + composite provider 자동 wiring
+- AWS PR #3 (`0e0322d`): audit trail + tracker artifact + archive-backed source
+- AWS 후속 (`51149f3`): fairness archive Lambda wiring
+
 ---
 
 ## 11. 확장된 Phase 1 체크리스트 (Causal + Non-Causal)

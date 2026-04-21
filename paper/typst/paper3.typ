@@ -175,7 +175,12 @@ homogeneous-task regime. Our contributions:
   per-sample discrimination without disturbing the primary task
   (variance ratio $0.055 arrow 0.719$, top-10 overlap
   $0.791 arrow 0.281$, primary AUC unchanged within noise,
-  Section 4.9.4). Audit-log integration and cross-dataset reproduction
+  Section 4.9.4). A further iteration (v3, "primary-task-logit target")
+  replaced the attribution supervision signal with the model's own
+  logit and collapsed the head back below the v1 baseline
+  (variance ratio $0.719 arrow 0.043$), documenting that the
+  demeaned target is narrowly effective rather than robustly so
+  (Section 4.13). Audit-log integration and cross-dataset reproduction
   remain deferred.
 
   Causal Guardrail (CG), a per-prediction reliability flag derived
