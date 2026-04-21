@@ -837,7 +837,7 @@ compliance:
   # build_sagemaker_compliance_tracker. Override below only when the
   # compliance experiment stream lives in a different account / region.
   tracking:
-    backend: in_memory             # sagemaker | in_memory
+    backend: sagemaker             # sagemaker | in_memory — verified against account 795833413857 / region ap-northeast-2, Experiments API reachable, ensure_experiment auto-creates on first call
     trial_prefix: compliance-trial
     display_name_tag: compliance_type
 
