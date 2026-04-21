@@ -78,6 +78,14 @@
 - **HMM 라우팅은 config-driven 이 원칙**이다 (`TemporalEnsembleExpert.set_hmm_routing`). 코드에서 `set_hmm_routing(True)` 를 직접 호출하지 말고 `config["hmm_routing"]["enabled"]=true` 로 제어한다. Transition matrix 는 buffer 로 등록되어 gradient 없음. `smoothing` 은 `[0, 1/(n_models-1)]` 로 clip 된다.
 - **ContextAssembler interpreter 는 optional-injection**이다. `multidisciplinary_interpreter` 를 생성자 또는 `attach_interpreter(...)` 로 주입. interpreter 실패는 반드시 swallow (exception 을 reason generation flow 로 전파 금지). interpreter 반환 dict 의 값은 자동으로 str 변환되고 falsy value 는 필터된다.
 
+### 1.14 Compliance tracking 원칙 (S5, 2026-04-21)
+- **MLflow/DVC 를 직접 이식하지 않는다.** AWS 는 SageMaker Experiments + Model Registry + Lineage + S3 versioning 의 네이티브 등가물을 제공하므로, `core/compliance/sagemaker_compliance_tracker.py::SageMakerComplianceTracker` 를 사용한다.
+- **4개 규제 산출물 유형만 기록**한다: `fria_assessment`, `ai_risk_assessment`, `compliance_registry_sweep`, `promotion_gate_verdict`. 그 외 임시 기록은 `log_custom_artifact` 로 타입 `custom` 에 태깅.
+- **Tracker 실패는 반드시 swallow**한다. `put_artifact` 실패 시 `trial_component_arn=None` 만 남기고 원래 caller flow 를 중단시키지 않는다. 감사 누락은 별도 observability 로 감지.
+- **Backend 기본은 `in_memory`** (단위 테스트 + 로컬 개발). 프로덕션 IAM + experiment 이름이 확정되면 `pipeline.yaml::compliance.tracking.backend=sagemaker` 로 전환. 직접 `boto3.client("sagemaker")` 를 주입하는 것도 가능 (테스트용).
+- **TrialComponent 이름은 120자 제한**. SageMaker 의 하드 캡이므로 `<artifact_type>-<artifact_id>` 포맷을 `[:120]` 로 절삭하는 것이 표준. 로컬 검증 시 이 길이를 초과하면 프로덕션에서 실패.
+- **ComplianceAuditStore 와 Compliance tracker 는 분리**한다. 전자는 **원천 이벤트** (consent 변경, opt-out 발생 등) 를 DynamoDB/S3 Parquet 에 저장. 후자는 **집계된 규제 산출물** (FRIA 결과, 승격 verdict 등) 을 SageMaker Experiments 에 기록. 용도가 다르므로 중복 저장이 아니다.
+
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:
   1. **Phase 0 출력 검증**: feature_stats.json에서 zero-variance 컬럼, NaN 비율, 생성된 피처 컬럼 수 확인

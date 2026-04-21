@@ -1229,6 +1229,27 @@ Four additional modules extend the hardening layer into the learning stack (feat
 
 All four modules remain backward-compatible: legacy callers that do not pass the new arguments preserve the pre-v2 behaviour exactly. `tests/test_phase2_remaining.py` (23 tests, all passing) exercises each safeguard with both the legacy and enhanced code paths.
 
+=== SageMaker-Native Compliance Tracking (v2)
+
+The on-premises reference system uses MLflow for experiment tracking and DVC for dataset versioning, the de-facto open-source combination. AWS provides managed equivalents for every role MLflow + DVC played, so rather than lifting the OSS stack into the cloud we wrap the native services behind a regulation-aware tracker:
+
+- *MLflow tracking* #sym.arrow *SageMaker Experiments* (Trials / TrialComponents)
+- *MLflow model registry* #sym.arrow *SageMaker Model Registry* (already handled by `core/serving/model_registry.py`)
+- *MLflow lineage* #sym.arrow *SageMaker Lineage* + the feature-to-table `DataLineageTracker`
+- *DVC dataset versioning* #sym.arrow *S3 versioning* (plus the `artifact_s3_prefix` config key that points the tracker at the bucket)
+- *Managed MLflow (2024)* #sym.arrow *SageMaker Managed MLflow* (picked up automatically by switching the backend to `sagemaker` in `compliance.tracking`)
+
+`core/compliance/sagemaker_compliance_tracker.py` implements this wrap:
+
+- Backend abstraction (`ComplianceTrackerBackend`) with two concrete implementations: `InMemoryTrackerBackend` for tests and local dev, `SageMakerTrackerBackend` for production. Both expose the same `put_artifact` / `list_artifacts` surface so callers are backend-agnostic.
+- Five artifact types cover the Sprint 0~4 regulatory surface: `fria_assessment`, `ai_risk_assessment`, `compliance_registry_sweep`, `promotion_gate_verdict`, `custom`. Each type maps to a dedicated `log_*` helper that extracts the relevant parameters and metrics from the domain dataclass and attaches artifact-type + grade / risk-category tags so the SageMaker console (and any Athena export) can filter by regulatory concern.
+- TrialComponent names are capped at the SageMaker 120-char limit; failed boto3 calls are logged and treated as best-effort so a tracking outage never blocks a regulatory decision.
+- The backend is selected via `pipeline.yaml::compliance.tracking.backend`; the default ships as `in_memory` so unit tests and local development stay hermetic, and the operator flips to `sagemaker` once production IAM is in place.
+
+`tests/test_sagemaker_compliance_tracker.py` (24 tests) exercises both backends with a synthetic boto3 client stub that records each `create_experiment` / `create_trial_component` / `list_trial_components` call so we can assert on the exact request shape (required fields, artifact-type tag presence, risk-category tag presence, 120-char name cap, `Completed` status, etc.) without making a real AWS call.
+
+This closes the Paper 2 v2 evidence gap for *regulatory artifact versioning* without depending on the MLflow / DVC stack, keeping the AWS deployment aligned with the #sym.quote.l.double cloud extension of on-prem, not a separate system #sym.quote.r.double positioning documented in `docs/pipeline_comparison_matrix.md`.
+
 == Korean AI Basic Act
 
 Korea's AI Basic Act (passed by the National Assembly December 2024, promulgated January 2025, effective January 22, 2026) @koreaaiact2024 introduces a domestic

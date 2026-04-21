@@ -8,10 +8,11 @@
 
 **진행 현황 (2026-04-21)**:
 - ✅ **Phase 1 Must (M1~M12) 완료** — 모든 규제 핵심 모듈 AWS 이식.
-- ✅ **Phase 2 Should 13/15 완료** — S1, S2, S3, S4, S7, S8, S9, S10, S11, S12, S13, S14, S15.
-- ⏳ **Phase 2 남은 2개** — S5 (MLflow+DVC, infra 의존), S6 (AuditStore DuckDB 통합, Sprint 0 foundation 과 설계 통합 필요). 별도 트랙.
+- ✅ **Phase 2 Should 14/15 완료** — S1~S5, S7~S15.
+- ⏳ **Phase 2 남은 1개** — S6 (AuditStore DuckDB 통합, Sprint 0 foundation 과 설계 통합 필요; AWS 대응은 DynamoDB + S3 Parquet + Athena 이중 구조로 이미 동작).
 - ⏳ **Phase 3 Could** — 미착수.
-- 누적 테스트: **303/303 PASS**, 하드코딩 0건.
+- 누적 테스트: **327/327 PASS**, 하드코딩 0건.
+- **S5 재정의**: 온프렘 MLflow+DVC 를 그대로 이식하지 않고, AWS 네이티브 서비스 (SageMaker Experiments + Model Registry + Lineage + S3 versioning) 기반으로 재설계. `core/compliance/sagemaker_compliance_tracker.py` 가 4개 규제 산출물 유형 (FRIA / AI Risk / Compliance Sweep / Promotion Gate) 을 Experiments TrialComponent 로 자동 기록.
 
 **관련 문서**:
 - `docs/pipeline_comparison_matrix.md` — 4-레이어 전수 비교 결과
@@ -65,8 +66,8 @@ AWS 로 이식할 때는 **AWS 의 config-중심 / 모듈화 패턴** 에 맞게
 | **S2** | IG 기반 3-stage Feature Selection | ✅ 완료 | `core/training/feature_selector.py::select()` Stage 3 mandatory feature 보장 | Feature 과다 선택 방지 |
 | **S3** | Evidential valid_mask 결측 방어 | ✅ 완료 | `core/model/layers/evidential.py::forward(valid_mask=)` + auto-detect | 실데이터 안정성 |
 | **S4** | HMM config 동적 라우팅 | ✅ 완료 | `core/model/experts/temporal.py::set_hmm_routing()` + config block | Config single-source |
-| **S5** | MLflow + DVC Compliance | ⏳ 보류 | 외부 인프라 의존, 별도 트랙 | 규제 산출물 버전관리 |
-| **S6** | ComplianceAuditStore DuckDB 통합 | ⏳ 보류 | Sprint 0 foundation과 중복 리스크, 통합 설계 검토 필요 | regulator queryability via SQL |
+| **S5** | SageMaker Experiments 기반 compliance tracker (MLflow+DVC 대체) | ✅ 완료 | `core/compliance/sagemaker_compliance_tracker.py` (신규) — `SageMakerComplianceTracker` + `InMemoryTrackerBackend` / `SageMakerTrackerBackend` + TrialComponent 규제 산출물 자동 기록 | 규제 산출물 버전관리 |
+| **S6** | ComplianceAuditStore SQL-queryable 통합 | ⏳ 보류 | 온프렘 DuckDB 스키마 (7 테이블) 는 AWS 에 **DynamoDB** (`core/compliance/audit_store.py`) + **S3 Parquet** (`S3ParquetComplianceStore`) 이중 구조로 이미 이식. 남은 작업은 Athena view layer 로 regulator SQL 쿼리를 제공하는 것 | regulator queryability via SQL |
 | **S7** | Fairness metrics 영속화 | ✅ 완료 | `core/monitoring/fairness_monitor.py::archive_metrics` | 이력 쿼리 |
 | **S8** | Drift Parquet 저장 + Markdown 리포트 | ✅ 완료 | `core/monitoring/drift_detector.py::archive_result, generate_markdown_report` | 감사 친화 저장 |
 | **S9** | Data Lineage 매핑 확장 API | ✅ 완료 | `core/monitoring/lineage_tracker.py::register_feature_mapping, load_mapping_from_yaml, coverage_report` | AI기본법 §34 학습데이터 출처 |
@@ -77,7 +78,7 @@ AWS 로 이식할 때는 **AWS 의 config-중심 / 모듈화 패턴** 에 맞게
 | **S14** | Counterfactual C-C (IPS/SNIPS) | ✅ 완료 | `core/evaluation/counterfactual_cc.py` (신규) | 관측편향 보정 |
 | **S15** | auto_promote=False 인적 감독 강제 | ✅ 완료 | `core/evaluation/model_competition.py::CompetitionConfig.auto_promote` + `pipeline.yaml serving.competition` | EU AI Act Art.14 |
 
-**Phase 2 Should 13/15 완료** (59 tests PASS). 남은 2개 (S5 MLflow+DVC, S6 AuditStore DuckDB 통합) 는 외부 인프라 의존성으로 별도 트랙.
+**Phase 2 Should 14/15 완료** (83 tests PASS). S5 는 MLflow+DVC 를 직접 이식하지 않고 **AWS 네이티브 등가물** (SageMaker Experiments + Model Registry + Lineage) 로 대체. 남은 S6 는 AWS DynamoDB/S3 Parquet 이중구조 위에 Athena view layer 만 추가하면 되므로 "보류" 는 인프라 작업 수준.
 
 ### 1.3 Could (v2 Optional 보강)
 
