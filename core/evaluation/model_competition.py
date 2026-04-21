@@ -174,6 +174,18 @@ class CompetitionConfig:
     # :meth:`from_dict`). Do not flip this default in code.
     auto_promote: bool = True
 
+    # Multi-task voting mode (consumed by :meth:`ModelCompetition.run`).
+    # When True every task must pass; when False strict majority (>50%)
+    # of tasks passing is sufficient.
+    require_all_tasks: bool = True
+
+    # OPE (off-policy evaluation) guard (consumed by
+    # :meth:`ModelCompetition.run`). When ``ope_results`` is supplied and
+    # a task's effective sample size >= this threshold, the OPE verdict
+    # overrides the metrics gate: a challenger that performs worse on OPE
+    # blocks promotion for that task. Setting to 0.0 disables the guard.
+    min_effective_sample_size: float = 0.0
+
     @classmethod
     def from_dict(
         cls, data: Optional[Dict[str, Any]] = None,
@@ -185,6 +197,7 @@ class CompetitionConfig:
         for field_name in (
             "primary_metric", "min_improvement", "max_degradation",
             "significance_level", "n_bootstrap", "auto_promote",
+            "require_all_tasks", "min_effective_sample_size",
         ):
             if field_name in data:
                 kwargs[field_name] = data[field_name]
@@ -589,6 +602,7 @@ class ModelCompetition:
         primary_metrics: Optional[Dict[str, str]] = None,
         champion_per_sample: Optional[Dict[str, np.ndarray]] = None,
         challenger_per_sample: Optional[Dict[str, np.ndarray]] = None,
+        ope_results: Optional[Dict[str, Dict[str, float]]] = None,
     ) -> Dict[str, Any]:
         """Execute a task-level model competition (legacy interface).
 
@@ -708,6 +722,29 @@ class ModelCompetition:
 
                 task_results[task]["is_significant"] = is_significant
 
+            # OPE guard: if an off-policy evaluation is supplied and its
+            # effective sample size meets the config threshold, a worse OPE
+            # result vetoes this task's promotion.
+            if ope_results and task in ope_results:
+                ope = ope_results[task]
+                ess = float(ope.get("effective_sample_size", 0.0))
+                champ_ope = float(ope.get("champion", 0.0))
+                chall_ope = float(ope.get("challenger", 0.0))
+                task_results[task]["ope"] = {
+                    "champion": champ_ope,
+                    "challenger": chall_ope,
+                    "effective_sample_size": ess,
+                }
+                if (ess >= self._config.min_effective_sample_size
+                        and chall_ope < champ_ope):
+                    if passes_threshold:
+                        passes_threshold = False
+                        task_results[task]["passes_threshold"] = False
+                        reasons.append(
+                            f"Task '{task}': OPE challenger {chall_ope:.4f} "
+                            f"< champion {champ_ope:.4f} (ess={ess:.1f})."
+                        )
+
             if not passes_threshold:
                 all_pass = False
                 if not any(task in r for r in reasons):
@@ -716,11 +753,16 @@ class ModelCompetition:
                         f"({improvement:.4f} < {self._config.min_improvement})."
                     )
 
-        promote = all_pass
         wins = sum(1 for t in task_results.values() if t["passes_threshold"])
+        # Voting mode: require-all vs strict majority
+        if self._config.require_all_tasks:
+            promote = all_pass
+        else:
+            promote = wins > len(tasks) / 2
         summary = (
             f"Competition result: {'PROMOTE' if promote else 'REJECT'} "
             f"({wins}/{len(tasks)} tasks passed, "
+            f"mode={'all' if self._config.require_all_tasks else 'majority'}, "
             f"min_improvement={self._config.min_improvement})."
         )
 
@@ -733,6 +775,56 @@ class ModelCompetition:
             "summary": summary,
             "reasons": reasons,
         }
+
+    # ------------------------------------------------------------------
+    # Evaluator report adapter
+    # ------------------------------------------------------------------
+
+    def run_from_evaluator_reports(
+        self,
+        champion_report: Dict[str, Any],
+        challenger_report: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run a competition from :class:`ModelEvaluator` report dicts.
+
+        Reports must shape as::
+
+            {
+              "tasks": {
+                "<task>": {
+                  "metrics": {"auc_roc": 0.8, "f1": 0.7, ...},
+                  "primary_metric": "auc_roc",
+                },
+                ...
+              }
+            }
+
+        Returns the same shape as :meth:`run`.
+        """
+        def _extract(report: Dict[str, Any]):
+            tasks = (report or {}).get("tasks", {}) or {}
+            metrics: Dict[str, Dict[str, float]] = {}
+            primaries: Dict[str, str] = {}
+            for name, body in tasks.items():
+                body = body or {}
+                m = body.get("metrics") or {}
+                metrics[name] = {k: float(v) for k, v in m.items()}
+                if "primary_metric" in body:
+                    primaries[name] = str(body["primary_metric"])
+            return metrics, primaries
+
+        champ_m, champ_p = _extract(champion_report)
+        chall_m, chall_p = _extract(challenger_report)
+        # Prefer champion's primary metric declarations but fall back to the
+        # challenger's when a task is missing one.
+        primary = dict(champ_p)
+        for k, v in chall_p.items():
+            primary.setdefault(k, v)
+        return self.run(
+            champion_metrics=champ_m,
+            challenger_metrics=chall_m,
+            primary_metrics=primary,
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
