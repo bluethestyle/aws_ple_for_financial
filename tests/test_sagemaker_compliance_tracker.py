@@ -419,13 +419,30 @@ class TestEndToEndWithFakeSageMaker:
 # ---------------------------------------------------------------------------
 
 class TestFactoryFromPipelineYAML:
-    def test_build_default_is_in_memory(self):
+    def test_build_reads_backend_from_pipeline_yaml(self):
+        # pipeline.yaml now ships with backend: sagemaker after the IAM /
+        # Experiments reachability verification. The factory must read
+        # that value rather than a stale in_memory default; we inject a
+        # fake boto3 client so the production backend works hermetically.
         cfg = yaml.safe_load(
             Path("configs/pipeline.yaml").read_text(encoding="utf-8")
         )
-        tracker = build_sagemaker_compliance_tracker(cfg)
-        # Default is in_memory per pipeline.yaml
-        assert tracker.summary()["backend"] == "in_memory"
+        shipped_backend = (
+            cfg.get("compliance", {}).get("tracking", {}).get("backend")
+        )
+        assert shipped_backend in {"sagemaker", "in_memory"}, (
+            f"Unexpected shipped backend: {shipped_backend!r}"
+        )
+        if shipped_backend == "sagemaker":
+            tracker = build_sagemaker_compliance_tracker(
+                cfg,
+                backend=SageMakerTrackerBackend(
+                    sagemaker_client=_FakeSageMakerClient()
+                ),
+            )
+        else:
+            tracker = build_sagemaker_compliance_tracker(cfg)
+        assert tracker.summary()["backend"] == shipped_backend
 
     def test_build_sagemaker_backend_with_fake(self):
         cfg = {
