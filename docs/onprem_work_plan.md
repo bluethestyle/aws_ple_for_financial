@@ -1,11 +1,16 @@
-# On-Prem 프로젝트 작업 계획
+# On-Prem 프로젝트 작업 계획 (AWS → 온프렘 Sync)
 
-**목적**: AWS 프로젝트에서 확정된 Findings 1~13 을 온프렘(gotothemoon) 프로젝트로 이식하고 실데이터 검증 준비. 이 문서는 **온프렘 쪽에서 실행할 작업**의 계획서.
+**목적**: AWS 는 온프렘의 **클라우드 확장 버전** — 두 체계는 원칙적으로 동일해야 함. 이 문서는 **AWS 에 이식되어 있지만 온프렘에는 아직 없는 항목** 을 온프렘으로 sync 하는 작업 계획.
 
-**기준 시점**: 2026-04-20
-**AWS 기준**: `aws_ple_for_financial` main 브랜치 (commit b58f07a 이후)
+**기준 시점**: 2026-04-20 (최초), 2026-04-21 (포지셔닝 정정 반영)
+**AWS 기준**: `aws_ple_for_financial` main 브랜치 (commit 35a95e9 이후)
 **온프렘 기준**: `c:/Users/user/Desktop/ttm/gotothemoon/workspace/code/`
 **온프렘 ablation 설계서 최종 수정**: 2026-04-13 (AWS Findings 8~13 반영 전)
+
+**관련 문서**:
+- `docs/pipeline_comparison_matrix.md` — 4-레이어 전수 비교 결과 (포지셔닝 정정본)
+- `docs/aws_work_plan.md` — 역방향 작업 계획 (온프렘 → AWS sync)
+- `docs/onprem_v2_validation_checklist.md` — 실데이터 검증 체크리스트
 
 ---
 
