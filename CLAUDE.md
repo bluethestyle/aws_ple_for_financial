@@ -70,7 +70,13 @@
 - **Annex IV mapper 는 Article 9 EU-FRIA 와 별개**다. `core/compliance/annex_iv_mapper.py::AnnexIVMapper` 는 Art. 11 기술문서 증거 추적용이고, `core/monitoring/fria_evaluator.py::FRIAEvaluator` 는 Art. 9 위험 평가용이다. 혼용 금지.
 - **SuitabilityFilter 는 `require_assessment=true` 가 기본**이다. `customer_risk_tolerance` 가 context 에 없으면 거부. 고령 (≥65) / 저소득 (<30M KRW) hard cap 은 config 로 조정하되 제거 금지 (금소법 §17 보호대상 규정).
 - **L2aSafetyGate 는 LLM 후처리에만 적용**한다. L1 template 결과에는 적용하지 않음 (template 은 이미 검증됨). gate 실패 시 반드시 L1 fallback 으로 회귀해야 하며, 응답을 빈 문자열로 리턴하지 않는다.
-- **Phase 2 남은 6개 항목 (S2/S3/S4/S5/S6/S12) 는 후속 트랙**이다. Paper 2 v2 코드 근거로 필수가 아니므로 우선순위 낮음. S5 (MLflow+DVC) 와 S6 (ComplianceAuditStore DuckDB 통합) 은 Sprint 0 foundation 과 중복 가능성이 있어 통합 설계를 먼저 검토해야 한다.
+- **Phase 2 남은 2개 항목 (S5, S6) 는 후속 트랙**이다. Paper 2 v2 코드 근거로 필수가 아니므로 우선순위 낮음. S5 (MLflow+DVC) 와 S6 (ComplianceAuditStore DuckDB 통합) 은 Sprint 0 foundation 과 중복 가능성이 있어 통합 설계를 먼저 검토해야 한다.
+
+### 1.13 Phase 2 학습/Reason 레이어 정책 (2026-04-21 추가분)
+- **Feature selector 는 3-stage 가 기본**이다 (`core/training/feature_selector.py::select`). Stage 3 (mandatory feature 보장) 는 `FeatureSelectionConfig.mandatory_features` 가 비어 있지 않을 때만 작동. 도메인 필수 feature (예: 규제/감사 관련) 를 Stage 1~2 가 드롭해도 Stage 3 가 복원한다. Stage 3 skip 금지 — 규제 리스크.
+- **Evidential layer 는 valid_mask 전파가 필수**다 (`core/model/layers/evidential.py::forward`). `valid_mask=None` 인 경우 NaN/Inf 자동 감지하여 invalid 로 마킹하고 neutral prediction + max uncertainty 로 응답. Loss 계산 시 반드시 info 에 실린 `valid_mask` 를 참조해야 invalid 행을 gradient 에서 제외할 수 있다.
+- **HMM 라우팅은 config-driven 이 원칙**이다 (`TemporalEnsembleExpert.set_hmm_routing`). 코드에서 `set_hmm_routing(True)` 를 직접 호출하지 말고 `config["hmm_routing"]["enabled"]=true` 로 제어한다. Transition matrix 는 buffer 로 등록되어 gradient 없음. `smoothing` 은 `[0, 1/(n_models-1)]` 로 clip 된다.
+- **ContextAssembler interpreter 는 optional-injection**이다. `multidisciplinary_interpreter` 를 생성자 또는 `attach_interpreter(...)` 로 주입. interpreter 실패는 반드시 swallow (exception 을 reason generation flow 로 전파 금지). interpreter 반환 dict 의 값은 자동으로 str 변환되고 falsy value 는 필터된다.
 
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:

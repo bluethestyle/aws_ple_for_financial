@@ -1215,6 +1215,20 @@ Nine additional safeguards were layered on top of the core compliance modules to
 
 The `test_phase2_should.py` suite exercises all nine modules (36 tests, all passing) and verifies that `pipeline.yaml` as shipped forces `auto_promote: false`.
 
+=== Learning-Stack & Interpretation Layer (v2)
+
+Four additional modules extend the hardening layer into the learning stack (feature selection, evidential head, temporal ensemble) and the reason-generation context, closing the remaining Paper 2 v2 evidence gaps for real-data safety and multidisciplinary interpretation.
+
+- *IG 3-stage feature selection* (`core/training/feature_selector.py::select`). The final `select()` call now runs Stage 1 (IG cumulative-importance), Stage 2 (LGBM-gain pruning), and Stage 3 (mandatory feature guarantee — domain-critical features are restored to the selection even if Stages 1-2 dropped them). Stage 3 logs a warning for mandatory features not present in the current feature schema and records the restored features in `FeatureSelectionResult.mandatory_included`.
+
+- *Evidential `valid_mask` missing-data guard* (`core/model/layers/evidential.py`). The evidential head now accepts an explicit `valid_mask: Tensor[B]` and, in its absence, auto-detects non-finite rows via `torch.isfinite`. Invalid rows receive a task-type-specific neutral prediction (0.5 for binary, 1/K for multiclass, 0.0 for regression) plus the canonical max-uncertainty value. `NaN`/`Inf` gradients are prevented by running the linear layer on a `nan_to_num`-scrubbed copy. The effective mask is returned in the evidence-info dict so downstream losses can exclude invalid rows.
+
+- *HMM-smoothed ensemble gating* (`core/model/experts/temporal.py::set_hmm_routing`). The `TemporalEnsembleExpert` exposes a runtime `set_hmm_routing(enabled, smoothing, transition_prior)` method and an equivalent `hmm_routing` config block. When enabled, gating weights produced by the learned gate are post-multiplied by a row-stochastic transition matrix and re-normalised, acting as a 1-step HMM forward smoothing that reduces per-sample variance of the gating decision. The transition matrix is held as a non-persistent buffer so it moves with `.to(device)` but does not train.
+
+- *Multidisciplinary interpreter hook* (`core/recommendation/reason/context_assembler.py`). The `ContextAssembler` now accepts an optional `multidisciplinary_interpreter` argument — either an object with an `interpret(context_dict) -> dict` method or a plain callable with the same signature. Each `assemble()` call invokes the interpreter and attaches its output to `AssembledContext.multidisciplinary_insights`. Failures are swallowed so a buggy interpreter cannot break reason generation; the attached interpreter can be swapped at runtime via `attach_interpreter(...)`.
+
+All four modules remain backward-compatible: legacy callers that do not pass the new arguments preserve the pre-v2 behaviour exactly. `tests/test_phase2_remaining.py` (23 tests, all passing) exercises each safeguard with both the legacy and enhanced code paths.
+
 == Korean AI Basic Act
 
 Korea's AI Basic Act (passed by the National Assembly December 2024, promulgated January 2025, effective January 22, 2026) @koreaaiact2024 introduces a domestic

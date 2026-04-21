@@ -8,10 +8,10 @@
 
 **진행 현황 (2026-04-21)**:
 - ✅ **Phase 1 Must (M1~M12) 완료** — 모든 규제 핵심 모듈 AWS 이식.
-- ✅ **Phase 2 Should 9/15 완료** — S1, S7, S8, S9, S10, S11, S13, S14, S15.
-- ⏳ **Phase 2 남은 6개** — S2/S3/S4 (학습 계열), S5 (MLflow+DVC), S6 (AuditStore 통합), S12 (context assembler). Paper 2 v2 코드 근거로는 필수 아님 → 후속 트랙.
+- ✅ **Phase 2 Should 13/15 완료** — S1, S2, S3, S4, S7, S8, S9, S10, S11, S12, S13, S14, S15.
+- ⏳ **Phase 2 남은 2개** — S5 (MLflow+DVC, infra 의존), S6 (AuditStore DuckDB 통합, Sprint 0 foundation 과 설계 통합 필요). 별도 트랙.
 - ⏳ **Phase 3 Could** — 미착수.
-- 누적 테스트: **280/280 PASS**, 하드코딩 0건.
+- 누적 테스트: **303/303 PASS**, 하드코딩 0건.
 
 **관련 문서**:
 - `docs/pipeline_comparison_matrix.md` — 4-레이어 전수 비교 결과
@@ -62,9 +62,9 @@ AWS 로 이식할 때는 **AWS 의 config-중심 / 모듈화 패턴** 에 맞게
 | # | 컴포넌트 | 상태 | AWS 구현 위치 | 가치 |
 |---|---|---|---|---|
 | **S1** | Human Fallback Router (Layer 4) | ✅ 완료 | `core/recommendation/fallback_router.py` (Layer 4 추가) | 고위험 건 자동 인적검토 |
-| **S2** | IG 기반 3-stage Feature Selection | ⏳ 보류 | `core/training/feature_selector.py` (확장 예정) | Feature 과다 선택 방지 |
-| **S3** | Evidential valid_mask 결측 방어 | ⏳ 보류 | `core/model/layers/evidential.py` (확장 예정) | 실데이터 안정성 |
-| **S4** | HMM config 동적 라우팅 | ⏳ 보류 | `core/model/experts/temporal.py` | Config single-source |
+| **S2** | IG 기반 3-stage Feature Selection | ✅ 완료 | `core/training/feature_selector.py::select()` Stage 3 mandatory feature 보장 | Feature 과다 선택 방지 |
+| **S3** | Evidential valid_mask 결측 방어 | ✅ 완료 | `core/model/layers/evidential.py::forward(valid_mask=)` + auto-detect | 실데이터 안정성 |
+| **S4** | HMM config 동적 라우팅 | ✅ 완료 | `core/model/experts/temporal.py::set_hmm_routing()` + config block | Config single-source |
 | **S5** | MLflow + DVC Compliance | ⏳ 보류 | 외부 인프라 의존, 별도 트랙 | 규제 산출물 버전관리 |
 | **S6** | ComplianceAuditStore DuckDB 통합 | ⏳ 보류 | Sprint 0 foundation과 중복 리스크, 통합 설계 검토 필요 | regulator queryability via SQL |
 | **S7** | Fairness metrics 영속화 | ✅ 완료 | `core/monitoring/fairness_monitor.py::archive_metrics` | 이력 쿼리 |
@@ -72,12 +72,12 @@ AWS 로 이식할 때는 **AWS 의 config-중심 / 모듈화 패턴** 에 맞게
 | **S9** | Data Lineage 매핑 확장 API | ✅ 완료 | `core/monitoring/lineage_tracker.py::register_feature_mapping, load_mapping_from_yaml, coverage_report` | AI기본법 §34 학습데이터 출처 |
 | **S10** | EU AI Act Annex IV 12-항목 매퍼 | ✅ 완료 | `core/compliance/annex_iv_mapper.py` (신규) | Art.11 기술문서 요건 |
 | **S11** | L2a Safety Gate 3-layer | ✅ 완료 | `core/recommendation/reason/l2a_safety_gate.py` (신규) | 할루시네이션 방어 |
-| **S12** | Consultation context + 다학제 해석기 | ⏳ 보류 | Paper 2 v2 evidence 충분, 후속 트랙 | Reason 근거 다양화 |
+| **S12** | Consultation context + 다학제 해석기 | ✅ 완료 | `core/recommendation/reason/context_assembler.py::attach_interpreter + AssembledContext.multidisciplinary_insights` | Reason 근거 다양화 |
 | **S13** | 금소법 §17 적합성 필터 | ✅ 완료 | `core/recommendation/constraint_engine.py::SuitabilityFilter` (확장) | 금융소비자보호법 |
 | **S14** | Counterfactual C-C (IPS/SNIPS) | ✅ 완료 | `core/evaluation/counterfactual_cc.py` (신규) | 관측편향 보정 |
 | **S15** | auto_promote=False 인적 감독 강제 | ✅ 완료 | `core/evaluation/model_competition.py::CompetitionConfig.auto_promote` + `pipeline.yaml serving.competition` | EU AI Act Art.14 |
 
-**Phase 2 Should 9/15 완료** (36 tests PASS). 남은 6개 (S2~S6, S12) 는 학습/infra 의존성이 커서 후속 트랙.
+**Phase 2 Should 13/15 완료** (59 tests PASS). 남은 2개 (S5 MLflow+DVC, S6 AuditStore DuckDB 통합) 는 외부 인프라 의존성으로 별도 트랙.
 
 ### 1.3 Could (v2 Optional 보강)
 
