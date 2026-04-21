@@ -181,6 +181,16 @@ class DriftDetector:
         self.psi_threshold_critical = psi_threshold_critical
         self.calculator = PSICalculator(n_bins=n_bins)
 
+        # Sprint 2 S8: optional DuckDB/Parquet persistence. When set via
+        # monitoring.drift.archive_parquet_path, every detect_drift result
+        # appends a row (one row per feature) to the Parquet archive.
+        self._archive_parquet_path: Optional[str] = None
+        if config is not None:
+            self._archive_parquet_path = (
+                config.get("monitoring", {}).get("drift", {})
+                .get("archive_parquet_path")
+            )
+
     def detect_drift(
         self,
         baseline_data: Any,
@@ -225,12 +235,121 @@ class DriftDetector:
 
         logger.info("Drift detection complete: %s", summary)
 
-        return {
+        result = {
             "psi_scores": psi_scores,
             "warning_features": warning_features,
             "critical_features": critical_features,
             "summary": summary,
         }
+        if self._archive_parquet_path:
+            self.archive_result(result, self._archive_parquet_path)
+        return result
+
+    # ------------------------------------------------------------------
+    # Sprint 2 S8: DuckDB / Parquet persistence + markdown report
+    # ------------------------------------------------------------------
+
+    def archive_result(
+        self,
+        result: Dict[str, Any],
+        parquet_path: str,
+        recorded_at: Optional[str] = None,
+    ) -> int:
+        """Append a drift result (one row per feature) to ``parquet_path``.
+
+        Returns the number of rows written. Silent-no-op (with a warning) if
+        pyarrow is unavailable.
+        """
+        try:
+            import pyarrow as pa  # type: ignore
+            import pyarrow.parquet as pq  # type: ignore
+        except ImportError:
+            logger.warning(
+                "pyarrow not installed; drift archive skipped for %s",
+                parquet_path,
+            )
+            return 0
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        ts = recorded_at or datetime.now(timezone.utc).isoformat()
+        psi_scores: Dict[str, float] = result.get("psi_scores", {})
+        warning_set = set(result.get("warning_features", []))
+        critical_set = set(result.get("critical_features", []))
+
+        rows: List[Dict[str, Any]] = []
+        for feature, psi in psi_scores.items():
+            if psi is None:
+                continue
+            if isinstance(psi, float) and np.isnan(psi):
+                continue
+            severity = "critical" if feature in critical_set else (
+                "warning" if feature in warning_set else "ok"
+            )
+            rows.append({
+                "recorded_at": ts,
+                "feature": feature,
+                "psi": float(psi),
+                "severity": severity,
+                "warning_threshold": self.psi_threshold_warning,
+                "critical_threshold": self.psi_threshold_critical,
+            })
+        if not rows:
+            return 0
+
+        target = Path(parquet_path)
+        existing: List[Dict[str, Any]] = []
+        if target.exists():
+            try:
+                existing = pq.read_table(str(target)).to_pylist()
+            except Exception:
+                logger.exception(
+                    "Could not read existing drift archive %s; overwriting",
+                    parquet_path,
+                )
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            pq.write_table(
+                pa.Table.from_pylist(existing + rows), str(target),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to write drift archive to %s", parquet_path,
+            )
+            return 0
+        return len(rows)
+
+    def generate_markdown_report(
+        self, result: Dict[str, Any], title: str = "Drift Report",
+    ) -> str:
+        """Produce a human-readable Markdown report from a drift result."""
+        summary = result.get("summary", {})
+        critical = result.get("critical_features", [])
+        warning = result.get("warning_features", [])
+        psi_scores: Dict[str, float] = result.get("psi_scores", {})
+
+        lines: List[str] = [f"# {title}", ""]
+        lines.append(f"- Total features: {summary.get('total_features', 0)}")
+        lines.append(f"- Warning features: {summary.get('warning_count', 0)}")
+        lines.append(f"- Critical features: {summary.get('critical_count', 0)}")
+        lines.append(f"- Max PSI: {summary.get('max_psi', 0.0):.4f}")
+        lines.append(f"- Avg PSI: {summary.get('avg_psi', 0.0):.4f}")
+        lines.append(
+            f"- Drift detected: {summary.get('drift_detected', False)}"
+        )
+        lines.append("")
+        if critical:
+            lines.append("## Critical")
+            for f in critical:
+                lines.append(f"- `{f}` — PSI={psi_scores.get(f, 0.0):.4f}")
+            lines.append("")
+        if warning:
+            lines.append("## Warning")
+            for f in warning:
+                lines.append(f"- `{f}` — PSI={psi_scores.get(f, 0.0):.4f}")
+            lines.append("")
+        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

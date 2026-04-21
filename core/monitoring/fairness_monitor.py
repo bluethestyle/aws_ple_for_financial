@@ -112,6 +112,115 @@ class FairnessMonitor:
             auto_incident = bool(_cfg_fairness["auto_incident"])
         self.auto_incident = auto_incident
 
+        # Sprint 2 S7: in-memory archive for fairness metrics history.
+        # When `archive_parquet_path` is set in config, `archive_metrics`
+        # also appends to the Parquet file.
+        self._archive: List[Dict[str, Any]] = []
+        self._archive_parquet_path: Optional[str] = _cfg_fairness.get(
+            "archive_parquet_path"
+        )
+
+    # ------------------------------------------------------------------
+    # Archive (Sprint 2 S7)
+    # ------------------------------------------------------------------
+
+    def archive_metrics(
+        self,
+        metrics: Any,
+        *,
+        recorded_at: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        parquet_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Persist a fairness measurement for later historical query.
+
+        Accepts a :class:`FairnessMetrics` dataclass, a dict, or any object
+        exposing ``__dict__``. Returns the archived dict.
+        """
+        from datetime import datetime, timezone
+
+        if hasattr(metrics, "__dict__") and not isinstance(metrics, dict):
+            payload = {
+                k: v for k, v in vars(metrics).items()
+                if not k.startswith("_")
+            }
+        elif isinstance(metrics, dict):
+            payload = dict(metrics)
+        else:
+            payload = {"value": metrics}
+
+        entry = {
+            "recorded_at": recorded_at or datetime.now(timezone.utc).isoformat(),
+            **payload,
+        }
+        if context:
+            entry["context"] = dict(context)
+        self._archive.append(entry)
+
+        target = parquet_path or self._archive_parquet_path
+        if target:
+            self._flush_parquet(entry, target)
+        return entry
+
+    def get_archive(
+        self,
+        attribute: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        data = list(self._archive)
+        if attribute is not None:
+            data = [
+                r for r in data
+                if r.get("attribute") == attribute
+            ]
+        data.sort(key=lambda r: r.get("recorded_at", ""))
+        if limit is not None:
+            data = data[-limit:]
+        return data
+
+    def _flush_parquet(
+        self, entry: Dict[str, Any], path: str,
+    ) -> None:
+        try:
+            import pyarrow as pa  # type: ignore
+            import pyarrow.parquet as pq  # type: ignore
+        except ImportError:
+            logger.warning(
+                "pyarrow not installed; fairness archive kept in-memory only",
+            )
+            return
+        from pathlib import Path
+
+        import json
+
+        # Best-effort: append by reading existing file (small dataset).
+        target = Path(path)
+        existing: List[Dict[str, Any]] = []
+        if target.exists():
+            try:
+                table = pq.read_table(str(target))
+                existing = table.to_pylist()
+            except Exception:
+                logger.exception(
+                    "Could not read existing fairness archive %s; overwriting",
+                    path,
+                )
+        # JSON-normalize complex values so pyarrow can build a stable schema.
+        serialisable = [
+            {k: (json.dumps(v, default=str)
+                 if isinstance(v, (dict, list)) else v)
+             for k, v in e.items()}
+            for e in (existing + [entry])
+        ]
+        try:
+            table = pa.Table.from_pylist(serialisable)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            pq.write_table(table, str(target))
+        except Exception:
+            logger.exception(
+                "Failed to flush fairness archive to %s", path,
+            )
+
     # ------------------------------------------------------------------
     # Individual metric computation
     # ------------------------------------------------------------------

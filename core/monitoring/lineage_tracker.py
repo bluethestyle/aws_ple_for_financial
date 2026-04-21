@@ -214,6 +214,111 @@ class DataLineageTracker:
         return [self.trace_feature_to_source(fn) for fn in feature_names]
 
     # ------------------------------------------------------------------
+    # Sprint 2 S9: extensible feature-to-table mapping
+    # ------------------------------------------------------------------
+
+    def register_feature_mapping(
+        self,
+        prefix: str,
+        source_tables: List[str],
+        source_columns: List[str],
+        data_group: str,
+        description: str = "",
+        pseudonymized: Optional[bool] = None,
+    ) -> None:
+        """Register a new feature-prefix-to-source mapping at runtime."""
+        if not prefix:
+            raise ValueError("prefix must be non-empty")
+        entry: Dict[str, Any] = {
+            "source_tables": list(source_tables),
+            "source_columns": list(source_columns),
+            "data_group": data_group,
+            "description": description,
+        }
+        if pseudonymized is not None:
+            entry["pseudonymized"] = bool(pseudonymized)
+        self.feature_source_map[prefix] = entry
+        logger.info(
+            "Registered lineage mapping: prefix=%s tables=%s data_group=%s",
+            prefix, source_tables, data_group,
+        )
+
+    def load_mapping_from_yaml(self, yaml_path: str) -> int:
+        """Load a YAML-defined feature mapping catalog.
+
+        Expected YAML shape::
+
+            feature_source_map:
+              spend_:
+                source_tables: [T_TXN, T_MCC]
+                source_columns: [amount, mcc_code]
+                data_group: G2_transactions
+                description: "Customer spending patterns by MCC"
+                pseudonymized: true
+              txn_count_: {...}
+
+        Returns the number of prefix entries loaded.
+        """
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError("PyYAML required for load_mapping_from_yaml") from exc
+
+        from pathlib import Path
+
+        p = Path(yaml_path)
+        if not p.exists():
+            raise FileNotFoundError(yaml_path)
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        raw_map = (
+            data.get("feature_source_map")
+            or data.get("lineage", {}).get("feature_source_map")
+            or {}
+        )
+        count = 0
+        for prefix, info in raw_map.items():
+            self.register_feature_mapping(
+                prefix=prefix,
+                source_tables=info.get("source_tables", []),
+                source_columns=info.get("source_columns", []),
+                data_group=info.get("data_group", "unknown"),
+                description=info.get("description", ""),
+                pseudonymized=info.get("pseudonymized"),
+            )
+            count += 1
+        logger.info(
+            "Loaded %d lineage prefix mappings from %s", count, yaml_path,
+        )
+        return count
+
+    def coverage_report(
+        self, feature_names: List[str],
+    ) -> Dict[str, Any]:
+        """Summarize how many of ``feature_names`` have a mapping."""
+        total = len(feature_names)
+        unmapped: List[str] = []
+        by_group: Dict[str, int] = {}
+        by_table: Dict[str, int] = {}
+        for fn in feature_names:
+            trace = self.trace_feature_to_source(fn)
+            if trace.get("status") == "unmapped":
+                unmapped.append(fn)
+                continue
+            grp = trace.get("data_group", "unknown")
+            by_group[grp] = by_group.get(grp, 0) + 1
+            for tbl in trace.get("source_tables", []):
+                by_table[tbl] = by_table.get(tbl, 0) + 1
+        mapped = total - len(unmapped)
+        return {
+            "total_features": total,
+            "mapped": mapped,
+            "unmapped": unmapped,
+            "coverage_rate": (mapped / total) if total else 0.0,
+            "by_data_group": by_group,
+            "by_source_table": by_table,
+        }
+
+    # ------------------------------------------------------------------
     # Recommendation-level tracing
     # ------------------------------------------------------------------
 

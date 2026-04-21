@@ -161,6 +161,36 @@ class CompetitionConfig:
     lower_is_better_metrics: frozenset = frozenset({
         "avg_mae", "mae", "rmse", "mape", "log_loss",
     })
+    # Sprint 2 S15: human approval enforcement (EU AI Act Art. 14, 인적 감독).
+    # When False, a challenger whose metrics meet the threshold is still
+    # marked as NOT auto-promotable: the reason column records
+    # "metrics_gate_passed_requires_manual_approval" so the operator must
+    # re-run with --force-promote.
+    #
+    # Default stays True for backward compatibility with legacy tests. The
+    # production posture is False, enforced via
+    # ``serving.competition.auto_promote`` in pipeline.yaml (see
+    # submit_pipeline.py which builds the config through
+    # :meth:`from_dict`). Do not flip this default in code.
+    auto_promote: bool = True
+
+    @classmethod
+    def from_dict(
+        cls, data: Optional[Dict[str, Any]] = None,
+    ) -> "CompetitionConfig":
+        """Build a CompetitionConfig from ``serving.competition`` block."""
+        if not data:
+            return cls()
+        kwargs: Dict[str, Any] = {}
+        for field_name in (
+            "primary_metric", "min_improvement", "max_degradation",
+            "significance_level", "n_bootstrap", "auto_promote",
+        ):
+            if field_name in data:
+                kwargs[field_name] = data[field_name]
+        if "secondary_metrics" in data:
+            kwargs["secondary_metrics"] = list(data["secondary_metrics"])
+        return cls(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +436,17 @@ class ModelCompetition:
                     f"statistically significant (t p={t_pval:.4f}, "
                     f"bootstrap p={boot_pval:.4f})."
                 )
+
+        # Sprint 2 S15: when auto_promote is disabled (the default under
+        # EU AI Act Art. 14 human-oversight posture), a passing challenger is
+        # NOT auto-approved. The operator must re-run with --force-promote.
+        if approved and not self._config.auto_promote:
+            approved = False
+            reason = (
+                f"{reason} | metrics_gate_passed but auto_promote=False "
+                f"(EU AI Act Art. 14 human oversight); re-run with "
+                f"--force-promote to promote manually."
+            )
 
         winner = "challenger" if approved else "champion"
         now = datetime.now(timezone.utc).isoformat()

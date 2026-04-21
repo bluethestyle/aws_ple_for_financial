@@ -275,6 +275,132 @@ class EligibilityFilter(AbstractFilter):
         )
 
 
+@FilterRegistry.register("suitability")
+class SuitabilityFilter(AbstractFilter):
+    """금소법 §17 적합성 원칙 필터 (Sprint 2 S13).
+
+    Korean Financial Consumer Protection Act (금소법) Article 17 requires
+    that a product's risk level not exceed the customer's assessed risk
+    tolerance. Unsuitable combinations must be blocked before recommendation.
+
+    Context keys (all optional but at least risk_tolerance + risk_level
+    pair must be present):
+        - ``customer_risk_tolerance`` (1-5, higher = more tolerant)
+        - ``item_risk_level`` (1-5, higher = more risky)
+        - ``customer_age`` (int)
+        - ``customer_income`` (float, KRW annualized)
+
+    Config example::
+
+        filters:
+          suitability:
+            require_assessment: true  # reject if risk_tolerance missing
+            senior_age_threshold: 65  # force conservative for seniors
+            senior_max_risk_level: 2  # cap risk for senior customers
+            low_income_threshold: 30000000  # 3천만원
+            low_income_max_risk_level: 3
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__(config)
+        self.require_assessment: bool = bool(
+            config.get("require_assessment", True)
+        )
+        self.senior_age_threshold: int = int(
+            config.get("senior_age_threshold", 65)
+        )
+        self.senior_max_risk_level: int = int(
+            config.get("senior_max_risk_level", 2)
+        )
+        self.low_income_threshold: float = float(
+            config.get("low_income_threshold", 30_000_000)
+        )
+        self.low_income_max_risk_level: int = int(
+            config.get("low_income_max_risk_level", 3)
+        )
+
+    def evaluate(
+        self,
+        customer_id: str,
+        item_id: str,
+        context: Dict[str, Any],
+    ) -> FilterResult:
+        tolerance = context.get("customer_risk_tolerance")
+        risk_level = context.get("item_risk_level")
+
+        if risk_level is None:
+            # No risk profile on the item: pass-through (other filters apply).
+            return FilterResult(
+                passed=True, filter_name="suitability",
+                details={"reason": "no_item_risk_level"},
+            )
+
+        if tolerance is None:
+            if self.require_assessment:
+                return FilterResult(
+                    passed=False,
+                    filter_name="suitability",
+                    reason="금소법 §17: missing customer_risk_tolerance",
+                    details={"item_risk_level": risk_level},
+                )
+            return FilterResult(
+                passed=True, filter_name="suitability",
+                details={"reason": "tolerance_missing_but_not_required"},
+            )
+
+        if int(risk_level) > int(tolerance):
+            return FilterResult(
+                passed=False,
+                filter_name="suitability",
+                reason=(
+                    f"금소법 §17: item risk {risk_level} exceeds "
+                    f"customer tolerance {tolerance}"
+                ),
+                details={
+                    "item_risk_level": risk_level,
+                    "customer_risk_tolerance": tolerance,
+                },
+            )
+
+        # Senior cap
+        age = context.get("customer_age")
+        if age is not None and int(age) >= self.senior_age_threshold:
+            if int(risk_level) > self.senior_max_risk_level:
+                return FilterResult(
+                    passed=False,
+                    filter_name="suitability",
+                    reason=(
+                        f"금소법 §17 senior cap: age={age} "
+                        f"max_risk={self.senior_max_risk_level} "
+                        f"< item_risk={risk_level}"
+                    ),
+                    details={"age": age, "risk_level": risk_level},
+                )
+
+        # Low-income cap
+        income = context.get("customer_income")
+        if income is not None and float(income) < self.low_income_threshold:
+            if int(risk_level) > self.low_income_max_risk_level:
+                return FilterResult(
+                    passed=False,
+                    filter_name="suitability",
+                    reason=(
+                        f"금소법 §17 low-income cap: income={income} "
+                        f"max_risk={self.low_income_max_risk_level} "
+                        f"< item_risk={risk_level}"
+                    ),
+                    details={"income": income, "risk_level": risk_level},
+                )
+
+        return FilterResult(
+            passed=True, filter_name="suitability",
+            details={
+                "item_risk_level": risk_level,
+                "customer_risk_tolerance": tolerance,
+            },
+        )
+
+
 @FilterRegistry.register("owned_product")
 class OwnedProductFilter(AbstractFilter):
     """Exclude items the customer already owns.

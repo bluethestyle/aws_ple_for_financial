@@ -1,15 +1,20 @@
 """
-3-Layer Serving Fallback Router
-=================================
+Serving Fallback Router (3-layer + optional Layer 4 Human Fallback)
+=====================================================================
 
-Routes prediction requests through the 3-layer fallback architecture:
+Routes prediction requests through the fallback architecture:
 
     Layer 1 — PLE → LGBM distillation  (best quality, requires teacher)
     Layer 2 — LGBM direct hard-label   (teacher quality below threshold)
     Layer 3 — Rule-based fallback       (LGBM unavailable or fidelity fail)
+    Layer 4 — Human Fallback (Sprint 2 S1; opt-in via
+              ``serving.review.tier_3_human_fallback``). Activated when
+              every automated layer fails; the caller is expected to
+              enqueue the case into HumanReviewQueue.
 
 Routing decisions are fully config-driven (distillation.teacher_threshold,
-distillation.fidelity, rule_engine.enabled).  No thresholds are hardcoded.
+distillation.fidelity, rule_engine.enabled,
+serving.review.tier_3_human_fallback).  No thresholds are hardcoded.
 """
 
 from __future__ import annotations
@@ -74,6 +79,16 @@ class FallbackRouter:
             "enabled", True
         )
 
+        # Layer 4 (S1 Human Fallback) availability - governed by
+        # `serving.review.tier_3_human_fallback` and by whether a review queue
+        # is wired in at runtime. The router itself only decides routing; the
+        # caller is responsible for enqueueing into the review queue when it
+        # sees a Layer 4 verdict.
+        review_cfg = config.get("serving", {}).get("review", {})
+        self.human_fallback_enabled: bool = bool(
+            review_cfg.get("tier_3_human_fallback", False)
+        )
+
         # Task type lookup from tasks list
         self._task_type: Dict[str, str] = {
             t["name"]: t.get("type", "binary")
@@ -83,11 +98,12 @@ class FallbackRouter:
         logger.info(
             "FallbackRouter initialised: binary_min_auc=%.2f "
             "multiclass_min_f1_ratio=%.2f regression_min_r2=%.2f "
-            "rule_engine_enabled=%s",
+            "rule_engine_enabled=%s human_fallback_enabled=%s",
             self.binary_min_auc,
             self.multiclass_min_f1_ratio,
             self.regression_min_r2,
             self.rule_engine_enabled,
+            self.human_fallback_enabled,
         )
 
     # ------------------------------------------------------------------
@@ -152,6 +168,17 @@ class FallbackRouter:
             logger.debug("task=%s → Layer 3 (rule-based)", task_name)
             return 3
 
+        # --- Layer 4 (S1): human fallback ---
+        # Every prior layer is unavailable. If human fallback is enabled,
+        # route to Layer 4 rather than silently defaulting; the caller is
+        # responsible for enqueueing the task into HumanReviewQueue.
+        if self.human_fallback_enabled:
+            logger.warning(
+                "task=%s: all automated layers unavailable → Layer 4 "
+                "(human fallback)", task_name,
+            )
+            return 4
+
         # Last resort: Layer 3 even if rule_engine is None (caller handles None)
         logger.warning(
             "task=%s: all layers unavailable, defaulting to Layer 3", task_name
@@ -183,7 +210,7 @@ class FallbackRouter:
         teacher_metrics_all = teacher_metrics_all or {}
 
         routing: Dict[str, int] = {}
-        layer_counts: Dict[int, int] = {1: 0, 2: 0, 3: 0}
+        layer_counts: Dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
 
         for task_name in task_names:
             layer = self.route(
@@ -197,11 +224,12 @@ class FallbackRouter:
             layer_counts[layer] = layer_counts.get(layer, 0) + 1
 
         logger.info(
-            "route_all: %d tasks → L1=%d L2=%d L3=%d",
+            "route_all: %d tasks → L1=%d L2=%d L3=%d L4=%d",
             len(task_names),
             layer_counts[1],
             layer_counts[2],
             layer_counts[3],
+            layer_counts[4],
         )
         return routing
 
