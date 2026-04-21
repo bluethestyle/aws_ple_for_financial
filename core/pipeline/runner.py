@@ -48,6 +48,105 @@ from .config import PipelineConfig
 logger = logging.getLogger(__name__)
 
 
+def _longest_contiguous_run(
+    positions: List[int],
+) -> Optional[Tuple[int, int]]:
+    """Return ``(start, end)`` of the longest contiguous run in *positions*.
+
+    Positions are expected to be a sorted list of integer column indices.
+    The returned range is a half-open interval ``[start, end)`` such that
+    ``end - start`` columns are covered. Ties on length pick the earliest
+    run.  Returns ``None`` on empty input.
+    """
+    if not positions:
+        return None
+    sorted_pos = sorted(set(positions))
+    best_start = sorted_pos[0]
+    best_end = sorted_pos[0] + 1
+    cur_start = sorted_pos[0]
+    cur_end = sorted_pos[0] + 1
+    for p in sorted_pos[1:]:
+        if p == cur_end:
+            cur_end = p + 1
+        else:
+            if cur_end - cur_start > best_end - best_start:
+                best_start, best_end = cur_start, cur_end
+            cur_start, cur_end = p, p + 1
+    if cur_end - cur_start > best_end - best_start:
+        best_start, best_end = cur_start, cur_end
+    return best_start, best_end
+
+
+def _rebuild_group_ranges_post_normalization(
+    feature_pipeline: Any,
+    feature_cols: List[str],
+    log_cols_created: List[str],
+) -> Dict[str, Tuple[int, int]]:
+    """Re-map feature_group_ranges against the post-normalization column order.
+
+    CLAUDE.md §1.7 — the normalizer reorders / appends ``{col}_log`` copies,
+    breaking the pre-normalization ``(start, end)`` ranges.  For every
+    enabled group we:
+
+    1. Resolve the set of original column names that belong to the group
+       (from ``group.output_columns``).
+    2. Attach ``{col}_log`` offspring to the same group when they exist in
+       ``log_cols_created`` and their base column was a member of the
+       group.
+    3. Locate each name in the new ``feature_cols`` list.
+    4. Return the *longest contiguous block* of positions as
+       ``(start, end)``.  Logs a warning when the group's columns ended up
+       non-contiguous so operators can trace routing anomalies back to
+       normalization-induced reordering.
+
+    Groups with zero resolvable columns are dropped from the map.  When
+    ``feature_pipeline`` has no ``_registry`` (e.g. a mock in tests),
+    returns an empty dict so the caller keeps its Stage 3 ranges.
+    """
+    registry = getattr(feature_pipeline, "_registry", None)
+    if registry is None or not getattr(registry, "enabled_groups", None):
+        return {}
+
+    log_set = set(log_cols_created or [])
+    col_index = {c: i for i, c in enumerate(feature_cols)}
+
+    rebuilt: Dict[str, Tuple[int, int]] = {}
+    for group in registry.enabled_groups:
+        group_cols = list(getattr(group, "output_columns", []) or [])
+        # Attach log offspring of this group's columns.
+        for base in list(group_cols):
+            log_name = f"{base}_log"
+            if log_name in log_set and log_name not in group_cols:
+                group_cols.append(log_name)
+
+        positions = [
+            col_index[c] for c in group_cols if c in col_index
+        ]
+        if not positions:
+            continue
+
+        block = _longest_contiguous_run(positions)
+        if block is None:
+            continue
+        start, end = block
+
+        if end - start != len(positions):
+            logger.warning(
+                "[Stage 6] Group '%s' is non-contiguous after normalization "
+                "(%d columns, longest block [%d, %d) = %d cols). Columns "
+                "outside the block will be orphaned from expert routing.",
+                group.name,
+                len(positions),
+                start,
+                end,
+                end - start,
+            )
+        rebuilt[group.name] = (start, end)
+
+    return rebuilt
+
+
+
 # ======================================================================
 # Pipeline state tracker for stage-level checkpointing / resume
 # ======================================================================
@@ -498,6 +597,31 @@ class PipelineRunner:
             "total_feature_cols": len(feature_cols),
             "time_seconds": round(time.time() - stage_start, 2),
         }
+        # -- Rebuild feature_group_ranges against post-normalization column order.
+        # CLAUDE.md §1.7: the 3-stage normalizer reorders / appends `{col}_log`
+        # copies, which invalidates the (start, end) ranges computed in Stage 3
+        # against the pre-normalization order. We re-map each group's columns
+        # (plus its `_log` offspring) to the new positions and emit the longest
+        # contiguous block per group, logging a warning when a group ends up
+        # non-contiguous (typical cause: `_log` copies stranded at the tail).
+        try:
+            rebuilt_ranges = _rebuild_group_ranges_post_normalization(
+                feature_pipeline=feature_pipeline,
+                feature_cols=feature_cols,
+                log_cols_created=log_cols_created,
+            )
+            if rebuilt_ranges:
+                feature_schema["feature_group_ranges"] = rebuilt_ranges
+                logger.info(
+                    "[Stage 6] feature_group_ranges rebuilt post-normalization: %d groups",
+                    len(rebuilt_ranges),
+                )
+        except Exception:
+            logger.exception(
+                "[Stage 6] feature_group_ranges rebuild failed — leaving Stage 3 "
+                "pre-normalization ranges in schema (may misalign expert routing)"
+            )
+
         state.mark_complete("stage6_normalization")
         logger.info(
             "[Stage 6] Normalization complete in %.2fs: %d continuous (scaled), "
