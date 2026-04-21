@@ -293,12 +293,13 @@ class TestPLEModelForwardPass:
                     "task_type": "regression", "output_dim": 1, "activation": None,
                 }
             elif t["type"] == "multiclass":
+                n_classes = int(t.get("num_classes", 5))
                 task_overrides[t["name"]] = {
-                    "task_type": "multiclass", "output_dim": 5, "activation": "softmax",
+                    "task_type": "multiclass", "output_dim": n_classes, "activation": "softmax",
                 }
             elif t["type"] == "ranking":
                 task_overrides[t["name"]] = {
-                    "task_type": "regression", "output_dim": 1, "activation": "sigmoid",
+                    "task_type": "regression", "output_dim": 1, "activation": None,
                 }
 
         return PLEConfig(
