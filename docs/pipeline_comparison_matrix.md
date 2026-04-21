@@ -4,18 +4,29 @@
 **대상**: `aws_ple_for_financial` (main @ 528be7a) vs `gotothemoon/workspace/code` (현 스냅샷)
 **방법**: 모델 / 증류 / 서빙 / 감사 4개 레이어별 Sonnet 서브에이전트 병렬 조사 후 통합
 
-**한 줄 요약**: AWS 는 *연구·MRM 인프라 깊이*, 온프렘은 *실운영·국내 규제 깊이*. 두 프로젝트는 중복이 아니라 *상보* 관계 — 병합할 것이 아니라 **양방향 이식 체크리스트**가 필요.
+**한 줄 요약**: AWS 는 온프렘의 **클라우드 확장 버전** — 두 체계는 원칙적으로 *동일해야* 하며, 차이는 (a) 클라우드 vs 온프렘 환경 고유 차이 또는 (b) **AWS 가 더 config-중심 / 모듈화를 지향해서 생긴 구조 차이** 또는 (c) **드리프트 (sync 필요)** 중 하나. 대부분의 gap 은 (c) = 양방향 sync 로 해결.
 
 ---
 
-## 0. 레이어별 판정 요약
+## 0. 포지셔닝 정정 (2026-04-21)
 
-| 레이어 | AWS 우위 건수 | 온프렘 우위 건수 | 양쪽 동등 | 핵심 메시지 |
+**원래 설계 의도**: AWS 는 온프렘의 **클라우드 확장 버전**. 두 체계는 원칙적으로 동일해야 한다.
+
+**허용되는 차이는 3종류만**:
+- **(a) 클라우드 vs 온프렘 인프라 차이** — SageMaker ↔ Airflow, S3 ↔ Parquet + DuckDB 쿼리, Bedrock API ↔ vLLM self-host, S3 Object Lock ↔ MinIO Object Lock
+- **(b) 설계 의도 차이** — AWS 는 *더 config-중심 / 모듈화* 지향. 구조가 다르면 AWS 패턴이 "타겟"
+- **(c) 드리프트** — 실수 또는 시간차로 한쪽만 구현됨. **양방향 sync 로 해결**
+
+아래 건수는 대부분 (c) 드리프트. "AWS 우위 / 온프렘 우위" 라는 표현은 정확하지 않고, 정확히는 **"현재 어느 쪽에 구현됐나"** 를 나타냄.
+
+| 레이어 | AWS 만 있음 (→ 온프렘으로 sync) | 온프렘만 있음 (→ AWS 로 sync) | 양쪽 구현 (API 정합성 체크) | 인프라 고유 차이 |
 |---|---|---|---|---|
-| **모델 아키텍처** | ~10 | ~4 | ~16 | AWS 가 Paper 3 Findings 8~13 (CEH/CG/CCP/W-amp) + Fusion 5종 + GradSurgery + FeatureRouter 보유. 온프렘은 LiquidNN, KD 모듈, ClusterTaskExpert, Sparse/Top-K gate 추가 |
-| **훈련 + 증류** | 5 | 3 | 3 | AWS 가 Teacher threshold gating / 3-Layer FallbackRouter / Platt calibration 독점. 온프렘은 Uplift T-Learner, IG 기반 3-stage FS, DuckDB 통합 |
-| **서빙 + 추천** | 1 | 9 | 3 | **온프렘 압도적 우위**. AI기본법/개보법/금소법/금감원 원칙이 모듈별 1:1 매핑. Human Review Queue, Dynamic Item Universe, Safety Gate 3-layer, Consent 4-모듈 모두 온프렘 전용 |
-| **모니터링 + 감사** | 3 | 9 | 2 | **온프렘 압도적 우위**. FRIA (AI기본법 §35), EU AI Act Annex IV, 36-항목 compliance registry, MLflow+DVC, Data Lineage 722D 모두 온프렘. AWS 는 WORM 저장소 + `log_attribution`/`log_guardrail` + Agent 자연어 조회만 독점 |
+| **모델 아키텍처** | ~10 | ~4 | ~16 | (거의 없음 — 순수 코드) |
+| **훈련 + 증류** | 5 | 3 | 3 | SageMaker HP ↔ Airflow DAG (인프라) |
+| **서빙 + 추천** | 1 | 9 | 3 | Bedrock ↔ vLLM (LLM provider) |
+| **모니터링 + 감사** | 3 | 9 | 2 | S3 WORM ↔ MinIO Object Lock |
+
+**핵심**: 온프렘만 있는 항목 (서빙 9 + 감사 9) 이 특히 많다 = AWS 에 규제/운영 모듈이 아직 이식 안 됨 = **AWS 도 보강 필요**. 반대로 AWS 만 있는 Paper 3 Findings 8~13 및 Fusion / Teacher threshold gating / Platt 은 **온프렘도 보강 필요**.
 
 ---
 
@@ -199,31 +210,64 @@ Phase 1A~1D 의 Must 항목:
 
 ---
 
-## 6. 두 프로젝트의 본질적 포지셔닝
+## 6. 두 프로젝트의 본질적 포지셔닝 (정정본)
 
-이 비교가 확인한 것:
+### 6.1 설계 의도
 
-1. **AWS 프로젝트 = 연구 + MRM 인프라 + Paper 생산**
-   - Paper 3 Findings 1~13 전체 이식
-   - Fusion 실험 5종 (NEAS/BRP/ECEB/AdaTT-sp/M1)
-   - MRM/SR 11-7 관련 인프라 집약 (threshold gating, calibration, leakage validator)
-   - WORM 저장소 + per-prediction 감사
+- **AWS 는 온프렘의 클라우드 확장 버전.** 별도 프로젝트가 아니라 *같은 시스템의 클라우드 대응*.
+- **기본 원칙**: 두 체계는 기능적으로 동일해야 함.
+- **허용되는 차이**:
+  1. **인프라 고유 차이** (SageMaker vs Airflow, S3 vs DuckDB, Bedrock vs vLLM, S3 Object Lock vs MinIO Object Lock 등)
+  2. **AWS 가 의도적으로 더 config-중심 / 모듈화 지향** — 구조가 다르면 AWS 패턴이 "타겟"
+  3. 그 외는 **드리프트 = 실수/시간차 = 양방향 sync 로 해결**
 
-2. **온프렘 프로젝트 = 실운영 + 국내 규제 + 인적 감독**
-   - AI기본법 / 개보법 / 신정법 / 금소법 / 금감원 AI RMF 조항별 모듈
-   - Human Review Queue + Kill Switch + Dynamic Item Universe
-   - FRIA + 36-항목 레지스트리 + EU AI Act Annex IV
-   - DuckDB Parquet 이력 저장 + MLflow + DVC
+### 6.2 이번 비교가 확인한 것
 
-3. **상보 관계**: 병합하지 말 것. 각자의 강점을 양방향 이식하는 것이 합리적.
-   - AWS → 온프렘: 연구 (CEH/CG/CCP/Fusion) + MRM 인프라 (threshold gating, fallback, calibration, WORM 개념)
-   - 온프렘 → AWS: 국내 규제 (FRIA, AI기본법 매핑) + 실운영 (Human Review, Kill Switch, Dynamic Item Universe) + 인적 감독 강제
+이 매트릭스가 보여준 gap 의 대부분은 (3) 드리프트입니다:
 
-4. **v2 발표 시 협업 구조**:
-   - Paper 1 v2 (AWS 쪽): 아키텍처 + 실데이터 ablation
-   - Paper 2 v2 (AWS 쪽): 서빙/규제 + **온프렘 규제 모듈 역수입 내용 통합**
-   - Paper 3 v2 (AWS 쪽): Loss dynamics + causal reinterpretation + 실데이터 재현
-   - 온프렘 백서: 규제 대응 증거 문서 + AWS 연구 성과 참조
+- **AWS 에 이식이 밀린 것**: 온프렘의 실운영/규제 모듈 (Human Review Queue, Kill Switch, Consent 4-모듈, FRIA, 36-항목 레지스트리, Dynamic Item Universe, Audit Archive 확장 컬럼, LLM marker, MLflow+DVC compliance)
+  - 원래 온프렘에 먼저 들어간 것 — AWS 클라우드 버전이 만들어질 때 규제/운영 모듈이 아직 이식 안 됨. **이식 대상**
+- **온프렘에 이식이 밀린 것**: AWS 의 최근 연구 성과 (Paper 3 Findings 8~13 = CEH/CG/CCP/W-amp/v3) 및 Fusion 기법 (NEAS/BRP-detached/ECEB/AdaTT-sp/M1) 및 MRM 인프라 (Teacher threshold gating, 3-Layer FallbackRouter, Platt calibration, LeakageValidator standalone class)
+  - AWS 에서 실험적으로 먼저 구현된 것 — 온프렘은 아직 sync 안 됨. **이식 대상**
+- **구조 차이가 있지만 기능 동등**: FD-TVS scoring (AWS monolithic `FDTVSScorer` 클래스 ↔ 온프렘 5-파일 분리)
+  - AWS 는 config-중심 plugin 방식, 온프렘은 테스트 친화적 분리. **기능 동일, 구조 의도적 차이**.
+
+### 6.3 인프라 고유 차이로 인정할 항목
+
+| 항목 | AWS | 온프렘 | 같은 역할 |
+|---|---|---|---|
+| 오케스트레이션 | SageMaker 순차 실행 | Airflow DAG | 잡 실행 관리 |
+| 데이터 저장소 | S3 Parquet + DynamoDB | Parquet (로컬/NFS) + DuckDB 쿼리 엔진 | 피처/메트릭 저장 (양쪽 모두 Parquet 포맷; AWS 는 S3 에, 온프렘은 파일시스템에. DuckDB 는 쿼리 레이어) |
+| LLM 서빙 | Bedrock API (Claude) | vLLM self-host (Qwen3-8B-AWQ) | L2a rewrite |
+| 감사 WORM | S3 Object Lock | *없음 → MinIO Object Lock 추가 필요* | 불변 감사 기록 |
+| 모니터링 알림 | CloudWatch | Slack | 운영 알림 |
+| 시크릿 관리 | SSM Parameter Store | 환경변수/파일 | HMAC 키 등 |
+
+**주의**: 온프렘 "WORM 없음" 은 인프라 고유 차이가 아니라 **결함**. MinIO Object Lock 등 온프렘 대체재로 보강 필요.
+
+### 6.4 설계 의도 차이 (AWS = 더 config-중심)
+
+| 측면 | AWS 패턴 | 온프렘 패턴 | 결론 |
+|---|---|---|---|
+| Config 소스 | `PLEConfig` dataclass + YAML + SM_HPS 주입 | YAML dict 직접 참조 (`self.config.get(...)`) | AWS 패턴이 타겟 (type-safety + IDE 지원) |
+| Plugin Registry | `ExpertRegistry`, `ScorerRegistry`, `FilterRegistry`, `TowerRegistry` 데코레이터 | Factory 패턴 | AWS 패턴이 타겟 |
+| HP 주입 | `config_builder.py` 단일 진입점 | 분산 | AWS 패턴이 타겟 |
+| Fusion 전환 | `fusion_type` 파라미터로 CGC 안에서 5종 전환 | 개별 구조 | AWS 패턴이 타겟 |
+
+**의미**: 위 항목들에서 온프렘이 AWS 로 sync 할 때는 단순 이식이 아니라 **AWS config-중심 패턴으로 재구성** 필요.
+
+### 6.5 양방향 sync 가 v2 목표
+
+- Phase A (AWS → 온프렘): `onprem_work_plan.md` 참조. CEH / CG / CCP / Fusion / Teacher gating / Fallback / Calibration.
+- Phase B (온프렘 → AWS): *신규 문서 필요 시*. Human Review / Kill Switch / Consent 4-모듈 / FRIA / 36-항목 레지스트리 / Dynamic Item Universe / Audit extended columns / LLM marker / MLflow+DVC.
+- Phase C (양쪽 공통): 온프렘 WORM 저장소 추가, 온프렘 LGBM temporal split 수정, AuditLogger API 통일.
+
+### 6.6 v2 발표 시 협업 구조 (정정)
+
+두 시스템이 **같은 시스템의 두 deployment** 라는 관점에서:
+- Paper 1/2/3 v2 는 AWS 쪽에서 작성하되, 내용은 **"온프렘 + AWS 공통 아키텍처"** 를 기술. 클라우드 고유 요소는 별도 노트.
+- 온프렘 백서는 **실운영 증거 + 규제 대응 상세** 로 AWS paper 의 보충 역할.
+- 두 프로젝트 모두 동일한 Findings 1~13 + 동일 규제 모듈 + 동일 서빙 흐름을 보유해야 함. 현재는 양쪽 모두 partial.
 
 ---
 
