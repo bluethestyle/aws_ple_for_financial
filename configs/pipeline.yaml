@@ -793,6 +793,17 @@ compliance:
       events: s3://aiops-ple-financial/compliance/events/dt=*/events_*.parquet
       promotion_gate: s3://aiops-ple-financial/compliance/artifacts/promotion_gate/*.parquet
 
+  # Phase 3 C4: AI security checker (prompt injection + output leak).
+  # Rule catalogues can be extended without code changes via
+  # prompt_injection_patterns / output_leak_patterns lists.
+  ai_security:
+    enabled: true
+    prompt_injection_severity: high
+    output_leak_severity: high
+    max_matches_reported: 10
+    # prompt_injection_patterns / output_leak_patterns left empty here
+    # means "use built-in defaults". Extend by listing extra regexes.
+
 # ---------------------------------------------------------------------------
 # Rule Engine — Layer 3 rule-based fallback (ML-free)
 # ---------------------------------------------------------------------------

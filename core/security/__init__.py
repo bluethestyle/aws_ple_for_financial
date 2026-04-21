@@ -25,6 +25,15 @@ from .encryption_policy import (
 )
 from .pipeline import EncryptionPipeline
 from .prompt_sanitizer import PromptSanitizer, SanitizeResult, Sensitivity
+from .ai_security_checker import (
+    AISecurityChecker,
+    AISecurityConfig,
+    DEFAULT_OUTPUT_LEAK_PATTERNS,
+    DEFAULT_PROMPT_INJECTION_PATTERNS,
+    SecurityFinding,
+    SecurityVerdict,
+    wrap_provider as wrap_provider_with_security,
+)
 
 __all__ = [
     "PIIDomain",
@@ -42,4 +51,12 @@ __all__ = [
     "PromptSanitizer",
     "SanitizeResult",
     "Sensitivity",
+    # C4 AI security
+    "AISecurityChecker",
+    "AISecurityConfig",
+    "SecurityFinding",
+    "SecurityVerdict",
+    "DEFAULT_PROMPT_INJECTION_PATTERNS",
+    "DEFAULT_OUTPUT_LEAK_PATTERNS",
+    "wrap_provider_with_security",
 ]
