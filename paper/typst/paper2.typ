@@ -1250,6 +1250,20 @@ The on-premises reference system uses MLflow for experiment tracking and DVC for
 
 This closes the Paper 2 v2 evidence gap for *regulatory artifact versioning* without depending on the MLflow / DVC stack, keeping the AWS deployment aligned with the #sym.quote.l.double cloud extension of on-prem, not a separate system #sym.quote.r.double positioning documented in `docs/pipeline_comparison_matrix.md`.
 
+=== DuckDB-over-Parquet compliance SQL (v2)
+
+The on-premises reference system uses DuckDB as the SQL engine over Parquet audit archives; AWS's paid equivalents (Athena, Redshift Spectrum, S3 Select) introduce infrastructure cost and operational overhead that the observed query volume does not justify. Instead, `core/compliance/audit_sql.py::ComplianceSQLHelper` wraps DuckDB's httpfs extension so `s3://` audit archives can be queried with the same SQL the on-prem deployment already uses --- at zero added infrastructure cost.
+
+- `register_view(name, parquet_uri)` attaches a Parquet glob / directory / `s3://` URI as a named DuckDB view. Views are re-creatable so new batches appended to the same prefix are picked up on demand.
+- `query(sql, params)` runs parameterised SQL and returns row dicts.
+- Four regulator-focused convenience methods --- `recent_opt_outs`, `consent_changes_for_user`, `sla_breaches`, `promotion_gate_history` --- take a `since` argument defaulting to the configured 30-day window, covering the typical quarterly-audit request shape.
+- `counts_by_column(view, column)` produces `{value: count}` summaries for dashboards.
+- `pipeline.yaml::compliance.audit_sql.paths` auto-registers views at construction time so the helper is ready to use in one line.
+
+Because views are registered against any combination of `s3://` and local paths, an auditor running the same SQL against an `InMemoryComplianceStore`-backed test fixture and a production `S3ParquetComplianceStore` export gets identical results. `tests/test_compliance_sql.py` (22 cases) verifies the config surface, view lifecycle, parameterised queries, each convenience method, and a cross-view JOIN across `opt_out` and `consent` views to confirm that multi-table analytical queries work without any additional infrastructure.
+
+`docs/pipeline_comparison_matrix.md` records the design-choice rationale alongside the other paid alternatives considered.
+
 == Korean AI Basic Act
 
 Korea's AI Basic Act (passed by the National Assembly December 2024, promulgated January 2025, effective January 22, 2026) @koreaaiact2024 introduces a domestic

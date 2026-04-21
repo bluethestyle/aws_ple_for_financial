@@ -86,6 +86,13 @@
 - **TrialComponent 이름은 120자 제한**. SageMaker 의 하드 캡이므로 `<artifact_type>-<artifact_id>` 포맷을 `[:120]` 로 절삭하는 것이 표준. 로컬 검증 시 이 길이를 초과하면 프로덕션에서 실패.
 - **ComplianceAuditStore 와 Compliance tracker 는 분리**한다. 전자는 **원천 이벤트** (consent 변경, opt-out 발생 등) 를 DynamoDB/S3 Parquet 에 저장. 후자는 **집계된 규제 산출물** (FRIA 결과, 승격 verdict 등) 을 SageMaker Experiments 에 기록. 용도가 다르므로 중복 저장이 아니다.
 
+### 1.15 Compliance SQL 원칙 (S6, 2026-04-21)
+- **Athena 를 기본으로 쓰지 않는다.** 온프렘의 DuckDB + Parquet 경험은 AWS 에서 DuckDB httpfs 확장 (`INSTALL httpfs; LOAD httpfs;`) 으로 그대로 재현된다. 쿼리당 $5/TB 의 Athena 비용을 감수할 만한 트래픽 (대시보드, QuickSight 연동 등) 이 생기기 전까지는 `core/compliance/audit_sql.py::ComplianceSQLHelper` 가 표준.
+- **View 이름은 `[A-Za-z0-9_]+` 만 허용**한다. DuckDB `CREATE VIEW` 에 SQL injection 을 주지 않기 위해 `register_view()` 에서 엄격 검증. 쿼리는 항상 parameterised (`?` 플레이스홀더) 사용.
+- **편의 메서드의 `view` 인자는 기본값 그대로 사용 권장**. `recent_opt_outs` 가 기본적으로 `opt_out` view, `sla_breaches` 가 `events` view 를 가정한다. pipeline.yaml 의 `compliance.audit_sql.paths` 가 동일 이름으로 등록되어 있어야 함.
+- **`ComplianceSQLHelper` 는 on-demand 사용**이다. 장기 실행 서비스가 아니므로 context manager (`with ComplianceSQLHelper() as h:`) 또는 `close()` 호출로 DuckDB connection 을 명시적으로 닫는다.
+- **DynamoDB (online 조회)** 와 **SQL helper (batch 조회)** 의 역할은 분리. DynamoDB 는 `ComplianceAuditStore` 가 담당. SQL helper 는 S3 Parquet archive 에 대한 SQL 만. 두 경로를 혼용해서 쓸 때도 서로의 데이터를 덮어쓰지 않아야 한다 (read-only join).
+
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:
   1. **Phase 0 출력 검증**: feature_stats.json에서 zero-variance 컬럼, NaN 비율, 생성된 피처 컬럼 수 확인
