@@ -9,10 +9,12 @@
 **진행 현황 (2026-04-21)**:
 - ✅ **Phase 1 Must (M1~M12) 완료** — 모든 규제 핵심 모듈 AWS 이식.
 - ✅ **Phase 2 Should 15/15 완료** — S1~S15 전체 완료.
-- ⏳ **Phase 3 Could** — 미착수.
-- 누적 테스트: **349/349 PASS**, 하드코딩 0건.
+- ✅ **Phase 3 Could 4/5 완료** — C1, C3, C4, C5. C2는 Won't (AWS SageMaker 네이티브).
+- 누적 테스트: **447/447 PASS**, 하드코딩 0건.
 - **S5 재정의**: 온프렘 MLflow+DVC 를 그대로 이식하지 않고, AWS 네이티브 서비스 (SageMaker Experiments + Model Registry + Lineage + S3 versioning) 기반으로 재설계. `core/compliance/sagemaker_compliance_tracker.py` 가 4개 규제 산출물 유형 (FRIA / AI Risk / Compliance Sweep / Promotion Gate) 을 Experiments TrialComponent 로 자동 기록.
 - **S6 재정의**: Athena 도입은 과잉. DuckDB httpfs 확장이 s3:// URI 를 네이티브로 읽으므로, `core/compliance/audit_sql.py::ComplianceSQLHelper` 로 온프렘 DuckDB 경험을 AWS 에서 0 인프라 비용으로 유지 (regulator 쿼리 + cross-view JOIN).
+- **C1 신규**: `core/evaluation/uplift_learner.py` (T-Learner + X-Learner + 평가 지표) — Paper 2 v2 Pearl Rung 2 공백 해소.
+- **C4 신규**: `core/security/ai_security_checker.py` (prompt injection + output PII/leak 탐지 + provider wrapping) — 기존 `prompt_sanitizer.py` 를 보강.
 
 **관련 문서**:
 - `docs/pipeline_comparison_matrix.md` — 4-레이어 전수 비교 결과
@@ -82,13 +84,13 @@ AWS 로 이식할 때는 **AWS 의 config-중심 / 모듈화 패턴** 에 맞게
 
 ### 1.3 Could (v2 Optional 보강)
 
-| # | 컴포넌트 | 이유 |
-|---|---|---|
-| **C1** | Uplift T-Learner | Paper 2 v2 Pearl Rung 2 (treatment effect) 보강. 실 offer 데이터 있으면 의미 |
-| **C2** | Airflow DAG 조건부 재학습 패턴 | AWS 는 SageMaker 라 DAG 직접 이식 X, **로직만 참고**하여 scheduler 확장 |
-| **C3** | LiquidNeuralNetwork Expert | 시계열 표현 추가 옵션. Paper 3 Paper 1 모두 "heterogeneous expert" 주장에 추가 근거 |
-| **C4** | AI Security Checker (LLM 프롬프트 보안) | `src/grounding/` 내 AI 보안 검사 |
-| **C5** | PortfolioTriageAgent | 고객 포트폴리오 기반 티어 분류 |
+| # | 컴포넌트 | 상태 | AWS 구현 위치 | 이유 |
+|---|---|---|---|---|
+| **C1** | Uplift T-Learner | ✅ 완료 | `core/evaluation/uplift_learner.py` (신규) | Paper 2 v2 Pearl Rung 2 (treatment effect / CATE) 공백 보강 |
+| **C2** | Airflow DAG 조건부 재학습 | 🚫 Won't | — | AWS 는 SageMaker managed orchestration, 이식 불필요 |
+| **C3** | LiquidNeuralNetwork Expert | ✅ 완료 | `core/model/experts/temporal.py::LiquidNeuralNetwork` (기존) | Paper 1 heterogeneous expert |
+| **C4** | AI Security Checker (LLM 프롬프트 보안) | ✅ 완료 | `core/security/ai_security_checker.py` (신규) + 기존 `prompt_sanitizer.py` | Prompt injection / output PII leak 탐지 |
+| **C5** | PortfolioTriageAgent | ✅ 완료 | `core/recommendation/reason/portfolio_triage.py` (기존) | Paper 1 5-agent architecture |
 
 ### 1.4 Won't (인프라 고유 — 이식 불필요)
 

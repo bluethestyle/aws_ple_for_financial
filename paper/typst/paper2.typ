@@ -1264,6 +1264,20 @@ Because views are registered against any combination of `s3://` and local paths,
 
 `docs/pipeline_comparison_matrix.md` records the design-choice rationale alongside the other paid alternatives considered.
 
+=== Pearl Ladder Completion & LLM Hardening (v2)
+
+Paper 2 v1 claimed coverage of Pearl's causal ladder at two rungs --- Rung 1 (observation) via the Causal Explainability Head and Rung 3 (counterfactual) via the CCP + Counterfactual Champion-Challenger. v2 fills the Rung 2 (intervention) gap with an uplift-learner module and adds a second LLM hardening layer that complements the existing `PromptSanitizer`.
+
+_Rung 2 uplift learners_ (`core/evaluation/uplift_learner.py`). Both T-Learner and X-Learner implementations are shipped with a matching numpy-only fallback regressor and a logistic propensity estimator. T-Learner fits independent outcome models for the treated and control populations and returns ``tau(x) = mu_1(x) - mu_0(x)``; X-Learner adds a cross-fit stage that re-weights imputed residuals by propensity, yielding more stable CATE under treatment-group imbalance. Evaluation uses the Qini coefficient (area under the Qini curve, normalised by the perfect-targeting ideal) and the top-K-percent uplift metric (mean observed effect within the predicted-top fraction). Both learners expose a ``fit(X, T, Y)`` / ``predict(X)`` interface so any sklearn or LightGBM regressor can be swapped in as the stage-1 model without changing the evaluation pipeline. The numpy-only implementation means offline evaluation, unit tests, and CI all run without heavy dependencies.
+
+_Regulatory positioning_. Rung 2 is where the recommender can justify treating / not-treating an individual customer based on the estimated heterogeneous effect, which AI Basic Act §35 (FRIA) and PIPA §37의2 (automated decision rights) both scrutinise. The uplift estimator output is audit-logged as a regulatory artifact via the SageMaker compliance tracker when the gate is enabled, so the rationale for choosing to target a given segment is reproducible.
+
+_LLM hardening — AI security checker_ (`core/security/ai_security_checker.py`). The existing `PromptSanitizer` handles sensitivity classification, PII scrubbing, and VPC routing; the security checker adds two complementary layers. On the request side, fourteen default prompt-injection / jailbreak patterns (``ignore previous instructions``, ``DAN mode``, ``reveal system prompt``, tool-call breakouts, base64-encoded payloads) are scanned before the prompt is sent to any LLM provider. On the response side, eight output-leak patterns catch system-prompt echoes, meta-instruction leaks, role-breakout phrasing, and Korean-resident-registration / card-number PII. Findings return a `SecurityVerdict` with per-finding severity; `wrap_provider` produces a drop-in replacement for any LLM provider that rewrites a blocked exchange to a safe refusal (configurable callbacks).
+
+Combined with the Sprint 2 L2a Safety Gate (`core/recommendation/reason/l2a_safety_gate.py`), the LLM path now has four independent hardening layers --- sensitivity-based routing, rule-based safety gate, AI security checker (prompt + output), and the LLM generation marker --- each of which can veto independently and each of which is config-driven so a security ops team can extend the rule catalogue without a code change.
+
+`tests/test_phase3_could.py` (39 cases) covers T-Learner / X-Learner CATE recovery, qini plus top-K-percent uplift metrics on synthetic uplift data, every default security pattern, the provider-wrapping end-to-end flow, and custom refusal callback injection. Together with the Phase 1 and Phase 2 suites the AWS-side regulatory, learning, and security stack is exercised by _447 tests (447 passing)_.
+
 == Korean AI Basic Act
 
 Korea's AI Basic Act (passed by the National Assembly December 2024, promulgated January 2025, effective January 22, 2026) @koreaaiact2024 introduces a domestic

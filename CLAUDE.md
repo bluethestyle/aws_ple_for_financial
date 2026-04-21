@@ -100,6 +100,15 @@
 - **CompositeProvider 는 earliest-wins 순서**다. 제공 순서를 바꾸면 override 의미가 바뀌므로, pipeline 설정을 변경할 때는 주석으로 이유를 남긴다. 실패한 provider 는 자동으로 skip 되어 다음 provider 가 평가된다.
 - **Gate enabled=true 전환 전 provider 필수**. `compliance.promotion_gate.enabled=true` 상태에서 provider 가 없으면 default 0.5 로 모든 gate 가 LIMITED 로 수렴해 실질 게이트 역할을 못한다 (§1.12 재확인). 배포 체크리스트에 반드시 포함.
 
+### 1.17 Phase 3 Could 정책 (C1 / C4, 2026-04-21)
+- **Uplift learner 는 numpy-only fallback 포함**한다 (`core/evaluation/uplift_learner.py`). sklearn / LightGBM 이 없어도 CI / 단위 테스트가 돌도록 Ridge-like 회귀를 기본 factory 로 제공. 실 학습에는 `regressor_factory=lambda: LGBMRegressor(...)` 로 교체.
+- **X-Learner 는 propensity 주입 가능**하다. 별도 propensity estimator 를 외부에서 학습해 재사용할 때 `fit(X, T, Y, propensity=...)` 로 전달. 미지정 시 내부 logistic regressor 자동 fit.
+- **Qini / uplift@K 는 표준 평가 지표**다. 새 uplift 방법을 비교할 때는 반드시 이 두 지표를 `evaluate_uplift()` 로 함께 리포트해야 한다 (단일 지표만으로는 ranking quality 왜곡).
+- **AISecurityChecker 는 prompt_sanitizer 와 병행**한다. `PromptSanitizer` = 민감도 분류 + PII scrubbing + VPC 라우팅, `AISecurityChecker` = prompt injection + output leak 탐지. 두 layer 를 모두 통과해야 LLM 호출이 발생한다. 순서는 `sanitize → security_check → generate → output_security_check` 고정.
+- **Security finding 은 swallow 금지**. `SecurityVerdict.should_block=True` 인 경우 반드시 safe refusal 반환. 로그 경고만 남기고 통과시키지 말 것 (감사 사고).
+- **Rule 카탈로그 는 config-driven 확장**한다. 새 공격 패턴은 `pipeline.yaml::compliance.ai_security.prompt_injection_patterns` / `output_leak_patterns` 에 추가. 코드 패치 없이 운영팀이 바로 반영 가능해야 함.
+- **`wrap_provider` 는 drop-in replacement**. 기존 `provider.generate(prompt)` 경로를 그대로 쓰면서 안전성만 강화된다. `on_prompt_block` / `on_output_block` 콜백으로 도메인 별 refusal 문구 커스터마이즈 가능.
+
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:
   1. **Phase 0 출력 검증**: feature_stats.json에서 zero-variance 컬럼, NaN 비율, 생성된 피처 컬럼 수 확인
