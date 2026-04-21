@@ -64,6 +64,11 @@ from core.compliance.rights import (
     ProfilingWorkflow,
     build_explanation_sla_tracker,
 )
+from core.compliance.audit_sql import (
+    AuditSQLConfig,
+    ComplianceSQLHelper,
+    build_compliance_sql_helper,
+)
 from core.compliance.sagemaker_compliance_tracker import (
     InMemoryTrackerBackend,
     SageMakerComplianceTracker,
@@ -168,4 +173,8 @@ __all__ = [
     "SageMakerTrackerBackend",
     "SageMakerComplianceTracker",
     "build_sagemaker_compliance_tracker",
+    # Sprint 2 S6: DuckDB-over-Parquet compliance SQL helper
+    "AuditSQLConfig",
+    "ComplianceSQLHelper",
+    "build_compliance_sql_helper",
 ]

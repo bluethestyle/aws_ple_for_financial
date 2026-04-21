@@ -778,6 +778,21 @@ compliance:
     artifact_s3_prefix: s3://aiops-ple-financial/compliance/artifacts
     display_name_tag: compliance_type
 
+  # Sprint 2 S6: DuckDB-over-Parquet compliance SQL (Athena-free).
+  # Paths are registered as DuckDB views; queries run on demand. For
+  # s3:// URIs DuckDB's httpfs extension is auto-installed. Preserves
+  # the on-premises DuckDB experience without adding Athena / Redshift
+  # Spectrum costs.
+  audit_sql:
+    enabled: true
+    default_since_days: 30
+    install_httpfs: true
+    paths:
+      opt_out: s3://aiops-ple-financial/compliance/events/dt=*/events_*.parquet
+      consent: s3://aiops-ple-financial/compliance/events/dt=*/events_*.parquet
+      events: s3://aiops-ple-financial/compliance/events/dt=*/events_*.parquet
+      promotion_gate: s3://aiops-ple-financial/compliance/artifacts/promotion_gate/*.parquet
+
 # ---------------------------------------------------------------------------
 # Rule Engine — Layer 3 rule-based fallback (ML-free)
 # ---------------------------------------------------------------------------
