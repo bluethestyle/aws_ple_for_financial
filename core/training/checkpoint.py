@@ -89,7 +89,7 @@ class CheckpointManager:
         s3_bucket: str = "",
         s3_prefix: str = "",
         max_keep: int = 3,
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
     ):
         self.local_dir = Path(local_dir)
         self.local_dir.mkdir(parents=True, exist_ok=True)

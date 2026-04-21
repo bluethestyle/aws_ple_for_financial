@@ -99,7 +99,7 @@ class PublicDisclosureGenerator:
             try:
                 import boto3
 
-                region = os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2")
+                region = os.environ.get("AWS_DEFAULT_REGION")
                 self._s3_client = boto3.client("s3", region_name=region)
             except Exception as exc:
                 logger.warning("S3 client init failed (disclosure): %s", exc)
@@ -504,7 +504,7 @@ class PublicDisclosureGenerator:
             "consent_management": cfg.get(
                 "consent_management", "DynamoDB-backed consent store with full audit trail"
             ),
-            "data_location": cfg.get("data_location", "ap-northeast-2 (Seoul)"),
+            "data_location": cfg.get("data_location", "unspecified"),
             "cross_border_transfer": cfg.get("cross_border_transfer", False),
         }
 

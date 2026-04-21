@@ -453,7 +453,7 @@ def query_cloudwatch_metrics(namespace: str = "PLE/ABTest", metric_names: Option
     """Query CloudWatch metrics — A/B test, latency (AWS only)."""
     try:
         import boto3
-        client = boto3.client("cloudwatch", region_name=kwargs.get("region", "ap-northeast-2"))
+        client = boto3.client("cloudwatch", region_name=kwargs.get("region"))
         # Simplified — return latest datapoints for requested metrics
         results = {}
         for metric in (metric_names or ["CTR", "Latency_p95"]):

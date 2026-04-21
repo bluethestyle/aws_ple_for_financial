@@ -188,7 +188,7 @@ class AsyncReasonOrchestrator:
 
         # SQS configuration (lazy init)
         self._sqs_queue_url: str = ao_cfg.get("sqs_queue_url", "")
-        self._sqs_region: str = ao_cfg.get("sqs_region", "ap-northeast-2")
+        self._sqs_region: Optional[str] = ao_cfg.get("sqs_region")
         self._sqs_client = None
         self._sqs_available: Optional[bool] = None  # Tri-state: None=unknown
 

@@ -91,7 +91,7 @@ class AuditPackageBuilder:
             try:
                 import boto3
 
-                region = os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2")
+                region = os.environ.get("AWS_DEFAULT_REGION")
                 self._s3_client = boto3.client("s3", region_name=region)
             except Exception as exc:
                 logger.warning("S3 client init failed (audit package): %s", exc)
@@ -458,7 +458,7 @@ class AuditPackageBuilder:
             "model_versions": cfg.get("model_versions", {}),
             "config_hashes": cfg.get("config_hashes", {}),
             "deployment_info": {
-                "region": cfg.get("region", "ap-northeast-2"),
+                "region": cfg.get("region", "unspecified"),
                 "environment": cfg.get("environment", "production"),
                 "instance_type": cfg.get("instance_type", "N/A"),
                 "last_deploy_date": cfg.get("last_deploy_date", "N/A"),

@@ -179,9 +179,14 @@ class FeatureGroupSpec:
 
 @dataclass
 class AWSSpec:
-    """AWS / SageMaker deployment configuration."""
+    """AWS / SageMaker deployment configuration.
 
-    region: str = "ap-northeast-2"
+    ``region`` has no hardcoded default per CLAUDE.md §1.1. Callers must
+    supply it via ``pipeline.yaml::aws.region``; leaving it unset lets
+    boto3 resolve from env / credentials.
+    """
+
+    region: Optional[str] = None
     s3_bucket: str = ""
     instance_type: str = "ml.g4dn.xlarge"
     cpu_instance_type: str = "ml.m5.2xlarge"

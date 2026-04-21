@@ -120,7 +120,7 @@ class NotificationService:
             import boto3
             self._ses_client = boto3.client(
                 "ses",
-                region_name=self._ses_config.get("region", "ap-northeast-2"),
+                region_name=self._ses_config.get("region"),
             )
         return self._ses_client
 
@@ -130,7 +130,7 @@ class NotificationService:
         Reads ``ses`` config keys:
             from_address: verified sender address
             recipients:   list of destination addresses
-            region:       AWS region (default ap-northeast-2)
+            region:       AWS region (falls back to boto3 env / credentials)
         """
         from_address = self._ses_config.get("from_address")
         recipients: List[str] = self._ses_config.get("recipients", [])
@@ -184,7 +184,7 @@ class NotificationService:
             import boto3
             client = boto3.client(
                 "sns",
-                region_name=self._sns_config.get("region", "ap-northeast-2"),
+                region_name=self._sns_config.get("region"),
             )
             message = json.dumps(body, ensure_ascii=False, indent=2, default=str)
             client.publish(
