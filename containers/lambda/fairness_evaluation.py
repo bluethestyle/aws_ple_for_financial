@@ -50,13 +50,22 @@ logger.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONFIG = {
-    "region": os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"),
+    # region: inherited from AWS_DEFAULT_REGION / AWS_REGION (boto3 resolves
+    # from env, shared credentials, or instance metadata when None).
+    "region": os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION"),
     "prediction_log_table": os.environ.get("PREDICTION_LOG_TABLE", "ple-prediction-log"),
     "result_bucket": os.environ.get("FAIRNESS_RESULT_BUCKET", "ple-monitoring"),
     "result_prefix": os.environ.get("FAIRNESS_RESULT_PREFIX", "fairness-reports"),
     "audit_table_prefix": os.environ.get("AUDIT_TABLE_PREFIX", "ple-audit"),
     "lookback_days": int(os.environ.get("LOOKBACK_DAYS", "7")),
     "cloudwatch_namespace": os.environ.get("CW_NAMESPACE", "PLE/Fairness"),
+    # S7 archive path: every evaluate_fairness result is persisted here
+    # for the PromotionGate MetadataAggregator + governance reporter.
+    # Falls through to pipeline.yaml::monitoring.fairness.archive_parquet_path
+    # when the monitor is constructed with that config attached; the env
+    # var here is for Lambda-only deployments where pipeline.yaml is not
+    # mounted.
+    "archive_parquet_path": os.environ.get("FAIRNESS_ARCHIVE_PARQUET_PATH"),
     # Protected attribute group pairs for evaluation
     # Each attribute maps to a list of (privileged, unprivileged) tuples
     "group_pairs_by_attribute": {
@@ -126,10 +135,16 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # ------------------------------------------------------------------
     from core.monitoring.fairness_monitor import FairnessMonitor
 
+    monitor_config: Dict[str, Any] = {}
+    if cfg.get("archive_parquet_path"):
+        monitor_config["monitoring"] = {
+            "fairness": {"archive_parquet_path": cfg["archive_parquet_path"]}
+        }
     monitor = FairnessMonitor(
         thresholds=cfg.get("thresholds") or None,
         protected_attributes=list(cfg["group_pairs_by_attribute"].keys()),
         auto_incident=False,  # We handle incidents explicitly below
+        config=monitor_config or None,
     )
 
     all_results: Dict[str, Any] = {}
@@ -146,6 +161,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         result_dict = monitor.to_dict(metrics)
         all_results[attribute] = result_dict
+
+        # Persist to fairness archive (S7). When archive_parquet_path is
+        # configured, every measurement flushes to Parquet for the
+        # PromotionGate MetadataAggregator + governance reporter to read.
+        monitor.archive_metrics(
+            metrics,
+            recorded_at=now.isoformat(),
+            context={"lookback_days": lookback_days, "source": "lambda"},
+        )
 
         if not metrics.is_fair:
             total_violations += len(metrics.violations)

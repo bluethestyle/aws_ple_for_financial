@@ -356,6 +356,15 @@ monitoring:
       spd_max: 0.1
       eod_max: 0.1
     auto_incident: true
+    # Sprint 2 S7: persist every archive_metrics() call here.
+    # Both the governance reporter and the PromotionGate MetadataAggregator
+    # (via fairness_archive_source) read this path — it survives a fresh
+    # submit_pipeline process start, unlike the in-memory history.
+    # When null, the fairness dimension in PromotionGate falls back to the
+    # heuristic 0.5 default, which collapses the gate to conservative
+    # LIMITED. Keep this wired in every environment that ships
+    # compliance.promotion_gate.enabled=true.
+    archive_parquet_path: s3://aiops-ple-financial/compliance/fairness/metrics.parquet
 
   drift:
     psi_warning: 0.1
