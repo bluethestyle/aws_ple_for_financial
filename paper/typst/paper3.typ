@@ -1898,7 +1898,7 @@ honest closed branch of the target-design search space.
 
 == Practical Guidelines Summary
 
-We distill the thirteen findings into ten guidelines for practitioners,
+We distill the thirteen findings into eleven guidelines for practitioners,
 grouped by the three themes.
 
 === Loss Dynamics and Gating (Findings 1--6)

@@ -397,7 +397,7 @@ SR 11-7 모델 리스크 관리 @fed2011sr117 의 기본 원칙이다.
 
 주요 통합 특성:
 - `FallbackRouter`는 가용성과 지표 임계값에 따라 각 태스크를 적절한 계층으로 자동 라우팅한다. 호출자는 어느 계층이 예측을 서빙했는지 알 수 없다.
-- 확률이 중요한 태스크(`churn_signal`, `product_stability`, `cross_sell_count`)에는 1/2계층 출력에 Platt 스케일링 기반 보정 확률을 적용한다.
+- 확률이 중요한 이진 분류 태스크의 1/2계층 출력에 Platt 스케일링 기반 보정 확률을 적용한다. 대상 태스크 목록은 데이터셋별로 `distillation.calibration.tasks` 에서 선언하며, Santander 벤치마크에서는 `churn_signal` 을 표준 예시로 설정한다. 점수 순서만 필요한 랭킹 계열 이진 태스크와 3계층(룰 엔진)으로 라우팅되는 회귀 태스크에는 Platt 스케일링을 적용하지 않는다.
 - 3계층의 경우, 룰 발동에서 나온 `contributing_features`가 피처 해석 레지스트리를 통해 사유 파이프라인에 직접 라우팅된다. 이를 통해 모델이 없는 상황에서도 해석 가능한 추천사유 생성이 가능하다.
 - 세 계층 모두 동일한 응답 스키마(예측값, 확률, 기여 피처, 추천사유 텍스트, 감사 토큰)를 생성하여, 어느 계층이 서빙했는지에 무관하게 API 계약이 호출자에게 투명하다.
 
@@ -1226,6 +1226,120 @@ AI 기반 교차판매(cross-sell) 추천은 고영향에 해당할 수 있다.
   },
   caption: [모니터링 및 거버넌스 아키텍처.\ 모니터링 컴포넌트 → 운영/감사 에이전트 → 합의 → 거버넌스 리포트 → 담당자 검토.],
 ) <fig:monitoring>
+
+=== 확장 규제 모듈 (v2)
+
+본 논문의 v2 개정에서는 통합된 `ComplianceStore` / `SLATracker` foundation 위에 구축된 확장 규제 모듈 세트를 추가한다. 각 모듈은 #text(stroke: 0pt)[플러그형]이다: `RecommendationService` 는 이들을 선택적 생성자 주입(optional constructor injection)으로 받으며, 주입이 없으면 v1 이전과 동일하게 동작한다. 따라서 핫패스 코드를 건드리지 않고도 환경별로 확장 규제 경로를 활성화할 수 있다.
+
+- *사용자 권리 관리자* (`core/compliance/rights/`). `OptOutManager`, `ProfilingWorkflow`, `ExplanationSLATracker` 3-클래스 조합으로 한국 개인정보보호법 §37의2(opt-out + 설명권), 신용정보법 §36의2(프로파일링 접근 / 정정 / 삭제), 그리고 개인정보 보호법 시행령 §44의2~4 의 10일 응답 기한을 커버한다. 모든 요청은 자동 SLA 마감이 설정된 `ComplianceRequest` 로 영속화되며, 마감을 초과하면 `SLA_BREACH` 이벤트가 발행된다.
+
+- *한국 AI기본법 FRIA* (`core/compliance/fria_assessment.py::KoreanFRIAAssessor`). AI기본법 시행령 §27 에 열거된 7차원 평가(데이터 민감도, 자동화 수준, 영향 범위, 모델 복잡도, 외부 의존성, 공정성 리스크, 설명가능성 갭)를 구현하며 §35③ 에 따라 5년 보관 기간을 강제한다. 감사 리포트에서 법적 근거를 분리 유지하기 위해 EU AI Act 제9조 평가기와 _별도 클래스_ 로 관리한다.
+
+- *금감원 AI RMF 분류기* (`core/compliance/ai_risk_classifier.py`). 6차원 가중 리스크 등급(high / medium / low)을 계산하며, 연속된 모델 버전 간 등급 상승을 명시적으로 탐지한다. 'high' 로 상승한 경우 승격 게이트를 통해 추가 운영자 승인이 요구된다.
+
+- *36항목 규제 레지스트리* (`core/compliance/compliance_registry.py`). A-group (구현 완료 18개) 과 GAP-group (식별된 18개 갭, 각 항목이 구체적 Sprint 산출물에 연결됨). 항목 체크는 선언형(`module_exists` / `file_exists` / `config_key` / `custom_check`)이므로 분기별 규제 리포트를 현재 코드 상태에서 자동 재생성할 수 있다.
+
+- *승격 게이트* (`core/evaluation/promotion_gate.py`). FRIA + AI Risk 평가를 `ModelCompetition` 의 사후 체크로 감싸며, CLAUDE.md §1.10 의 단일 승격 진입점 원칙에 따라 `scripts/submit_pipeline.py::_decide_promotion` 에서 호출된다. UNACCEPTABLE FRIA 등급 또는 'high' 등급 상승은 승격을 차단하고 `GateVerdict` 가 감사 로그에 기록된다. 게이트는 세 개의 협력 서브시스템으로 구성된다:
+  - *차원 점수 제공자* (`core/compliance/dimension_scores.py`). earliest-wins 복합 체인: `ManualScoreProvider`(모델 버전 단위 운영자 override), `MetricsDerivedScoreProvider`(7개 `HEURISTIC_RULES` 가 메타데이터 경로 #sym.arrow 차원 점수를 `identity` / `one_minus` / `log10_ratio` 변환으로 매핑, $[0, 1]$ 로 클리핑), 그리고 기본 0.5 fallback. 각 룰은 메타데이터 경로, 변환, fallback 발동 여부를 기록하여 감사 가능한 유도 트레일을 남긴다.
+  - *MetadataAggregator* (`core/compliance/metadata_aggregator.py`). 메트릭 기반 제공자에 공급하는 6개 내장 소스: (i) 피처 lineage, (ii) 공정성 아카이브, (iii) 휴먼 리뷰 큐 깊이, (iv) 모델 레지스트리, (v) LLM 설정 슬롯, (vi) 정적 override. 이 중 두 소스(lineage YAML, 공정성 Parquet)는 _archive-backed_ 라 `submit_pipeline` 프로세스가 새로 시작되어도 메타데이터가 생존한다(빈 런타임 인스턴스에 의존하지 않음). 결과는 TTL 캐시(기본 300초)로 단일 승격 결정 내 반복 조회를 상쇄한다.
+  - *감사 + tracker 통합*. `GateVerdict.details` 는 메타데이터 스냅샷과 차원별 유도 트레일(경로, 원시값, 변환, fallback 사용 여부, 최종 점수)을 함께 싣는다. `AuditLogger.log_model_promotion(gate_details=...)` 이 이 페이로드를 HMAC 서명 + 해시 체인 레코드에 임베드하며, 동시에 `_run_promotion_gate` 가 non-skip verdict 를 `SageMakerComplianceTracker` 에 `promotion_gate_verdict` artifact 로 기록한다. tracker 실패는 swallow 된다 --- 컴플라이언스 추적 장애가 승격 결정을 절대 차단하지 않으며, 누락된 항목은 감사 로그만으로도 탐지 가능하다.
+
+  게이트는 `pipeline.yaml` 에서 `compliance.promotion_gate.enabled: true` 로 배포된다. 제공자 체인이 기본 와이어링되었기 때문이다. 이전 릴리스는 모든 차원이 0.5 fallback 으로 수렴하여 보수적 LIMITED 로 collapse 하는 상황을 피하기 위해 비활성 상태로 배포했었다. 환경별로 여전히 비활성화는 가능하되 제공자는 제거하지 않는다.
+
+- *휴먼 리뷰 큐 + LLM 마커* (`core/serving/review/human_review_queue.py`, `core/recommendation/reason/marker_applier.py`). AI기본법 §34 인간 감독을 위한 3-tier 검토 큐(5% 사후 샘플 / 100% 필수 에이전트 / 100% 휴먼 fallback). `MarkerApplier` 는 §31 에서 의무화한 AI 생성 표지를 모든 L2a LLM 생성 추천사유 문자열에 멱등적으로 추가한다.
+
+- *동적 item universe 로더* (`core/recommendation/universe/dynamic_loader.py`). DuckDB 를 통해 Parquet 에서 후보 캠페인 + 상품 집합을 읽으며(로컬 및 `s3://` 경로 지원), 설정된 캠페인 상태 집합(`approved` / `running`)으로 필터링한다. 취소되거나 미승인된 캠페인에 대한 추천 서빙을 방지한다.
+
+- *감사 아카이브 확장* (`core/recommendation/audit_archiver.py`). 5-에이전트 아키텍처의 감사 요구사항을 지원하기 위해 5개 컬럼(`thinking_trace`, `hallucination_flags`, `tools_used`, `critique_verdict`, `agent_tier`)을 추가하며 v1 Parquet 파일과의 하위 호환성을 유지한다.
+
+모든 확장 모듈은 Sprint 0 foundation 프리미티브(`ComplianceRequest`, `ComplianceEvent`, `SLATracker`)를 공유하므로, `ComplianceStore` 에 대한 감사 쿼리 하나로 임의의 사용자, 모델 버전, 또는 요청 유형의 전체 규제 이력을 단일 이벤트 스트림에서 재구성할 수 있다.
+
+=== Phase 2 Hardening Layer (v2)
+
+온프레미스 참조 시스템의 운영 성숙도에 맞추기 위해 9개의 추가 안전장치를 핵심 규제 모듈 위에 적층하였다. 각 항목은 특정한 감독 / 견고성 / 유효 도전(effective challenge) 요구사항을 다룬다.
+
+- *Human-Fallback Layer-4 라우팅* (`core/recommendation/fallback_router.py`). 기존 3계층 폴백 라우터(증류 LGBM #sym.arrow 직접 LGBM #sym.arrow 룰 엔진)에 네 번째 계층이 명시적으로 추가되어, 희망 없는 케이스를 조용히 열화시키는 대신 휴먼 리뷰 큐로 라우팅한다. `serving.review.tier_3_human_fallback` 로 활성화되며 `route_all()` 의 계층별 카운트로 노출된다.
+
+- *L2a Safety Gate 3-layer* (`core/recommendation/reason/l2a_safety_gate.py`). 모든 LLM 생성 L2a 출력은 이제 세 개의 독립적 검사를 통과한다: (1) 구조적 파싱(길이, 문장 수), (2) 룰 기반 스크리닝(금지 구문, 정규식, 한국 주민등록번호 + 카드 PII 패턴), (3) 선택적 LLM 품질 점수. 어느 한 계층의 거부권도 L1 템플릿 출력으로 폴백을 강제하며, `SafetyVerdict` 가 어느 계층에서 실패했는지를 사후 분석용으로 기록한다.
+
+- *금소법 §17 suitability filter* (`core/recommendation/constraint_engine.py::SuitabilityFilter`). 제약 엔진 필터로 등록되어 기존의 fatigue / eligibility / owned-product 필터와 조합된다. risk_tolerance #sym.gt.eq risk_level 을 강제하며, 고령 고객(#sym.gt.eq 65세, max risk 2) 과 저소득 고객(연 #sym.lt 3천만원, max risk 3) 에 대한 hard cap 을 추가로 적용한다.
+
+- *Counterfactual Champion-Challenger* (`core/evaluation/counterfactual_cc.py`). paired-bootstrap 신뢰구간을 갖는 off-policy IPS 와 SNIPS 추정기. EU AI Act 제15조(정확성) 와 SR 11-7 effective challenge 를 지원하며, 로그된 관찰 데이터상에서 챌린저가 챔피언보다 나은 결과를 냈을 것이라는 증거를 제공한다.
+
+- *auto-promote=False 강제* (`core/evaluation/model_competition.py`). 기본 `CompetitionConfig` 는 레거시 테스트 호환성을 위해 여전히 auto-promote 이지만, 프로덕션은 `pipeline.yaml` 의 `serving.competition.auto_promote: false` 로 운용한다. 이 posture 에서는 모든 메트릭 임계값을 통과한 챌린저도 승격되지 _않는다_: 운영자가 `--force-promote` 로 재실행해야 하며, EU AI Act 제14조(인간 감독) 를 만족하고 감사 로그에 운영자 서명을 명시적으로 남긴다.
+
+- *Annex IV 기술문서 매퍼* (`core/compliance/annex_iv_mapper.py`). 12개 Annex IV 섹션 각각에 대해 증거 소스(Python 모듈, 문서, config 키) 목록을 resolve 하고 전체 / 부분 / 누락 증거 상태를 보고하는 전용 매퍼. coverage rate 가 자동 추적되므로 매 적합성 평가 전에 기술 파일을 재생성할 수 있다.
+
+- *공정성 메트릭 아카이브* (`core/monitoring/fairness_monitor.py`). 모니터는 이제 모든 측정값을 in-memory 히스토리에 추가하며, `monitoring.fairness.archive_parquet_path` 가 설정되면 거버넌스 리포터가 직접 쿼리할 수 있는 Parquet 파일에도 추가한다. `get_archive(attribute, limit)` 가 재계산 없이 drill-down 대시보드를 지원한다.
+
+- *드리프트 영속화 + markdown 리포트* (`core/monitoring/drift_detector.py`). 각 `detect_drift()` 호출이 선택적으로 피처당 한 행을 Parquet 아카이브에 기록하여 PSI 점수, 심각도 라벨, 평가 시점의 임계값을 보존한다. 동반 메서드 `generate_markdown_report()` 는 주간 거버넌스 번들에 적합한 인간 가독 요약을 생성한다.
+
+- *Lineage 카탈로그 확장* (`core/monitoring/lineage_tracker.py`). Lineage 추적기가 런타임 등록(`register_feature_mapping`), YAML 정의 카탈로그 로드(`load_mapping_from_yaml`), 커버리지 리포트(`coverage_report` --- 현재 피처 집합 중 소스 테이블 매핑을 가진 비율) 를 지원한다. 피처 개수가 증가할 때 AI기본법 §34(학습 데이터 출처) 요구사항을 충족하기 위해 필요하다.
+
+`test_phase2_should.py` 스위트(36 tests, all passing) 가 9개 모듈을 모두 실행하며, `pipeline.yaml` 이 `auto_promote: false` 를 강제하는지 확인한다.
+
+=== Learning-Stack & Interpretation Layer (v2)
+
+4개의 추가 모듈이 hardening layer 를 학습 스택(피처 선택, evidential head, temporal ensemble) 및 추천사유 생성 컨텍스트로 확장하여, 실데이터 안전성과 다학제 해석에 관한 Paper 2 v2 의 잔여 근거 갭을 닫는다.
+
+- *IG 3-stage 피처 선택* (`core/training/feature_selector.py::select`). 최종 `select()` 호출은 이제 Stage 1 (IG 누적 중요도), Stage 2 (LGBM-gain pruning), Stage 3 (필수 피처 보장 — Stage 1-2 가 드롭했더라도 도메인 필수 피처는 selection 에 복원) 을 실행한다. Stage 3 는 현재 피처 스키마에 존재하지 않는 필수 피처에 대해 경고를 로그하며, 복원된 피처를 `FeatureSelectionResult.mandatory_included` 에 기록한다.
+
+- *Evidential `valid_mask` 결측 데이터 가드* (`core/model/layers/evidential.py`). Evidential head 는 이제 명시적 `valid_mask: Tensor[B]` 를 받으며, 부재 시 `torch.isfinite` 를 통해 non-finite 행을 자동 탐지한다. 유효하지 않은 행은 task-type 별 중립 예측값(binary 0.5, multiclass 1/K, regression 0.0) 과 canonical max-uncertainty 값을 받는다. `NaN` / `Inf` gradient 는 `nan_to_num` 으로 scrub 한 복사본에서 linear layer 를 실행하여 방지한다. 유효 마스크는 evidence-info dict 로 반환되어 downstream loss 가 유효하지 않은 행을 제외할 수 있다.
+
+- *HMM-smoothed ensemble 게이팅* (`core/model/experts/temporal.py::set_hmm_routing`). `TemporalEnsembleExpert` 는 런타임 `set_hmm_routing(enabled, smoothing, transition_prior)` 메서드와 이에 상응하는 `hmm_routing` config 블록을 노출한다. 활성화 시 학습된 게이트가 생성한 게이팅 가중치에 row-stochastic 전이 행렬을 post-multiply 하고 재정규화하여, 1-step HMM forward smoothing 으로 작동해 게이팅 결정의 per-sample variance 를 감소시킨다. 전이 행렬은 non-persistent buffer 로 보유되어 `.to(device)` 에는 따라가지만 학습되지 않는다.
+
+- *다학제 interpreter hook* (`core/recommendation/reason/context_assembler.py`). `ContextAssembler` 가 선택적 `multidisciplinary_interpreter` 인자를 받는다 --- `interpret(context_dict) -> dict` 메서드를 가진 객체이거나 동일 시그니처의 plain callable. 각 `assemble()` 호출이 interpreter 를 호출하고 출력을 `AssembledContext.multidisciplinary_insights` 에 부착한다. 실패는 swallow 되어 버그가 있는 interpreter 가 추천사유 생성을 깨트리지 못한다; 부착된 interpreter 는 `attach_interpreter(...)` 로 런타임 교체 가능하다.
+
+4개 모듈 모두 하위 호환이다: 신규 인자를 넘기지 않는 레거시 호출자는 v2 이전 동작을 그대로 보존한다. `tests/test_phase2_remaining.py` (23 tests, all passing) 가 각 안전장치를 레거시 / 확장 코드 경로 모두로 실행한다.
+
+=== SageMaker-Native 규제 추적 (v2)
+
+온프레미스 참조 시스템은 실험 추적에 MLflow 를, 데이터셋 버전 관리에 DVC 를 사용하며, 이는 de-facto 오픈소스 조합이다. AWS 는 MLflow + DVC 가 담당하던 모든 역할에 대해 관리형 동등물을 제공하므로, 오픈소스 스택을 클라우드로 이식하는 대신 네이티브 서비스를 규제 인식(regulation-aware) 추적기 뒤에 래핑한다:
+
+- *MLflow tracking* #sym.arrow *SageMaker Experiments* (Trials / TrialComponents)
+- *MLflow model registry* #sym.arrow *SageMaker Model Registry* (이미 `core/serving/model_registry.py` 에서 처리)
+- *MLflow lineage* #sym.arrow *SageMaker Lineage* + 피처-테이블 `DataLineageTracker`
+- *DVC 데이터셋 버전 관리* #sym.arrow *S3 versioning* (추적기가 버킷을 가리키도록 하는 `artifact_s3_prefix` config 키 포함)
+- *Managed MLflow (2024)* #sym.arrow *SageMaker Managed MLflow* (`compliance.tracking` 의 backend 를 `sagemaker` 로 전환하면 자동 picked up)
+
+`core/compliance/sagemaker_compliance_tracker.py` 가 이 래퍼를 구현한다:
+
+- Backend 추상화(`ComplianceTrackerBackend`) 에 두 개의 구체 구현: 테스트 및 로컬 개발용 `InMemoryTrackerBackend`, 프로덕션용 `SageMakerTrackerBackend`. 둘 다 동일한 `put_artifact` / `list_artifacts` 표면을 노출하므로 호출자는 backend-agnostic 이다.
+- 5개 artifact 유형이 Sprint 0~4 규제 표면을 커버한다: `fria_assessment`, `ai_risk_assessment`, `compliance_registry_sweep`, `promotion_gate_verdict`, `custom`. 각 유형은 도메인 데이터클래스에서 관련 파라미터와 메트릭을 추출하고 artifact-type + grade / risk-category 태그를 부착하는 전용 `log_*` helper 로 매핑되므로, SageMaker 콘솔(및 Athena export) 에서 규제 관심사별 필터링이 가능하다.
+- TrialComponent 이름은 SageMaker 의 120자 제한으로 cap 된다; 실패한 boto3 호출은 로그되고 best-effort 로 처리되어 추적 장애가 규제 결정을 절대 차단하지 않는다.
+- Backend 는 `pipeline.yaml::compliance.tracking.backend` 로 선택되며, 기본값은 `in_memory` 로 배포되어 단위 테스트와 로컬 개발이 hermetic 을 유지하고, 프로덕션 IAM 이 갖춰지면 운영자가 `sagemaker` 로 전환한다.
+
+`tests/test_sagemaker_compliance_tracker.py` (24 tests) 가 양쪽 backend 를 합성 boto3 클라이언트 stub 으로 실행하여 각 `create_experiment` / `create_trial_component` / `list_trial_components` 호출의 정확한 요청 형태(필수 필드, artifact-type 태그 존재, risk-category 태그 존재, 120자 이름 cap, `Completed` 상태 등) 를 실제 AWS 호출 없이 단언한다.
+
+이는 MLflow / DVC 스택에 의존하지 않고 *규제 artifact 버전 관리* 에 관한 Paper 2 v2 근거 갭을 닫으며, `docs/pipeline_comparison_matrix.md` 에 문서화된 #sym.quote.l.double 온프렘의 클라우드 확장, 별개 시스템이 아님 #sym.quote.r.double 포지셔닝에 AWS 배포를 정렬시킨다.
+
+=== DuckDB-over-Parquet 규제 SQL (v2)
+
+온프레미스 참조 시스템은 Parquet 감사 아카이브에 대한 SQL 엔진으로 DuckDB 를 사용한다; AWS 의 유료 동등물(Athena, Redshift Spectrum, S3 Select) 은 관찰된 쿼리 볼륨이 정당화하지 못하는 인프라 비용과 운영 오버헤드를 발생시킨다. 대신 `core/compliance/audit_sql.py::ComplianceSQLHelper` 가 DuckDB 의 httpfs 확장을 래핑하여, 온프렘 배포가 이미 사용 중인 동일한 SQL 로 `s3://` 감사 아카이브를 쿼리할 수 있게 한다 --- 추가 인프라 비용 0.
+
+- `register_view(name, parquet_uri)` 가 Parquet glob / 디렉토리 / `s3://` URI 를 명명된 DuckDB view 로 부착한다. View 는 재생성 가능하므로 동일 prefix 에 append 되는 새 배치는 on-demand 로 picked up 된다.
+- `query(sql, params)` 가 파라미터화된 SQL 을 실행하고 row dict 를 반환한다.
+- 규제기관 지향 편의 메서드 4개 --- `recent_opt_outs`, `consent_changes_for_user`, `sla_breaches`, `promotion_gate_history` --- 가 설정된 30일 윈도우를 기본값으로 하는 `since` 인자를 받으며, 전형적 분기별 감사 요청 형태를 커버한다.
+- `counts_by_column(view, column)` 이 대시보드용 `{value: count}` 요약을 생성한다.
+- `pipeline.yaml::compliance.audit_sql.paths` 가 생성 시점에 view 를 자동 등록하므로 helper 는 한 줄로 사용 가능하다.
+
+View 는 `s3://` 와 로컬 경로의 임의 조합에 대해 등록되므로, `InMemoryComplianceStore` 기반 테스트 fixture 와 프로덕션 `S3ParquetComplianceStore` export 에 대해 동일한 SQL 을 실행하는 감사자는 동일한 결과를 얻는다. `tests/test_compliance_sql.py` (22 cases) 가 config 표면, view 생명주기, 파라미터화된 쿼리, 각 편의 메서드, 그리고 `opt_out` 과 `consent` view 간 cross-view JOIN 을 검증하여 추가 인프라 없이 다중 테이블 분석 쿼리가 작동함을 확인한다.
+
+`docs/pipeline_comparison_matrix.md` 가 검토된 다른 유료 대안들과 함께 설계 선택의 근거를 기록한다.
+
+=== Pearl 사다리 완성 & LLM Hardening (v2)
+
+Paper 2 v1 은 Pearl 의 인과 사다리를 두 rung 에서 커버한다고 주장했다 --- Rung 1(관찰) 은 Causal Explainability Head 로, Rung 3(반사실) 은 CCP + Counterfactual Champion-Challenger 로. v2 는 uplift-learner 모듈로 Rung 2(개입) 갭을 채우고, 기존 `PromptSanitizer` 를 보완하는 두 번째 LLM hardening 계층을 추가한다.
+
+_Rung 2 uplift learners_ (`core/evaluation/uplift_learner.py`). T-Learner 와 X-Learner 구현 모두 numpy-only fallback 회귀기 및 logistic propensity 추정기와 함께 배포된다. T-Learner 는 처치군과 대조군에 대해 독립 outcome 모델을 적합시키고 ``tau(x) = mu_1(x) - mu_0(x)`` 를 반환한다; X-Learner 는 imputed residual 을 propensity 로 재가중하는 cross-fit 단계를 추가하여 처치군 불균형 하에서 더 안정적인 CATE 를 산출한다. 평가는 Qini coefficient(Qini curve 아래 면적을 perfect-targeting ideal 로 정규화) 와 top-K-percent uplift 지표(예측 상위 분위 내 평균 관찰 효과) 를 사용한다. 두 learner 모두 ``fit(X, T, Y)`` / ``predict(X)`` 인터페이스를 노출하므로 stage-1 모델로 임의의 sklearn 또는 LightGBM 회귀기를 평가 파이프라인 변경 없이 swap in 할 수 있다. numpy-only 구현은 오프라인 평가, 단위 테스트, CI 모두 무거운 의존성 없이 실행됨을 의미한다.
+
+_규제 포지셔닝_. Rung 2 는 추천기가 추정된 이질적 효과에 근거하여 개별 고객을 treating / not-treating 하는 것을 정당화할 수 있는 층위이며, AI기본법 §35(FRIA) 와 PIPA §37의2(자동화된 결정 권리) 가 모두 정밀 검토하는 영역이다. Uplift 추정기 출력은 게이트 활성화 시 SageMaker 규제 추적기를 통해 규제 artifact 로 감사 로그되므로, 특정 세그먼트를 타겟팅한 선택의 근거는 재현 가능하다.
+
+_LLM hardening --- AI security checker_ (`core/security/ai_security_checker.py`). 기존 `PromptSanitizer` 는 민감도 분류, PII scrubbing, VPC 라우팅을 담당한다; security checker 는 두 개의 보완 계층을 추가한다. 요청 측에서는 14개 기본 prompt-injection / jailbreak 패턴(``ignore previous instructions``, ``DAN mode``, ``reveal system prompt``, tool-call breakout, base64 인코딩 페이로드) 이 LLM 공급자에게 프롬프트가 전송되기 전에 스캔된다. 응답 측에서는 8개 output-leak 패턴이 system-prompt echo, meta-instruction 누출, role-breakout 구문, 한국 주민등록번호 / 카드번호 PII 를 잡아낸다. Finding 은 finding 별 심각도를 가진 `SecurityVerdict` 를 반환한다; `wrap_provider` 는 임의의 LLM 공급자에 대한 drop-in replacement 를 생성하여 차단된 교환을 안전한 거부(configurable callback) 로 재작성한다.
+
+Sprint 2 의 L2a Safety Gate(`core/recommendation/reason/l2a_safety_gate.py`) 와 결합하여, LLM 경로는 이제 네 개의 독립적 hardening 계층을 갖는다 --- 민감도 기반 라우팅, 룰 기반 safety gate, AI security checker (prompt + output), LLM 생성 마커 --- 각 계층이 독립적으로 거부권을 행사할 수 있고 각 계층이 config-driven 이라 보안 운영팀이 코드 변경 없이 룰 카탈로그를 확장할 수 있다.
+
+`tests/test_phase3_could.py` (39 cases) 가 T-Learner / X-Learner CATE 복원, 합성 uplift 데이터에서의 qini 및 top-K-percent uplift 지표, 모든 기본 보안 패턴, provider-wrapping end-to-end 흐름, 커스텀 거부 callback 주입을 커버한다. Phase 1 및 Phase 2 스위트와 합쳐 AWS 측 규제 / 학습 / 보안 스택은 _447 tests (447 passing)_ 로 실행된다.
 
 === Human-in-the-Loop
 

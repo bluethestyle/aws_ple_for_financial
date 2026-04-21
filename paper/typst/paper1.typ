@@ -147,7 +147,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Multi-disciplinary Feature Engineering*: Features derived from eleven academic disciplines --- including unconventional applications of chemical kinetics (spending activation rate), epidemic modeling (product adoption diffusion), criminological Routine Activity Theory (transaction regularity), and wave interference (spending periodicity) --- serve dual roles as learning signals and recommendation context that is reverse-mapped to business language for customer-facing explanations.
 
-+ *Financial DNA Task Grouping*: Four task groups (engagement, lifecycle, value, consumption) aligned with the two-axis decomposition (Financial DNA $times$ Data Modality), providing semantic routing for expert selection.
++ *Financial DNA Task Grouping*: Four task groups (engagement, lifecycle, value, consumption) aligned with the two-axis decomposition (Financial DNA $times$ Data Modality). Expert selection itself operates _per-task_ via the CGC gate (13 independent routing decisions); the task groups provide semantic structure for post-hoc interpretation and for the rule-based fallback layer's template selection rather than gating the router directly.
 
 + *Gate Type Analysis for Heterogeneous MTL*: We demonstrate that softmax gating outperforms sigmoid in 13-task heterogeneous settings (7 binary + 3 multiclass + 3 regression), reversing the conventional preference from homogeneous-task literature @tang2020 @sigmoid_moe2024. The reversal is attributed to softmax's protective isolation of minority-type tasks from majority-type gradient corruption.
 
