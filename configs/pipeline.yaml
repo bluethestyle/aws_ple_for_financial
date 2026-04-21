@@ -765,6 +765,19 @@ compliance:
     require_approval_on_escalation: true
     default_score: 0.5
 
+  # Sprint 2 S5: SageMaker-native compliance tracking.
+  # Replaces the on-premises MLflow+DVC stack with SageMaker Experiments
+  # (Trials/TrialComponents) + SageMaker Lineage + S3 versioning. Every
+  # regulatory artifact (FRIA result, AI-risk assessment, compliance
+  # registry sweep, promotion-gate verdict) is logged as a TrialComponent.
+  tracking:
+    backend: in_memory             # sagemaker | in_memory
+    experiment_name: aiops-ple-financial-compliance
+    trial_prefix: compliance-trial
+    region: ap-northeast-2
+    artifact_s3_prefix: s3://aiops-ple-financial/compliance/artifacts
+    display_name_tag: compliance_type
+
 # ---------------------------------------------------------------------------
 # Rule Engine — Layer 3 rule-based fallback (ML-free)
 # ---------------------------------------------------------------------------

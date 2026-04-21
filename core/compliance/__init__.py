@@ -64,6 +64,14 @@ from core.compliance.rights import (
     ProfilingWorkflow,
     build_explanation_sla_tracker,
 )
+from core.compliance.sagemaker_compliance_tracker import (
+    InMemoryTrackerBackend,
+    SageMakerComplianceTracker,
+    SageMakerTrackerBackend,
+    TrackedArtifact,
+    TrackingConfig,
+    build_sagemaker_compliance_tracker,
+)
 from core.compliance.sla_tracker import (
     SLADefinition,
     SLAReport,
@@ -153,4 +161,11 @@ __all__ = [
     "AIRiskClassifier",
     "AIRiskConfig",
     "build_ai_risk_classifier",
+    # Sprint 2 S5: SageMaker compliance tracker
+    "TrackingConfig",
+    "TrackedArtifact",
+    "InMemoryTrackerBackend",
+    "SageMakerTrackerBackend",
+    "SageMakerComplianceTracker",
+    "build_sagemaker_compliance_tracker",
 ]
