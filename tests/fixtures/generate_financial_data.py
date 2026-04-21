@@ -33,13 +33,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # 16 task definitions (name, type, label_col)
 # ---------------------------------------------------------------------------
-TASK_DEFINITIONS: List[Dict[str, str]] = [
+TASK_DEFINITIONS: List[Dict[str, object]] = [
     {"name": "ctr",              "type": "binary",      "label_col": "label_ctr"},
     {"name": "cvr",              "type": "binary",      "label_col": "label_cvr"},
     {"name": "churn",            "type": "binary",      "label_col": "label_churn"},
     {"name": "retention",        "type": "binary",      "label_col": "label_retention"},
-    {"name": "nba",              "type": "multiclass",  "label_col": "label_nba"},
-    {"name": "life_stage",       "type": "multiclass",  "label_col": "label_life_stage"},
+    {"name": "nba",              "type": "multiclass",  "label_col": "label_nba",          "num_classes": 5},
+    {"name": "life_stage",       "type": "multiclass",  "label_col": "label_life_stage",   "num_classes": 6},
     {"name": "ltv",              "type": "regression",  "label_col": "label_ltv"},
     {"name": "engagement",       "type": "regression",  "label_col": "label_engagement"},
     {"name": "credit_risk",      "type": "binary",      "label_col": "label_credit_risk"},
@@ -48,7 +48,7 @@ TASK_DEFINITIONS: List[Dict[str, str]] = [
     {"name": "cross_sell",       "type": "binary",      "label_col": "label_cross_sell"},
     {"name": "satisfaction",     "type": "regression",  "label_col": "label_satisfaction"},
     {"name": "default_prob",     "type": "regression",  "label_col": "label_default_prob"},
-    {"name": "channel_pref",     "type": "multiclass",  "label_col": "label_channel_pref"},
+    {"name": "channel_pref",     "type": "multiclass",  "label_col": "label_channel_pref", "num_classes": 5},
     {"name": "product_affinity", "type": "ranking",     "label_col": "label_product_affinity"},
 ]
 

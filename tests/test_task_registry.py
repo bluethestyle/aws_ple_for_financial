@@ -12,7 +12,7 @@ def make_config(task_type: TaskType, **kwargs) -> TaskConfig:
     return TaskConfig(
         name="test_task",
         task_type=task_type,
-        loss_type=LossType.BCE,
+        loss_type=kwargs.pop("loss_type", LossType.AUTO),
         **kwargs,
     )
 
