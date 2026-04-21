@@ -240,6 +240,54 @@ class MetricsDerivedScoreProvider:
                 out[dim] = rule.apply(meta)
         return out
 
+    def explain(self, model_version: str) -> Dict[str, Dict[str, Any]]:
+        """Return a per-dimension derivation trail for audit.
+
+        For each dimension emits ``{path, raw_value, transform, fallback,
+        fallback_used, score}``. ``fallback_used=True`` when the metadata
+        path was missing / unparsable and the rule's fallback value was
+        used, ``False`` when the raw value drove the score.
+
+        Used by :class:`PromotionGate` to populate ``GateVerdict.details``
+        so the HMAC+hash-chain audit log can reproduce why a verdict was
+        issued (CLAUDE.md §1.10).
+        """
+        try:
+            meta = self._lookup(model_version) or {}
+        except Exception:
+            logger.exception(
+                "metadata_lookup failed during explain for model_version=%s",
+                model_version,
+            )
+            meta = {}
+        trail: Dict[str, Dict[str, Any]] = {}
+        for dim in self._dimensions:
+            rule = self._rules.get(dim)
+            if rule is None:
+                trail[dim] = {
+                    "path": None, "raw_value": None,
+                    "transform": None, "fallback": 0.5,
+                    "fallback_used": True, "score": 0.5,
+                }
+                continue
+            raw = _walk(meta, rule.path)
+            score = rule.apply(meta)
+            fallback_used = raw is None
+            if raw is not None:
+                try:
+                    float(raw)
+                except (TypeError, ValueError):
+                    fallback_used = True
+            trail[dim] = {
+                "path": rule.path,
+                "raw_value": raw,
+                "transform": rule.transform,
+                "fallback": rule.fallback,
+                "fallback_used": fallback_used,
+                "score": score,
+            }
+        return trail
+
 
 # ---------------------------------------------------------------------------
 # CompositeProvider — layer providers with a win-precedence order

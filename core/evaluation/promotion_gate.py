@@ -129,6 +129,9 @@ class PromotionGate:
                     f"(score={fria_result.total_score:.4f})"
                 ),
                 fria=fria_result,
+                details=self._build_details(
+                    model_version, fria_scores, None,
+                ),
             )
 
         ai_scores = self._scores_for(
@@ -151,6 +154,9 @@ class PromotionGate:
                 ),
                 fria=fria_result,
                 ai_risk=ai_result,
+                details=self._build_details(
+                    model_version, fria_scores, ai_scores,
+                ),
             )
 
         return GateVerdict(
@@ -161,6 +167,9 @@ class PromotionGate:
             ),
             fria=fria_result,
             ai_risk=ai_result,
+            details=self._build_details(
+                model_version, fria_scores, ai_scores,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -182,6 +191,89 @@ class PromotionGate:
             d: float(scores.get(d, self._default_score))
             for d in dimensions
         }
+
+    def _build_details(
+        self,
+        model_version: str,
+        fria_scores: Dict[str, float],
+        ai_scores: Optional[Dict[str, float]],
+    ) -> Dict[str, Any]:
+        """Assemble audit payload: metadata snapshot + per-dim derivation.
+
+        Always-safe: any introspection failure returns a details dict
+        with an ``_error`` field rather than raising. Audit must not
+        block promotion (CLAUDE.md §1.10).
+        """
+        details: Dict[str, Any] = {
+            "model_version": model_version,
+            "fria_dimension_scores": dict(fria_scores),
+        }
+        if ai_scores is not None:
+            details["ai_risk_dimension_scores"] = dict(ai_scores)
+
+        details["fria_derivation"] = self._explain_if_possible(
+            self._fria_provider, model_version,
+        )
+        details["ai_risk_derivation"] = self._explain_if_possible(
+            self._ai_risk_provider, model_version,
+        )
+        details["metadata_snapshot"] = self._metadata_snapshot(
+            self._fria_provider, model_version,
+        )
+        return details
+
+    @staticmethod
+    def _explain_if_possible(
+        provider: Optional[DimensionScoresFn], model_version: str,
+    ) -> Optional[Dict[str, Dict[str, Any]]]:
+        if provider is None:
+            return None
+        candidates = [provider]
+        inner = getattr(provider, "_providers", None)
+        if inner is not None:
+            candidates.extend(inner)
+        for c in candidates:
+            explain = getattr(c, "explain", None)
+            if callable(explain):
+                try:
+                    return explain(model_version)
+                except Exception:
+                    logger.exception(
+                        "provider.explain failed for %s", model_version,
+                    )
+                    return {"_error": "explain_failed"}
+        return None
+
+    @staticmethod
+    def _metadata_snapshot(
+        provider: Optional[DimensionScoresFn], model_version: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Extract the raw metadata dict the provider saw, if exposed.
+
+        MetricsDerivedScoreProvider holds a metadata_lookup callable; we
+        dip into it to freeze the exact inputs for audit. CompositeProvider
+        is walked as well.
+        """
+        if provider is None:
+            return None
+        candidates = [provider]
+        inner = getattr(provider, "_providers", None)
+        if inner is not None:
+            candidates.extend(inner)
+        for c in candidates:
+            lookup = getattr(c, "_lookup", None)
+            if callable(lookup):
+                try:
+                    snap = lookup(model_version) or {}
+                    return dict(snap) if isinstance(snap, dict) else {
+                        "value": snap,
+                    }
+                except Exception:
+                    logger.exception(
+                        "metadata snapshot failed for %s", model_version,
+                    )
+                    return {"_error": "snapshot_failed"}
+        return None
 
 
 # ---------------------------------------------------------------------------
