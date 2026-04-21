@@ -56,7 +56,7 @@ def _get_hmac_secret() -> bytes:
         try:
             import boto3
 
-            region = os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2")
+            region = os.environ.get("AWS_DEFAULT_REGION")
             ssm = boto3.client("ssm", region_name=region)
             response = ssm.get_parameter(Name=ssm_param_name, WithDecryption=True)
             _HMAC_SECRET_KEY = response["Parameter"]["Value"].encode("utf-8")
@@ -148,7 +148,7 @@ class AuditLogger:
             try:
                 import boto3
 
-                region = os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2")
+                region = os.environ.get("AWS_DEFAULT_REGION")
                 self._s3_client = boto3.client("s3", region_name=region)
             except Exception as exc:
                 logger.warning("boto3 S3 client init failed; will use local fallback: %s", exc)
@@ -388,29 +388,39 @@ class AuditLogger:
         significance: Optional[Dict[str, Any]] = None,
         trigger: str = "auto",
         user: str = "system",
+        gate_details: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Log a Champion-Challenger promotion decision.
 
         decision: one of ``"bootstrap"`` (no prior champion, promote directly),
         ``"promote"`` (challenger approved), ``"reject"`` (challenger kept out),
         ``"force_promote"`` (operator override).
+
+        ``gate_details`` (optional) carries the PromotionGate verdict's
+        ``details`` payload: per-dim score derivation trail + raw metadata
+        snapshot + model version. Included in the HMAC+hash-chain audit
+        record so the verdict can be reproduced from the log alone
+        (CLAUDE.md §1.10).
         """
         operation = f"model_promotion:{decision}"
         status = "SUCCESS" if decision != "reject" else "REJECTED"
+        metadata: Dict[str, Any] = {
+            "champion_version": champion_version,
+            "challenger_version": challenger_version,
+            "decision": decision,
+            "reason": reason,
+            "comparison": comparison or {},
+            "significance": significance or {},
+            "trigger": trigger,
+            "operation_type": "model_promotion",
+        }
+        if gate_details is not None:
+            metadata["gate_details"] = gate_details
         return self.log_operation(
             operation=operation,
             user=user,
             status=status,
-            metadata={
-                "champion_version": champion_version,
-                "challenger_version": challenger_version,
-                "decision": decision,
-                "reason": reason,
-                "comparison": comparison or {},
-                "significance": significance or {},
-                "trigger": trigger,
-                "operation_type": "model_promotion",
-            },
+            metadata=metadata,
         )
 
     # ------------------------------------------------------------------

@@ -14,7 +14,7 @@ Usage::
 
     registry = DatasetRegistry(
         s3_base="s3://bucket/datasets/",
-        region="ap-northeast-2",
+        region=config.aws.region,
     )
 
     # Register a new dataset version
@@ -125,14 +125,16 @@ class DatasetRegistry:
         s3_base: S3 URI prefix (e.g. ``"s3://bucket/datasets/"``).
             Leave empty for local-only operation.
         local_base: Local directory for storing version artifacts.
-        region: AWS region for boto3 S3 client.
+        region: AWS region for boto3 S3 client. ``None`` lets boto3 resolve
+            from env / credentials; callers should pass
+            ``pipeline.yaml::aws.region``.
     """
 
     def __init__(
         self,
         s3_base: str = "",
         local_base: str = "datasets/",
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
     ) -> None:
         self._s3_base = s3_base.rstrip("/")
         self._local_base = local_base
@@ -464,7 +466,7 @@ class DatasetRegistry:
             {
                 "s3_base": "s3://bucket/datasets/",
                 "local_base": "datasets/",
-                "region": "ap-northeast-2"
+                "region": "<aws region>"   # falls back to boto3 env / credentials
             }
 
         Parameters:
@@ -476,7 +478,7 @@ class DatasetRegistry:
         return cls(
             s3_base=config.get("s3_base", ""),
             local_base=config.get("local_base", "datasets/"),
-            region=config.get("region", "ap-northeast-2"),
+            region=config.get("region"),
         )
 
     # ------------------------------------------------------------------

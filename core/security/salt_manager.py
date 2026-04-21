@@ -15,10 +15,17 @@ from .domains import PIIDomain
 logger = logging.getLogger(__name__)
 
 class SaltManager:
-    """Retrieve domain salts from AWS Secrets Manager with in-memory caching."""
+    """Retrieve domain salts from AWS Secrets Manager with in-memory caching.
 
-    def __init__(self, secret_name: str = "aiops-ple-financial/pii-salts",
-                 region: str = "ap-northeast-2", cache_ttl: int = 3600):
+    ``secret_name`` and ``region`` have no hardcoded AWS-specific defaults per
+    CLAUDE.md §1.1. Callers should build the secret name from
+    ``pipeline.yaml::aws.s3_bucket`` (e.g. ``{bucket}/pii-salts``) and pass
+    ``aws.region``. ``region=None`` lets boto3 resolve from env / credentials.
+    The fetch path raises if ``secret_name`` is missing.
+    """
+
+    def __init__(self, secret_name: Optional[str] = None,
+                 region: Optional[str] = None, cache_ttl: int = 3600):
         self._secret_name = secret_name
         self._region = region
         self._cache_ttl = cache_ttl
@@ -46,6 +53,12 @@ class SaltManager:
         self._cache_time = time.time()
 
     def _fetch_from_secrets_manager(self) -> Dict[str, str]:
+        if not self._secret_name:
+            logger.warning(
+                "SaltManager: secret_name is not configured; returning empty "
+                "salts. Pass secret_name derived from pipeline.yaml::aws.s3_bucket."
+            )
+            return {}
         try:
             import boto3
             client = boto3.client("secretsmanager", region_name=self._region)

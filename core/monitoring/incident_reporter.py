@@ -127,7 +127,7 @@ class IncidentReporter:
         self.s3_bucket = s3_bucket or os.environ.get("INCIDENT_S3_BUCKET", "")
         self.s3_prefix = s3_prefix.strip("/")
         self.severity_criteria = severity_criteria or dict(DEFAULT_SEVERITY_CRITERIA)
-        self.region = region or os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2")
+        self.region = region or os.environ.get("AWS_DEFAULT_REGION")
 
         self._sns_client = None
         self._s3_client = None

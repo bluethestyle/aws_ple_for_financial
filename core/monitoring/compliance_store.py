@@ -108,7 +108,7 @@ class ComplianceAuditStore:
         create_tables: bool = False,
     ) -> None:
         self.table_prefix = table_prefix or os.environ.get("COMPLIANCE_TABLE_PREFIX", "")
-        self.region = region or os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2")
+        self.region = region or os.environ.get("AWS_DEFAULT_REGION")
 
         try:
             import boto3

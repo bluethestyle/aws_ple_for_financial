@@ -235,10 +235,12 @@ class SageMakerTracker(ExperimentTracker):
             from sagemaker.experiments.run import Run
             from sagemaker.session import Session
 
-            # Auto-detect region from environment or boto3 config
-            region = os.environ.get(
-                "AWS_DEFAULT_REGION",
-                boto3.session.Session().region_name or "ap-northeast-2",
+            # Auto-detect region from environment or boto3 config.
+            # No hardcoded fallback per CLAUDE.md §1.1 — operator must set
+            # AWS_DEFAULT_REGION or configure a boto3 session region.
+            region = (
+                os.environ.get("AWS_DEFAULT_REGION")
+                or boto3.session.Session().region_name
             )
             boto_session = boto3.session.Session(region_name=region)
             session = Session(boto_session=boto_session)

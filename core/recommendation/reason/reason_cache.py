@@ -116,7 +116,7 @@ class ReasonCache:
         self,
         backend: str = "memory",
         table_name: str = "ple-reason-cache",
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
         ttl_hours: int = 24,
     ) -> None:
         self._backend = backend

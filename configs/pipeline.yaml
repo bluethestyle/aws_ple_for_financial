@@ -798,6 +798,20 @@ compliance:
         # to infer from the configured slot count directly (1.0 when
         # any non-dummy backend is fully wired).
         agent_slot_baseline: null
+        # Archive-backed source paths. Preferred over live runtime
+        # objects in production because they survive a fresh process
+        # start — submit_pipeline spawns a new orchestrator, so the
+        # in-memory FairnessMonitor archive is empty. Reading the
+        # Parquet / YAML archives populated by upstream jobs (serving,
+        # training, monitoring) gives the gate real metadata.
+        sources:
+          # feature_groups.yaml with `pseudonymized:` flags per prefix.
+          # When unset, falls back to DataLineageTracker's in-memory
+          # default map (~9 prefixes).
+          lineage_yaml_path: configs/financial/feature_groups.yaml
+          # FairnessMonitor Parquet archive. When null, the aggregator
+          # falls back to monitoring.fairness.archive_parquet_path.
+          fairness_archive_parquet_path: null
         # Static values layered on top of live sources — for metadata
         # that does not yet have a machine-readable producer, e.g.
         # reason_coverage tracked in serving logs.

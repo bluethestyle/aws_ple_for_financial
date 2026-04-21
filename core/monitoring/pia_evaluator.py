@@ -145,7 +145,10 @@ class PIAEvaluator:
     ) -> None:
         self.system_name = system_name
         self.assessor = assessor
-        self.data_regions = data_regions or ["ap-northeast-2"]
+        # data_regions has no hardcoded AWS default per CLAUDE.md §1.1 —
+        # callers must pass the deployment region list explicitly (derived
+        # from pipeline.yaml::aws.region).
+        self.data_regions = data_regions or []
         self.audit_store = audit_store
 
     # ------------------------------------------------------------------

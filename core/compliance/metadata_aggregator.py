@@ -48,7 +48,9 @@ __all__ = [
     "MetadataAggregatorConfig",
     "MetadataAggregator",
     "build_lineage_source",
+    "build_lineage_yaml_source",
     "build_fairness_source",
+    "build_fairness_archive_source",
     "build_registry_source",
     "build_llm_source",
     "build_review_queue_source",
@@ -426,6 +428,139 @@ def build_review_queue_source(
     return _src
 
 
+def build_lineage_yaml_source(yaml_path: str) -> MetadataSource:
+    """Compute ``pii_ratio`` from a lineage / feature_groups YAML file.
+
+    Reads ``feature_source_map`` (or ``lineage.feature_source_map``) from
+    the given YAML path and counts the pseudonymized vs non-pseudonymized
+    feature groups. This is the archive-backed equivalent of
+    :func:`build_lineage_source`: instead of requiring a live
+    :class:`DataLineageTracker` instance, it pulls the map from the config
+    file the tracker would have been loaded from. Production friendlier:
+    survives a fresh process start without a running tracker.
+
+    Missing file / malformed YAML / empty map → returns ``{}`` so the
+    heuristic falls back to 0.5 (CLAUDE.md §1.16).
+    """
+    loaded = _load_lineage_map(yaml_path)
+
+    def _src(_model_version: str) -> Dict[str, Any]:
+        if not loaded:
+            return {}
+        total = len(loaded)
+        if total == 0:
+            return {}
+        non_pseudo = 0
+        for info in loaded.values():
+            if not info.get("pseudonymized", False):
+                non_pseudo += 1
+        return {"pii_ratio": float(non_pseudo) / float(total)}
+
+    return _src
+
+
+def _load_lineage_map(yaml_path: str) -> Dict[str, Dict[str, Any]]:
+    """Parse ``feature_source_map`` out of a YAML file. Best-effort."""
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        logger.warning(
+            "PyYAML not installed; lineage_yaml_source will fallback",
+        )
+        return {}
+    from pathlib import Path
+
+    try:
+        p = Path(yaml_path)
+        if not p.exists():
+            logger.debug("lineage yaml not found at %s", yaml_path)
+            return {}
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception:
+        logger.exception("failed to read lineage yaml %s", yaml_path)
+        return {}
+    raw_map = (
+        data.get("feature_source_map")
+        or (data.get("lineage") or {}).get("feature_source_map")
+        or {}
+    )
+    if not isinstance(raw_map, dict):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for prefix, info in raw_map.items():
+        if isinstance(info, Mapping):
+            out[str(prefix)] = dict(info)
+    return out
+
+
+def build_fairness_archive_source(
+    parquet_path: str,
+    limit: int = 50,
+) -> MetadataSource:
+    """Compute ``disparate_impact_min`` by reading a Parquet fairness archive.
+
+    Reads at most ``limit`` rows (tail) from ``parquet_path`` and returns
+    the worst-case disparate impact observed, mapped into ``[0, 1]`` via
+    ``min(v, 1/v)``. The heuristic's ``one_minus`` transform then maps
+    lower DI to higher fairness_risk.
+
+    This is the archive-backed equivalent of :func:`build_fairness_source`:
+    instead of requiring a live :class:`FairnessMonitor` instance with a
+    populated in-memory archive, it reads directly from the Parquet file
+    that ``FairnessMonitor.archive_metrics(parquet_path=...)`` writes to.
+    Production friendlier: survives a fresh process start.
+
+    Missing file / pyarrow not installed / empty archive / all rows
+    invalid → returns ``{}`` so the heuristic falls back to 0.5.
+    """
+
+    def _src(_model_version: str) -> Dict[str, Any]:
+        try:
+            import pyarrow.parquet as pq  # type: ignore
+        except ImportError:
+            logger.debug(
+                "pyarrow not installed; fairness_archive_source will "
+                "fallback"
+            )
+            return {}
+        from pathlib import Path
+
+        try:
+            target = Path(parquet_path)
+            if not target.exists():
+                return {}
+            table = pq.read_table(str(target))
+            rows = table.to_pylist()
+        except Exception:
+            logger.exception(
+                "failed to read fairness archive %s", parquet_path,
+            )
+            return {}
+        if not rows:
+            return {}
+        tail = rows[-limit:] if limit > 0 else rows
+        di_values: List[float] = []
+        for entry in tail:
+            raw = entry.get("disparate_impact")
+            if raw is None:
+                continue
+            try:
+                di = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if math.isnan(di) or math.isinf(di):
+                continue
+            di_values.append(di)
+        if not di_values:
+            return {}
+        worst = min(
+            (min(v, 1.0 / v) if v > 0 else 0.0) for v in di_values
+        )
+        return {"disparate_impact_min": float(max(0.0, min(1.0, worst)))}
+
+    return _src
+
+
 def build_static_source(values: Mapping[str, Any]) -> MetadataSource:
     """Emit a fixed mapping regardless of ``model_version``.
 
@@ -458,21 +593,43 @@ def build_metadata_aggregator_from_config(
     static_overrides: Optional[Mapping[str, Any]] = None,
     aggregator_config: Optional[MetadataAggregatorConfig] = None,
     agent_slot_baseline: Optional[int] = None,
+    lineage_yaml_path: Optional[str] = None,
+    fairness_archive_path: Optional[str] = None,
 ) -> MetadataAggregator:
-    """Compose an aggregator from the runtime objects the caller has.
+    """Compose an aggregator from the runtime objects + archive paths.
 
     Every argument is optional. Missing sources simply contribute nothing
     to the merged metadata, and the downstream heuristic falls back to
     0.5 for the corresponding dimension.
 
-    Ordering: lineage → registry → review → fairness → llm → static.
-    Later sources override earlier on key conflict, so ``static_overrides``
-    is the final operator-escape-hatch layer.
+    Runtime objects (``lineage_tracker``, ``fairness_monitor``,
+    ``review_queue``, ``model_registry``) vs archive paths
+    (``lineage_yaml_path``, ``fairness_archive_path``) are both supported
+    so the aggregator works in two deployment modes:
+
+    - **Runtime mode**: orchestrator holds live instances and passes them
+      directly (fastest, but empty on fresh process start).
+    - **Archive mode**: aggregator reads from YAML / Parquet files
+      populated by upstream jobs (survives restarts, preferred for
+      compliance PromotionGate where lineage + fairness archives have
+      been accumulating from serving).
+
+    When both forms are supplied for the same dimension, the runtime
+    object wins (registered first). The archive sources are still
+    appended so they can fill gaps (e.g. lineage runtime tracker has no
+    map, yaml path does).
+
+    Ordering: lineage (runtime → yaml) → registry → review → fairness
+    (runtime → archive) → llm → static. Later sources override earlier
+    on key conflict, so ``static_overrides`` is the final
+    operator-escape-hatch layer.
     """
 
     sources: List[MetadataSource] = []
     if lineage_tracker is not None:
         sources.append(build_lineage_source(lineage_tracker))
+    if lineage_yaml_path:
+        sources.append(build_lineage_yaml_source(lineage_yaml_path))
     if model_registry is not None:
         sources.append(build_registry_source(model_registry))
     if review_queue is not None:
@@ -483,6 +640,8 @@ def build_metadata_aggregator_from_config(
         )
     if fairness_monitor is not None:
         sources.append(build_fairness_source(fairness_monitor))
+    if fairness_archive_path:
+        sources.append(build_fairness_archive_source(fairness_archive_path))
     sources.append(build_llm_source(
         pipeline_config, agent_slot_baseline=agent_slot_baseline,
     ))

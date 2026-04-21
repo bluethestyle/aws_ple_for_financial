@@ -127,7 +127,7 @@ class RecommendationAuditArchiver:
             try:
                 import boto3
 
-                region = os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2")
+                region = os.environ.get("AWS_DEFAULT_REGION")
                 self._s3_client = boto3.client("s3", region_name=region)
             except Exception as exc:
                 logger.warning("S3 client init failed (audit archiver): %s", exc)

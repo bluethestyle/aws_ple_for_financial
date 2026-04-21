@@ -12,7 +12,7 @@ Configuration example (YAML)::
       duckdb:
         memory_limit: 8GB
         threads: 4
-        s3_region: ap-northeast-2
+        s3_region: <aws region>     # defaults to AWS_DEFAULT_REGION env var
         s3_access_key_id: ${AWS_ACCESS_KEY_ID}
         s3_secret_access_key: ${AWS_SECRET_ACCESS_KEY}
       athena:
@@ -162,7 +162,7 @@ class QueryEngine:
 
             athena_cfg = self._config.get("query_engine", {}).get("athena", {})
             region = athena_cfg.get(
-                "region", os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2")
+                "region", os.environ.get("AWS_DEFAULT_REGION")
             )
             self._athena_client = boto3.client("athena", region_name=region)
             self._athena_database = athena_cfg.get("database", "default")

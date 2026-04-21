@@ -47,7 +47,8 @@ class BedrockDialogSession:
         registry: ToolRegistry for tool definitions and execution.
         agent_type: "ops" or "audit" — filters available tools.
         model_id: Bedrock model ID (default Claude Sonnet).
-        region: AWS region.
+        region: AWS region. ``None`` lets boto3 resolve from env /
+            credentials; callers should pass ``pipeline.yaml::aws.region``.
         system_prompt: Optional system prompt override.
         config: Additional config dict.
     """
@@ -57,7 +58,7 @@ class BedrockDialogSession:
         registry: "ToolRegistry",
         agent_type: str = "ops",
         model_id: str = "anthropic.claude-sonnet-4-6-20250514-v1:0",
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
         system_prompt: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         recall_memory: Optional[Any] = None,  # DialogRecallMemory instance

@@ -403,9 +403,25 @@ def _build_metadata_aggregator(
     static_overrides = agg_cfg.get("static_overrides") or {}
     agent_slot_baseline = agg_cfg.get("agent_slot_baseline")
 
-    # Lineage / fairness / review-queue objects are created lazily here
-    # so a minimal ``python -m submit_pipeline --dry-run`` import does not
-    # require a full runtime stack.
+    # Archive paths — preferred in production because they survive a
+    # fresh process start (live runtime objects are always empty when
+    # submit_pipeline spawns a new orchestrator).
+    sources_cfg = agg_cfg.get("sources") or {}
+    lineage_yaml_path = sources_cfg.get("lineage_yaml_path")
+    fairness_archive_path = sources_cfg.get("fairness_archive_parquet_path")
+
+    # Falls back to monitoring.fairness.archive_parquet_path if the
+    # aggregator block does not override it.
+    if not fairness_archive_path:
+        fairness_archive_path = (
+            (pipeline_config.get("monitoring") or {})
+            .get("fairness", {})
+            .get("archive_parquet_path")
+        )
+
+    # Lineage / fairness / review-queue live instances — kept for
+    # backward compatibility. The archive sources above already cover
+    # fresh-start case, so the live instances are best-effort extras.
     lineage_tracker = None
     fairness_monitor = None
     try:
@@ -431,6 +447,8 @@ def _build_metadata_aggregator(
         static_overrides=static_overrides,
         aggregator_config=cfg,
         agent_slot_baseline=agent_slot_baseline,
+        lineage_yaml_path=lineage_yaml_path,
+        fairness_archive_path=fairness_archive_path,
     )
 
 
@@ -463,12 +481,48 @@ def _run_promotion_gate(
         logger.info(
             "Promotion gate verdict: %s - %s", verdict.decision, verdict.reason,
         )
+        _track_promotion_gate_verdict(
+            pipeline_config, new_version, verdict,
+        )
         return verdict
     except Exception as exc:
         logger.warning(
             "Promotion gate raised (non-fatal, treating as skip): %s", exc,
         )
         return None
+
+
+def _track_promotion_gate_verdict(
+    pipeline_config: dict,
+    model_version: str,
+    verdict: object,
+) -> None:
+    """Best-effort SageMaker Experiments log for a gate verdict.
+
+    Records a ``promotion_gate_verdict`` artifact tagged with the decision
+    so auditors can pull every gate run from the Experiments stream alone
+    (CLAUDE.md §1.14). Failures swallow — tracker outage must not block
+    promotion decisions.
+    """
+    try:
+        from core.compliance.sagemaker_compliance_tracker import (
+            build_sagemaker_compliance_tracker,
+        )
+        tracker = build_sagemaker_compliance_tracker(pipeline_config)
+        fria = getattr(verdict, "fria", None)
+        ai_risk = getattr(verdict, "ai_risk", None)
+        tracker.log_promotion_decision(
+            model_version=model_version,
+            decision=getattr(verdict, "decision", "unknown"),
+            reason=getattr(verdict, "reason", ""),
+            fria_result=fria,
+            ai_risk_assessment=ai_risk,
+        )
+    except Exception as exc:
+        logger.warning(
+            "SageMaker compliance tracker failed for gate verdict "
+            "(non-fatal): %s", exc,
+        )
 
 
 def _decide_promotion(
@@ -614,6 +668,7 @@ def _decide_promotion(
                 comparison=result.comparison,
                 significance=result.significance,
                 trigger="auto",
+                gate_details=dict(gate_verdict.details or {}),
             )
             return
 
@@ -630,6 +685,10 @@ def _decide_promotion(
             comparison=result.comparison,
             significance=result.significance,
             trigger="auto",
+            gate_details=(
+                dict(gate_verdict.details or {})
+                if gate_verdict is not None else None
+            ),
         )
     else:
         logger.info(

@@ -35,14 +35,15 @@ class DialogRecallMemory:
 
     Args:
         table_name: DynamoDB table name.
-        region: AWS region.
+        region: AWS region. ``None`` lets boto3 resolve from env /
+            credentials; callers should pass ``pipeline.yaml::aws.region``.
         in_memory_limit: Max entries in fallback memory.
     """
 
     def __init__(
         self,
         table_name: str = "agent_dialog_recall",
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
         in_memory_limit: int = 1000,
     ) -> None:
         self._table_name = table_name

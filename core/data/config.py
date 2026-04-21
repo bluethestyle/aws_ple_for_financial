@@ -82,7 +82,9 @@ class DataBackendConfig:
     duckdb_memory_limit: str = "4GB"
     duckdb_threads: int = 0
     duckdb_temp_directory: Optional[str] = None
-    s3_region: str = "ap-northeast-2"
+    # ``None`` lets boto3 / DuckDB httpfs resolve from env / credentials;
+    # callers should pass ``pipeline.yaml::aws.region``.
+    s3_region: Optional[str] = None
     s3_access_key_id: Optional[str] = None
     s3_secret_access_key: Optional[str] = None
 
@@ -117,7 +119,7 @@ class DataBackendConfig:
             duckdb_memory_limit=os.environ.get("DUCKDB_MEMORY_LIMIT", "4GB"),
             duckdb_threads=int(os.environ.get("DUCKDB_THREADS", "0")),
             duckdb_temp_directory=os.environ.get("DUCKDB_TEMP_DIR"),
-            s3_region=os.environ.get("AWS_DEFAULT_REGION", "ap-northeast-2"),
+            s3_region=os.environ.get("AWS_DEFAULT_REGION"),
             s3_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
             s3_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
         )
@@ -131,7 +133,7 @@ class DataBackendConfig:
             duckdb_memory_limit=d.get("duckdb_memory_limit", "4GB"),
             duckdb_threads=int(d.get("duckdb_threads", 0)),
             duckdb_temp_directory=d.get("duckdb_temp_directory"),
-            s3_region=d.get("s3_region", "ap-northeast-2"),
+            s3_region=d.get("s3_region"),
             s3_access_key_id=d.get("s3_access_key_id"),
             s3_secret_access_key=d.get("s3_secret_access_key"),
         )
