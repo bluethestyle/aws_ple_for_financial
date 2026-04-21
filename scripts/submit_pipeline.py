@@ -367,6 +367,39 @@ def _audit_promotion(**kwargs) -> None:
         logger.warning("Audit log for promotion failed (non-fatal): %s", exc)
 
 
+def _run_promotion_gate(
+    new_version: str,
+    pipeline_config: Optional[dict],
+) -> Optional["object"]:
+    """Optional Sprint 2 FRIA + AI Risk gate.
+
+    Returns a :class:`GateVerdict` when the gate is enabled (via
+    ``compliance.promotion_gate.enabled``), else ``None``. Failures in the
+    gate itself are logged and treated as ``skip`` so a compliance-module
+    error does not silently block unrelated promotions.
+    """
+    if not pipeline_config:
+        return None
+    gate_cfg = (
+        (pipeline_config.get("compliance") or {}).get("promotion_gate") or {}
+    )
+    if not gate_cfg.get("enabled", False):
+        return None
+    try:
+        from core.evaluation.promotion_gate import build_promotion_gate
+        gate = build_promotion_gate(pipeline_config)
+        verdict = gate.evaluate(model_version=new_version)
+        logger.info(
+            "Promotion gate verdict: %s - %s", verdict.decision, verdict.reason,
+        )
+        return verdict
+    except Exception as exc:
+        logger.warning(
+            "Promotion gate raised (non-fatal, treating as skip): %s", exc,
+        )
+        return None
+
+
 def _decide_promotion(
     registry,
     new_version: str,
@@ -374,6 +407,7 @@ def _decide_promotion(
     fidelity_summary: dict,
     force_promote: bool,
     aws_region: str,
+    pipeline_config: Optional[dict] = None,
 ) -> None:
     """Run the Champion-Challenger offline gate and act on its verdict.
 
@@ -476,10 +510,40 @@ def _decide_promotion(
         metrics=dict(new_metrics or {}),
     )
 
-    competition = ModelCompetition()
+    # Sprint 2 S15: honour serving.competition.auto_promote (defaults false
+    # in pipeline.yaml to comply with EU AI Act Art. 14). Falling back to
+    # legacy default only if the yaml block is missing entirely.
+    from core.evaluation.model_competition import CompetitionConfig
+
+    comp_cfg = None
+    if pipeline_config:
+        comp_cfg = CompetitionConfig.from_dict(
+            (pipeline_config.get("serving") or {}).get("competition")
+        )
+    competition = ModelCompetition(config=comp_cfg)
     result = competition.evaluate(champion_candidate, challenger_candidate)
 
     if result.promotion_approved:
+        # Sprint 2 post-gate: FRIA + AI Risk (safety floor layered on top
+        # of ModelCompetition). Disabled by default; enable via
+        # compliance.promotion_gate.enabled in pipeline.yaml.
+        gate_verdict = _run_promotion_gate(new_version, pipeline_config)
+        if gate_verdict is not None and gate_verdict.blocks_promotion:
+            logger.warning(
+                "Model %s rejected by promotion gate: %s",
+                new_version, gate_verdict.reason,
+            )
+            _audit_promotion(
+                champion_version=champion_version,
+                challenger_version=new_version,
+                decision="reject",
+                reason=f"promotion_gate: {gate_verdict.reason}",
+                comparison=result.comparison,
+                significance=result.significance,
+                trigger="auto",
+            )
+            return
+
         registry.promote(new_version)
         logger.info(
             "Model %s promoted to champion (previous=%s): %s",
@@ -631,6 +695,23 @@ def _register_model(
         )
 
         # --- Champion-Challenger gate --------------------------------------
+        # Forward the raw pipeline config so the Sprint 2 post-gate
+        # (FRIA + AI Risk) can read `compliance.promotion_gate`.
+        raw_pipeline_cfg: Optional[dict] = None
+        try:
+            import yaml
+            cfg_path = Path("configs/pipeline.yaml")
+            if cfg_path.exists():
+                raw_pipeline_cfg = yaml.safe_load(
+                    cfg_path.read_text(encoding="utf-8")
+                )
+        except Exception:
+            logger.debug(
+                "Could not load raw pipeline.yaml for promotion_gate; "
+                "continuing with gate disabled",
+                exc_info=True,
+            )
+
         _decide_promotion(
             registry=registry,
             new_version=version,
@@ -638,6 +719,7 @@ def _register_model(
             fidelity_summary=model_version.fidelity_summary,
             force_promote=force_promote,
             aws_region=config.aws.region,
+            pipeline_config=raw_pipeline_cfg,
         )
 
     finally:
