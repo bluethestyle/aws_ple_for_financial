@@ -69,6 +69,14 @@ from core.compliance.audit_sql import (
     ComplianceSQLHelper,
     build_compliance_sql_helper,
 )
+from core.compliance.dimension_scores import (
+    CompositeProvider,
+    DefaultScoreProvider,
+    DimensionScoresProvider,
+    HEURISTIC_RULES,
+    ManualScoreProvider,
+    MetricsDerivedScoreProvider,
+)
 from core.compliance.sagemaker_compliance_tracker import (
     InMemoryTrackerBackend,
     SageMakerComplianceTracker,
@@ -177,4 +185,11 @@ __all__ = [
     "AuditSQLConfig",
     "ComplianceSQLHelper",
     "build_compliance_sql_helper",
+    # Dimension score providers (plug into PromotionGate)
+    "DimensionScoresProvider",
+    "ManualScoreProvider",
+    "DefaultScoreProvider",
+    "MetricsDerivedScoreProvider",
+    "CompositeProvider",
+    "HEURISTIC_RULES",
 ]

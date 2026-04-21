@@ -93,6 +93,13 @@
 - **`ComplianceSQLHelper` 는 on-demand 사용**이다. 장기 실행 서비스가 아니므로 context manager (`with ComplianceSQLHelper() as h:`) 또는 `close()` 호출로 DuckDB connection 을 명시적으로 닫는다.
 - **DynamoDB (online 조회)** 와 **SQL helper (batch 조회)** 의 역할은 분리. DynamoDB 는 `ComplianceAuditStore` 가 담당. SQL helper 는 S3 Parquet archive 에 대한 SQL 만. 두 경로를 혼용해서 쓸 때도 서로의 데이터를 덮어쓰지 않아야 한다 (read-only join).
 
+### 1.16 Dimension score provider 원칙 (PromotionGate 연결, 2026-04-21)
+- **`ManualScoreProvider(overrides)` 는 unknown model 에서 빈 dict 를 반환**한다. `CompositeProvider` 와 함께 써서 "특정 모델만 operator override, 나머지는 heuristic" 레이어 구조를 만들 수 있도록 보장. 과거 default_score 자동 채움 동작은 composite 흐름을 silent mask 하므로 제거.
+- **Heuristic rules (`HEURISTIC_RULES`) 는 감사 가능해야 한다.** 각 규칙은 1) metadata path, 2) 변환 (identity / one_minus / log10_ratio), 3) fallback 이 명시된 `HeuristicRule` dataclass. `transform="log10_ratio"` 만 `ratio_denominator` 를 소비. 값은 `[0, 1]` 로 clip. 새 변환을 추가할 때는 규칙을 명시적으로 등록하고 테스트 필수.
+- **`MetricsDerivedScoreProvider` 의 metadata lookup 실패는 swallow**. 모든 차원이 per-rule fallback(기본 0.5) 로 채워지며, gate 는 그 결과로 LIMITED 로 conservative 수렴. 로그에 exception 을 남기되 flow 를 중단하지 않는다.
+- **CompositeProvider 는 earliest-wins 순서**다. 제공 순서를 바꾸면 override 의미가 바뀌므로, pipeline 설정을 변경할 때는 주석으로 이유를 남긴다. 실패한 provider 는 자동으로 skip 되어 다음 provider 가 평가된다.
+- **Gate enabled=true 전환 전 provider 필수**. `compliance.promotion_gate.enabled=true` 상태에서 provider 가 없으면 default 0.5 로 모든 gate 가 LIMITED 로 수렴해 실질 게이트 역할을 못한다 (§1.12 재확인). 배포 체크리스트에 반드시 포함.
+
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:
   1. **Phase 0 출력 검증**: feature_stats.json에서 zero-variance 컬럼, NaN 비율, 생성된 피처 컬럼 수 확인
