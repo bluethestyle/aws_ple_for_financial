@@ -45,11 +45,20 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from .cold_start_strategy import TaskColdStartRegistry, UserSegment
+from .cold_start_strategy import TaskColdStartRegistry
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["ColdStartHandler", "UserSegment"]
+
+
+class UserSegment:
+    """User engagement segment. Keep string values to stay JSON-friendly
+    across Lambda / ECS boundaries."""
+
+    ANONYMOUS = "ANONYMOUS"    # segment=0: no user_id context
+    COLDSTART = "COLDSTART"    # segment=1: user_id known, no history
+    WARMSTART = "WARMSTART"    # segment=2: full feature history available
 
 
 class ColdStartHandler:

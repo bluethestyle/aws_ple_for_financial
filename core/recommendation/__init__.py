@@ -31,6 +31,22 @@ from .pipeline import RecommendationPipeline, RecommendationResult, Recommendati
 from .audit_archiver import RecommendationAuditArchiver, RecommendationAuditRecord
 from .rule_engine import RuleBasedRecommender
 from .fallback_router import FallbackRouter
+# Sprint 3 additions
+from .universe import (
+    Campaign,
+    CampaignStatus,
+    DynamicItemUniverseLoader,
+    Item,
+    ItemUniverseConfig,
+    Product,
+    build_item_universe_loader,
+)
+from .reason.marker_applier import (
+    DEFAULT_MARKER_TEXT,
+    MarkerApplier,
+    MarkerConfig,
+    wrap_provider,
+)
 
 __all__ = [
     # scorer
@@ -58,4 +74,17 @@ __all__ = [
     # layer 3 fallback
     "RuleBasedRecommender",
     "FallbackRouter",
+    # Sprint 3 M10: dynamic item universe
+    "Campaign",
+    "CampaignStatus",
+    "DynamicItemUniverseLoader",
+    "Item",
+    "ItemUniverseConfig",
+    "Product",
+    "build_item_universe_loader",
+    # Sprint 3 M12: LLM marker
+    "DEFAULT_MARKER_TEXT",
+    "MarkerApplier",
+    "MarkerConfig",
+    "wrap_provider",
 ]

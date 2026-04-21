@@ -89,19 +89,60 @@ class KillSwitch:
         fallback_strategy: str = "rule_based",
         region: str = "ap-northeast-2",
         audit_store=None,
+        use_dynamo: bool = True,
     ) -> None:
-        import boto3
-
         self._table_name = table_name
         self._fallback = FallbackStrategy(fallback_strategy)
         self._region = region
         self._audit_store = audit_store
+        self._table = None
+        self._memory: Dict[str, Dict[str, Any]] = {}
 
-        dynamodb = boto3.resource("dynamodb", region_name=region)
-        self._table = dynamodb.Table(table_name)
+        if use_dynamo:
+            try:
+                import boto3
 
-        logger.info(
-            "KillSwitch: table=%s, fallback=%s", table_name, fallback_strategy,
+                dynamodb = boto3.resource("dynamodb", region_name=region)
+                self._table = dynamodb.Table(table_name)
+                logger.info(
+                    "KillSwitch: table=%s, fallback=%s",
+                    table_name, fallback_strategy,
+                )
+            except Exception:
+                logger.warning(
+                    "KillSwitch: boto3 unavailable; using in-memory backend",
+                )
+        else:
+            logger.info(
+                "KillSwitch: in-memory backend, fallback=%s", fallback_strategy,
+            )
+
+    # ------------------------------------------------------------------
+    # Config-driven factory (Sprint 3 M2 extension)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_config(
+        cls,
+        pipeline_config: Optional[Dict[str, Any]] = None,
+        audit_store=None,
+    ) -> "KillSwitch":
+        """Build from the ``serving.kill_switch`` block of pipeline.yaml.
+
+        Unknown / missing block falls back to defaults (DynamoDB on AWS,
+        in-memory elsewhere).
+        """
+        serving = (pipeline_config or {}).get("serving") or {}
+        ks_cfg = serving.get("kill_switch") or {}
+        backend = str(ks_cfg.get("backend", "dynamodb"))
+        return cls(
+            table_name=str(ks_cfg.get("table_name", "ple-kill-switch")),
+            fallback_strategy=str(
+                ks_cfg.get("fallback_strategy", "rule_based")
+            ),
+            region=str(ks_cfg.get("region", "ap-northeast-2")),
+            audit_store=audit_store,
+            use_dynamo=(backend == "dynamodb"),
         )
 
     # ------------------------------------------------------------------
@@ -145,7 +186,24 @@ class KillSwitch:
         return KillSwitchState(active=False, scope="none")
 
     def _get_switch(self, switch_key: str) -> KillSwitchState:
-        """Fetch a single switch entry from DynamoDB."""
+        """Fetch a single switch entry (DynamoDB or in-memory)."""
+        if self._table is None:
+            item = self._memory.get(switch_key)
+            if item is None:
+                return KillSwitchState(active=False, scope=switch_key)
+            return KillSwitchState(
+                active=bool(item.get("active", False)),
+                scope=switch_key,
+                reason=str(item.get("reason", "")),
+                activated_at=str(item.get("activated_at", "")),
+                activated_by=str(item.get("activated_by", "")),
+                fallback_strategy=self._fallback,
+                metadata={
+                    k: v for k, v in item.items()
+                    if k not in {"switch_key", "active", "reason",
+                                 "activated_at", "activated_by"}
+                },
+            )
         try:
             response = self._table.get_item(
                 Key={"switch_key": switch_key},
@@ -209,11 +267,14 @@ class KillSwitch:
             "activated_by": activated_by,
         }
 
-        try:
-            self._table.put_item(Item=item)
-        except Exception:
-            logger.exception("KillSwitch.activate failed: scope=%s", scope)
-            raise
+        if self._table is None:
+            self._memory[scope] = dict(item)
+        else:
+            try:
+                self._table.put_item(Item=item)
+            except Exception:
+                logger.exception("KillSwitch.activate failed: scope=%s", scope)
+                raise
 
         logger.warning(
             "KillSwitch ACTIVATED: scope=%s, reason=%s, by=%s",
@@ -258,22 +319,30 @@ class KillSwitch:
 
         now = datetime.now(timezone.utc).isoformat()
 
-        try:
-            self._table.update_item(
-                Key={"switch_key": scope},
-                UpdateExpression=(
-                    "SET active = :a, deactivated_at = :t, "
-                    "deactivated_by = :b"
-                ),
-                ExpressionAttributeValues={
-                    ":a": False,
-                    ":t": now,
-                    ":b": deactivated_by,
-                },
-            )
-        except Exception:
-            logger.exception("KillSwitch.deactivate failed: scope=%s", scope)
-            raise
+        if self._table is None:
+            item = self._memory.setdefault(scope, {"switch_key": scope})
+            item["active"] = False
+            item["deactivated_at"] = now
+            item["deactivated_by"] = deactivated_by
+        else:
+            try:
+                self._table.update_item(
+                    Key={"switch_key": scope},
+                    UpdateExpression=(
+                        "SET active = :a, deactivated_at = :t, "
+                        "deactivated_by = :b"
+                    ),
+                    ExpressionAttributeValues={
+                        ":a": False,
+                        ":t": now,
+                        ":b": deactivated_by,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "KillSwitch.deactivate failed: scope=%s", scope,
+                )
+                raise
 
         logger.info(
             "KillSwitch DEACTIVATED: scope=%s, by=%s", scope, deactivated_by,

@@ -239,6 +239,15 @@ class RecommendationService:
         audit_logger: Optional[Any] = None,
         fairness_monitor: Optional[Any] = None,
         prompt_sanitizer: Optional[Any] = None,
+        # Sprint 1~3 integration hooks (all optional; pure metadata annotation
+        # by default so nothing is blocked until the operator opts in).
+        opt_out_manager: Optional[Any] = None,           # M4 rights.OptOutManager
+        profiling_workflow: Optional[Any] = None,         # M5 rights.ProfilingWorkflow
+        explanation_sla_tracker: Optional[Any] = None,    # M6 rights.ExplanationSLATracker
+        ai_risk_classifier: Optional[Any] = None,         # M9
+        review_queue: Optional[Any] = None,               # M1
+        item_universe_loader: Optional[Any] = None,       # M10
+        marker_applier: Optional[Any] = None,             # M12
     ) -> None:
         from .feature_store import AbstractFeatureStore
 
@@ -271,6 +280,15 @@ class RecommendationService:
         # Classifies and scrubs prompts before they reach any LLM provider.
         # When None, no sanitization is performed (backward-compatible).
         self._prompt_sanitizer = prompt_sanitizer
+
+        # --- Sprint 1~3 integration hooks (non-blocking annotations) ---
+        self._opt_out_manager = opt_out_manager
+        self._profiling_workflow = profiling_workflow
+        self._explanation_sla_tracker = explanation_sla_tracker
+        self._ai_risk_classifier = ai_risk_classifier
+        self._review_queue = review_queue
+        self._item_universe_loader = item_universe_loader
+        self._marker_applier = marker_applier
 
         # --- 3-layer fallback components (all optional) ---
         # When fallback_router is None the service behaves exactly as before
@@ -444,6 +462,14 @@ class RecommendationService:
                     user_id,
                     exc_info=True,
                 )
+
+        # ---- 1e. Rights annotations (Sprint 1: M4/M5/M6) ----
+        # Non-blocking: surface SLA breaches + pending profiling requests in
+        # metadata so downstream services can act on them. Each hook is
+        # independent and swallows its own exceptions.
+        self._annotate_explanation_sla(user_id, metadata)
+        self._annotate_profiling_rights(user_id, metadata)
+        self._annotate_ai_risk_grade(metadata)
 
         # ---- 2. A/B variant selection ----
         variant_name = ""
@@ -624,11 +650,43 @@ class RecommendationService:
                     seen[name] = value
             ctx["ig_top_features"] = sorted(seen.items(), key=lambda x: -x[1])
 
+        # ---- 7a. Dynamic item universe (Sprint 3 M10) ----
+        # Injects the current eligible campaign + product set so the pipeline
+        # never serves stale / canceled items. Ignored when loader disabled.
+        if self._item_universe_loader is not None:
+            try:
+                universe_items = self._item_universe_loader.load()
+                if universe_items:
+                    ctx["candidate_items"] = [
+                        {"item_id": i.item_id, "item_type": i.item_type,
+                         "name": i.name, "status": i.status,
+                         **(i.metadata or {})}
+                        for i in universe_items
+                    ]
+                    metadata["universe_items_loaded"] = len(universe_items)
+            except Exception:
+                logger.warning(
+                    "Dynamic item universe load failed for user_id=%s; "
+                    "continuing (non-blocking)",
+                    user_id,
+                    exc_info=True,
+                )
+
         recommendations: List[Dict[str, Any]] = []
         if self._pipeline is not None:
             recommendations = self._run_pipeline(
                 user_id, normalised, ctx,
             )
+
+        # ---- 7b. Human review triage (Sprint 3 M1) ----
+        # Tier is supplied by the caller via ctx["agent_tier"] (1/2/3). The
+        # queue policy decides whether to enqueue; returns None when the
+        # tier is allowed to auto-execute.
+        self._triage_for_review(user_id, recommendations, ctx, metadata)
+
+        # ---- 7c. LLM generation marker (Sprint 3 M12) ----
+        # Post-processes L2a reason_text to satisfy AI기본법 §31 disclosure.
+        self._apply_llm_marker_to_recommendations(recommendations)
 
         # ---- 8. A/B metric recording ----
         elapsed = self._elapsed(t0)
@@ -916,6 +974,137 @@ class RecommendationService:
                 user_id,
             )
             return []
+
+    # ------------------------------------------------------------------
+    # Sprint 1-3 hook helpers (Sprint 4 integration)
+    # ------------------------------------------------------------------
+
+    def _annotate_explanation_sla(
+        self, user_id: str, metadata: Dict[str, Any],
+    ) -> None:
+        """M6 ExplanationSLATracker - surface pending / breached requests."""
+        tracker = self._explanation_sla_tracker
+        if tracker is None:
+            return
+        try:
+            pending = tracker.list_pending(user_id=user_id)
+            if not pending:
+                return
+            metadata["pending_explanations"] = len(pending)
+            breached = [r for r in pending if r.is_overdue()]
+            if breached:
+                metadata["explanation_sla_breaches"] = len(breached)
+                logger.warning(
+                    "Explanation SLA breach for user_id=%s: %d pending overdue",
+                    user_id, len(breached),
+                )
+        except Exception:
+            logger.debug(
+                "ExplanationSLATracker annotation failed for user_id=%s",
+                user_id, exc_info=True,
+            )
+
+    def _annotate_profiling_rights(
+        self, user_id: str, metadata: Dict[str, Any],
+    ) -> None:
+        """M5 ProfilingWorkflow - surface pending access/correction/deletion."""
+        wf = self._profiling_workflow
+        if wf is None:
+            return
+        try:
+            pending = wf.list_pending_for_user(user_id)
+            if pending:
+                metadata["pending_profiling_requests"] = len(pending)
+                metadata["pending_profiling_types"] = sorted({
+                    r.request_type for r in pending
+                })
+        except Exception:
+            logger.debug(
+                "ProfilingWorkflow annotation failed for user_id=%s",
+                user_id, exc_info=True,
+            )
+
+    def _annotate_ai_risk_grade(self, metadata: Dict[str, Any]) -> None:
+        """M9 AIRiskClassifier - annotate the latest grade of the active model."""
+        clf = self._ai_risk_classifier
+        if clf is None:
+            return
+        try:
+            model_version = metadata.get("model_version")
+            if not model_version:
+                return
+            latest = clf.latest_for_model(model_version)
+            if latest is None:
+                return
+            metadata["ai_risk_grade"] = latest.grade
+            metadata["ai_risk_score"] = latest.total_score
+            if latest.grade_change:
+                metadata["ai_risk_grade_change"] = True
+        except Exception:
+            logger.debug(
+                "AIRiskClassifier annotation failed", exc_info=True,
+            )
+
+    def _triage_for_review(
+        self,
+        user_id: str,
+        recommendations: List[Dict[str, Any]],
+        ctx: Dict[str, Any],
+        metadata: Dict[str, Any],
+    ) -> None:
+        """M1 HumanReviewQueue - enqueue tier-based review (if required)."""
+        queue = self._review_queue
+        if queue is None or not recommendations:
+            return
+        try:
+            tier = int(ctx.get("agent_tier", 0))
+        except (TypeError, ValueError):
+            tier = 0
+        if tier not in (1, 2, 3):
+            return
+        try:
+            top = recommendations[0]
+            rec_id = str(
+                top.get("recommendation_id")
+                or top.get("item_id")
+                or top.get("product_id")
+                or "unknown"
+            )
+            item = queue.enqueue(
+                user_id=user_id,
+                recommendation_id=rec_id,
+                tier=tier,
+                payload={
+                    "recommendations_count": len(recommendations),
+                    "variant": metadata.get("ab_variant", ""),
+                },
+            )
+            if item is not None:
+                metadata["review_id"] = item.review_id
+                metadata["review_tier"] = item.tier
+        except Exception:
+            logger.debug(
+                "HumanReviewQueue triage failed for user_id=%s",
+                user_id, exc_info=True,
+            )
+
+    def _apply_llm_marker_to_recommendations(
+        self, recommendations: List[Dict[str, Any]],
+    ) -> None:
+        """M12 MarkerApplier - idempotent AI 생성 표시 on reason_text."""
+        applier = self._marker_applier
+        if applier is None or not recommendations:
+            return
+        try:
+            for rec in recommendations:
+                text = rec.get("reason_text")
+                if not isinstance(text, str):
+                    continue
+                rec["reason_text"] = applier.apply(text)
+        except Exception:
+            logger.debug(
+                "MarkerApplier post-processing failed", exc_info=True,
+            )
 
     # ------------------------------------------------------------------
     # Fallback

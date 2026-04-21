@@ -83,6 +83,14 @@ class RecommendationAuditRecord:
     segment_id: int = -1
     timestamp: str = ""
     batch_id: str = ""
+    # Sprint 3 M11 extensions (agentic + compliance trail)
+    # All columns are nullable-by-default so existing Parquet readers keep
+    # working on older rows.
+    thinking_trace: str = ""                 # Agent reasoning chain (L1/L2a)
+    hallucination_flags: List[str] = field(default_factory=list)
+    tools_used: List[str] = field(default_factory=list)
+    critique_verdict: str = ""               # SelfChecker final call
+    agent_tier: int = 0                      # 1 / 2 / 3 tier (0 = n/a)
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +178,13 @@ class RecommendationAuditArchiver:
         # Serialize nested structures to JSON strings for Parquet compatibility
         row["score_components"] = json.dumps(row["score_components"], default=str)
         row["feature_importances"] = json.dumps(row["feature_importances"], default=str)
+        # Sprint 3 M11 extensions — list columns flattened to JSON strings
+        row["hallucination_flags"] = json.dumps(
+            row.get("hallucination_flags", []), default=str
+        )
+        row["tools_used"] = json.dumps(
+            row.get("tools_used", []), default=str
+        )
 
         self._buffer.append(row)
 

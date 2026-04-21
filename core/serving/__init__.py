@@ -47,6 +47,14 @@ from .cold_start_strategy import (
 from .cpe_engine import CPEEngine, CPEDecision
 from .agentic_orchestrator import ServingAgenticOrchestrator, ReasonResponse
 from .vector_store import ServingVectorStore, SearchResult
+# Sprint 3 additions
+from .review import (
+    HumanReviewQueue,
+    ReviewConfig,
+    ReviewItem,
+    ReviewState,
+    build_human_review_queue,
+)
 
 __all__ = [
     # config
@@ -97,4 +105,10 @@ __all__ = [
     "ReasonResponse",
     "ServingVectorStore",
     "SearchResult",
+    # Sprint 3 M1: Human Review Queue
+    "HumanReviewQueue",
+    "ReviewConfig",
+    "ReviewItem",
+    "ReviewState",
+    "build_human_review_queue",
 ]
