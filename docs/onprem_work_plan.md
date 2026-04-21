@@ -319,17 +319,25 @@ Paper 3 Finding 7 의 9-way fusion 비교에서 나온 기법들. 온프렘 `src
 | **Orchestration** | SageMaker 순차 | Airflow DAGs | AWS vs 온프렘 의도적 분리 (CLAUDE.md 명시) |
 | **Data store** | S3 Parquet | DuckDB + files | 동일 |
 
-### 10.5 온프렘 전용 (AWS 로 역수입 검토 대상)
+### 10.5 양쪽 있지만 구조 다른 항목
 
-참고: 반대 방향 gap 도 있음. AWS 에 없고 온프렘에만 있는 것들. 필요 시 일부는 AWS 로 역수입 가능.
+| 컴포넌트 | AWS 구조 | 온프렘 구조 | 비고 |
+|---|---|---|---|
+| **FD-TVS scoring** | `core/recommendation/scorer.py::FDTVSScorer` (단일 클래스, `_stage1~4` 메서드) | `src/scoring/` 분리: `fd_tvs_scorer.py` + `dna_modifier.py` + `fatigue_decay.py` + `risk_penalty.py` + `segment_classifier.py` | 기능 동등. 온프렘이 테스트 용이성 위해 분리, AWS 는 config-driven plugin 방식으로 집약. **API 정합성만 점검**하면 됨 |
+| **4-stage 구성** | `S_task * W_modifier * V_velocity * R_penalty` | 동일 | 수식 레벨은 일치 |
+| **segment_task_weights + dynamic_weight_rules** | AWS `scorer.py` L312-318 | 온프렘 segment_classifier + FD-TVS 조합 | 양쪽 모두 config-driven |
+
+→ **"AWS 역수입 검토" 에서 제외.** 기능은 이미 양쪽에 있음. 다만 온프렘 분리 구조가 더 테스트 친화적이라, AWS v2 에서 AWS 측을 온프렘 스타일로 리팩터링 검토는 가능.
+
+### 10.6 온프렘 전용 (AWS 로 역수입 검토 대상)
 
 | 컴포넌트 | 온프렘 위치 | AWS 역수입 가치 |
 |---|---|---|
-| FD-TVS scoring (dna_modifier, fatigue_decay, risk_penalty, segment_classifier) | `src/scoring/` | 금감원 스토리 강화 시 AWS Paper 2 에도 이식 고려 |
-| Human review queue + kill switch | `src/recommendation/` | AWS 에는 compliance/human_review 로 대체 가능 |
-| Explanation SLA tracker | `src/recommendation/explanation_sla_tracker.py` | AWS Paper 2 에 없는 운영 지표 |
-| EU AI Act mapper (운영 관점) | `src/monitoring/eu_ai_act_mapper.py`, `fria_evaluator.py` | AWS 도 Paper 2 에 eu_ai_act 매핑 있으나 코드 레벨은 온프렘이 더 상세 |
-| 다학제 피처 (TDA, HGCN 그래프 라이브러리 포함) | `src/graph/`, `src/timeseries/`, `src/domain_features/` | AWS 는 expert 내부에서만 처리; 온프렘은 별도 모듈 |
+| Human review queue + kill switch | `src/recommendation/human_review_queue.py`, `kill_switch.py` | AWS 는 compliance 로직만 있고 큐/스위치 미구현. Paper 2 운영 스토리 보강 가능 |
+| Explanation SLA tracker | `src/recommendation/explanation_sla_tracker.py` | AWS Paper 2 에 없는 운영 지표 (설명 생성 SLA) |
+| EU AI Act mapper (운영 관점) | `src/monitoring/eu_ai_act_mapper.py`, `fria_evaluator.py` | AWS 는 Paper 2 에 eu_ai_act 매핑 있으나 코드 레벨은 온프렘이 더 상세 |
+| 다학제 피처 모듈 (graph/timeseries/domain_features) | `src/graph/`, `src/timeseries/`, `src/domain_features/` | AWS 는 expert 내부에서만 처리; 온프렘은 별도 모듈화 |
+| Airflow DAG 운영 정책 | `src/airflow_dags/`, `CLAUDE.md` (execution_timeout 금지 등) | AWS 는 SageMaker 순차 실행이라 해당 없음 |
 
 ---
 
