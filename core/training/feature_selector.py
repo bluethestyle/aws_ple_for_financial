@@ -296,11 +296,13 @@ class FeatureSelector:
         lgbm_model: Any = None,
         feature_names: Optional[List[str]] = None,
     ) -> FeatureSelectionResult:
-        """Combined: LGBM gain selection -> mandatory features.
+        """Combined 3-stage pipeline:
 
-        Runs the 2-stage pipeline.  If ``lgbm_model`` is ``None``,
-        only Stage 2 (mandatory features) is applied.
-        Teacher IG attribution is not used.
+        1. Stage 1: IG-based cumulative selection.
+        2. Stage 2: LGBM gain pruning (optional, when ``lgbm_model`` is given).
+        3. Stage 3: Mandatory feature guarantee — domain-critical features
+           listed in ``config.mandatory_features`` are always added back to
+           the final set, even if they were dropped by Stages 1 or 2.
 
         Args:
             model: PLE teacher model.
@@ -315,11 +317,12 @@ class FeatureSelector:
         # Stage 1
         ig_result = self.select_by_ig(model, features, task_name, feature_names)
 
+        all_names = feature_names or [
+            f"f_{i}" for i in range(ig_result.original_count)
+        ]
+
         # Stage 2
         if lgbm_model is not None:
-            all_names = feature_names or [
-                f"f_{i}" for i in range(ig_result.original_count)
-            ]
             pruned_indices = self.prune_by_lgbm(
                 lgbm_model,
                 all_names,
@@ -332,6 +335,47 @@ class FeatureSelector:
                 (1 - len(pruned_indices) / ig_result.original_count) * 100, 1,
             )
             ig_result.selection_method = "combined"
+
+        # Stage 3: Mandatory feature guarantee
+        mandatory_names = list(self._config.mandatory_features or [])
+        if mandatory_names:
+            name_to_idx = {n: i for i, n in enumerate(all_names)}
+            mandatory_idx = [
+                name_to_idx[n] for n in mandatory_names
+                if n in name_to_idx
+            ]
+            missing = [
+                n for n in mandatory_names if n not in name_to_idx
+            ]
+            if missing:
+                logger.warning(
+                    "Mandatory features not in feature_names: %s",
+                    missing,
+                )
+            added = [i for i in mandatory_idx if i not in ig_result.selected_indices]
+            if added:
+                combined = sorted(
+                    set(ig_result.selected_indices) | set(mandatory_idx)
+                )
+                ig_result.selected_indices = combined
+                ig_result.selected_names = [all_names[i] for i in combined]
+                ig_result.selected_count = len(combined)
+                ig_result.reduction_pct = round(
+                    (1 - len(combined) / ig_result.original_count) * 100, 1,
+                )
+                ig_result.mandatory_included = [
+                    all_names[i] for i in mandatory_idx
+                ]
+                ig_result.selection_method = (
+                    "combined_with_mandatory"
+                    if lgbm_model is not None
+                    else "ig_with_mandatory"
+                )
+                logger.info(
+                    "Stage 3 restored %d mandatory feature(s) for task=%s: %s",
+                    len(added), task_name,
+                    [all_names[i] for i in added],
+                )
 
         return ig_result
 

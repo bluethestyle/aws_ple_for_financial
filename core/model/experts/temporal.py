@@ -610,6 +610,100 @@ class TemporalEnsembleExpert(AbstractExpert):
             self._output_dim,
         )
 
+        # Sprint 2 S4: HMM-smoothed ensemble gating (config single-source).
+        # Disabled by default; activated via `set_hmm_routing(True, ...)` or
+        # via `config["hmm_routing"]` block.
+        self._hmm_routing_enabled: bool = False
+        self._hmm_smoothing: float = 0.0
+        self._hmm_transition: Optional[torch.Tensor] = None
+        hmm_cfg = config.get("hmm_routing") or {}
+        if hmm_cfg.get("enabled", False):
+            self.set_hmm_routing(
+                enabled=True,
+                smoothing=float(hmm_cfg.get("smoothing", 0.1)),
+                transition_prior=hmm_cfg.get("transition_prior"),
+            )
+
+    # ------------------------------------------------------------------
+    # Sprint 2 S4: HMM routing
+    # ------------------------------------------------------------------
+
+    def set_hmm_routing(
+        self,
+        enabled: bool,
+        smoothing: float = 0.1,
+        transition_prior: Optional[Any] = None,
+    ) -> None:
+        """Toggle HMM-style smoothing on the ensemble gating weights.
+
+        Args:
+            enabled: If True, gating weights produced by ``self.gate`` are
+                post-multiplied by a row-stochastic transition matrix before
+                being applied to the sub-model outputs. This reduces
+                per-sample variance of the gating decision (analogous to
+                an HMM forward pass over a 1-step sequence).
+            smoothing: Off-diagonal weight in the transition matrix
+                (``0.0`` = identity = no smoothing; ``1 / n`` = uniform).
+                Must be in ``[0, 1 / (n_models - 1)]``; clipped otherwise.
+            transition_prior: Optional ``(n_models, n_models)`` tensor /
+                list overriding the smoothing-based default. Rows are
+                re-normalised to sum to 1.
+        """
+        if self.gate is None:
+            # Either gating is off, or only one sub-model → nothing to smooth.
+            self._hmm_routing_enabled = False
+            return
+
+        num_models = sum([
+            self.mamba_enabled, self.transformer_enabled, self.lnn_enabled,
+        ])
+        if num_models <= 1:
+            self._hmm_routing_enabled = False
+            return
+
+        self._hmm_routing_enabled = bool(enabled)
+        if not enabled:
+            return
+
+        if transition_prior is not None:
+            mat = torch.as_tensor(transition_prior, dtype=torch.float32)
+            if mat.shape != (num_models, num_models):
+                raise ValueError(
+                    f"transition_prior shape {tuple(mat.shape)} "
+                    f"must be ({num_models}, {num_models})"
+                )
+            row_sum = mat.sum(dim=-1, keepdim=True).clamp(min=1e-12)
+            mat = mat / row_sum
+        else:
+            s = max(0.0, min(smoothing, 1.0 / max(1, num_models - 1)))
+            off = s
+            diag = 1.0 - s * (num_models - 1)
+            mat = torch.full(
+                (num_models, num_models), off, dtype=torch.float32,
+            )
+            mat.fill_diagonal_(diag)
+
+        self._hmm_smoothing = float(smoothing)
+        # Store as buffer so it moves with .to(device) but doesn't train.
+        self.register_buffer("_hmm_transition_buf", mat, persistent=False)
+        self._hmm_transition = self._hmm_transition_buf  # alias
+        logger.info(
+            "HMM routing enabled: n_models=%d smoothing=%.3f",
+            num_models, self._hmm_smoothing,
+        )
+
+    def _apply_hmm_smoothing(
+        self, gate_weights: torch.Tensor
+    ) -> torch.Tensor:
+        """Multiply gate weights by the learned / configured transition
+        matrix and re-normalise. Left alone when HMM routing is disabled
+        or the transition buffer is missing."""
+        if (not self._hmm_routing_enabled) or self._hmm_transition is None:
+            return gate_weights
+        smoothed = gate_weights @ self._hmm_transition.to(gate_weights.device)
+        smoothed = smoothed.clamp(min=1e-12)
+        return smoothed / smoothed.sum(dim=-1, keepdim=True)
+
     @property
     def output_dim(self) -> int:
         return self._output_dim
@@ -677,6 +771,8 @@ class TemporalEnsembleExpert(AbstractExpert):
         if self.gate is not None and len(outputs) > 1:
             concat = torch.cat(outputs, dim=-1)
             gate_weights = self.gate(concat)  # [B, num_models]
+            # Sprint 2 S4: HMM-smoothed gating (no-op when disabled)
+            gate_weights = self._apply_hmm_smoothing(gate_weights)
             projected = [proj(out) for proj, out in zip(self.model_projs, outputs)]
             expert_output = sum(
                 w.unsqueeze(-1) * p

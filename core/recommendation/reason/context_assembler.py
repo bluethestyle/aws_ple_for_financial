@@ -144,6 +144,13 @@ class AssembledContext:
     regulatory_notes: List[str] = field(default_factory=list)
     # e.g. ["AI 기반 추천임을 고지", "원금 손실 가능성 안내 필수"]
 
+    # Source 6 (Sprint 2 S12): Multidisciplinary interpreter insights —
+    # each key is a domain label (e.g. "behavioral_economics", "risk_mgmt")
+    # and each value is a short natural-language insight derived from
+    # features + segment + product. Populated when a
+    # `multidisciplinary_interpreter` is attached to the assembler.
+    multidisciplinary_insights: Dict[str, str] = field(default_factory=dict)
+
     # Metadata
     assembled_at: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -168,6 +175,7 @@ class AssembledContext:
             "consultation_summary": self.consultation_summary,
             "segment_info": self.segment_info,
             "regulatory_notes": self.regulatory_notes,
+            "multidisciplinary_insights": dict(self.multidisciplinary_insights),
             "assembled_at": self.assembled_at,
             **self.extra,
         }
@@ -296,6 +304,7 @@ class ContextAssembler:
         consultation_store=None,
         segment_store=None,
         regulatory_config: Optional[Dict[str, List[str]]] = None,
+        multidisciplinary_interpreter=None,
     ) -> None:
         self._reverse_mapper = reverse_mapper
         self._product_catalog = product_catalog
@@ -305,11 +314,16 @@ class ContextAssembler:
             regulatory_config if regulatory_config is not None
             else _DEFAULT_REGULATORY_NOTES
         )
+        # Sprint 2 S12: optional multidisciplinary interpreter.
+        # Contract: any object exposing ``interpret(context_dict) -> dict[str, str]``
+        # or a plain callable with the same signature.
+        self._multidisciplinary_interpreter = multidisciplinary_interpreter
 
         logger.info(
             "ContextAssembler initialised: reverse_mapper=%s, "
             "product_catalog=%s, consultation_store=%s, "
-            "segment_store=%s, regulatory_config=%d task(s)",
+            "segment_store=%s, regulatory_config=%d task(s), "
+            "multidisciplinary_interpreter=%s",
             type(self._reverse_mapper).__name__ if self._reverse_mapper else "None",
             "dict" if isinstance(self._product_catalog, dict)
             else ("callable" if callable(self._product_catalog) else "None"),
@@ -318,7 +332,45 @@ class ContextAssembler:
             "dict" if isinstance(self._segment_store, dict)
             else ("callable" if callable(self._segment_store) else "None"),
             len(self._regulatory_config),
+            self._multidisciplinary_interpreter is not None,
         )
+
+    # ------------------------------------------------------------------
+    # Sprint 2 S12: interpreter attachment
+    # ------------------------------------------------------------------
+
+    def attach_interpreter(self, interpreter) -> None:
+        """Plug in a multidisciplinary interpreter at runtime.
+
+        Any object with an ``interpret(context_dict) -> Dict[str, str]``
+        method, or a bare callable with the same signature, is accepted.
+        Passing ``None`` detaches the current interpreter.
+        """
+        self._multidisciplinary_interpreter = interpreter
+
+    def _run_interpreter(
+        self, assembled: "AssembledContext",
+    ) -> Dict[str, str]:
+        """Call the attached interpreter and normalize its output."""
+        interp = self._multidisciplinary_interpreter
+        if interp is None:
+            return {}
+        try:
+            if hasattr(interp, "interpret"):
+                result = interp.interpret(assembled.to_dict())
+            elif callable(interp):
+                result = interp(assembled.to_dict())
+            else:
+                return {}
+        except Exception:
+            logger.exception(
+                "Multidisciplinary interpreter failed for customer=%s",
+                assembled.customer_id,
+            )
+            return {}
+        if not isinstance(result, dict):
+            return {}
+        return {str(k): str(v) for k, v in result.items() if v}
 
     # ------------------------------------------------------------------
     # Public API
@@ -392,7 +444,7 @@ class ContextAssembler:
             task_name=task_name,
         )
 
-        return AssembledContext(
+        assembled = AssembledContext(
             customer_id=customer_id,
             task_name=task_name,
             product_id=product_id,
@@ -404,6 +456,14 @@ class ContextAssembler:
             assembled_at=assembled_at,
             extra=extra_context if extra_context else {},
         )
+
+        # Source 6 (Sprint 2 S12): multidisciplinary interpretation
+        if self._multidisciplinary_interpreter is not None:
+            insights = self._run_interpreter(assembled)
+            if insights:
+                assembled.multidisciplinary_insights = insights
+
+        return assembled
 
     # ------------------------------------------------------------------
     # Source 1: Feature interpretations via ReverseMapper

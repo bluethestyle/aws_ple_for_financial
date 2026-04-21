@@ -37,7 +37,7 @@ Example::
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -146,26 +146,90 @@ class EvidentialLayer(nn.Module):
     # ── Forward ─────────────────────────────────────────────────
 
     def forward(
-        self, x: torch.Tensor
+        self,
+        x: torch.Tensor,
+        valid_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Compute prediction and evidential uncertainty.
 
         Args:
             x: Expert feature tensor ``(B, input_dim)``.
+            valid_mask: Optional ``(B,)`` boolean / 0-1 float tensor. When
+                supplied, rows where ``valid_mask == 0`` are guaranteed to
+                have a finite prediction and max-uncertainty output even if
+                the input row contains NaN / Inf values. When ``None``, the
+                layer auto-detects non-finite rows and marks them invalid.
 
         Returns:
-            ``(prediction, evidence_info)`` where:
-
-            * ``prediction`` -- ``(B,)`` for binary/regression, ``(B, K)``
-              for multiclass.
-            * ``evidence_info`` -- dict with at least ``"prediction"``,
-              ``"uncertainty"``, and the raw distribution parameters.
+            ``(prediction, evidence_info)`` where ``evidence_info`` also
+            includes ``"valid_mask"`` (effective mask) so that the loss
+            function can skip invalid rows.
         """
+        # Sprint 2 S3: auto-detect invalid rows if no explicit mask given.
+        if valid_mask is None:
+            finite = torch.isfinite(x).all(dim=-1)
+            valid_mask = finite.to(x.dtype)
+        else:
+            valid_mask = valid_mask.to(x.dtype)
+            if valid_mask.dim() != 1 or valid_mask.shape[0] != x.shape[0]:
+                raise ValueError(
+                    f"valid_mask shape {tuple(valid_mask.shape)} must be "
+                    f"(B,) matching x's batch dim {x.shape[0]}"
+                )
+
+        # Replace any non-finite inputs with zeros before the linear layer
+        # so the forward pass never produces NaN gradients.
+        safe_x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
         if self.task_type == "binary":
-            return self._forward_binary(x)
-        if self.task_type == "multiclass":
-            return self._forward_multiclass(x)
-        return self._forward_regression(x)
+            pred, info = self._forward_binary(safe_x)
+        elif self.task_type == "multiclass":
+            pred, info = self._forward_multiclass(safe_x)
+        else:
+            pred, info = self._forward_regression(safe_x)
+
+        # Apply the mask: invalid rows keep a neutral prediction (0.5 for
+        # binary, 1/K for multiclass, 0.0 for regression) and max uncertainty.
+        if (valid_mask == 0).any():
+            pred, info = self._apply_valid_mask(pred, info, valid_mask)
+        info["valid_mask"] = valid_mask
+        return pred, info
+
+    def _apply_valid_mask(
+        self,
+        pred: torch.Tensor,
+        info: Dict[str, torch.Tensor],
+        valid_mask: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """Overwrite invalid-row predictions with a neutral + max-uncertainty
+        placeholder. Keeps the evidence parameters in the info dict
+        untouched so downstream loss functions can still read them for
+        valid rows via the returned mask."""
+        if self.task_type == "binary":
+            neutral = torch.full_like(pred, 0.5)
+        elif self.task_type == "multiclass":
+            neutral = torch.full_like(pred, 1.0 / float(self.output_dim))
+        else:
+            neutral = torch.zeros_like(pred)
+
+        mask_3d = valid_mask
+        if pred.dim() == 2 and valid_mask.dim() == 1:
+            mask_3d = valid_mask.unsqueeze(-1)
+        pred = torch.where(mask_3d.bool(), pred, neutral)
+
+        # Uncertainty → very large value where invalid (model says "I don't know").
+        unc = info.get("uncertainty")
+        if unc is not None:
+            if unc.dim() != valid_mask.dim():
+                inv_mask = (valid_mask == 0).unsqueeze(-1) if unc.dim() > 1 else (valid_mask == 0)
+            else:
+                inv_mask = valid_mask == 0
+            # Use 1.0 as the max-uncertainty canonical value; loss functions
+            # already clamp this per task.
+            unc = torch.where(inv_mask, torch.ones_like(unc), unc)
+            info["uncertainty"] = unc
+        info["prediction"] = pred
+        return pred, info
 
     def _forward_binary(
         self, x: torch.Tensor
