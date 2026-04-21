@@ -691,8 +691,9 @@ aws:
 #   금소법 §17 (적합성)
 # ---------------------------------------------------------------------------
 compliance:
-  # region / s3_bucket are inherited from the top-level `aws` block; override
-  # below only when the compliance store lives in a different account/region.
+  # region / s3_bucket are inherited from the top-level `aws` block via
+  # build_compliance_store — override here only when the compliance store
+  # lives in a different account/region.
   store:
     backend: in_memory                       # in_memory | dynamodb | s3_parquet
     requests_table: ple-compliance-requests  # DynamoDB table name (prod)

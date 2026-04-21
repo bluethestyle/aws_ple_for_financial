@@ -542,8 +542,18 @@ def build_compliance_store(config: Dict[str, Any]) -> ComplianceStore:
     """
     Instantiate a ComplianceStore from the `compliance.store` config block.
 
-    Expected config shape (pipeline.yaml):
+    Accepts three shapes (in order of specificity):
 
+    1. Full pipeline config ``{"compliance": {"store": {...}}, "aws": {...}}``
+       — ``region`` falls back to ``aws.region`` when the store block omits
+       it. This is the recommended shape; changing ``aws.region`` propagates.
+    2. Compliance block ``{"store": {...}}`` — no aws fallback available.
+    3. Flat store block ``{"backend": ..., ...}`` — legacy shape.
+
+    Expected nested shape (pipeline.yaml)::
+
+        aws:
+          region: <aws region>   # inherited by store when not set below
         compliance:
           store:
             backend: "dynamodb" | "s3_parquet" | "in_memory"
@@ -551,13 +561,23 @@ def build_compliance_store(config: Dict[str, Any]) -> ComplianceStore:
             events_table:   <dynamodb table name>
             s3_bucket:      <s3 bucket>
             s3_prefix:      <s3 key prefix>
-            region:         <aws region>   # falls back to aws.region
+            region:         <aws region>   # optional, falls back to aws.region
     """
-    store_cfg = config.get("store", config)  # accept nested or flat
+    # Resolve the store block + optional aws block across the 3 accepted shapes
+    aws_cfg: Dict[str, Any] = {}
+    if "compliance" in config and isinstance(config["compliance"], dict):
+        aws_cfg = config.get("aws") or {}
+        compliance_cfg = config["compliance"]
+        store_cfg = compliance_cfg.get("store", compliance_cfg)
+    else:
+        store_cfg = config.get("store", config)
+
     backend = store_cfg.get("backend", "in_memory")
 
     if backend == "in_memory":
         return InMemoryComplianceStore()
+
+    region = store_cfg.get("region") or aws_cfg.get("region")
 
     if backend == "dynamodb":
         requests_table = store_cfg.get("requests_table")
@@ -569,11 +589,11 @@ def build_compliance_store(config: Dict[str, Any]) -> ComplianceStore:
         return DynamoDBComplianceStore(
             requests_table=requests_table,
             events_table=events_table,
-            region=store_cfg.get("region"),
+            region=region,
         )
 
     if backend == "s3_parquet":
-        bucket = store_cfg.get("s3_bucket")
+        bucket = store_cfg.get("s3_bucket") or aws_cfg.get("s3_bucket")
         if not bucket:
             raise ValueError("s3_parquet backend requires s3_bucket")
         return S3ParquetComplianceStore(
