@@ -547,11 +547,11 @@ def build_compliance_store(config: Dict[str, Any]) -> ComplianceStore:
         compliance:
           store:
             backend: "dynamodb" | "s3_parquet" | "in_memory"
-            requests_table: "ple-compliance-requests"
-            events_table: "ple-compliance-events"
-            s3_bucket: "aiops-ple-financial"
-            s3_prefix: "compliance"
-            region: "ap-northeast-2"
+            requests_table: <dynamodb table name>
+            events_table:   <dynamodb table name>
+            s3_bucket:      <s3 bucket>
+            s3_prefix:      <s3 key prefix>
+            region:         <aws region>   # falls back to aws.region
     """
     store_cfg = config.get("store", config)  # accept nested or flat
     backend = store_cfg.get("backend", "in_memory")

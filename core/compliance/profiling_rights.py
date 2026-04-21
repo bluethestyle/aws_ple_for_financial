@@ -68,7 +68,8 @@ class ProfilingRightsManager:
 
     Args:
         table_name: DynamoDB table name.
-        region: AWS region.
+        region: AWS region. ``None`` lets boto3 resolve from env /
+            credentials; callers should pass ``pipeline.yaml::aws.region``.
         audit_store: Optional callable ``(event_dict) -> None`` for audit
             logging.
         use_dynamo: If ``False``, use in-memory dict.  Defaults to ``True``;
@@ -78,7 +79,7 @@ class ProfilingRightsManager:
     def __init__(
         self,
         table_name: str = "ple-profiling-rights",
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
         audit_store: Any = None,
         use_dynamo: bool = True,
     ) -> None:

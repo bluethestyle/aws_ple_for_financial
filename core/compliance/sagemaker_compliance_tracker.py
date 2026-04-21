@@ -62,12 +62,24 @@ ARTIFACT_TYPES = (
 
 @dataclass
 class TrackingConfig:
-    """Driven by the ``compliance.tracking`` block of pipeline.yaml."""
+    """Driven by the ``compliance.tracking`` block of pipeline.yaml.
+
+    AWS-specific identifiers (region, experiment_name tied to a bucket) are
+    not hardcoded here per CLAUDE.md §1.1. The factory
+    :func:`build_sagemaker_compliance_tracker` derives them from
+    ``pipeline.yaml::aws.region`` and ``aws.s3_bucket`` when the
+    ``compliance.tracking`` block does not set them explicitly.
+    """
 
     backend: str = "in_memory"          # "sagemaker" | "in_memory"
-    experiment_name: str = "aiops-ple-financial-compliance"
+    # Generic placeholder — carries no AWS-specific identifier. Factory
+    # overrides with ``{aws.s3_bucket}-compliance`` when available, or the
+    # caller supplies an explicit value via pipeline.yaml.
+    experiment_name: str = "compliance"
     trial_prefix: str = "compliance-trial"
-    region: str = "ap-northeast-2"
+    # None → boto3 resolves from env / shared credentials; factory injects
+    # pipeline.yaml::aws.region when the tracking block omits it.
+    region: Optional[str] = None
     artifact_s3_prefix: str = ""        # optional: s3://bucket/prefix
     display_name_tag: str = "compliance_type"
 
@@ -76,25 +88,29 @@ class TrackingConfig:
             raise ValueError(
                 f"backend={self.backend!r} must be 'sagemaker' or 'in_memory'"
             )
-        if not self.experiment_name.strip():
+        if self.experiment_name is None or not self.experiment_name.strip():
             raise ValueError("experiment_name must be non-empty")
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "TrackingConfig":
         if not data:
             return cls()
-        return cls(
-            backend=str(data.get("backend", "in_memory")),
-            experiment_name=str(
-                data.get("experiment_name", "aiops-ple-financial-compliance")
-            ),
-            trial_prefix=str(data.get("trial_prefix", "compliance-trial")),
-            region=str(data.get("region", "ap-northeast-2")),
-            artifact_s3_prefix=str(data.get("artifact_s3_prefix", "")),
-            display_name_tag=str(
-                data.get("display_name_tag", "compliance_type")
-            ),
-        )
+        kwargs: Dict[str, Any] = {}
+        if "backend" in data and data["backend"] is not None:
+            kwargs["backend"] = str(data["backend"])
+        if "experiment_name" in data and data["experiment_name"] is not None:
+            kwargs["experiment_name"] = str(data["experiment_name"])
+        if "trial_prefix" in data and data["trial_prefix"] is not None:
+            kwargs["trial_prefix"] = str(data["trial_prefix"])
+        if "region" in data:
+            kwargs["region"] = (
+                str(data["region"]) if data["region"] is not None else None
+            )
+        if "artifact_s3_prefix" in data and data["artifact_s3_prefix"] is not None:
+            kwargs["artifact_s3_prefix"] = str(data["artifact_s3_prefix"])
+        if "display_name_tag" in data and data["display_name_tag"] is not None:
+            kwargs["display_name_tag"] = str(data["display_name_tag"])
+        return cls(**kwargs)
 
 
 @dataclass
@@ -570,9 +586,31 @@ def build_sagemaker_compliance_tracker(
     pipeline_config: Optional[Dict[str, Any]] = None,
     backend: Optional[ComplianceTrackerBackend] = None,
 ) -> SageMakerComplianceTracker:
-    """Instantiate from the ``compliance.tracking`` block of pipeline.yaml."""
-    compliance_cfg = (pipeline_config or {}).get("compliance") or {}
-    cfg = TrackingConfig.from_dict(compliance_cfg.get("tracking"))
+    """Instantiate from the ``compliance.tracking`` block of pipeline.yaml.
+
+    AWS constants are derived from the top-level ``aws`` block when the
+    tracking block omits them:
+
+    - ``region``          ← ``aws.region``
+    - ``experiment_name`` ← ``{aws.s3_bucket}-compliance`` (derived identifier)
+    """
+    pc = pipeline_config or {}
+    compliance_cfg = pc.get("compliance") or {}
+    aws_cfg = pc.get("aws") or {}
+    tracking_data: Dict[str, Any] = dict(compliance_cfg.get("tracking") or {})
+
+    # region ← aws.region (when not explicitly overridden in tracking block)
+    if "region" not in tracking_data and aws_cfg.get("region"):
+        tracking_data["region"] = aws_cfg["region"]
+
+    # experiment_name ← derived from aws.s3_bucket so the tracking stream is
+    # tagged with the deployment's bucket identifier without repeating it.
+    if "experiment_name" not in tracking_data:
+        s3_bucket = aws_cfg.get("s3_bucket")
+        if s3_bucket:
+            tracking_data["experiment_name"] = f"{s3_bucket}-compliance"
+
+    cfg = TrackingConfig.from_dict(tracking_data)
     return SageMakerComplianceTracker(config=cfg, backend=backend)
 
 

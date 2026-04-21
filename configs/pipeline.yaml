@@ -610,21 +610,24 @@ serving_prep:
 # ---------------------------------------------------------------------------
 serving:
   # M1 Human Review Queue
+  # region is inherited from the top-level `aws.region` block via
+  # build_human_review_queue — override here only to pin a different AWS
+  # region for the review queue table.
   review:
     tier_1_sample_rate: 0.05      # 5% post-hoc random sample
     tier_2_review_required: true  # 100% mandatory agent review
     tier_3_human_fallback: true   # mandatory human fallback path
     queue_backend: in_memory      # in_memory | dynamodb
     dynamodb_table: ple-review-queue
-    region: ap-northeast-2
     sla_hours: 24
 
   # M2 Kill Switch (extends existing table-based switch with config)
+  # region is inherited from `aws.region` via KillSwitch.from_config —
+  # override here only to pin a different AWS region for the switch table.
   kill_switch:
     backend: dynamodb             # dynamodb | in_memory
     table_name: ple-kill-switch
     fallback_strategy: rule_based # rule_based | previous_model | disable
-    region: ap-northeast-2
 
   # M10 Dynamic Item Universe Loader
   item_universe:
@@ -688,13 +691,13 @@ aws:
 #   금소법 §17 (적합성)
 # ---------------------------------------------------------------------------
 compliance:
+  # region / s3_bucket are inherited from the top-level `aws` block; override
+  # below only when the compliance store lives in a different account/region.
   store:
     backend: in_memory                       # in_memory | dynamodb | s3_parquet
     requests_table: ple-compliance-requests  # DynamoDB table name (prod)
     events_table: ple-compliance-events
-    s3_bucket: aiops-ple-financial
     s3_prefix: compliance
-    region: ap-northeast-2
 
   retention:
     default_days: 1825       # 5년 (AI기본법 §35 FRIA 보존)
@@ -756,26 +759,62 @@ compliance:
     enabled: true
     marker_text: "※ 본 추천 사유는 AI가 생성하였습니다. (AI기본법 §31)"
 
-  # Sprint 2 promotion gate (layered on top of ModelCompetition)
-  # Enable once per-model dimension score providers are wired up; until
-  # then conservative default 0.5 is used and the gate behaves as a
-  # smoke test, not a safety floor.
+  # Sprint 2 promotion gate (layered on top of ModelCompetition).
+  #
+  # Dimension scores are resolved by the auto-wired provider chain
+  # (earliest-wins order):
+  #   1. ``providers.manual_overrides`` — operator override per model
+  #      version. Unknown versions fall through to the next layer.
+  #   2. ``MetadataAggregator`` — real metadata pulled from lineage,
+  #      fairness monitor, review queue, model registry, llm_provider
+  #      block. Missing sources fall back to 0.5 per dimension.
+  #
+  # CLAUDE.md §1.16: enabled=true requires a real provider. The
+  # MetadataAggregator is wired automatically by submit_pipeline from
+  # the runtime objects it already holds.
   promotion_gate:
-    enabled: false
+    enabled: true
     require_approval_on_escalation: true
     default_score: 0.5
+    providers:
+      # Operator overrides keyed by model_version. Values in [0.0, 1.0].
+      # Unknown versions fall through to the MetadataAggregator layer.
+      # Dimensions omitted here pick up the heuristic-derived score.
+      manual_overrides: {}
+      # Example (commented) — freezes v_critical at HIGH posture:
+      #   v_critical:
+      #     data_sensitivity: 0.85
+      #     scope_of_impact: 0.80
+      #     fairness_risk: 0.75
+      aggregator:
+        # How long the merged metadata dict is cached before re-polling
+        # the backing sources.
+        cache_ttl_seconds: 300
+        max_cache_entries: 256
+        # Agent-slot baseline for llm_provider_ratio. When set, the
+        # ratio is configured_slots / max(baseline, configured) — this
+        # lets a partially-populated LLM config score < 1.0. Leave null
+        # to infer from the configured slot count directly (1.0 when
+        # any non-dummy backend is fully wired).
+        agent_slot_baseline: null
+        # Static values layered on top of live sources — for metadata
+        # that does not yet have a machine-readable producer, e.g.
+        # reason_coverage tracked in serving logs.
+        static_overrides: {}
 
   # Sprint 2 S5: SageMaker-native compliance tracking.
   # Replaces the on-premises MLflow+DVC stack with SageMaker Experiments
   # (Trials/TrialComponents) + SageMaker Lineage + S3 versioning. Every
   # regulatory artifact (FRIA result, AI-risk assessment, compliance
   # registry sweep, promotion-gate verdict) is logged as a TrialComponent.
+  #
+  # region is inherited from `aws.region`; experiment_name is derived
+  # from `aws.s3_bucket` as `{bucket}-compliance` via
+  # build_sagemaker_compliance_tracker. Override below only when the
+  # compliance experiment stream lives in a different account / region.
   tracking:
     backend: in_memory             # sagemaker | in_memory
-    experiment_name: aiops-ple-financial-compliance
     trial_prefix: compliance-trial
-    region: ap-northeast-2
-    artifact_s3_prefix: s3://aiops-ple-financial/compliance/artifacts
     display_name_tag: compliance_type
 
   # Sprint 2 S6: DuckDB-over-Parquet compliance SQL (Athena-free).

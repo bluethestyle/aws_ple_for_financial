@@ -92,14 +92,16 @@ class MemoryFeatureStore(AbstractFeatureStore):
     Args:
         s3_uri: Full S3 URI (``s3://bucket/path/features.parquet``).
         user_id_column: Column name to use as the lookup key.
-        region: AWS region for the S3 client.
+        region: AWS region for the S3 client. ``None`` lets boto3 resolve
+            from env / credentials; callers should pass
+            ``pipeline.yaml::aws.region`` via feature_store_config.
     """
 
     def __init__(
         self,
         s3_uri: str,
         user_id_column: str = "user_id",
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
     ) -> None:
         self._s3_uri = s3_uri
         self._user_id_column = user_id_column
@@ -184,7 +186,9 @@ class DynamoDBFeatureStore(AbstractFeatureStore):
 
     Args:
         table_name: DynamoDB table name.
-        region: AWS region.
+        region: AWS region. ``None`` lets boto3 resolve from env /
+            credentials; callers should pass ``pipeline.yaml::aws.region``
+            via feature_store_config.
         user_id_key: Name of the partition key attribute.
     """
 
@@ -194,7 +198,7 @@ class DynamoDBFeatureStore(AbstractFeatureStore):
     def __init__(
         self,
         table_name: str,
-        region: str = "ap-northeast-2",
+        region: Optional[str] = None,
         user_id_key: str = "user_id",
     ) -> None:
         import boto3
@@ -359,7 +363,7 @@ class FeatureStoreFactory:
             return MemoryFeatureStore(
                 s3_uri=s3_uri,
                 user_id_column=fs_cfg.get("user_id_column", "user_id"),
-                region=fs_cfg.get("region", "ap-northeast-2"),
+                region=fs_cfg.get("region"),
             )
 
         if resolved == FeatureStoreMode.DYNAMODB:
@@ -371,7 +375,7 @@ class FeatureStoreFactory:
                 )
             return DynamoDBFeatureStore(
                 table_name=table_name,
-                region=fs_cfg.get("region", "ap-northeast-2"),
+                region=fs_cfg.get("region"),
                 user_id_key=fs_cfg.get("user_id_key", "user_id"),
             )
 

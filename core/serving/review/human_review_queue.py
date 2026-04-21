@@ -50,14 +50,21 @@ class ReviewState:
 
 @dataclass
 class ReviewConfig:
-    """Config-driven tiering policy. Read from ``serving.review`` block."""
+    """Config-driven tiering policy. Read from ``serving.review`` block.
+
+    ``region`` has no hardcoded AWS default per CLAUDE.md §1.1. The factory
+    :func:`build_human_review_queue` injects ``pipeline.yaml::aws.region``
+    when the ``serving.review`` block omits it.
+    """
 
     tier_1_sample_rate: float = 0.05       # 5% post-hoc sample
     tier_2_review_required: bool = True    # 100% agent review
     tier_3_human_fallback: bool = True     # must go to HumanFallback
     queue_backend: str = "in_memory"       # in_memory | dynamodb
     dynamodb_table: str = "ple-review-queue"
-    region: str = "ap-northeast-2"
+    # None → boto3 resolves from env / shared credentials; factory injects
+    # pipeline.yaml::aws.region when the review block omits it.
+    region: Optional[str] = None
     sla_hours: int = 24                    # how long a reviewer has
 
     def __post_init__(self) -> None:
@@ -73,17 +80,24 @@ class ReviewConfig:
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ReviewConfig":
         if not data:
             return cls()
-        return cls(
-            tier_1_sample_rate=float(data.get("tier_1_sample_rate", 0.05)),
-            tier_2_review_required=bool(
-                data.get("tier_2_review_required", True)
-            ),
-            tier_3_human_fallback=bool(data.get("tier_3_human_fallback", True)),
-            queue_backend=str(data.get("queue_backend", "in_memory")),
-            dynamodb_table=str(data.get("dynamodb_table", "ple-review-queue")),
-            region=str(data.get("region", "ap-northeast-2")),
-            sla_hours=int(data.get("sla_hours", 24)),
-        )
+        kwargs: Dict[str, Any] = {}
+        if "tier_1_sample_rate" in data and data["tier_1_sample_rate"] is not None:
+            kwargs["tier_1_sample_rate"] = float(data["tier_1_sample_rate"])
+        if "tier_2_review_required" in data and data["tier_2_review_required"] is not None:
+            kwargs["tier_2_review_required"] = bool(data["tier_2_review_required"])
+        if "tier_3_human_fallback" in data and data["tier_3_human_fallback"] is not None:
+            kwargs["tier_3_human_fallback"] = bool(data["tier_3_human_fallback"])
+        if "queue_backend" in data and data["queue_backend"] is not None:
+            kwargs["queue_backend"] = str(data["queue_backend"])
+        if "dynamodb_table" in data and data["dynamodb_table"] is not None:
+            kwargs["dynamodb_table"] = str(data["dynamodb_table"])
+        if "region" in data:
+            kwargs["region"] = (
+                str(data["region"]) if data["region"] is not None else None
+            )
+        if "sla_hours" in data and data["sla_hours"] is not None:
+            kwargs["sla_hours"] = int(data["sla_hours"])
+        return cls(**kwargs)
 
 
 @dataclass
@@ -338,7 +352,19 @@ def build_human_review_queue(
     pipeline_config: Optional[Dict[str, Any]] = None,
     audit_callback: Optional[Any] = None,
 ) -> HumanReviewQueue:
-    """Instantiate from the ``serving.review`` block of pipeline.yaml."""
-    serving = (pipeline_config or {}).get("serving") or {}
-    review_cfg = ReviewConfig.from_dict(serving.get("review"))
+    """Instantiate from the ``serving.review`` block of pipeline.yaml.
+
+    ``region`` is derived from the top-level ``aws`` block when the review
+    block omits it, so changing ``aws.region`` propagates to the review
+    queue without duplicating the value.
+    """
+    pc = pipeline_config or {}
+    serving = pc.get("serving") or {}
+    aws_cfg = pc.get("aws") or {}
+    review_data: Dict[str, Any] = dict(serving.get("review") or {})
+
+    if "region" not in review_data and aws_cfg.get("region"):
+        review_data["region"] = aws_cfg["region"]
+
+    review_cfg = ReviewConfig.from_dict(review_data)
     return HumanReviewQueue(config=review_cfg, audit_callback=audit_callback)

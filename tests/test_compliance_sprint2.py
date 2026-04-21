@@ -455,9 +455,12 @@ class TestPromotionGate:
             Path("configs/pipeline.yaml").read_text(encoding="utf-8")
         )
         gate = build_promotion_gate(cfg_yaml)
-        # default in repo is disabled → skip
+        # Repo ships with enabled=true but no aggregator wired and empty
+        # manual_overrides, so every dimension falls back to default_score
+        # (0.5) → LIMITED / MEDIUM → pass (conservative).
         v = gate.evaluate(model_version="v1")
-        assert v.decision == "skip"
+        assert v.decision == "pass"
+        assert v.fria.risk_category == "LIMITED"
 
     def test_factory_with_override(self):
         cfg = {
