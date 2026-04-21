@@ -1169,6 +1169,52 @@ The GDPR/KFCPA compliance obligations listed above are enforced through a pipeli
 
 All checks operate with graceful degradation: if the compliance service is temporarily unavailable, a warning is logged, the recommendation is restricted to pre-approved low-risk products only (check cards, demand deposits), and the incident is escalated for human review within the next monitoring cycle. This compensating control ensures that a transient infrastructure failure does not create a customer-facing outage while limiting exposure to products that do not require suitability assessment.
 
+=== Extended Regulatory Modules (v2)
+
+The v2 revision of this paper includes an extended set of regulatory modules built on a unified `ComplianceStore` / `SLATracker` foundation. Each module is #text(stroke: 0pt)[pluggable]: `RecommendationService` accepts them as optional constructor injections and defaults to the pre-v1 behaviour when they are absent, so the extended compliance path can be activated per-environment without touching hot-path code.
+
+- *User rights managers* (`core/compliance/rights/`). A three-class suite --- `OptOutManager`, `ProfilingWorkflow`, and `ExplanationSLATracker` --- covering Korean PIPA §37의2 (opt-out + explanation right), Credit Information Act §36의2 (profiling access / correction / deletion), and the 10-day response deadline of PIPA Enforcement Decree §44의2~4. Every request is persisted as a `ComplianceRequest` with an automatic SLA deadline and every disposition emits a `SLA_BREACH` event when the deadline is missed.
+
+- *Korean AI Basic Act FRIA* (`core/compliance/fria_assessment.py::KoreanFRIAAssessor`). Implements the 7-dimensional assessment enumerated in AI Basic Act Enforcement Decree §27 (data sensitivity, automation level, scope of impact, model complexity, external dependency, fairness risk, explainability gap) with a mandatory 5-year retention period (§35③). This is held as a *separate* class from the EU AI Act Article 9 evaluator to preserve legal-basis separation in audit reports.
+
+- *금감원 AI RMF classifier* (`core/compliance/ai_risk_classifier.py`). Six-dimensional weighted risk grade (high / medium / low) with explicit detection of grade escalation between successive model versions; an escalation to 'high' requires additional operator approval via the promotion gate.
+
+- *36-item compliance registry* (`core/compliance/compliance_registry.py`). A-group (18 implemented items) plus GAP-group (18 identified gaps, each linked to a concrete Sprint deliverable). Item checks are declarative (`module_exists` / `file_exists` / `config_key` / `custom_check`) so quarterly compliance reports can be regenerated automatically from the live code state.
+
+- *Promotion gate* (`core/evaluation/promotion_gate.py`). Wraps the FRIA + AI Risk evaluations as an optional post-check on `ModelCompetition`. Called from `scripts/submit_pipeline.py::_decide_promotion` per CLAUDE.md §1.10 (single promotion entry point). UNACCEPTABLE FRIA grade or risk escalation to 'high' blocks promotion with a `GateVerdict` recorded to the audit log.
+
+- *Human review queue + LLM marker* (`core/serving/review/human_review_queue.py`, `core/recommendation/reason/marker_applier.py`). A three-tier review queue (5% post-hoc sample / 100% mandatory agent / 100% human fallback) covering AI Basic Act §34 human oversight. `MarkerApplier` idempotently appends the AI-generation disclosure mandated by §31 to every L2a LLM-generated reason string.
+
+- *Dynamic item universe loader* (`core/recommendation/universe/dynamic_loader.py`). Reads the candidate campaign + product set from Parquet via DuckDB (local and `s3://` paths), filtered to a configured campaign status set (`approved` / `running`). Prevents the pipeline from serving recommendations for canceled or not-yet-approved campaigns.
+
+- *Audit archive extensions* (`core/recommendation/audit_archiver.py`). Five additional columns --- `thinking_trace`, `hallucination_flags`, `tools_used`, `critique_verdict`, `agent_tier` --- to support the 5-agent architecture's audit requirements while preserving backward compatibility with v1 Parquet files.
+
+All extended modules share the Sprint 0 foundation primitives (`ComplianceRequest`, `ComplianceEvent`, `SLATracker`) so that an audit query against `ComplianceStore` can reconstruct the full regulatory history of any user, model version, or request type from a single event stream.
+
+=== Phase 2 Hardening Layer (v2)
+
+Nine additional safeguards were layered on top of the core compliance modules to match the operational maturity of the on-premises reference system. Each addresses a specific oversight, robustness, or effective-challenge requirement.
+
+- *Human-Fallback Layer-4 routing* (`core/recommendation/fallback_router.py`). The original 3-layer fallback router (distilled LGBM #sym.arrow direct LGBM #sym.arrow rule engine) gains an explicit fourth layer that routes hopeless cases to a human review queue rather than silently degrading. Activated via `serving.review.tier_3_human_fallback` and surfaced via `route_all()` layer counts.
+
+- *L2a Safety Gate 3-layer* (`core/recommendation/reason/l2a_safety_gate.py`). Every LLM-generated L2a output now passes through three independent checks: (1) structural parsing (length, sentence count), (2) rule-based screening (banned phrases, regex, Korean resident registration + card PII patterns), (3) optional LLM quality score. Any veto forces fallback to the L1 template output; the `SafetyVerdict` records which layer failed for post-hoc analysis.
+
+- *금소법 §17 suitability filter* (`core/recommendation/constraint_engine.py::SuitabilityFilter`). Registered as a constraint-engine filter so it composes with the existing fatigue, eligibility, and owned-product filters. Enforces risk_tolerance #sym.gt.eq risk_level with additional hard caps for senior customers ( #sym.gt.eq 65, max risk 2) and low-income customers ( #sym.lt 30M KRW annual, max risk 3).
+
+- *Counterfactual Champion-Challenger* (`core/evaluation/counterfactual_cc.py`). Off-policy IPS and SNIPS estimators with paired-bootstrap confidence intervals. Supports EU AI Act Art. 15 (accuracy) and SR 11-7 effective-challenge by providing evidence that a challenger would have produced better outcomes than the champion on logged observational data.
+
+- *auto-promote=False enforcement* (`core/evaluation/model_competition.py`). The default `CompetitionConfig` still auto-promotes to preserve legacy test behaviour, but production operates with `serving.competition.auto_promote: false` in `pipeline.yaml`. Under this posture a challenger that beats all metric thresholds is still NOT promoted: the operator must re-run with `--force-promote`, satisfying EU AI Act Art. 14 (human oversight) and leaving an explicit operator signature in the audit log.
+
+- *Annex IV technical-documentation mapper* (`core/compliance/annex_iv_mapper.py`). A dedicated mapper that, for each of the 12 Annex IV sections, resolves a list of evidence sources (Python modules, documents, config keys) and reports which sections have full, partial, or missing evidence. The coverage rate is tracked automatically so the technical file can be regenerated before every conformity assessment.
+
+- *Fairness metrics archive* (`core/monitoring/fairness_monitor.py`). The monitor now appends every measurement to an in-memory history and, when `monitoring.fairness.archive_parquet_path` is configured, to a Parquet file that the governance reporter can query directly. `get_archive(attribute, limit)` supports drill-down dashboards without re-running the computation.
+
+- *Drift persistence + markdown report* (`core/monitoring/drift_detector.py`). Each `detect_drift()` call optionally writes one row per feature to a Parquet archive, preserving PSI scores, severity labels, and the thresholds that were active at evaluation time. A companion `generate_markdown_report()` produces a human-readable summary suitable for the weekly governance bundle.
+
+- *Lineage catalog extensions* (`core/monitoring/lineage_tracker.py`). The lineage tracker now accepts runtime registrations (`register_feature_mapping`), loads YAML-defined catalogs (`load_mapping_from_yaml`), and returns coverage reports (`coverage_report`) that quantify how many of the current feature set have a source-table mapping. Required for AI Basic Act §34 (training-data provenance) when the feature count grows.
+
+The `test_phase2_should.py` suite exercises all nine modules (36 tests, all passing) and verifies that `pipeline.yaml` as shipped forces `auto_promote: false`.
+
 == Korean AI Basic Act
 
 Korea's AI Basic Act (passed by the National Assembly December 2024, promulgated January 2025, effective January 22, 2026) @koreaaiact2024 introduces a domestic

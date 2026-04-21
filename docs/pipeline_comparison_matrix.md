@@ -208,6 +208,57 @@ Phase 1A~1D 의 Must 항목:
 | **Platt calibration** | AWS ✓, 온프렘 ✗ | 온프렘 Distillation 에 이식 |
 | **온프렘 LGBM student temporal split** | 온프렘 TODO C6 (random split) | **즉시 수정** (leakage 위험) |
 
+### 5.4 Sprint 1~4 완료분 (온프렘 → AWS 역수입 중 Must 12항목) — 2026-04-21
+
+M1~M12 (원래 "온프렘만" 표에 있던 항목들) 은 **`aws_build_plan.md` 의 4개 Sprint 에 걸쳐 AWS 로 이식 완료**했다. 아래 표는 "양쪽 구현" 상태로 이동한 흔적.
+
+| # | 항목 | AWS 구현 위치 | 테스트 |
+|---|---|---|---|
+| M1 | Human Review Queue | `core/serving/review/human_review_queue.py` | `tests/test_sprint3_serving.py` (25 cases) |
+| M2 | Kill Switch (in-memory + config) | `core/serving/kill_switch.py` (확장) | `tests/test_sprint3_serving.py` |
+| M3 | Marketing Consent (5채널, config-driven) | `core/compliance/consent_manager.py` (확장) | `tests/test_consent_channels.py` (19 cases) |
+| M4 | OptOutManager + explanation request | `core/compliance/rights/opt_out.py` | `tests/test_compliance_rights.py` |
+| M5 | ProfilingWorkflow (access/correction/deletion) | `core/compliance/rights/profiling.py` | `tests/test_compliance_rights.py` |
+| M6 | ExplanationSLATracker (10-일 SLA) | `core/compliance/rights/explanation_sla.py` | `tests/test_compliance_rights.py` (37 cases 통합) |
+| M7 | KoreanFRIAAssessor (7-차원, 5-년 retention) | `core/compliance/fria_assessment.py` | `tests/test_compliance_sprint2.py` |
+| M8 | ComplianceRegistry (36 항목, A+GAP) | `core/compliance/compliance_registry.py` | `tests/test_compliance_sprint2.py` |
+| M9 | AIRiskClassifier (6-차원, 등급 escalation) | `core/compliance/ai_risk_classifier.py` | `tests/test_compliance_sprint2.py` (40 cases 통합) |
+| M10 | DynamicItemUniverseLoader (DuckDB + TTL) | `core/recommendation/universe/dynamic_loader.py` | `tests/test_sprint3_serving.py` |
+| M11 | Audit Archive 확장 5개 컬럼 | `core/recommendation/audit_archiver.py` (확장) | `tests/test_sprint3_serving.py` |
+| M12 | LLM Generation Marker (idempotent) | `core/recommendation/reason/marker_applier.py` | `tests/test_sprint3_serving.py` (56 cases 통합) |
+
+**통합**:
+- `core/evaluation/promotion_gate.py`: FRIA + AI Risk 게이트가 `scripts/submit_pipeline.py::_decide_promotion` 에 optional post-check 로 연결 (`compliance.promotion_gate.enabled`=false 기본).
+- `core/serving/predict.py`: 위 모든 hook 이 `RecommendationService.__init__` 의 optional 인자로 주입. 기본 None (기존 동작 보존). 주입 시 non-blocking metadata annotation 또는 (tier 2/3) blocking queue enqueue 로 동작.
+
+**양쪽 구현 현황**:
+- AWS: 완료 (244 테스트 PASS, 하드코딩 0건).
+- 온프렘: 동일 기능이 별도 모듈 (예: `src/scoring/`, `src/monitoring/`) 로 존재. 구조가 다름 → Phase B 역이식 대상 (별도 sync).
+
+### 5.5 Phase 2 Should 완료분 (2026-04-21)
+
+Must 12항목 이식에 이어, Should 15항목 중 **9개** 를 추가 이식 완료. 남은 Should 6개는 학습 계열 (S2~S4), MLflow/DVC (S5), ComplianceAuditStore 통합 (S6), context 도구 (S12) 로 Paper 2 v2 의 코드 근거로 필수가 아니라 후속 Phase 로 보류.
+
+| # | 항목 | AWS 구현 위치 | 테스트 |
+|---|---|---|---|
+| S1 | Human Fallback Router (Layer 4) | `core/recommendation/fallback_router.py` (확장) | `tests/test_phase2_should.py::TestS1HumanFallback` |
+| S7 | Fairness metrics archive | `core/monitoring/fairness_monitor.py::archive_metrics` | `tests/test_phase2_should.py::TestS7FairnessArchive` |
+| S8 | Drift DuckDB/Parquet persist + Markdown | `core/monitoring/drift_detector.py::archive_result, generate_markdown_report` | `tests/test_phase2_should.py::TestS8DriftPersist` |
+| S9 | Lineage catalog 확장 | `core/monitoring/lineage_tracker.py::register_feature_mapping, load_mapping_from_yaml, coverage_report` | `tests/test_phase2_should.py::TestS9Lineage` |
+| S10 | EU AI Act Annex IV 12-항목 | `core/compliance/annex_iv_mapper.py` (신규) | `tests/test_phase2_should.py::TestS10AnnexIV` |
+| S11 | L2a Safety Gate 3-layer | `core/recommendation/reason/l2a_safety_gate.py` (신규) | `tests/test_phase2_should.py::TestS11SafetyGate` |
+| S13 | 금소법 §17 적합성 필터 | `core/recommendation/constraint_engine.py::SuitabilityFilter` (확장) | `tests/test_phase2_should.py::TestS13Suitability` |
+| S14 | Counterfactual C-C (IPS/SNIPS) | `core/evaluation/counterfactual_cc.py` (신규) | `tests/test_phase2_should.py::TestS14Counterfactual` |
+| S15 | auto_promote=False 강제 | `core/evaluation/model_competition.py::CompetitionConfig.auto_promote` + `pipeline.yaml serving.competition` + `submit_pipeline.py` from_dict 주입 | `tests/test_phase2_should.py::TestS15AutoPromote` |
+
+**누적 테스트 현황 (2026-04-21)**: Phase 1 Must 244 + Phase 2 Should 36 + 기존 regression (compliance_evaluators) 46 = **280/280 PASS**. 하드코딩 0건.
+
+**남은 Should (6개, 후속 Phase)**:
+- S2 IG 3-stage Feature Selection, S3 Evidential valid_mask, S4 HMM config 라우팅 — 학습 계열, Paper 3 실데이터 검증과 묶어 처리 권장
+- S5 MLflow + DVC Compliance — 외부 플랫폼 의존, infra 작업 별도 트랙
+- S6 ComplianceAuditStore DuckDB 통합 — Sprint 0 foundation 과 legacy audit_store 병합 필요, 중복 리스크
+- S12 Consultation context + 다학제 해석기 — reason 확장, Paper 2 v2 에서 추가 evidence 충분 시 보류
+
 ---
 
 ## 6. 두 프로젝트의 본질적 포지셔닝 (정정본)

@@ -53,6 +53,25 @@
 - **모든 판정은 `AuditLogger.log_model_promotion`으로 HMAC 서명 + hash chain 감사 로그에 기록**한다. promote/reject/bootstrap/force_promote 모두 동일하게 기록되어야 하며, 로깅 실패가 승격 자체를 차단하지 않도록 best-effort로 호출한다 (SR 11-7 MRM).
 - **`ModelCompetition`의 default metric 설정**(primary=avg_auc, min_improvement=0.5%, max_degradation=2%, significance_level=0.05)은 코드에 하드코딩되어 있지만, 프로덕션 도입 시 pipeline.yaml `serving.competition.*` 섹션으로 이관 예정. 임의 수정 금지.
 
+### 1.11 Compliance 모듈 원칙 (Sprint 0~4, 2026-04-21)
+- **Sprint 0 Foundation이 모든 신규 컴플라이언스 기능의 의존성 기반**이다. 새 규제 기능은 반드시 `ComplianceRequest`/`ComplianceEvent` 타입, `ComplianceStore` 인터페이스, `SLATracker` 기반 위에 구축한다. 새 store, SLA, audit 메커니즘을 병행 작성하지 않는다.
+- **`core/compliance/rights/` 서브패키지**는 사용자 권리 (opt-out, profiling, explanation SLA) 전용이다. 기존 `core/compliance/ai_opt_out.py`, `core/compliance/profiling_rights.py`는 legacy DynamoDB 경로로 유지하되, 새 코드는 rights/ 서브패키지를 사용한다.
+- **한국 AI기본법 FRIA vs EU AI Act FRIA는 서로 다른 class**이다. `core/compliance/fria_assessment.py::KoreanFRIAAssessor` (AI기본법 §35, 7-차원, 5-년 retention)와 `core/monitoring/fria_evaluator.py::FRIAEvaluator` (EU AI Act Art. 9, 5-차원)를 혼용하지 않는다. 법적 기반이 다르므로 리포트를 통합해도 내부 저장은 분리한다.
+- **promotion_gate는 `compliance.promotion_gate.enabled=false` 기본**이다. Dimension 점수 provider가 wire되지 않은 상태에서 기본 0.5를 쓰면 승격 경로가 conservative LIMITED로 수렴하므로 실제 게이트 역할을 못한다. 실 provider 연결 전에 enabled=true 변경 금지.
+- **predict.py의 Sprint 1~3 hook은 모두 optional injection**이다. 아무 hook을 주입하지 않으면 기존 11단계 동작과 동일. 주입 시 대부분 non-blocking metadata annotation이며, 유일한 blocking 동작은 HumanReviewQueue (tier 2/3) 뿐이다.
+- **Marker applier는 idempotent**이다. L2a LLM rewrite 결과에 이미 AI기본법 marker가 포함되어 있으면 `apply()`는 원본을 반환한다. 여러 단계에서 중복 적용되어도 안전.
+- **ComplianceRegistry의 36 항목은 A-group 18개 + GAP 18개로 고정**한다. 새 체크 항목이 필요하면 GAP-group에 추가하고 Sprint X 진행 시 A-group으로 이동한다.
+
+### 1.12 Phase 2 Should 정책 (2026-04-21)
+- **`auto_promote=False` 는 pipeline.yaml 에서 강제**한다 (EU AI Act Art. 14 + SR 11-7). `CompetitionConfig` 의 코드 default 는 후행 호환성 때문에 True 로 두되, `pipeline.yaml::serving.competition.auto_promote=false` 를 통해 프로덕션 posture 을 강제한다. 모든 challenger 가 metrics gate 통과해도 `--force-promote` 수동 override 없이는 승격되지 않는다.
+- **Layer 4 (Human Fallback) 는 opt-in**이다. `serving.review.tier_3_human_fallback=true` 일 때만 `FallbackRouter` 가 Layer 4 를 반환한다. Layer 4 verdict 를 받은 caller 는 반드시 `HumanReviewQueue` 에 enqueue 해야 하며, 라우터 자체는 큐에 넣지 않는다 (관심사 분리).
+- **Fairness / Drift 영속화 경로는 config 플래그로만 활성**한다. `monitoring.fairness.archive_parquet_path`, `monitoring.drift.archive_parquet_path` 를 지정해야 Parquet 쓰기 경로가 작동한다. 미지정 시 in-memory archive 만 유지.
+- **Counterfactual C-C 는 logged propensities 를 요구**한다. logged_propensities 가 없으면 IPS/SNIPS 실행 불가. `CounterfactualEvaluator.from_config(serving.counterfactual_cc)` 로 estimator (ips/snips), min_lift, bootstrap 파라미터를 config-driven 으로 관리.
+- **Annex IV mapper 는 Article 9 EU-FRIA 와 별개**다. `core/compliance/annex_iv_mapper.py::AnnexIVMapper` 는 Art. 11 기술문서 증거 추적용이고, `core/monitoring/fria_evaluator.py::FRIAEvaluator` 는 Art. 9 위험 평가용이다. 혼용 금지.
+- **SuitabilityFilter 는 `require_assessment=true` 가 기본**이다. `customer_risk_tolerance` 가 context 에 없으면 거부. 고령 (≥65) / 저소득 (<30M KRW) hard cap 은 config 로 조정하되 제거 금지 (금소법 §17 보호대상 규정).
+- **L2aSafetyGate 는 LLM 후처리에만 적용**한다. L1 template 결과에는 적용하지 않음 (template 은 이미 검증됨). gate 실패 시 반드시 L1 fallback 으로 회귀해야 하며, 응답을 빈 문자열로 리턴하지 않는다.
+- **Phase 2 남은 6개 항목 (S2/S3/S4/S5/S6/S12) 는 후속 트랙**이다. Paper 2 v2 코드 근거로 필수가 아니므로 우선순위 낮음. S5 (MLflow+DVC) 와 S6 (ComplianceAuditStore DuckDB 통합) 은 Sprint 0 foundation 과 중복 가능성이 있어 통합 설계를 먼저 검토해야 한다.
+
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:
   1. **Phase 0 출력 검증**: feature_stats.json에서 zero-variance 컬럼, NaN 비율, 생성된 피처 컬럼 수 확인
