@@ -940,18 +940,70 @@ def _register_model(
                     uploaded, bucket, scan_prefix,
                 )
 
-            for page in paginator.paginate(Bucket=bucket, Prefix=scan_prefix):
-                for obj in page.get("Contents", []):
-                    key = obj["Key"]
-                    if key.endswith("/model.lgbm"):
-                        task_name = key.split("/")[-2]
-                        students[task_name] = f"s3://{bucket}/{key}"
-                    elif key.endswith("/metadata.json"):
-                        task_name = key.split("/")[-2]
-                        meta_obj = s3.get_object(Bucket=bucket, Key=key)
-                        student_metadata[task_name] = json.loads(
-                            meta_obj["Body"].read().decode()
+                # Load LGBM Boosters from the extracted files. ModelRegistry.
+                # package expects live Booster objects (it calls
+                # model.save_model inside the version dir). The S3 prefix
+                # above exists for downstream Lambda/predict code that pulls
+                # flat files.
+                import lightgbm as _lgb
+                for task_dir in sorted(extract_dir.iterdir()):
+                    if not task_dir.is_dir():
+                        continue
+                    lgbm_file = task_dir / "model.lgbm"
+                    if not lgbm_file.exists():
+                        continue
+                    task_name = task_dir.name
+                    try:
+                        students[task_name] = _lgb.Booster(
+                            model_file=str(lgbm_file),
                         )
+                    except Exception as load_err:
+                        logger.warning(
+                            "Failed to load Booster for task '%s': %s",
+                            task_name, load_err,
+                        )
+                        continue
+                    meta_file = task_dir / "metadata.json"
+                    if meta_file.exists():
+                        try:
+                            with open(meta_file, encoding="utf-8") as mf:
+                                student_metadata[task_name] = json.load(mf)
+                        except Exception:
+                            logger.debug(
+                                "Could not parse metadata for '%s'",
+                                task_name, exc_info=True,
+                            )
+            else:
+                # No tarball: treat scan_prefix as a flat layout and fetch
+                # each .lgbm file locally before loading into a Booster.
+                import lightgbm as _lgb
+                flat_dir = Path(tmp) / "students_flat"
+                flat_dir.mkdir(parents=True, exist_ok=True)
+                for page in paginator.paginate(
+                    Bucket=bucket, Prefix=scan_prefix,
+                ):
+                    for obj in page.get("Contents", []):
+                        key = obj["Key"]
+                        if key.endswith("/model.lgbm"):
+                            task_name = key.split("/")[-2]
+                            local = flat_dir / task_name / "model.lgbm"
+                            local.parent.mkdir(parents=True, exist_ok=True)
+                            s3.download_file(bucket, key, str(local))
+                            try:
+                                students[task_name] = _lgb.Booster(
+                                    model_file=str(local),
+                                )
+                            except Exception as load_err:
+                                logger.warning(
+                                    "Failed to load Booster for '%s': %s",
+                                    task_name, load_err,
+                                )
+                        elif key.endswith("/metadata.json"):
+                            task_name = key.split("/")[-2]
+                            meta_obj = s3.get_object(Bucket=bucket, Key=key)
+                            student_metadata[task_name] = json.loads(
+                                meta_obj["Body"].read().decode()
+                            )
         except Exception as e:
             logger.warning("Failed to list student artifacts: %s", e)
 
