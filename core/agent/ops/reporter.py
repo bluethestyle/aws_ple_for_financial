@@ -163,14 +163,17 @@ class OpsReporter:
         severity_order = {"CRITICAL": 0, "FAIL": 1, "WARNING": 2, "INFO": 3}
         attention.sort(key=lambda a: severity_order.get(a.get("severity", "INFO"), 99))
 
-        # Build all_checkpoints summary
+        # Build all_checkpoints summary.
+        # Keep every scalar measurement plus any structured detail
+        # explicitly attached (e.g. per-Lambda latency breakdowns on
+        # CP6). The earlier ``[:3]`` truncation silently dropped these
+        # richer fields — observed 2026-04-22 when the AWS-backed CP6
+        # per_lambda payload disappeared from the report output.
         all_cps = {}
         for cp in checkpoints:
             summary = {"status": cp.status}
-            # Add key measurement as detail
             if cp.measurements:
-                key_metrics = list(cp.measurements.items())[:3]
-                for k, v in key_metrics:
+                for k, v in cp.measurements.items():
                     summary[k] = v
             if cp.error:
                 summary["error"] = cp.error

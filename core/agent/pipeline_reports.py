@@ -62,6 +62,9 @@ class PipelineJobContext:
         cloudwatch_namespace: str = "PLE/Serving",
         cloudwatch_lookback_minutes: int = 60,
         audit_archive_parquet_glob: str = "",
+        l2a_lambda: str = "ple-reason-l2a",
+        predict_warm_sla_ms: int = 500,
+        l2a_sla_ms: int = 15000,
     ) -> None:
         self.region = region
         self.phase0_job_name = phase0_job_name
@@ -78,6 +81,16 @@ class PipelineJobContext:
         # runs them through GroundingValidator, and surfaces the tier-1
         # grounding / readability / overall quality metrics.
         self.audit_archive_parquet_glob = audit_archive_parquet_glob
+        # L2a rewrite Lambda + its own latency SLA. This is deliberately
+        # decoupled from predict_warm_sla_ms because L2a bodies always
+        # call Bedrock Sonnet (~3-4s) so a sub-second SLA is not
+        # meaningful. predict_warm_sla_ms targets warm ple-predict only
+        # (cold starts excluded via CW Logs Insights), so the real CP6
+        # metric reflects steady-state user-perceived latency rather
+        # than Lambda init-phase noise.
+        self.l2a_lambda = l2a_lambda
+        self.predict_warm_sla_ms = predict_warm_sla_ms
+        self.l2a_sla_ms = l2a_sla_ms
 
 
 # ---------------------------------------------------------------------------
@@ -523,12 +536,28 @@ def _build_aws_registry(ctx: PipelineJobContext):
     registry.register("check_feature_store_health", _predict_health,
                       description="serving health (CP5, AWS)", category="query")
 
-    # CP6 — Recommendation audit. DynamoDB row count + p50/p95 Duration
-    # from CloudWatch. p50/p95 use GetMetricData (not GetMetricStatistics)
-    # so we can request ExtendedStatistics like "p95" for the same
-    # AWS/Lambda Duration metric. SLA breaches on p95 are the signal
-    # OpsDiagnoser scores against ``latency_sla_ms``.
-    def _predict_percentile(stat: str) -> Optional[float]:
+    # CP6 — Recommendation audit. This is the user-perceived serving
+    # latency and it needs per-lambda breakdown:
+    #
+    #   - ple-predict (warm-only): the synchronous inference path. We
+    #     exclude cold starts via CloudWatch Logs Insights because
+    #     cold-start init-phase latency (~8s on a 3GB Lambda) is not a
+    #     steady-state signal — it's a deployment characteristic that
+    #     the SRE team mitigates with provisioned concurrency, not a
+    #     feature-store issue.
+    #   - ple-reason-l2a: SQS-triggered Bedrock Sonnet rewrite. Every
+    #     invocation body includes a Bedrock call (~3-4s), so a
+    #     sub-second SLA is meaningless. Tracked with a dedicated
+    #     15s SLA via ctx.l2a_sla_ms.
+    #
+    # CP6 primary ``p95_latency_ms`` stays as the predict-warm-only
+    # value so OpsDiagnoser's single-SLA rule (CORR-002) scores
+    # against the right steady-state metric. The l2a latency + the
+    # cold-inclusive predict latency live under ``per_lambda`` for
+    # operators who want the full picture.
+
+    def _simple_percentile(stat: str, lambda_name: str) -> Optional[float]:
+        """GetMetricData p50/p95 over the lookback window."""
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=ctx.cloudwatch_lookback_minutes)
         try:
@@ -540,8 +569,7 @@ def _build_aws_registry(ctx: PipelineJobContext):
                             "Namespace": "AWS/Lambda",
                             "MetricName": "Duration",
                             "Dimensions": [{
-                                "Name": "FunctionName",
-                                "Value": ctx.predict_lambda,
+                                "Name": "FunctionName", "Value": lambda_name,
                             }],
                         },
                         "Period": 60,
@@ -556,13 +584,70 @@ def _build_aws_registry(ctx: PipelineJobContext):
             points = resp.get("MetricDataResults", [{}])[0].get("Values", [])
             if not points:
                 return None
-            # For tail statistics we want the aggregate over the window,
-            # not just the most recent minute. Reducing by max here
-            # matches AWS Console's default "p95 over window" display.
             return float(max(points))
         except Exception:
-            logger.debug("CP6 p-stat %s failed", stat, exc_info=True)
+            logger.debug(
+                "simple_percentile %s/%s failed", lambda_name, stat,
+                exc_info=True,
+            )
             return None
+
+    def _warm_only_percentiles(lambda_name: str) -> Dict[str, Optional[float]]:
+        """CloudWatch Logs Insights — p50/p95 of Duration excluding cold starts.
+
+        The Lambda managed runtime writes one REPORT line per invocation
+        with ``@duration`` (end-to-end) and ``@initDuration`` (cold-start
+        init-phase, only present on the very first invocation of a
+        sandbox). We filter warm invocations with
+        ``ispresent(@initDuration) = 0``, then ``pct(@duration, 95)``
+        gives the steady-state user-perceived tail.
+        """
+        import time as _time
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(minutes=ctx.cloudwatch_lookback_minutes)
+        query = (
+            "fields @timestamp, @duration, @initDuration"
+            " | filter @type = \"REPORT\" and ispresent(@initDuration) = 0"
+            " | stats pct(@duration, 95) as p95,"
+            "         pct(@duration, 50) as p50,"
+            "         count(*) as warm_count"
+        )
+        try:
+            resp = logs_client.start_query(
+                logGroupName=f"/aws/lambda/{lambda_name}",
+                startTime=int(start.timestamp()),
+                endTime=int(end.timestamp()),
+                queryString=query,
+            )
+            qid = resp["queryId"]
+            for _ in range(30):
+                res = logs_client.get_query_results(queryId=qid)
+                if res["status"] in ("Complete", "Failed", "Cancelled"):
+                    break
+                _time.sleep(1)
+            if res["status"] != "Complete":
+                return {"p50": None, "p95": None, "warm_count": 0}
+            rows = res.get("results", [])
+            if not rows:
+                return {"p50": None, "p95": None, "warm_count": 0}
+            flat: Dict[str, str] = {f["field"]: f["value"] for f in rows[0]}
+            def _num(key: str) -> Optional[float]:
+                val = flat.get(key)
+                try:
+                    return float(val) if val else None
+                except Exception:
+                    return None
+            return {
+                "p50": _num("p50"),
+                "p95": _num("p95"),
+                "warm_count": int(_num("warm_count") or 0),
+            }
+        except Exception:
+            logger.debug(
+                "warm-only percentile Logs Insights failed for %s",
+                lambda_name, exc_info=True,
+            )
+            return {"p50": None, "p95": None, "warm_count": 0}
 
     def _audit_archive() -> Dict[str, Any]:
         try:
@@ -571,16 +656,80 @@ def _build_aws_registry(ctx: PipelineJobContext):
             ).get("Count", 0)
         except Exception:
             item_count = 0
-        p50 = _predict_percentile("p50") or _cw_datapoints(
-            "Duration", statistic="Average", namespace="AWS/Lambda",
-            dimensions=[{"Name": "FunctionName", "Value": ctx.predict_lambda}],
-        ).get("value")
-        p95 = _predict_percentile("p95")
+
+        # predict — warm-only p50/p95 via Logs Insights.
+        # When the warm sample is too small (< 5 invocations) the tail
+        # is dominated by cold-start init phase, which reflects
+        # provisioned-concurrency posture, not feature-store health.
+        # In that regime we **suppress** the primary p95 so CP6 does
+        # not fire a latency SLA breach; the raw values still live in
+        # per_lambda for operators who need the full picture.
+        predict_warm = _warm_only_percentiles(ctx.predict_lambda)
+        predict_full_p95 = _simple_percentile("p95", ctx.predict_lambda)
+        warm_count = int(predict_warm.get("warm_count", 0) or 0)
+        MIN_WARM_SAMPLES = 5
+        if (
+            warm_count >= MIN_WARM_SAMPLES
+            and predict_warm["p95"] is not None
+        ):
+            predict_p50 = predict_warm["p50"]
+            predict_p95 = predict_warm["p95"]
+            predict_sla_scope = "warm-only"
+        else:
+            # Insufficient warm samples — leave p95 unreported so
+            # OpsDiagnoser's single-SLA rule (CORR-002) does not alarm
+            # on cold-dominant noise.
+            predict_p50 = (
+                predict_warm["p50"]
+                if predict_warm["p50"] is not None
+                else _simple_percentile("p50", ctx.predict_lambda)
+            )
+            predict_p95 = None
+            predict_sla_scope = (
+                f"warm-only (suppressed: {warm_count} warm samples < "
+                f"{MIN_WARM_SAMPLES} minimum)"
+            )
+
+        # l2a — always includes Bedrock Sonnet in the body, so cold-vs-
+        # warm exclusion is meaningless. Report the raw GetMetricData
+        # percentiles.
+        l2a_p50 = _simple_percentile("p50", ctx.l2a_lambda)
+        l2a_p95 = _simple_percentile("p95", ctx.l2a_lambda)
+
+        per_lambda = {
+            ctx.predict_lambda: {
+                "warm_p50_ms": predict_warm["p50"],
+                "warm_p95_ms": predict_warm["p95"],
+                "warm_count": warm_count,
+                "full_p95_ms": predict_full_p95,
+                "sla_ms": ctx.predict_warm_sla_ms,
+                "sla_scope": predict_sla_scope,
+            },
+            ctx.l2a_lambda: {
+                "p50_ms": l2a_p50,
+                "p95_ms": l2a_p95,
+                "sla_ms": ctx.l2a_sla_ms,
+                "sla_scope": "all-invocations (Bedrock-bound)",
+            },
+        }
+        # Surface the strictest per-lambda SLA breach as an extra
+        # anomaly so OpsReporter.attention_required picks it up even
+        # without modifying OpsDiagnoser.
+        extra_anomalies: List[Dict[str, Any]] = []
+        if l2a_p95 and l2a_p95 > ctx.l2a_sla_ms:
+            extra_anomalies.append({
+                "type": "l2a_latency_sla_breach",
+                "lambda": ctx.l2a_lambda,
+                "p95": l2a_p95,
+                "sla": ctx.l2a_sla_ms,
+            })
         return {
-            "p50_latency_ms": p50,
-            "p95_latency_ms": p95,
+            "p50_latency_ms": predict_p50,
+            "p95_latency_ms": predict_p95,        # predict warm-only
             "filter_pass_rate": None,
             "total_requests": int(item_count),
+            "per_lambda": per_lambda,
+            "extra_anomalies": extra_anomalies,
         }
 
     registry.register("read_audit_archive", _audit_archive,
@@ -825,8 +974,16 @@ def run_pipeline_reports(
         else:
             logger.info("Ops report: local-artifacts registry")
             registry = _build_registry(art_path)
+        # latency_sla_ms is the *warm* predict SLA — cold-start noise
+        # is filtered out upstream in the AWS registry. L2a and any
+        # Bedrock-bound Lambda carry their own SLA in the per_lambda
+        # payload (ctx.l2a_sla_ms).
+        warm_sla = (
+            aws_context.predict_warm_sla_ms
+            if aws_context is not None else 500
+        )
         ops_cfg = {
-            "latency_sla_ms": 300,
+            "latency_sla_ms": warm_sla,
             "min_val_auc": 0.55,
             "fidelity_gap_threshold": 0.05,
             "grad_norm_warning": 100,

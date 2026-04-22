@@ -216,7 +216,15 @@ class OpsCollector:
         return CheckpointResult("CP5", "서빙 헬스", status, measurements, anomalies)
 
     def collect_cp6_recommendation(self) -> CheckpointResult:
-        """CP6: Recommendation response"""
+        """CP6: Recommendation response.
+
+        The ``p95_latency_ms`` field represents the warm-only predict
+        Lambda p95 when the upstream tool delivers it that way (the
+        AWS-backed pipeline_reports registry does). ``latency_sla_ms``
+        accordingly refers to the warm-SLA; Bedrock-bound rewrite
+        latencies belong in ``per_lambda[<l2a>]`` with its own SLA and
+        are surfaced via ``extra_anomalies`` from the upstream tool.
+        """
         data = self._safe_call("read_audit_archive") or {}
 
         measurements = {
@@ -224,14 +232,21 @@ class OpsCollector:
             "p95_latency_ms": data.get("p95_latency_ms"),
             "filter_pass_rate": data.get("filter_pass_rate"),
             "total_requests": data.get("total_requests", 0),
+            # Per-Lambda breakdown — opt-in payload from the AWS registry.
+            # Stays empty when the legacy / local-file registry is used
+            # so existing callers see unchanged behaviour.
+            "per_lambda": data.get("per_lambda", {}),
         }
 
-        anomalies = []
+        anomalies: List[Dict[str, Any]] = list(
+            data.get("extra_anomalies", []) or [],
+        )
         sla = self._config.get("latency_sla_ms", 300)
-        if measurements.get("p95_latency_ms") and measurements["p95_latency_ms"] > sla:
+        p95 = measurements.get("p95_latency_ms")
+        if p95 and p95 > sla:
             anomalies.append({
                 "type": "latency_sla_breach",
-                "p95": measurements["p95_latency_ms"],
+                "p95": p95,
                 "sla": sla,
             })
 
