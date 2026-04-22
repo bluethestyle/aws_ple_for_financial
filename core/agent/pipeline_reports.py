@@ -836,10 +836,61 @@ def _build_registry(artifacts_dir: Path):
 # Consensus arbiter (optional — only when boto3 + Bedrock reachable)
 # ---------------------------------------------------------------------------
 
-def _build_bedrock_arbiter():
+# Ops agent's 3-person voting panel. Each perspective corresponds to a
+# stakeholder who would normally be in a production incident call —
+# SRE owns infra availability + tail latency, MLOps owns training /
+# distillation quality, Biz owns customer-visible impact.
+_OPS_PERSPECTIVES = {
+    "sre": (
+        "당신은 SRE 엔지니어입니다. 인프라 가용성, 콜드 스타트, p50/p95 "
+        "지연시간, 에러율, 배포 롤백 가능성에 민감하세요. 지표 수치를 직접 "
+        "인용하고 '운영상 조치' 관점으로 판단하세요."
+    ),
+    "mlops": (
+        "당신은 MLOps/ML 엔지니어입니다. 학습 수렴(loss, val_auc, epochs), "
+        "증류 피델리티, 피처 엔지니어링 상태(zero_variance, nan_ratio) 의 "
+        "모델 품질 영향을 중시합니다. 데이터 또는 모델 차원의 근본 원인을 "
+        "찾는 관점으로 판단하세요."
+    ),
+    "biz": (
+        "당신은 금융 서비스 PM입니다. 추천 응답 지연, 서빙 가용성, 모델 "
+        "정확도가 실제 고객 전환율/이탈/만족도에 미치는 영향을 우선합니다. "
+        "트래픽 수치와 Lambda/DDB 사용량을 비즈니스 KPI 관점에서 해석하세요."
+    ),
+}
+
+# Audit agent's 3-person voting panel. Each perspective is a role a
+# real bank audit committee would actually call into — a regulator
+# checking compliance, a risk manager looking for bias / stability
+# issues, and an internal auditor focused on evidentiary record
+# integrity.
+_AUDIT_PERSPECTIVES = {
+    "regulator": (
+        "당신은 금융 규제 감독자입니다. 국내 금소법·AI기본법, EU AI Act, "
+        "FRIA(기본권영향평가) 준수 여부를 체크합니다. 설명의무(예: EU AI Act "
+        "제13조), 투명성, 고위험 AI 분류 상태에 민감하세요. 증빙이 없으면 "
+        "non-compliant 로 판단해야 합니다."
+    ),
+    "risk": (
+        "당신은 모델 리스크 매니저입니다. 편향(DI), 부당차별, 모델 드리프트, "
+        "설명가능성(grounding score, faithfulness) 지표로 판단하세요. 샘플 "
+        "사이즈가 작으면 불확실성을 명시적으로 기록해야 합니다. SR 11-7 "
+        "MRM 원칙을 따릅니다."
+    ),
+    "audit_trail": (
+        "당신은 내부감사인입니다. 감사 추적(HMAC 서명, hash chain), 증빙 "
+        "보존, 누가/언제/무엇을 승인했는지의 서명 체인을 강조하세요. "
+        "metadata 가 비어있거나 FRIA 상태가 pending 이면 증거 미비로 "
+        "판정해야 합니다."
+    ),
+}
+
+
+def _build_sonnet_provider():
+    """Bedrock Sonnet provider (lazy-imports boto3 + consensus)."""
     try:
         import boto3
-        from core.agent.consensus import ConsensusArbiter
+        from core.agent.consensus import ConsensusArbiter  # noqa: F401
     except Exception:
         logger.info("ConsensusArbiter unavailable (boto3 or consensus import)")
         return None
@@ -873,8 +924,53 @@ def _build_bedrock_arbiter():
                 return chunks[0].get("text", "").strip()
             return ""
 
+    return _BedrockProvider()
+
+
+def _build_ops_arbiter():
+    """3-agent ConsensusArbiter for the Ops reporter (SRE / MLOps / Biz)."""
+    provider = _build_sonnet_provider()
+    if provider is None:
+        return None
+    from core.agent.consensus import ConsensusArbiter
     return ConsensusArbiter(
-        llm_provider=_BedrockProvider(),
+        llm_provider=provider,
+        config={
+            "agents": 3,
+            "parallel": False,
+            "perspectives": _OPS_PERSPECTIVES,
+        },
+    )
+
+
+def _build_audit_arbiter():
+    """3-agent ConsensusArbiter for the Audit reporter
+    (Regulator / Risk / AuditTrail)."""
+    provider = _build_sonnet_provider()
+    if provider is None:
+        return None
+    from core.agent.consensus import ConsensusArbiter
+    return ConsensusArbiter(
+        llm_provider=provider,
+        config={
+            "agents": 3,
+            "parallel": False,
+            "perspectives": _AUDIT_PERSPECTIVES,
+        },
+    )
+
+
+def _build_bedrock_arbiter():
+    """Backwards-compatible single arbiter — kept for callers that still
+    inject one arbiter into both reporters. New code should use
+    :func:`_build_ops_arbiter` / :func:`_build_audit_arbiter` so each
+    report gets its own stakeholder panel."""
+    provider = _build_sonnet_provider()
+    if provider is None:
+        return None
+    from core.agent.consensus import ConsensusArbiter
+    return ConsensusArbiter(
+        llm_provider=provider,
         config={"agents": 3, "parallel": False},
     )
 
@@ -953,7 +1049,13 @@ def run_pipeline_reports(
     ops_path = reports_dir / "ops_report.json"
     audit_path = reports_dir / "audit_report.json"
 
-    arbiter = _build_bedrock_arbiter() if enable_consensus else None
+    # Each reporter gets its own 3-agent panel so Ops sees
+    # SRE/MLOps/Biz and Audit sees Regulator/Risk/AuditTrail — the
+    # perspectives that actually exist in a bank's incident-and-
+    # compliance review loop, instead of the generic alpha/beta/gamma
+    # arbiter both reports used to share.
+    ops_arbiter = _build_ops_arbiter() if enable_consensus else None
+    audit_arbiter = _build_audit_arbiter() if enable_consensus else None
 
     # ---- Ops ----------------------------------------------------------
     try:
@@ -991,7 +1093,7 @@ def run_pipeline_reports(
         collector = OpsCollector(registry=registry, config=ops_cfg)
         checkpoints = collector.collect_all()
         diagnoses = OpsDiagnoser(config=ops_cfg).diagnose(checkpoints)
-        reporter = OpsReporter(consensus_arbiter=arbiter)
+        reporter = OpsReporter(consensus_arbiter=ops_arbiter)
         ops_report = reporter.generate(checkpoints, diagnoses, period="daily")
         ops_report.save(str(ops_path))
         ops_status = ops_report.status
@@ -1026,7 +1128,7 @@ def run_pipeline_reports(
             aws_context.audit_archive_parquet_glob if aws_context else "",
         )
 
-        reporter = AuditReporter(consensus_arbiter=arbiter)
+        reporter = AuditReporter(consensus_arbiter=audit_arbiter)
         audit_report = reporter.generate(
             focus_areas=[],
             regulatory_results=reg_summary,
