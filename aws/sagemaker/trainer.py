@@ -415,6 +415,9 @@ class SageMakerTrainer:
         instance = (
             (desc.get("ResourceConfig") or {}).get("InstanceType", "")
         )
+        checkpoint_uri = (
+            (desc.get("CheckpointConfig") or {}).get("S3Uri", "")
+        )
         logger.info(
             "Job %s finished: status=%s, billable=%ds, model=%s",
             job_name, status, billable, model_arts or "<none>",
@@ -423,6 +426,7 @@ class SageMakerTrainer:
             "job_name": job_name,
             "status": status,
             "s3_model_uri": model_arts,
+            "checkpoint_s3_uri": checkpoint_uri,
             "output_path": output,
             "billable_seconds": billable,
             "instance_type": instance,
@@ -548,6 +552,7 @@ class SageMakerTrainer:
             "instance_type": aws.instance_type,
             "spot": aws.use_spot,
             "output_path": output_path,
+            "checkpoint_s3_uri": checkpoint_s3 if aws.use_spot else "",
         }
         if wait:
             attached = self.attach_running_job(job_name)
@@ -556,6 +561,8 @@ class SageMakerTrainer:
                 s3_model_uri=attached["s3_model_uri"],
                 billable_seconds=attached["billable_seconds"],
             )
+            if attached.get("checkpoint_s3_uri"):
+                result["checkpoint_s3_uri"] = attached["checkpoint_s3_uri"]
             if attached["status"] != "Completed":
                 raise RuntimeError(
                     f"Training job {job_name} ended with status "

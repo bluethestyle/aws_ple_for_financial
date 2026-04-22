@@ -308,6 +308,14 @@ def _run_full(config, args, s3_base, ts, wait):
         )
         logger.info("Phase 2 complete: %s", phase2.get("job_name"))
         model_uri = phase2.get("s3_model_uri", phase1_uri)
+        # distill_entry.py expects a directory of .pt/.pth files (best.pt +
+        # epoch_*.pt), which the Spot checkpoint_s3_uri always holds; the
+        # SageMaker output model.tar.gz, in contrast, is a single gzipped
+        # archive that the distillation entrypoint cannot open without an
+        # extra extraction step. Prefer the checkpoint dir when available.
+        teacher_channel_uri = (
+            phase2.get("checkpoint_s3_uri") or model_uri
+        )
 
     # Step 3: Distillation (CPU instance, PyTorch estimator, 2 channels).
     logger.info("--- Step 3: Knowledge Distillation (PLE → LGBM, CPU) ---")
@@ -317,7 +325,7 @@ def _run_full(config, args, s3_base, ts, wait):
     else:
         distill = trainer.launch_distillation(
             staging_dir=staging,
-            teacher_uri=model_uri,
+            teacher_uri=teacher_channel_uri,
             wait=wait,
         )
         student_uri = distill.get("output_path", f"{s3_base}/students/{ts}/")
