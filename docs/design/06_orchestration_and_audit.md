@@ -149,7 +149,7 @@ EventBridge (스케줄 또는 S3 이벤트 트리거)
       "Next": "RegisterModel"
     },
     "RegisterModel": {
-      "Comment": "submit_pipeline._register_model: always registers, then runs the offline Champion-Challenger gate (ModelCompetition) to decide whether promoted=True. The decision (bootstrap/promote/reject/force_promote) is recorded by AuditLogger.log_model_promotion.",
+      "Comment": "submit_pipeline._decide_promotion: 4-step short-circuit ladder — (1) --force-promote → promote (trigger=manual), (2) no champion → bootstrap, (3) fidelity_summary.failed>0 → reject (Competition skipped), (4) ModelCompetition.evaluate → promote/reject. All outcomes (bootstrap/promote/reject/force_promote) recorded by AuditLogger.log_model_promotion (HMAC + hash-chain) AND by SageMakerComplianceTracker as promotion_gate_verdict artifact. Production posture: pipeline.yaml forces serving.competition.auto_promote=false (EU AI Act Art.14, SR 11-7) — gate-passing challengers still require --force-promote for actual promotion.",
       "Type": "Task",
       "Resource": "arn:aws:lambda:...:register-and-evaluate",
       "Next": "CheckPromotion"
@@ -210,29 +210,52 @@ Step Functions (AWS):
 ┌─────────────────────────────────────────────────────────┐
 │ Layer 1: AWS 네이티브 (자동)                              │
 │                                                         │
-│ CloudTrail      ← 모든 AWS API 호출 자동 기록            │
-│ S3 Versioning   ← 데이터/모델 변경 이력 자동 보존         │
-│ SageMaker       ← 학습/추론 Job 메타데이터 자동 기록      │
-│   Lineage                                               │
+│ CloudTrail         ← 모든 AWS API 호출 자동 기록          │
+│ S3 Versioning +    ← 데이터/모델 변경 이력 자동 보존 +    │
+│   Object Lock                    WORM 물리 삭제 방지      │
+│ SageMaker Lineage  ← 학습/추론 Job 메타데이터 자동 기록   │
 └─────────────────────────────────────────────────────────┘
         +
 ┌─────────────────────────────────────────────────────────┐
 │ Layer 2: 플랫폼 레벨 (반자동)                             │
 │                                                         │
-│ ExperimentTracker ← 하이퍼파라미터/메트릭 기록             │
-│ SchemaRegistry    ← 스키마 버전 이력                      │
-│ FeaturePipeline   ← fit된 transformer 버전별 저장         │
-│ ModelRegistry     ← 모델 버전 + 평가 결과                 │
+│ SageMaker          ← 하이퍼파라미터/메트릭 기록 (MLflow   │
+│   Experiments       대체). 기본 backend 는 sagemaker     │
+│ SageMaker Model    ← 모델 버전 + 평가 결과                │
+│   Registry                                              │
+│ SageMaker-         ← 4개 규제 산출물 유형 (fria_assessment│
+│  ComplianceTracker   / ai_risk_assessment /              │
+│                      compliance_registry_sweep /          │
+│                      promotion_gate_verdict) TrialCompo-  │
+│                      nent 자동 기록, 120자 이름 cap      │
+│ SchemaRegistry     ← 스키마 버전 이력                     │
+│ FeaturePipeline    ← fit된 transformer 버전별 저장        │
 └─────────────────────────────────────────────────────────┘
         +
 ┌─────────────────────────────────────────────────────────┐
 │ Layer 3: 비즈니스 레벨 (명시적)                            │
 │                                                         │
-│ AuditLogger       ← 의사결정 근거 기록                    │
-│ ComplianceChecker ← 규제 준수 검증                       │
-│ AccessController  ← 데이터 접근 권한 관리                  │
+│ AuditLogger           ← 의사결정 근거 기록 (HMAC + hash  │
+│                         chain, S3 WORM)                  │
+│ ComplianceChecker     ← 36항목 레지스트리 (A-18 + GAP-18) │
+│ KoreanFRIAAssessor    ← AI기본법 §35, 7-차원, 5-년        │
+│ FRIAEvaluator (EU)    ← EU AI Act Art.9, 5-차원           │
+│ AnnexIVMapper         ← EU AI Act Art.11 tech doc         │
+│ SuitabilityFilter     ← KFCPA §17 ≥65 / <30M KRW hard cap│
+│ AISecurityChecker     ← prompt injection 14 + output      │
+│                         leak 8 패턴 + wrap_provider      │
+│ ComplianceSQLHelper   ← DuckDB httpfs (S3 Parquet 배치    │
+│                         조회 — Athena 비용 회피, S6)      │
+│ AccessController      ← 데이터 접근 권한 관리             │
 └─────────────────────────────────────────────────────────┘
 ```
+
+> **감사 경로 분리 원칙 (CLAUDE.md §1.14, §1.15)**
+> - **Online 조회** (consent 변경, opt-out 이벤트 등 원천 이벤트) → `ComplianceAuditStore` (DynamoDB). 저지연 단건 조회 용.
+> - **Batch 조회** (감사관 cross-view JOIN, 주기별 집계) → `ComplianceSQLHelper` (DuckDB httpfs 로 S3 Parquet 를 직접 쿼리, 인프라 비용 0). 두 경로는 read-only JOIN 으로만 연동하며 서로의 데이터를 덮어쓰지 않는다.
+> - **규제 산출물 집계** (FRIA 결과, 승격 verdict 등) → `SageMakerComplianceTracker` 로 Experiments TrialComponent 에 기록. 원천 이벤트 (`ComplianceAuditStore` 담당) 와는 용도가 다르므로 중복 저장이 아니다.
+>
+> **Fairness archive 프로덕션 배선 (2026-04-21, commit `51149f3`)**: `containers/lambda/fairness_evaluation.py` 가 매 평가마다 `FairnessMonitor.archive_metrics()` 를 호출하여 `monitoring.fairness.archive_parquet_path` 에 측정치를 실제로 append 한다. 이 producer wiring 덕분에 `MetadataAggregator` 가 읽는 `fairness_archive_parquet_path` source 가 더 이상 비어있지 않으며, PromotionGate 의 `fairness_risk` 차원이 heuristic 0.5 로 silent collapse 하지 않는다.
 
 ### 데이터 리니지 — 전체 추적 경로
 

@@ -1,12 +1,23 @@
 # AWS 쪽 구축 계획서 (Build Plan)
 
 **대상**: `docs/aws_work_plan.md` 의 Must (M1~M12) 중심 상세 실행 계획.
-**기준 시점**: 2026-04-21
+**기준 시점**: 2026-04-22
 **전제**: AWS 는 온프렘의 클라우드 확장 버전. 온프렘 → AWS 이식 시 AWS 의 **config-중심 / 데코레이터 Registry 패턴** 으로 재구성.
 
+> **진행 상태 배너 (2026-04-22)** — 본 문서는 Sprint 계획 단계에서 작성된 실행 명세로, 아래 항목은 **이미 완료**되어 merge 된 상태입니다:
+> - **Phase 1 Must M1~M12** — 전량 완료
+> - **Phase 2 Should S1~S15** — 전량 완료 (S5 는 SageMaker Experiments 네이티브, S6 는 DuckDB httpfs 로 재설계 — CLAUDE.md §1.14/§1.15)
+> - **Phase 3 Could** — C1/C3/C4/C5 완료, C2 는 Won't (SageMaker managed orchestration 네이티브)
+> - **PR #1~#3 PromotionGate Live Wiring (2026-04-21)** — `core/compliance/metadata_aggregator.py` + 6 evidence source + audit trail + SageMakerComplianceTracker artifact 연결. `compliance.promotion_gate.enabled: true` 가 pipeline.yaml 기본값으로 전환됨 (commit `51149f3`/`9426162`/`ec8587b`).
+> - **현재 테스트**: 620/620 PASS
+>
+> 실시간 진행 현황과 최근 3~7일 변경사항은 `docs/aws_work_plan.md` 상단 "진행 현황" 블록 및 `docs/pipeline_comparison_matrix.md §5.10` 을 참조하십시오. 본 문서는 **역사적 Build Plan** 으로 유지되며 Sprint 설계 원칙을 추적하고자 할 때 사용하십시오.
+>
+> **FRIA 모듈 파일 경로 주의**: M7 은 **EU AI Act Art. 9** 기반이며 구현 위치는 `core/monitoring/fria_evaluator.py::FRIAEvaluator` (5-차원) 입니다. 한국 AI기본법 §35 FRIA 는 별도 class `core/compliance/fria_assessment.py::KoreanFRIAAssessor` (7-차원, 5-년 retention) 로 구현되어 있으며 법적 기반이 달라 저장도 분리합니다 (CLAUDE.md §1.11). 본 문서 M7 섹션에서 `fria_evaluator.py` 로 표기된 부분은 EU 경로이며, 한국 경로 구현은 별도 진행되었습니다.
+
 **관련 문서**:
-- `docs/aws_work_plan.md` — Must/Should/Could 항목 리스트 + 법적 근거
-- `docs/pipeline_comparison_matrix.md` — 4-레이어 gap 분석
+- `docs/aws_work_plan.md` — Must/Should/Could 항목 리스트 + 법적 근거 (최신)
+- `docs/pipeline_comparison_matrix.md` — 4-레이어 gap 분석 + §5.10 운영 전환 체크리스트
 - `docs/onprem_work_plan.md` — 반대 방향 계획
 
 ---

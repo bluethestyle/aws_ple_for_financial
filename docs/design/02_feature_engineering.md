@@ -280,20 +280,32 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
 
 ## Stage 4: Feature Integration + Normalization
 
-### Power-law 자동 감지 + StandardScaler
+### Canonical 3-Stage Normalization (CLAUDE.md §2.1, §1.9)
 
 ```
 Numeric Features (all axes merged)
     ↓
-[Skewness 검사]─── skewness > 2.0 ──▶ log1p 변환 (power-law 자동 감지)
-    ↓                                      ↓
-    │ (원본 유지)                      (log1p 변환본)
-    ↓                                      ↓
-    └──── log1p + raw 병렬 결합 ──────────┘
-                   ↓
-          StandardScaler (z-score: mean=0, std=1)
-                   ↓
-        scaler_params.json 저장 (mean, std, log1p_cols)
+┌─ Stage 1 ─── 멱법칙 자동 감지 (skew + kurt 스크린 → log-log R²) ──▶ log1p(x) 복사본 생성
+│                                                                     (`{col}_log` 컬럼으로 피처 행렬 말미에 append)
+│
+├─ Stage 2 ─── TRAIN split only fit StandardScaler (z-score: mean=0, std=1)
+│   · `exclude_from_scaler: [categorical_id, probability]` 선언 컬럼 제외
+│     (ID 버킷 정수, [0,1] 확률 컬럼은 scaling 시 분포 왜곡되므로 skip — CLAUDE.md §1.9)
+│   · 연속형 (non-binary, non-categorical-ID, non-probability) 컬럼에만 적용
+│
+└─ Stage 3 ─── Stage 1 에서 생성된 `_log` 컬럼은 **raw magnitude 보존**
+                (scaler 재적용 금지 — heavy-tail 신호 유지)
+    ↓
+    scaler_params.json 저장 (mean, std, log1p_cols, exclude_cols)
+    ↓
+[Stage 6 완료 후] PipelineRunner._rebuild_group_ranges_post_normalization()
+    · Stage 1 이 `_log` 컬럼을 말미에 append 하고 컬럼 순서를 재배열하므로,
+      pre-normalization 의 `feature_group_ranges` 는 stale 상태가 된다
+    · 각 feature group 의 original + `_log` offspring 을 post-normalization
+      컬럼 순서에서 재위치 → longest contiguous block 을 새 range 로 emit
+    · 비연속 매칭 발생 시 WARNING, 14 regression test 로 잠금
+    · 상세: CLAUDE.md §1.7, commit `ec8587b` (2026-04-21), 테스트
+      `tests/test_group_ranges_rebuild.py`
 ```
 
 ### 구현
@@ -302,15 +314,19 @@ Numeric Features (all axes merged)
 # core/feature/normalizer.py
 class PowerLawAwareScaler:
     """
-    Power-law 자동 감지 + StandardScaler.
-    1. fit 시 각 컬럼의 skewness 계산
-    2. skewness > 2.0인 컬럼에 log1p 변환 (원본은 유지)
-    3. log1p 변환본 + 원본을 병렬로 결합
-    4. 전체에 StandardScaler 적용 (z-score)
-    5. get_params() → scaler_params.json 저장
-    cuPY 가속: cupy 설치 시 skewness/mean/std 계산을 GPU에서 수행.
+    3-Stage 정규화의 Stage 1+2+3 을 래핑한 클래스.
+
+    Stage 1: fit 시 각 컬럼의 skew+kurt → log-log R² 검정으로 멱법칙 감지.
+             감지된 컬럼에 log1p 변환본(`{col}_log`)을 피처 행렬 말미에 append.
+    Stage 2: TRAIN split 에서만 fit. `exclude_from_scaler` 규칙에 따라
+             categorical_id / probability sub-kind 를 skip. 연속형에만 z-score.
+    Stage 3: Stage 1 에서 생성된 `_log` 컬럼은 raw magnitude 를 보존 — 재스케일 금지.
+    get_params() → scaler_params.json 저장 (mean, std, log1p_cols, exclude_cols).
+    cuPY 가속: cupy 설치 시 skew/mean/std 계산을 GPU 에서 수행.
     """
 ```
+
+> **왜 Stage 3 에서 `_log` 를 보존하는가** — FeatureRouter 가 expert 마다 두 뷰 (centered 원본 + tail-preserving log) 를 모두 받을 수 있도록 설계된 구조이기 때문이다. `_log` 를 Stage 2 scaler 에 포함시키면 heavy-tail 신호가 평탄화되어 DeepFM / OT 같은 분포 의존 expert 의 성능이 저하된다.
 
 ---
 

@@ -13,8 +13,13 @@ Stage 4:   FeatureGroupPipeline + Normalization
 Stage 5:   LabelDeriver (13 tasks, derived in generate_benchmark_data.py to prevent spend_level-style leakage)
 Stage 5.5: LeakageValidator (sequence/correlation/product/temporal)
 Stage 6:   SequenceBuilder (flat → 3D tensors)
-Stage 7:   DataLoader (temporal split with gap_days=30)
+Stage 7:   DataLoader (temporal split with configurable gap_days, minimum 7)
 ```
+
+> **규제·정합성 주의 (CLAUDE.md §1.1 / §1.3 / §1.7)**
+> - **Split-config 3-layer**: 본 문서에서 다루는 Stage 1~7 설정은 `configs/pipeline.yaml` (공통) + `configs/datasets/{name}.yaml` (데이터셋별 tasks/labels/ablation) + `configs/{name}/feature_groups.yaml` (피처 그룹/전문가 라우팅) 3-layer 구성에서 온다. "두 configuration files" 가 아니다.
+> - **`gap_days`**: 설정 가능 값이며 **최소 7일** (CLAUDE.md §1.3). 본 문서에서 30일로 예시된 값들은 Santander 기본치이며 조절 가능.
+> - **3-stage 정규화 및 §1.7 post-normalization rebuild**: Stage 4 이후 `_log` 접미사 컬럼이 추가되고 컬럼 순서가 재배열되므로, `feature_group_ranges` 는 runner 가 longest-contiguous-block heuristic 으로 재구축한다. 상세는 02_feature_engineering.md §Stage 4 Normalization 및 `docs/guides/feature_engineering.md §Canonical 3-Stage Normalization Pipeline` 참조.
 
 ---
 
@@ -260,7 +265,7 @@ class PIIDomain(Enum):
 | 검증 | 설명 | 실패 시 |
 |------|------|---------|
 | **Sequence Leakage** | 시퀀스가 예측 윈도우(month 17)에 침투하는지 확인 | CRITICAL fail |
-| **Feature-Label Correlation** | Pearson > threshold인 피처 플래그 | WARNING |
+| **Feature-Label Correlation** | Pearson `|r|` ≥ 0.95 인 피처 플래그 (50K subsample 효율화). 2026-04 의 18→13 task 축소가 이 validator 발동의 결과 — `income_tier`/`tenure_stage`/`spend_level`/`engagement_score` 는 deterministic feature transform 으로 완벽 복원 가능 | WARNING → 승인 없으면 HARD STOP |
 | **Temporal Leakage** | Train set에 val/test 분할 경계 이후 데이터 포함 여부 | CRITICAL fail |
 | **Product Column Leakage** | prod_* 컬럼이 month 16 상태인지 확인 (month 17 아닌지) | CRITICAL fail |
 
@@ -294,7 +299,7 @@ else:
 temporal_split:
   enabled: true
   date_col: snapshot_date
-  gap_days: 30          # 30일 갭 (누수 방지)
+  gap_days: 30          # 설정 가능, 최소 7일 (CLAUDE.md §1.3). Santander 기본치 30
   train_ratio: 0.7
   val_ratio: 0.15       # test = 1 - 0.7 - 0.15 = 0.15
 ```

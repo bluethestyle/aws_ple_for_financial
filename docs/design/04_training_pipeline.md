@@ -685,6 +685,10 @@ ModelRegistry.package(version=…)   ← 항상 등록
 
 **Safety floor**: fidelity gate는 ModelCompetition과 독립적으로 동작한다. 학습 metric이 champion보다 좋더라도 student↔teacher fidelity가 실패한 버전은 자동 승격 대상에서 제외된다. `--force-promote`로만 강제 가능.
 
+**프로덕션 posture — `auto_promote: false` 강제 (EU AI Act Art. 14 + SR 11-7, CLAUDE.md §1.12)**: `configs/pipeline.yaml::serving.competition.auto_promote` 를 `false` 로 강제하여, 모든 metric threshold 를 통과한 challenger 라도 **자동 승격되지 않는다**. 운영자가 `--force-promote` 로 재실행해야 실제 승격이 확정된다. 코드 수준 `CompetitionConfig.auto_promote` 기본값은 레거시 테스트 픽스처 호환을 위해 `True` 로 유지되지만, 런타임에는 pipeline.yaml 의 `false` 가 우선한다.
+
+**PromotionGate Live Wiring (2026-04-21, PR #2/#3, commits `51149f3`/`9426162`)**: `compliance.promotion_gate.enabled: true` 가 기본값으로 전환되었다. `core/compliance/metadata_aggregator.py::MetadataAggregator` 가 6개 evidence source (fairness archive Parquet, drift archive Parquet, review queue DynamoDB, model registry DynamoDB, lineage YAML, LLM config) 를 composite 하여 차원 점수를 공급하며, `GateVerdict.details` 가 per-dimension 유도 trail 을 HMAC + hash-chain 감사 로그에 임베드하고 동시에 `SageMakerComplianceTracker` 에 `promotion_gate_verdict` artifact 로 기록된다 (CLAUDE.md §1.14). 이전에 fairness archive 가 비어있어 `fairness_risk` 차원이 heuristic 0.5 로 silent collapse 하던 gap 은, `containers/lambda/fairness_evaluation.py` 가 매 평가마다 `monitor.archive_metrics()` 를 호출하는 producer wiring 으로 해소되었다 (commit `51149f3`).
+
 **감사 로그 구조**
 
 모든 승격 판정은 다음 형식으로 S3 WORM (또는 local fallback)에 추가된다:
