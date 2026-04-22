@@ -233,7 +233,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         encryptor = _get_pii_encryptor()
         if encryptor is not None:
             try:
-                import pandas as _pd
                 from core.security.domains import PIIDomain, resolve_domain
                 pii_cols = [
                     col for col in features
@@ -245,11 +244,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         "these should be pre-hashed by the caller",
                         len(pii_cols), pii_cols,
                     )
-                    # Hash them in place so they don't propagate raw
-                    feat_df = _pd.DataFrame([features])
+                    # Pandas-free (CLAUDE.md §3.3): encryptor accepts
+                    # single-row dicts directly.
                     col_domain_map = {c: resolve_domain(c) for c in pii_cols}
-                    hashed_df = encryptor.hash_dataframe(feat_df, col_domain_map)
-                    features = hashed_df.iloc[0].to_dict()
+                    features = encryptor.hash_row(features, col_domain_map)
             except Exception:
                 logger.warning(
                     "Feature PII scan failed (non-fatal)", exc_info=True

@@ -229,13 +229,22 @@ class AbstractDomainIngestor(ABC):
         schema_valid, schema_warnings = self._validate_schema(df)
         warnings.extend(schema_warnings)
 
-        # Step 5: Encrypt PII
+        # Step 5: Encrypt PII.
+        # EncryptionPipeline.process_source now speaks plain dict-of-lists
+        # (pandas-free per CLAUDE.md §3.3 — the Lambda runtime has no
+        # pandas). Ingestion jobs still carry a DataFrame through the
+        # rest of this method, so adapt at the boundary.
         pii_encrypted = 0
         pii_dropped = 0
         if self._encryption_pipeline is not None:
             pre_cols = set(df.columns)
-            df = self._encryption_pipeline.process_source(
-                self.source_name, df,
+            cols_in = {c: df[c].tolist() for c in df.columns}
+            cols_out = self._encryption_pipeline.process_source(
+                self.source_name, cols_in,
+            )
+            import pandas as _pd
+            df = _pd.DataFrame(
+                {k: list(v) for k, v in cols_out.items()},
             )
             post_cols = set(df.columns)
             # Count new _idx columns as encrypted
