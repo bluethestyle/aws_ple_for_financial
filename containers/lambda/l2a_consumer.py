@@ -99,14 +99,20 @@ def _rewrite(l1_text: str, facts: str, similar_context: str) -> str:
 
 
 def _write_cache(user_id: str, task_name: str, l2a_text: str) -> None:
-    """Write L2a reason to DynamoDB reason_cache with TTL."""
+    """Write L2a reason to DynamoDB reason_cache with TTL.
+
+    The deployed table (ple-reason-cache) uses ``user_task_key`` as the
+    HASH partition key, not ``pk``. We mirror the legacy column name
+    used by serving code elsewhere (see core/recommendation/reason/*)
+    so there is a single read/write shape across the fleet.
+    """
     ddb = _get_ddb()
     ttl = int(time.time()) + CACHE_TTL_HOURS * 3600
 
     ddb.put_item(
         TableName=CACHE_TABLE,
         Item={
-            "pk": {"S": f"{user_id}:{task_name}"},
+            "user_task_key": {"S": f"{user_id}#{task_name}"},
             "user_id": {"S": user_id},
             "task_name": {"S": task_name},
             "l2a_reason": {"S": l2a_text},
