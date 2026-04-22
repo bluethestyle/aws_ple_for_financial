@@ -105,6 +105,16 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--attach-distill-output", type=str, default="",
+        help=(
+            "Skip Distillation submission and use the given S3 prefix "
+            "(SageMaker distill Job output) as the student artefacts "
+            "source for Register + PromotionGate. Useful for re-running "
+            "registration with updated scan logic without paying for a "
+            "fresh distill job."
+        ),
+    )
+    parser.add_argument(
         "--force-promote", action="store_true",
         help=(
             "Promote the new model to champion unconditionally, bypassing the "
@@ -351,6 +361,11 @@ def _run_full(config, args, s3_base, ts, wait):
     if args.dry_run:
         logger.info("[DRY RUN] Distillation Job: teacher=%s", model_uri)
         student_uri = f"{s3_base}/students/{ts}/"
+    elif args.attach_distill_output:
+        logger.info(
+            "Attaching existing distill output: %s", args.attach_distill_output,
+        )
+        student_uri = args.attach_distill_output.rstrip("/") + "/"
     else:
         distill = trainer.launch_distillation(
             staging_dir=staging,
@@ -871,15 +886,61 @@ def _register_model(
             logger.warning("Failed to extract teacher artifacts: %s", e)
             training_metrics = {}
 
-        # List student models from S3
-        students = {}
-        student_metadata = {}
+        # List student models from S3.
+        #
+        # SageMaker Training Jobs auto-tar /opt/ml/model into an
+        # output/model.tar.gz artefact. distill_entry.py writes
+        # {task}/model.lgbm files under /opt/ml/model, so the students'
+        # S3 prefix contains a single model.tar.gz rather than the
+        # flat {task}/model.lgbm files the registry expects. Detect the
+        # tarball, extract it locally, and re-upload the flat layout to
+        # a dedicated "extracted/" sub-prefix so both the scan below and
+        # downstream Lambda predict code can pull individual model files.
+        students: dict[str, str] = {}
+        student_metadata: dict[str, dict] = {}
         parts = student_uri.replace("s3://", "").split("/", 1)
         bucket, prefix = parts[0], parts[1]
 
+        scan_prefix = prefix
         try:
+            import tarfile, io
             paginator = s3.get_paginator("list_objects_v2")
+            tar_key: Optional[str] = None
             for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    if obj["Key"].endswith("/output/model.tar.gz"):
+                        tar_key = obj["Key"]
+                        break
+                if tar_key:
+                    break
+
+            if tar_key:
+                logger.info(
+                    "Detected distillation tarball: s3://%s/%s — extracting",
+                    bucket, tar_key,
+                )
+                extract_dir = Path(tmp) / "students_extract"
+                extract_dir.mkdir(parents=True, exist_ok=True)
+                tar_buf = io.BytesIO()
+                s3.download_fileobj(bucket, tar_key, tar_buf)
+                tar_buf.seek(0)
+                with tarfile.open(fileobj=tar_buf, mode="r:gz") as tar:
+                    tar.extractall(extract_dir)
+                scan_prefix = f"{prefix.rstrip('/')}/extracted"
+                uploaded = 0
+                for fp in extract_dir.rglob("*"):
+                    if not fp.is_file():
+                        continue
+                    rel = fp.relative_to(extract_dir).as_posix()
+                    s3_key = f"{scan_prefix.rstrip('/')}/{rel}"
+                    s3.upload_file(str(fp), bucket, s3_key)
+                    uploaded += 1
+                logger.info(
+                    "Re-uploaded %d flat student artifacts under s3://%s/%s/",
+                    uploaded, bucket, scan_prefix,
+                )
+
+            for page in paginator.paginate(Bucket=bucket, Prefix=scan_prefix):
                 for obj in page.get("Contents", []):
                     key = obj["Key"]
                     if key.endswith("/model.lgbm"):
