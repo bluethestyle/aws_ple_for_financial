@@ -33,6 +33,17 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Force UTF-8 stdout/stderr. SageMaker SDK streams CloudWatch container
+# logs straight to sys.stdout.print(); Windows' cp949 default raises
+# UnicodeEncodeError on characters like em-dash (U+2014) that appear in
+# progress bars and task descriptions, killing the orchestrator even
+# though the Training Job itself is fine.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+except (AttributeError, Exception):
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -76,6 +87,14 @@ def parse_args():
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Print what would be submitted without actually running",
+    )
+    parser.add_argument(
+        "--attach-phase1-job", type=str, default="",
+        help=(
+            "Attach to an already-running Phase 1 Training Job (by job name) "
+            "instead of submitting a new one. Used to recover from an "
+            "orchestrator crash without losing the billable clock."
+        ),
     )
     parser.add_argument(
         "--force-promote", action="store_true",
@@ -261,8 +280,21 @@ def _run_full(config, args, s3_base, ts, wait):
         )
         model_uri = f"{s3_base}/models/phase2/{ts}/model.tar.gz"
     else:
-        phase1 = trainer.launch_phase1(staging_dir=staging, wait=wait)
-        logger.info("Phase 1 complete: %s", phase1.get("job_name"))
+        if args.attach_phase1_job:
+            logger.info(
+                "Attaching to existing Phase 1 job: %s",
+                args.attach_phase1_job,
+            )
+            phase1 = trainer.attach_running_job(args.attach_phase1_job)
+            if phase1.get("status") != "Completed":
+                logger.error(
+                    "Existing Phase 1 %s ended with status %s; aborting.",
+                    args.attach_phase1_job, phase1.get("status"),
+                )
+                sys.exit(2)
+        else:
+            phase1 = trainer.launch_phase1(staging_dir=staging, wait=wait)
+            logger.info("Phase 1 complete: %s", phase1.get("job_name"))
         phase1_uri = phase1.get("s3_model_uri", "")
         if not phase1_uri:
             logger.error(

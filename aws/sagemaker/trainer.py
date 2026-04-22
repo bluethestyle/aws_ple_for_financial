@@ -308,9 +308,10 @@ class SageMakerTrainer:
                 ),
             },
             job_name=job_name,
-            wait=wait,
-            logs="All" if wait else "None",
+            wait=False,
+            logs="None",
         )
+        logger.info("Submitted: %s (wait=%s)", job_name, wait)
 
         result: dict[str, Any] = {
             "job_name": job_name,
@@ -321,7 +322,17 @@ class SageMakerTrainer:
             "teacher_uri": teacher_uri,
         }
         if wait:
-            result["s3_output_uri"] = estimator.model_data
+            attached = self.attach_running_job(job_name)
+            result.update(
+                status=attached["status"],
+                s3_output_uri=attached["s3_model_uri"],
+                billable_seconds=attached["billable_seconds"],
+            )
+            if attached["status"] != "Completed":
+                raise RuntimeError(
+                    f"Distillation job {job_name} ended with status "
+                    f"{attached['status']} — aborting pipeline.",
+                )
         return result
 
     # ------------------------------------------------------------------
@@ -335,7 +346,13 @@ class SageMakerTrainer:
         )
 
     def wait_for_job(self, job_name: str) -> str:
-        """Block until a running job completes. Returns terminal status."""
+        """Block until a running job completes. Returns terminal status.
+
+        Uses the AWS-side waiter rather than the SDK's log streamer to
+        avoid the Windows cp949 UnicodeEncodeError path that kills the
+        orchestrator when container logs contain non-ASCII characters
+        (e.g. em-dash, Korean).
+        """
         waiter = self._sm_client.get_waiter(
             "training_job_completed_or_stopped",
         )
@@ -348,6 +365,68 @@ class SageMakerTrainer:
         status = desc["TrainingJobStatus"]
         logger.info("Job %s finished with status: %s", job_name, status)
         return status
+
+    def attach_running_job(
+        self, job_name: str, poll_interval_s: int = 30,
+    ) -> dict[str, Any]:
+        """Attach to a Training Job already running on the cluster.
+
+        When ``submit_pipeline`` crashes (typically due to a local-side
+        issue like the cp949 encoding bug) the underlying Training Job
+        usually keeps running — SageMaker-side state is fully
+        decoupled. ``attach_running_job`` polls the job until it reaches
+        a terminal status and returns the same dict shape as
+        :meth:`_launch_training`, so the orchestrator can continue with
+        Phase 2 / Distillation without resubmitting Phase 1.
+
+        Parameters
+        ----------
+        job_name : str
+            SageMaker Training Job name (as returned by an earlier
+            ``launch_*`` call).
+        poll_interval_s : int
+            Seconds between ``describe_training_job`` polls (default 30).
+
+        Returns
+        -------
+        dict
+            ``job_name``, ``status``, ``s3_model_uri`` (if Completed),
+            ``billable_seconds``, ``output_path``, ``instance_type``.
+        """
+        logger.info(
+            "Attaching to running job %s (poll every %ds)...",
+            job_name, poll_interval_s,
+        )
+        terminal = {"Completed", "Failed", "Stopped"}
+        while True:
+            desc = self.describe_job(job_name)
+            status = desc["TrainingJobStatus"]
+            secondary = desc.get("SecondaryStatus", "")
+            if status in terminal:
+                break
+            logger.info("  [%s] %s ...", status, secondary)
+            time.sleep(poll_interval_s)
+
+        billable = int(desc.get("BillableTimeInSeconds", 0))
+        model_arts = (desc.get("ModelArtifacts") or {}).get(
+            "S3ModelArtifacts", "",
+        )
+        output = (desc.get("OutputDataConfig") or {}).get("S3OutputPath", "")
+        instance = (
+            (desc.get("ResourceConfig") or {}).get("InstanceType", "")
+        )
+        logger.info(
+            "Job %s finished: status=%s, billable=%ds, model=%s",
+            job_name, status, billable, model_arts or "<none>",
+        )
+        return {
+            "job_name": job_name,
+            "status": status,
+            "s3_model_uri": model_arts,
+            "output_path": output,
+            "billable_seconds": billable,
+            "instance_type": instance,
+        }
 
     # ------------------------------------------------------------------
     # Internal
@@ -450,12 +529,18 @@ class SageMakerTrainer:
         if aws.use_spot:
             logger.info("  Checkpoint: %s", checkpoint_s3)
 
+        # Submit but never stream CloudWatch logs — SageMaker's SDK
+        # streamer prints raw container stdout to the local console,
+        # which dies on Windows cp949 whenever a non-ASCII byte (e.g.
+        # em-dash, Korean logging) lands in the stream. We wait via the
+        # AWS waiter + describe_training_job polling instead.
         estimator.fit(
             inputs,
             job_name=job_name,
-            wait=wait,
-            logs="All" if wait else "None",
+            wait=False,
+            logs="None",
         )
+        logger.info("Submitted: %s (wait=%s)", job_name, wait)
 
         result: dict[str, Any] = {
             "job_name": job_name,
@@ -465,7 +550,17 @@ class SageMakerTrainer:
             "output_path": output_path,
         }
         if wait:
-            result["s3_model_uri"] = estimator.model_data
+            attached = self.attach_running_job(job_name)
+            result.update(
+                status=attached["status"],
+                s3_model_uri=attached["s3_model_uri"],
+                billable_seconds=attached["billable_seconds"],
+            )
+            if attached["status"] != "Completed":
+                raise RuntimeError(
+                    f"Training job {job_name} ended with status "
+                    f"{attached['status']} — aborting pipeline.",
+                )
         return result
 
     def _build_input_channels(self) -> dict[str, TrainingInput]:
