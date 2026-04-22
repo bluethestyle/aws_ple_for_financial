@@ -430,6 +430,45 @@ def _run_full(config, args, s3_base, ts, wait):
             force_promote=args.force_promote,
         )
 
+    # Step 5: Ops + Audit reports (post-hoc observability).
+    # Wired to live AWS sources: SageMaker DescribeTrainingJob for the
+    # Phase 0/1/2/Distill metrics, CloudWatch GetMetricData for Lambda
+    # serving health, DynamoDB scan for reason_cache depth. Reports are
+    # best-effort — failures log but never roll back the already-signed
+    # promotion audit record from Step 4.
+    if not args.dry_run and wait:
+        try:
+            from core.agent.pipeline_reports import (
+                PipelineJobContext,
+                run_pipeline_reports,
+            )
+            logger.info(
+                "--- Step 5: Ops + Audit reports ---",
+            )
+            ctx = PipelineJobContext(
+                region=config.aws.region,
+                phase0_job_name=locals().get("phase0", {}).get("job_name", ""),
+                phase1_job_name=locals().get("phase1", {}).get("job_name", ""),
+                phase2_job_name=locals().get("phase2", {}).get("job_name", ""),
+                distill_job_name=locals().get("distill", {}).get("job_name", ""),
+            )
+            report_artifacts = run_pipeline_reports(
+                version=version,
+                artifacts_dir=f"outputs/pipeline_reports/{version}",
+                s3_prefix=f"{s3_base}/artifacts/{version}",
+                enable_consensus=True,
+                aws_context=ctx,
+            )
+            logger.info(
+                "Ops status=%s | Audit risk=%s | Ops s3=%s | Audit s3=%s",
+                report_artifacts.ops_status,
+                report_artifacts.audit_risk_level,
+                report_artifacts.ops_s3_uri,
+                report_artifacts.audit_s3_uri,
+            )
+        except Exception:
+            logger.exception("Pipeline reports failed (non-fatal)")
+
     logger.info("=" * 60)
     logger.info("Pipeline complete!")
     logger.info("  Features:  %s", features_uri)
