@@ -12,11 +12,12 @@ Complete reference for all YAML configuration files in the platform.
 4. [Dataset Config (datasets/*.yaml)](#dataset-config-datasetsyaml)
 5. [recommendation.yaml](#recommendationyaml)
 6. [monitoring.yaml](#monitoringyaml)
-7. [Serving Config](#serving-config)
-8. [Training Config](#training-config)
-9. [PLE Model Config](#ple-model-config)
-10. [Agent Configuration (agent.yaml)](#agent-configuration-configsfinancialagent-yaml)
-11. [Checklist Configuration (checklist.yaml)](#checklist-configuration-configsfinancialchecklist-yaml)
+7. [Compliance Config](#compliance-config)
+8. [Serving Config](#serving-config)
+9. [Training Config](#training-config)
+10. [PLE Model Config](#ple-model-config)
+11. [Agent Configuration (agent.yaml)](#agent-configuration-configsfinancialagent-yaml)
+12. [Checklist Configuration (checklist.yaml)](#checklist-configuration-configsfinancialchecklist-yaml)
 
 ---
 
@@ -54,12 +55,20 @@ configs/
 
 ### Merge behaviour (`deep_merge`)
 
-At runtime the two files are merged with `load_merged_config(common, dataset)`:
+The system uses a **3-layer split-config** (CLAUDE.md §1.1):
+
+1. **`configs/pipeline.yaml`** — common settings shared across datasets (model, training, distillation, AWS, compliance, monitoring).
+2. **`configs/datasets/{name}.yaml`** — dataset-specific overrides (tasks, labels, adapter, ablation scenarios).
+3. **`configs/{name}/feature_groups.yaml`** — feature-group definitions and expert routing, referenced from the dataset YAML via `feature_groups_file`.
+
+At runtime layers 1 and 2 are deep-merged with `load_merged_config(common, dataset)`:
 
 1. `pipeline.yaml` is loaded as the base.
 2. `datasets/<name>.yaml` is recursively merged on top.
 3. For dict values, keys are merged recursively (neither file wins wholesale).
 4. For list values and scalar values, the dataset file wins.
+
+Layer 3 (`feature_groups.yaml`) is loaded separately by the feature-engineering stage based on the path declared in the merged config (`feature_groups_file`). Adding a new dataset therefore touches all three files: copy `configs/datasets/example.yaml`, copy `configs/{existing}/feature_groups.yaml`, and implement the adapter module.
 
 ```python
 # core/pipeline/config.py
@@ -243,6 +252,15 @@ feature_groups:
         MY_VAR: my_value
       s3_staging_prefix: "s3://bucket/staging"
 
+    # Normalization exclusions (CLAUDE.md §1.9)
+    exclude_from_scaler: []           # Optional. Skip StandardScaler for the listed sub-kinds.
+                                      # Valid items: `categorical_id` (integers that look numeric
+                                      # but encode IDs — e.g. customer_id-derived buckets) and
+                                      # `probability` (already in [0,1] such as calibrated
+                                      # downstream scores). Applying StandardScaler to these
+                                      # distorts the distribution, so Stage 2 of the 3-stage
+                                      # normalization pipeline skips them.
+
     # Knowledge distillation inclusion
     distill: true                     # Default: true
     distill_weight: 1.0               # Default: 1.0 (relative weight)
@@ -287,6 +305,47 @@ feature_groups:
 
 Dataset-agnostic defaults. Do **not** put task lists, label derivations, or
 adapter settings here — those belong in `configs/datasets/<name>.yaml`.
+
+### Distillation block
+
+```yaml
+distillation:
+  # Threshold below which a teacher is considered too weak for distillation
+  # and the LGBM student is trained on hard labels directly (MRM safety
+  # floor, CLAUDE.md §1.8). Expressed as a multiple of the random-baseline
+  # metric for that task type.
+  teacher_threshold: 2.0              # 2x random baseline minimum
+
+  # Calibration configuration (CLAUDE.md §1.8). Dataset-agnostic — the
+  # task list is declared per dataset. Only probability-critical binary
+  # classification tasks need Platt scaling; ranking-oriented binary
+  # tasks and regression tasks routed to Layer 3 do NOT receive
+  # calibration.
+  calibration:
+    enabled: true
+    method: platt                     # Only "platt" supported currently
+    tasks: []                         # Override per dataset in datasets/{name}.yaml
+                                      # Example (santander): [churn_signal]
+                                      # Set per dataset, not here.
+```
+
+### Compliance block (see `## Compliance Config` below for detail)
+
+```yaml
+compliance:
+  tracking:
+    backend: sagemaker                # Shipped default (2026-04-21). See §Compliance Config.
+  promotion_gate:
+    enabled: true                     # Production default. See §Compliance Config.
+```
+
+### Serving block (see `## Serving Config` below for detail)
+
+```yaml
+serving:
+  competition:
+    auto_promote: false               # Posture enforcement. See §Serving Config.
+```
 
 ## Dataset Config (datasets/*.yaml)
 
@@ -627,6 +686,17 @@ fairness:
     frequency: daily
     time: "06:00"
     timezone: UTC
+
+  # Parquet archive (CLAUDE.md §1.12, commit 51149f3 2026-04-21).
+  # When set, `FairnessMonitor.archive_metrics()` appends every evaluation
+  # to this path in addition to the in-memory history. The PromotionGate
+  # MetadataAggregator reads this archive as the `fairness_risk` dimension
+  # source, so leaving the path unset collapses the dimension to its
+  # heuristic 0.5 fallback and the gate converges to a conservative
+  # LIMITED verdict. Lambda `containers/lambda/fairness_evaluation.py`
+  # calls `monitor.archive_metrics()` on every scheduled run so the
+  # archive actually fills over time.
+  archive_parquet_path: s3://aiops-ple-financial/compliance/fairness/metrics.parquet
 ```
 
 ### Drift detection
@@ -645,6 +715,12 @@ drift:
   baseline:
     source: s3://bucket/baselines/latest/
     format: parquet
+
+  # Parquet archive (CLAUDE.md §1.12). When set, every `detect_drift()`
+  # call optionally writes one row per feature to the archive, preserving
+  # PSI scores, severity labels, and the thresholds active at evaluation
+  # time. Consumed by the weekly governance markdown report.
+  archive_parquet_path: s3://aiops-ple-financial/compliance/drift/metrics.parquet
 ```
 
 ### Incident management
@@ -709,6 +785,132 @@ general:
 
 ---
 
+## Compliance Config
+
+**File:** `configs/pipeline.yaml` — top-level `compliance:` block.
+**Loaded by:** `core.compliance.*` modules (see CLAUDE.md §1.10–§1.16).
+
+### `compliance.tracking`
+
+Regulatory artifact tracking via SageMaker Experiments (replaces the
+on-prem MLflow + DVC path — CLAUDE.md §1.14).
+
+```yaml
+compliance:
+  tracking:
+    # Shipped default (2026-04-21, commit 9426162). IAM reachability
+    # verified against production account: list_experiments succeeds,
+    # describe_experiment returns ResourceNotFound (not access-denied)
+    # for unseeded names, confirming the training-job role carries
+    # Experiments permissions. `in_memory` is retained for hermetic
+    # unit tests and local development.
+    backend: sagemaker                # "sagemaker" | "in_memory"
+
+    experiment_name: aiops-ple-financial
+    region: ap-northeast-2
+
+    # Only 4 artifact types are recorded:
+    # - fria_assessment          (Korean AI Basic Act §35 FRIA 7-dim)
+    # - ai_risk_assessment       (EU AI Act Art. 9 FRIA 5-dim)
+    # - compliance_registry_sweep (36-item ComplianceRegistry A+GAP)
+    # - promotion_gate_verdict   (Champion-Challenger gate output)
+    # Any other artifact is tagged `custom` via `log_custom_artifact`.
+    # TrialComponent names are capped at 120 characters (SageMaker hard
+    # limit) — format `<artifact_type>-<artifact_id>`[:120].
+```
+
+### `compliance.promotion_gate`
+
+Per-dimension gate applied immediately after the ModelCompetition
+verdict. Blocks promotion when regulatory dimensions (fairness,
+privacy, lineage, risk) are not adequately substantiated, even if
+metrics gate passes (CLAUDE.md §1.10, §1.11, §1.16).
+
+```yaml
+compliance:
+  promotion_gate:
+    # Production default (2026-04-21, PR #2/#3). Requires dimension
+    # score providers to be wired — see CLAUDE.md §1.16. With providers
+    # not wired, every dimension collapses to its heuristic 0.5 fallback
+    # and the gate converges to a conservative LIMITED verdict
+    # regardless of challenger quality. MetadataAggregator + 6 source
+    # live-wiring (see below) closes this gap.
+    enabled: true
+
+    # Earliest-wins composition: manual overrides apply first, then
+    # metadata aggregator, then per-rule heuristic fallbacks.
+    providers:
+      manual_overrides: {}            # Optional {model_version: {dimension: score}}
+      aggregator:
+        sources:
+          # Six evidence sources aggregated into dimension scores and
+          # embedded in `GateVerdict.details` as a per-dimension
+          # derivation trail.
+          fairness_archive_parquet_path: s3://aiops-ple-financial/compliance/fairness/metrics.parquet
+          drift_archive_parquet_path:    s3://aiops-ple-financial/compliance/drift/metrics.parquet
+          review_queue_table:            aiops-ple-review-queue
+          model_registry_table:          aiops-ple-model-registry
+          lineage_mapping_path:          configs/financial/feature_groups.yaml
+          llm_config_path:               configs/pipeline.yaml
+
+    # Heuristic transforms are audit-traceable: each rule declares
+    # (metadata_path, transform, fallback). Supported transforms are
+    # `identity`, `one_minus`, `log10_ratio` (requires
+    # ratio_denominator). Values clipped to [0, 1]. Any new transform
+    # must be registered in code, not YAML.
+    heuristic_fallback: 0.5
+
+    # Per-verdict action thresholds.
+    thresholds:
+      accept_min_score: 0.75
+      limited_min_score: 0.50
+      # Below limited_min_score → reject.
+```
+
+### `compliance.audit_sql` (S6)
+
+Offline SQL over S3 Parquet archives via DuckDB httpfs — used by
+regulators for batch queries (CLAUDE.md §1.15). Athena is deliberately
+**not** the default; DuckDB httpfs extension reads s3:// URIs natively
+and adds zero infrastructure cost.
+
+```yaml
+compliance:
+  audit_sql:
+    backend: duckdb                   # "duckdb" (default) | "athena" (future)
+    paths:
+      opt_out:   s3://aiops-ple-financial/compliance/opt_out/*.parquet
+      events:    s3://aiops-ple-financial/compliance/events/*.parquet
+      fairness:  s3://aiops-ple-financial/compliance/fairness/metrics.parquet
+      drift:     s3://aiops-ple-financial/compliance/drift/metrics.parquet
+    # View names restricted to [A-Za-z0-9_]+ (injection guard).
+```
+
+### `compliance.ai_security` (C4)
+
+Prompt-injection and output-leak pattern catalog (CLAUDE.md §1.17).
+Extend in YAML, not code, so security ops can respond to new attack
+patterns without a release.
+
+```yaml
+compliance:
+  ai_security:
+    prompt_injection_patterns:        # Default: 14 patterns
+      # - ignore previous instructions
+      # - DAN mode
+      # - reveal system prompt
+      # - base64-encoded payloads
+      # - ... (extend as needed)
+    output_leak_patterns:             # Default: 8 patterns
+      # - system-prompt echo
+      # - meta-instruction leak
+      # - Korean resident-registration number
+      # - card number PII
+      # - ... (extend as needed)
+```
+
+---
+
 ## Serving Config
 
 **File:** Embedded in serving YAML or passed programmatically
@@ -762,6 +964,28 @@ serving:
       - name: challenger
         model_path: s3://bucket/models/v2/
         weight: 0.2
+
+  # Offline Champion-Challenger competition (CLAUDE.md §1.10, §1.12).
+  # The offline gate lives in `scripts/submit_pipeline.py::_decide_promotion`
+  # and applies a fixed 4-step short-circuit ladder:
+  #   (1) --force-promote  → promote unconditionally (operator override)
+  #   (2) no champion      → bootstrap promote
+  #   (3) fidelity failed  → reject (safety floor, Competition skipped)
+  #   (4) else             → ModelCompetition.evaluate() verdict
+  competition:
+    # Production posture: FORCE auto_promote=false. Code-level
+    # CompetitionConfig.auto_promote default is retained at True for
+    # legacy test fixtures, but pipeline.yaml's False overrides at
+    # runtime. Under this posture, a challenger that beats all metric
+    # thresholds is still NOT promoted: the operator must re-run with
+    # `--force-promote`. Satisfies EU AI Act Art. 14 (human oversight)
+    # and SR 11-7 (model risk management).
+    auto_promote: false
+
+    primary_metric: avg_auc           # Default primary competition metric
+    min_improvement: 0.005            # 0.5% absolute gain required
+    max_degradation: 0.02             # 2% absolute regression tolerated on secondaries
+    significance_level: 0.05          # Paired-bootstrap two-sided p threshold
 
   # Kill switch
   kill_switch:
@@ -881,9 +1105,16 @@ model:
     subhead_hidden_dim: 64
     subhead_output_dim: 32
 
-  # adaTT (Adaptive Task Transfer)
+  # adaTT (Adaptive Task Transfer, loss-level TAG+GradNorm hybrid).
+  # STATUS: loss-level adaTT has a null effect at 13-task scale
+  # (ΔAUC ≈ -0.001, within single-seed noise) after five implementation
+  # bugs were corrected. Kept behind `enabled` for ablation comparison,
+  # NOT enabled in production. Task groups below are the canonical four
+  # Financial-DNA groups used for post-hoc interpretation and for the
+  # rule-based fallback layer's template selection; they do NOT gate
+  # the CGC router directly (routing is per-task via the CGC gate).
   adatt:
-    enabled: true
+    enabled: false                    # Production default for 13-task benchmark
     transfer_lambda: 0.1
     temperature: 1.0
     warmup_epochs: 10
@@ -895,18 +1126,25 @@ model:
     inter_group_strength: 0.3
     grad_interval: 10
     max_transfer_ratio: 0.5
-    task_groups:
+    task_groups:                       # Financial DNA 4-group split (post-hoc)
       engagement:
-        members: [click, convert]
+        members: [churn_signal, top_mcc_shift]
+        intra_strength: 0.7
+      lifecycle:
+        members: [segment_prediction, will_acquire_deposits, will_acquire_cards,
+                  will_acquire_loans, will_acquire_funds, will_acquire_insurance]
         intra_strength: 0.7
       value:
-        members: [ltv, nba]
+        members: [nba_primary, cross_sell_count]
+        intra_strength: 0.7
+      consumption:
+        members: [next_mcc, mcc_diversity_trend, product_stability]
         intra_strength: 0.7
 
   # Logit transfer
   logit_transfers:
-    - source: click
-      target: convert
+    - source: churn_signal
+      target: will_acquire_deposits
       enabled: true
   logit_transfer_strength: 0.5
 
