@@ -451,7 +451,7 @@ All three layers are integrated into a unified Lambda serving path:
 
 Key integration properties:
 - `FallbackRouter` auto-routes each task to its appropriate layer based on availability and metric thresholds; the caller is unaware of which layer served the prediction.
-- Calibrated probabilities (Platt scaling) are applied on Layer 1/2 outputs for probability-critical binary classification tasks where raw LGBM probabilities are systematically biased. The task list is dataset-specific and declared in `distillation.calibration.tasks`; the Santander benchmark configures `churn_signal` as the canonical example. Ranking-oriented binary tasks that only require a consistent score ordering, and regression tasks routed to Layer 3 (rule engine), do not receive Platt scaling.
+- Calibrated probabilities (Platt scaling) are applied on Layer 1/2 outputs for probability-critical binary classification tasks where raw LGBM probabilities are systematically biased. The calibration-enabled task set is declared per dataset under the distillation configuration (e.g. `distillation.calibration.tasks`) so that probability-consuming downstream logic (thresholding, expected-value scoring, risk budgeting) is correctly calibrated regardless of benchmark. Ranking-oriented binary tasks that only require a consistent score ordering, and regression tasks routed to Layer 3 (rule engine), do not receive Platt scaling.
 - For Layer 3, `contributing_features` from rule firings are injected directly into the reason pipeline. This enables interpretable reasons even when no model is available, using the same 3-agent interface as Layer 1/2.
 - All three layers produce an identical response schema --- prediction, probability, contributing features, reason text, audit token --- ensuring the API contract is transparent to callers regardless of which layer served the request.
 
@@ -1208,11 +1208,11 @@ Nine additional safeguards were layered on top of the core compliance modules to
 
 - *Counterfactual Champion-Challenger* (`core/evaluation/counterfactual_cc.py`). Off-policy IPS and SNIPS estimators with paired-bootstrap confidence intervals. Supports EU AI Act Art. 15 (accuracy) and SR 11-7 effective-challenge by providing evidence that a challenger would have produced better outcomes than the champion on logged observational data.
 
-- *auto-promote=False enforcement* (`core/evaluation/model_competition.py`). The default `CompetitionConfig` still auto-promotes to preserve legacy test behaviour, but production operates with `serving.competition.auto_promote: false` in `pipeline.yaml`. Under this posture a challenger that beats all metric thresholds is still NOT promoted: the operator must re-run with `--force-promote`, satisfying EU AI Act Art. 14 (human oversight) and leaving an explicit operator signature in the audit log.
+- *auto-promote=False enforcement* (`core/evaluation/model_competition.py`). The code-level `CompetitionConfig` default is retained at `True` purely for backwards compatibility with legacy test fixtures; production posture is enforced in `pipeline.yaml::serving.competition.auto_promote: false`, which takes precedence at run time. Under this posture a challenger that beats all metric thresholds is still NOT promoted: the operator must re-run with `--force-promote`, satisfying EU AI Act Art. 14 (human oversight) and SR 11-7 model-risk management, and leaving an explicit operator signature in the audit log. Flipping the code default is deliberately avoided so that unit tests using bare `CompetitionConfig()` continue to pass.
 
 - *Annex IV technical-documentation mapper* (`core/compliance/annex_iv_mapper.py`). A dedicated mapper that, for each of the 12 Annex IV sections, resolves a list of evidence sources (Python modules, documents, config keys) and reports which sections have full, partial, or missing evidence. The coverage rate is tracked automatically so the technical file can be regenerated before every conformity assessment.
 
-- *Fairness metrics archive* (`core/monitoring/fairness_monitor.py`). The monitor now appends every measurement to an in-memory history and, when `monitoring.fairness.archive_parquet_path` is configured, to a Parquet file that the governance reporter can query directly. `get_archive(attribute, limit)` supports drill-down dashboards without re-running the computation.
+- *Fairness metrics archive and PromotionGate wiring* (`core/monitoring/fairness_monitor.py`, `containers/lambda/fairness_evaluation.py`). The monitor appends every measurement to an in-memory history and, when `monitoring.fairness.archive_parquet_path` is configured, also to an S3 Parquet file that the governance reporter can query directly. `get_archive(attribute, limit)` supports drill-down dashboards without re-running the computation. Critically, the fairness Lambda now invokes `monitor.archive_metrics()` on every evaluation so the archive actually fills over time. This closes a prior gap where `MetadataAggregator.fairness_archive_parquet_path` pointed at an archive no producer was writing to, causing the PromotionGate `fairness_risk` dimension to silently collapse to its heuristic 0.5 fallback and the gate to converge to a conservative `LIMITED` verdict independent of the challenger. With the producer wired, `MetadataAggregator` now reads real fairness evidence and the gate verdict reflects true challenger behaviour.
 
 - *Drift persistence + markdown report* (`core/monitoring/drift_detector.py`). Each `detect_drift()` call optionally writes one row per feature to a Parquet archive, preserving PSI scores, severity labels, and the thresholds that were active at evaluation time. A companion `generate_markdown_report()` produces a human-readable summary suitable for the weekly governance bundle.
 
@@ -1249,7 +1249,7 @@ The on-premises reference system uses MLflow for experiment tracking and DVC for
 - Backend abstraction (`ComplianceTrackerBackend`) with two concrete implementations: `InMemoryTrackerBackend` for tests and local dev, `SageMakerTrackerBackend` for production. Both expose the same `put_artifact` / `list_artifacts` surface so callers are backend-agnostic.
 - Five artifact types cover the Sprint 0~4 regulatory surface: `fria_assessment`, `ai_risk_assessment`, `compliance_registry_sweep`, `promotion_gate_verdict`, `custom`. Each type maps to a dedicated `log_*` helper that extracts the relevant parameters and metrics from the domain dataclass and attaches artifact-type + grade / risk-category tags so the SageMaker console (and any Athena export) can filter by regulatory concern.
 - TrialComponent names are capped at the SageMaker 120-char limit; failed boto3 calls are logged and treated as best-effort so a tracking outage never blocks a regulatory decision.
-- The backend is selected via `pipeline.yaml::compliance.tracking.backend`; the default ships as `in_memory` so unit tests and local development stay hermetic, and the operator flips to `sagemaker` once production IAM is in place.
+- The backend is selected via `pipeline.yaml::compliance.tracking.backend`; the shipped default is `sagemaker` (production IAM has been verified reachable --- `list_experiments` succeeds, and `describe_experiment` returns `ResourceNotFound` for an unseeded name rather than an access-denied error, confirming the training-job role carries the required Experiments permissions). The `in_memory` backend is retained for unit tests and local development that must remain hermetic, and is opted into by overriding the flag.
 
 `tests/test_sagemaker_compliance_tracker.py` (24 tests) exercises both backends with a synthetic boto3 client stub that records each `create_experiment` / `create_trial_component` / `list_trial_components` call so we can assert on the exact request shape (required fields, artifact-type tag presence, risk-category tag presence, 120-char name cap, `Completed` status, etc.) without making a real AWS call.
 
@@ -1281,7 +1281,7 @@ _LLM hardening — AI security checker_ (`core/security/ai_security_checker.py`)
 
 Combined with the Sprint 2 L2a Safety Gate (`core/recommendation/reason/l2a_safety_gate.py`), the LLM path now has four independent hardening layers --- sensitivity-based routing, rule-based safety gate, AI security checker (prompt + output), and the LLM generation marker --- each of which can veto independently and each of which is config-driven so a security ops team can extend the rule catalogue without a code change.
 
-`tests/test_phase3_could.py` (39 cases) covers T-Learner / X-Learner CATE recovery, qini plus top-K-percent uplift metrics on synthetic uplift data, every default security pattern, the provider-wrapping end-to-end flow, and custom refusal callback injection. Together with the Phase 1 and Phase 2 suites the AWS-side regulatory, learning, and security stack is exercised by _447 tests (447 passing)_.
+`tests/test_phase3_could.py` (39 cases) covers T-Learner / X-Learner CATE recovery, qini plus top-K-percent uplift metrics on synthetic uplift data, every default security pattern, the provider-wrapping end-to-end flow, and custom refusal callback injection. Together with the Phase 1 and Phase 2 suites, plus the PromotionGate MetadataAggregator live-wiring tests and the post-normalization feature-group-range rebuild regression suite, the AWS-side regulatory, learning, and security stack is exercised by _620 tests (620 passing)_.
 
 == Korean AI Basic Act
 
@@ -1496,25 +1496,35 @@ _approve_ (two-stage gate, see below),
 _monitor_ (continuous PSI-based drift detection), and
 _retrain_ (automatic re-distillation when drift exceeds threshold).
 The _approve_ stage is implemented as a two-gate pipeline.
-The *offline gate* (`ModelCompetition.evaluate`) runs immediately after
-distillation: it compares the newly registered challenger against the
-current champion's recorded metrics, requiring the primary metric to
-improve by at least `min_improvement` (default 0.5%) with no secondary
-metric degrading by more than `max_degradation` (default 2%), and
-optionally a paired-bootstrap significance test.
-A safety floor rejects any challenger with outstanding fidelity failures
-regardless of its training metrics.
-A `--force-promote` operator override is available for bootstrap and
-emergency rollback scenarios. Every decision --- `bootstrap`, `promote`,
-`reject`, or `force_promote` --- is recorded by
-`AuditLogger.log_model_promotion` to an HMAC-signed, hash-chained
-S3 WORM log, producing a non-repudiable audit trail of who promoted
-what and why.
+The *offline gate* (`scripts/submit_pipeline.py::_decide_promotion`) runs
+immediately after distillation and applies a single short-circuit
+decision ladder in a fixed order, so every challenger is evaluated
+against the same sequence and the outcome is fully auditable:
+(1) if `--force-promote` is set, the challenger is promoted
+unconditionally as an operator override (`trigger=manual`);
+(2) otherwise, if no champion exists in the registry, the challenger
+is bootstrap-promoted and no comparison is attempted;
+(3) otherwise, if `fidelity_summary.failed > 0`, the challenger is
+rejected by a safety floor regardless of its training metrics and
+Competition is skipped, preserving the teacher-student fidelity
+guarantee;
+(4) otherwise, `ModelCompetition.evaluate` compares the challenger
+against the current champion's recorded metrics, requiring the primary
+metric to improve by at least `min_improvement` (default 0.5%) with no
+secondary metric degrading by more than `max_degradation` (default
+2%), and optionally a paired-bootstrap significance test, and returns
+a promote / reject verdict.
+Every outcome --- `bootstrap`, `promote`, `reject`, or `force_promote`
+--- is recorded by `AuditLogger.log_model_promotion` to an
+HMAC-signed, hash-chained S3 WORM log, producing a non-repudiable
+audit trail of who promoted what and why.
 The *online gate* (`ModelMonitor.evaluate_champion_challenger`) is
-invoked after a challenger has accumulated sufficient DynamoDB
-prediction records to apply a two-proportion z-test on realized
-traffic; this gate is scaffolded but not yet scheduler-wired, and
-activates once real traffic volume justifies the comparison.
+invoked only after step (4) has promoted a challenger and sufficient
+DynamoDB prediction records have accumulated to apply a
+two-proportion z-test on realized traffic; it is scaffolded but not
+yet scheduler-wired, so it is deliberately *not* part of the automatic
+offline ladder above and activates only once real traffic volume
+justifies the comparison.
 
 === Per-Prediction Attribution Audit (CEH Integration)
 <ceh-audit>

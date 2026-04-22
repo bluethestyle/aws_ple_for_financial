@@ -157,7 +157,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Comprehensive Ablation*: 23 scenarios (14 joint feature+expert + 9 structure cross) on a reproducible 1M-customer benchmark with Gaussian Copula + latent variable variance budget.
 
-+ *Config-driven Pipeline*: End-to-end system (feature engineering → training → distillation → serving) controlled by two configuration files, enabling deployment by teams with 1--2 ML engineers.
++ *Config-driven Pipeline*: End-to-end system (feature engineering → training → distillation → serving) controlled by a split-config of three YAML files (`pipeline.yaml` for common model/training/distillation/AWS settings, `feature_groups.yaml` for feature-group routing, and `configs/datasets/{name}.yaml` for dataset-specific tasks/labels/ablation), enabling deployment by teams with 1--2 ML engineers.
 
 + *Reproducible Benchmark*: Synthetic data generation with variance budget @patki2016sdv for controlled AUC ceilings, validated against XGBoost baselines, with open-source code and fixed seeds.
 
@@ -436,7 +436,7 @@ Four principles guide the architecture:
 + *Flexible Extensibility*: New features, tasks, or experts are added via YAML configuration,
   not code changes. The system has been extended from 4 to 13 tasks without architectural modification.
 + *Unified Manageability*: The entire pipeline (feature engineering → training → distillation → serving → monitoring)
-  is controlled by two configuration files,
+  is controlled by a split-config of three YAML files (`pipeline.yaml` + `feature_groups.yaml` + `configs/datasets/{name}.yaml`),
   reducing operational overhead for teams with limited ML engineering resources.
 
 == Data Axis Classification
@@ -982,10 +982,12 @@ and is validated in the ablation study.
 
 == Config-Driven Design
 
-The entire pipeline is controlled by two YAML files:
-`pipeline.yaml` (model, training, deployment settings) and
-`feature_groups.yaml` (feature generation, expert routing).
-Adding a new dataset, task, or expert requires only configuration changes.
+The entire pipeline is controlled by a split-config of three YAML files:
+`pipeline.yaml` (common model, training, distillation, and AWS settings),
+`feature_groups.yaml` (feature generation and expert routing), and
+`configs/datasets/{name}.yaml` (dataset-specific tasks, labels, and ablation scenarios).
+The split keeps cross-dataset settings in `pipeline.yaml` while letting a new dataset be onboarded by copying `configs/datasets/example.yaml` and redefining task/label schemas only.
+Adding a new task or expert requires only configuration changes.
 
 == Data Processing
 
@@ -1016,8 +1018,9 @@ We implement three structural safeguards:
   ensures no temporal overlap between training and validation windows.
   For cross-sectional (single-snapshot) data, the system auto-detects
   and falls back to random splitting.
-+ *Scaler train-only fitting*: StandardScaler is fit exclusively on the training split;
-  validation and test data are transformed using training statistics.
++ *3-stage normalization with post-normalization group-range rebuild*:
+  Stage 1 detects power-law columns (skew + kurtosis screen followed by log-log $R^2$) and appends a log1p copy of each as an `_log` column; Stage 2 fits StandardScaler on the training split only and applies it to continuous (non-binary, non-categorical-ID, non-probability) columns, so validation and test splits are transformed with training statistics; Stage 3 preserves the `_log` offspring at raw magnitude rather than re-scaling, so FeatureRouter receives both centered and tail-preserving views of heavy-tailed features.
+  Because Stage 1 appends `_log` columns at the end of the feature matrix, the pre-normalization `feature_group_ranges` become stale; the runner therefore rebuilds each group's range against the post-normalization column order using a longest-contiguous-block heuristic, which closes a silent routing bug where FeatureRouter would otherwise slice the wrong columns for experts whose groups contained power-law features.
 + *LeakageValidator*: A pre-training check computes Pearson correlation
   between every feature and every label (on a 50K subsample for efficiency).
   Correlations above 0.95 trigger a warning and investigation.
@@ -1053,7 +1056,7 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
   caption: [Variance budget per label tier (benchmark v4 per-tier allocation). XGB AUC ceiling validates difficulty control. The final benchmark version (v12) reported throughout this paper uses a unified global allocation (obs\_frac=0.15, lat\_frac=0.35, noise\_frac=0.50) with 3rd--5th order multiplicative label interactions, producing meaningful class distributions across all 13 tasks (described in the paragraph below).],
 ) <tab:variance-budget>
 
-The benchmark underwent several iterations (v2 through v4; see Appendix F for version history).
+The benchmark underwent several iterations (v2 through v12; see Appendix F for version history).
 The final version, v12 (reported here), introduces Financial DNA axis-aligned situation variables --- each customer receives
 an independent situation per DNA axis (engagement: steady/surging/declining/volatile;
 lifecycle: stable/growing/consolidating/transitioning;
@@ -1734,10 +1737,11 @@ impossible to achieve at this scale.
 
 #heading(numbering: none, level: 3)[A. Configuration Schema]
 
-The entire system is controlled by two YAML configuration files:
-`pipeline.yaml` (model architecture, training hyperparameters, task definitions,
-AWS deployment settings) and `feature_groups.yaml` (feature group definitions,
-generator parameters, expert routing rules).
+The entire system is controlled by a split-config of three YAML configuration files:
+`pipeline.yaml` (model architecture, training hyperparameters, distillation, AWS deployment settings --- the settings shared across datasets),
+`feature_groups.yaml` (feature group definitions, generator parameters, expert routing rules), and
+`configs/datasets/{name}.yaml` (dataset-specific task definitions, label derivations, and ablation scenarios).
+`load_merged_config()` deep-merges the dataset file into the common settings at run time.
 Full configuration files are available in the accompanying repository.
 
 #heading(numbering: none, level: 3)[B. Ablation Scenario Definitions]

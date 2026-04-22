@@ -197,6 +197,23 @@ homogeneous-task regime. Our contributions:
   result: the "decorative DAG" from Finding 8 is a training-choice
   artefact, not an architectural constraint.
 
+- A Counterfactual Probe (CCP, Finding 12) that tests Pearl Rung 3
+  directly: under $"do"(z_j = v)$ interventions the amplified DAG
+  carries a median of $32%$ and a 95th percentile of $61%$ of the
+  counterfactual effect, versus $0.16%$ on the baseline teacher ---
+  a $200 times$ jump that establishes Rung 3 viability *only* on top
+  of the amplified teacher. On baseline checkpoints the DAG is
+  numerically incapable of supporting Rung 3 claims (Section 4.12).
+
+- A CEH v3 variant (Finding 13, *honest negative result*) that
+  replaces the v2 demeaned grad $times$ input supervision with the
+  model's own primary-task logit gradient as target; the head
+  re-collapses to a global importance pattern (variance ratio
+  $0.719 arrow 0.043$), demonstrating that the v1$arrow$v2
+  improvement is narrowly target-dependent rather than a robust
+  design principle and closing that branch of CEH exploration
+  (Section 4.13).
+
 The system, data generator, and ablation scripts are publicly available.#footnote[
   https://github.com/bluethestyle/aws\_ple\_for\_financial
 ]
@@ -1600,7 +1617,7 @@ other hyperparameters identical to teacher_ceh_demeaned.
     align: (left, right, right, right),
     stroke: 0.5pt,
     [*Metric*], [*Baseline*], [*W-amp*], [*Change*],
-    [$||bold(W)||_F$], [$0.363$], [$5.028$], [$13.9 times$],
+    [$||bold(W)||_F$], [$0.363$], [$5.028$], [$approx 14 times$],
     [Active edges ($|W| > 0.01$)], [$8.5%$], [$59.5%$], [$7.0 times$],
     [Max $|W_(i j)|$], [$0.11$], [$0.77$], [$7.0 times$],
     [Primary AUC (churn\_signal)], [$0.6870$], [$0.6865$], [within noise],
@@ -2048,6 +2065,21 @@ evaluated. CG's v1$arrow.r$v2 pivot also introduces a concrete
 prediction (latent-based formulations should be evaluated alongside
 weight-based ones), which has not been tested on the remaining
 candidates.
+
+*Scope boundary --- evidential uncertainty head*: Separate from the
+causal-expert reinterpretation thread above, the implementation ships
+an `EvidentialLayer` (`core/model/layers/evidential.py`) that emits a
+per-sample neutral prediction with maximum uncertainty when input
+features are invalid (NaN/Inf detection) or when a caller-supplied
+`valid_mask` marks a row as untrustworthy; the layer propagates
+`valid_mask` forward so downstream losses can exclude invalid rows
+from gradient updates. This head sits in a complementary role to the
+Causal Guardrail (CG): CG flags *out-of-distribution* inputs in the
+causal latent space, whereas the evidential head flags *numerically
+invalid* inputs at the feature level. We deliberately do not report
+empirical findings on the evidential head here because it did not
+emerge from the Axis-3 reinterpretation programme; we mention it only
+to prevent the reader from conflating its role with CG's.
 
 == Relationship to Companion Papers
 
