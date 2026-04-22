@@ -71,10 +71,18 @@ Mamba, etc.), applies 3-stage normalization, and writes training-ready tensors.
 DuckDB is the data backend throughout this phase — no pandas for large-scale
 loads.
 
+The adapter only converts raw data to a standardized DataFrame (CLAUDE.md §1.2);
+Phase 0 as a whole is driven by `PipelineRunner` (`core/pipeline/runner.py`),
+which runs preprocessing → feature generation → label derivation →
+3-stage normalization → tensor save. Trigger Phase 0 through the training
+entry point with `--phase0-only`, or let `train.py` execute it implicitly
+when `outputs/phase0/*.pt` is missing:
+
 ```bash
-PYTHONPATH=. python adapters/santander_adapter.py \
-  --input-dir  data/benchmark \
-  --output-dir outputs/phase0
+PYTHONPATH=. python containers/training/train.py \
+  --config  configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
+  --phase0-only
 ```
 
 Phase 0 produces:
@@ -108,19 +116,22 @@ by 3-stage normalization), 13 tasks.
 ## 4. Train
 
 ```bash
+# Canonical split-config invocation (CLAUDE.md §1.1).
 PYTHONPATH=. python containers/training/train.py \
-  --config  configs/santander/pipeline.yaml
+  --config  configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml
 ```
 
 To override hyperparameters without editing YAML:
 
 ```bash
 PYTHONPATH=. python containers/training/train.py \
-  --config configs/santander/pipeline.yaml \
+  --config  configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
   --hp '{"training": {"batch_size": 5632, "lr": 0.0005, "amp_enabled": true}}'
 ```
 
-Default training settings (from `configs/santander/pipeline.yaml`):
+Default training settings (merged from `pipeline.yaml` + `datasets/santander.yaml`):
 
 | Parameter | Value |
 |---|---|
@@ -163,24 +174,30 @@ completed scenarios based on `pipeline_state.json`.
 
 ## Configuration
 
-Everything is config-driven. Two YAML files control the pipeline:
+Everything is config-driven (CLAUDE.md §1.1). Three YAML files form a
+split-config and are deep-merged at runtime by `load_merged_config()`:
 
-| File | Controls |
-|---|---|
-| `configs/santander/pipeline.yaml` | Model architecture, training HP, distillation, AWS settings, task definitions |
-| `configs/santander/feature_groups.yaml` | Feature group definitions, generator input filters, expert routing |
+| Layer | File | Controls |
+|---|---|---|
+| 1 | `configs/pipeline.yaml` | Common model architecture, training HP, distillation, AWS, compliance, monitoring — shared across datasets |
+| 2 | `configs/datasets/{name}.yaml` | Dataset-specific tasks, label derivation rules, adapter, data source, ablation scenarios |
+| 3 | `configs/{name}/feature_groups.yaml` | Feature group definitions, generator input filters, expert routing (`target_experts`) — referenced via `feature_groups_file` in layer 2 |
 
 Edit only these files to change tasks, hyperparameters, or expert assignments.
-Do **not** hardcode values in Python scripts.
+Do **not** hardcode values in Python scripts. See
+[configuration_reference.md](./configuration_reference.md) for the full schema.
 
 ### Adapting to a new dataset
 
-1. Copy `configs/santander/pipeline.yaml` → `configs/<my_dataset>/pipeline.yaml`
-2. Copy `configs/santander/feature_groups.yaml` → `configs/<my_dataset>/feature_groups.yaml`
-3. Implement a data adapter in `adapters/<my_dataset>_adapter.py`
-   (copy `adapters/santander_adapter.py` as a starting point — adapter converts
-   raw data to a standardized DataFrame; no feature engineering or label
-   derivation in the adapter).
+1. Copy the dataset template: `cp configs/datasets/example.yaml configs/datasets/<my_dataset>.yaml` and fill in tasks, labels, adapter, `data.source`, and `feature_groups_file`.
+2. Copy an existing feature-groups file: `cp -r configs/santander configs/<my_dataset>` and edit `configs/<my_dataset>/feature_groups.yaml` for your columns + generators.
+3. Implement a data adapter in `adapters/<my_dataset>_adapter.py` (copy `adapters/santander_adapter.py` as a starting point — adapter converts raw data to a standardized DataFrame; no feature engineering or label derivation in the adapter).
+4. Run with the split-config invocation:
+   ```bash
+   PYTHONPATH=. python containers/training/train.py \
+     --config  configs/pipeline.yaml \
+     --dataset configs/datasets/<my_dataset>.yaml
+   ```
 
 ---
 

@@ -81,6 +81,47 @@ Seven transformers ship out of the box. All are registered in
 Transformers **modify existing columns** (in contrast to generators, which
 create new columns). They follow the sklearn `fit()` / `transform()` pattern.
 
+### Canonical 3-Stage Normalization Pipeline
+
+In production Phase 0 the transformers above are orchestrated into a
+fixed 3-stage pipeline (CLAUDE.md §2.1, §1.9). Understand the ordering
+before wiring custom transformers — the stages are not interchangeable:
+
+- **Stage 1 — power-law detection + log1p copy append**: the runner
+  screens each continuous column with a skew+kurtosis heuristic and,
+  for candidates, a log-log R² test. Columns that clear the power-law
+  check receive a `{col}_log` sibling column containing `log1p(max(x,0))`
+  of the original. These copies are **appended at the end** of the
+  feature matrix.
+- **Stage 2 — StandardScaler fit on TRAIN only**: the scaler is fitted
+  on the training split and applied to val/test using train statistics
+  (no leakage). Stage 2 **skips** columns declared in the feature
+  group's `exclude_from_scaler` list — the two supported sub-kinds are
+  `categorical_id` (integers that encode IDs) and `probability`
+  (already in [0,1], e.g. calibrated scores). Applying StandardScaler
+  to these distorts their distribution.
+- **Stage 3 — `_log` offspring at raw magnitude**: the log copies
+  generated in Stage 1 are **not** re-scaled in Stage 2. They retain
+  their raw magnitude so FeatureRouter can feed experts both a
+  centered view (original column, z-scored) and a tail-preserving
+  view (`_log` column) of heavy-tailed features.
+- **After Stage 6 (end of normalization)**: the runner calls
+  `_rebuild_group_ranges_post_normalization()` to re-locate each
+  feature group's members in the reordered column layout and emit a
+  longest-contiguous-block range. See [§Dimension tracking](#3-dimension-tracking)
+  below for the full rationale and the §1.7 regression suite.
+
+### LeakageValidator (pre-training)
+
+Before the trainer starts, `LeakageValidator` computes Pearson
+correlation between every feature column and every label column on a
+50K subsample. Any correlation `|r| ≥ 0.95` triggers a warning that
+the pipeline escalates into a hard stop unless the operator
+acknowledges. The 18 → 13 task reduction (removing `income_tier`,
+`tenure_stage`, `spend_level`, `engagement_score`) was driven by this
+validator flagging deterministic feature-to-label transforms (CLAUDE.md
+§1.3). See `core/pipeline/leakage_validator.py`.
+
 ### 1. StandardScaler
 
 Z-score normalisation: `(x - mean) / std`.
@@ -1035,7 +1076,25 @@ total = pipeline.total_dim
 ```
 
 These ranges are essential for Integrated Gradients attribution (slicing the
-gradient vector per group).
+gradient vector per group) AND for FeatureRouter's per-expert input slicing.
+
+> **Post-normalization rebuild (CLAUDE.md §1.7, commit `ec8587b`
+> 2026-04-21)** — The 3-stage normalization pipeline described below
+> appends `_log` copies of power-law columns at the end of the feature
+> matrix (Stage 1) and reorders columns into
+> `continuous | binary | categorical | probability | log` groups. This
+> invalidates the *pre-normalization* `group_ranges` that this page
+> computes, because each group's members are now scattered across the
+> post-normalization column order. The runner therefore calls
+> `_rebuild_group_ranges_post_normalization()` after Stage 6, which
+> re-locates each group's original columns plus any `_log` offspring in
+> the new matrix and emits the **longest contiguous block** as that
+> group's refreshed range (non-contiguous groups log a warning). Before
+> this fix, FeatureRouter silently sliced the wrong columns for any
+> expert whose group contained a power-law feature — no exception was
+> raised because slicing with a wrong range still returns a tensor.
+> A 14-case regression suite (`tests/test_group_ranges_rebuild.py`)
+> locks this behaviour.
 
 ---
 

@@ -199,7 +199,7 @@ docker push 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/ple-training:latest
 | Script | Role |
 |---------|------|
 | `scripts/package_source.py` | Stage source directory → build tarball → upload to S3 (reused by all Jobs) |
-| `scripts/run_sagemaker_teacher.py` | Submit 3-scenario (baseline/gradsurgery/adaTT) Spot training Jobs in parallel |
+| `scripts/run_sagemaker_teacher.py` | Submit teacher Spot training Jobs in parallel. The default benchmark runs the 23-scenario ablation grid (14 joint feature+expert + 9 structure cross, tasks_13 row). Earlier drafts cited a 3-scenario baseline/gradsurgery/adaTT comparison; GradSurgery was experimentally evaluated in 2026-04-15 and **not adopted** (no task-metric gain, VRAM overhead from `retain_graph` — see CLAUDE.md `feedback_gradsurgery`). loss-level adaTT is disabled by default at the 13-task scale (ΔAUC ≈ -0.001, within single-seed noise) and retained only for ablation comparison. |
 | `scripts/run_sagemaker_eval.py` | Submit evaluation Job (uses `containers/evaluation/eval_entry.py` as entry point) |
 
 ```bash
@@ -392,9 +392,73 @@ serving:
 
 ---
 
+## Champion-Challenger Promotion Gate (offline)
+
+Before a new challenger ever reaches A/B traffic, it passes through the
+offline gate in `scripts/submit_pipeline.py::_decide_promotion`. The gate
+applies a fixed 4-step short-circuit ladder in order, so every challenger
+is evaluated against the same sequence and every outcome is auditable:
+
+1. `--force-promote` → promote unconditionally (operator override,
+   `trigger=manual`). Use for bootstrap, emergency rollback, and for
+   any challenger that has cleared manual human review.
+2. No champion in registry → `bootstrap` promotion (`trigger=auto`).
+3. `fidelity_summary.failed > 0` → `reject` (safety floor — Competition
+   is skipped regardless of training metrics). Preserves the
+   teacher-student fidelity guarantee.
+4. Otherwise → `ModelCompetition.evaluate` runs: primary metric must
+   improve by `min_improvement` (default 0.5 %) with no secondary
+   metric degrading by more than `max_degradation` (default 2 %), and
+   an optional paired-bootstrap significance test. Returns `promote`
+   or `reject`.
+
+All four outcomes (`bootstrap` / `promote` / `reject` / `force_promote`)
+are recorded by `AuditLogger.log_model_promotion` to an HMAC-signed,
+hash-chained S3 WORM log, and simultaneously to
+`SageMakerComplianceTracker` as a `promotion_gate_verdict` artifact
+(TrialComponent under `aiops-ple-financial` experiment).
+
+### Production posture — `auto_promote: false`
+
+In production `pipeline.yaml::serving.competition.auto_promote` is
+forced to `false`. A challenger that clears the metric gate is still
+**not** promoted: the operator must re-run with `--force-promote` for
+the challenger to go live. This satisfies EU AI Act Art. 14 (human
+oversight) and SR 11-7 (model risk management). The code-level
+`CompetitionConfig.auto_promote` default is retained at `True` for
+legacy test fixtures; pipeline.yaml's `false` takes precedence at run
+time.
+
+### PromotionGate live wiring (2026-04-21)
+
+`compliance.promotion_gate.enabled: true` is the default in
+`configs/pipeline.yaml`. The gate reads dimension scores composed via
+`core/compliance/metadata_aggregator.py::MetadataAggregator` from six
+evidence sources (fairness archive Parquet, drift archive Parquet,
+review queue DynamoDB, model registry DynamoDB, lineage YAML, LLM
+config). Ensure the following are in place before cut-over (checklist
+also in `docs/pipeline_comparison_matrix.md` §5.10):
+
+- [x] `monitoring.fairness.archive_parquet_path` set to an S3 path and
+      the fairness Lambda (`containers/lambda/fairness_evaluation.py`)
+      calls `monitor.archive_metrics()` on every scheduled run.
+- [x] `monitoring.drift.archive_parquet_path` set.
+- [x] `compliance.tracking.backend: sagemaker` (IAM reachability
+      verified; `list_experiments` / `describe_experiment` return
+      non-access-denied responses).
+- [ ] Optional: `compliance.promotion_gate.providers.manual_overrides`
+      populated for critical model versions that must override the
+      heuristic aggregator.
+- [ ] Dry-run: submit one challenger without `--force-promote`,
+      confirm the gate writes a verdict to both the audit log and the
+      SageMaker TrialComponent.
+
+---
+
 ## A/B Testing
 
-Built-in A/B testing support for model variant comparison.
+Built-in A/B testing support for model variant comparison. A/B traffic
+is split **only after** a challenger has passed the offline gate above.
 
 ### Configuration
 

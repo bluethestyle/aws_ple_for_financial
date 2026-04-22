@@ -125,12 +125,17 @@ L_entropy = -entropy_lambda * sum(gate_weights * log(gate_weights))
 
 ## Adaptive Task Transfer (adaTT)
 
-> **Status (Paper 1 finding)**: adaTT **degrades** performance at 13-task scale.
-> With 13 tasks there are 156 directed task pairs; affinity estimation becomes
-> unstable and produces $-$0.019 AUC degradation vs. PLE-only baseline.
-> **GradSurgery is now the recommended replacement** — it reduces the 156-pair
-> problem to 3 task-type-group projections.  adaTT config is retained for
-> ablation comparison only; set `enabled: false` in production.
+> **Status (Paper 1 finding, revised 2026-04-17)**: At 13-task scale the
+> loss-level adaTT mechanism is **null** after correcting five
+> implementation bugs — ΔAUC = −0.001 vs PLE-only baseline, within
+> single-seed measurement noise. An earlier draft reported −0.019 and
+> attributed it to algorithmic instability; the corrected measurements
+> locate the cause in the implementation rather than the mechanism.
+> **GradSurgery was evaluated as an alternative and was *not* adopted**
+> either — it matched adaTT within noise and added non-trivial VRAM
+> overhead from `retain_graph`. Production runs PLE softmax directly
+> without adaTT or GradSurgery; both configs are retained for ablation
+> comparison only with `enabled: false`.
 
 adaTT measures loss-level task affinity and dynamically transfers knowledge
 between related tasks while blocking negative transfer.
@@ -170,13 +175,22 @@ model:
     grad_interval: 10              # Steps between affinity measurements
     max_transfer_ratio: 0.5        # Cap on transfer amount
 
-    # Task groups define prior relationships
+    # Canonical 4 task groups (Financial DNA). Used for post-hoc
+    # interpretation and rule-based fallback template selection — NOT
+    # for CGC router gating (routing is per-task).
     task_groups:
       engagement:
-        members: [ctr, cvr]
+        members: [churn_signal, top_mcc_shift]
+        intra_strength: 0.7
+      lifecycle:
+        members: [segment_prediction, will_acquire_deposits, will_acquire_cards,
+                  will_acquire_loans, will_acquire_funds, will_acquire_insurance]
         intra_strength: 0.7
       value:
-        members: [ltv, churn]
+        members: [nba_primary, cross_sell_count]
+        intra_strength: 0.7
+      consumption:
+        members: [next_mcc, mcc_diversity_trend, product_stability]
         intra_strength: 0.7
     inter_group_strength: 0.3      # Cross-group prior transfer
 ```
@@ -196,14 +210,16 @@ between these groups using PCGrad-style cosine projection. The experiment showed
 no meaningful AUC/F1 improvement over the PLE-only baseline while incurring
 significant VRAM overhead due to the retained computation graph.
 
-### Advantages over adaTT
+### Comparison vs adaTT (ablation, both not adopted)
 
-| | adaTT | GradSurgery |
+| | adaTT (post-bugfix) | GradSurgery |
 |---|---|---|
-| Transfer pairs | 156 (13×12) | 3 (task-type groups) |
-| Instability at 13 tasks | High | Low |
-| Ablation result (AUC) | −0.019 vs baseline | +0.030 vs adaTT |
+| Transfer pairs | 156 (13×12), loss-level hybrid | 3 (task-type groups), gradient-level PCGrad |
+| Stability at 13 tasks | Acceptable after 5 impl bug fixes | Stable |
+| Ablation result (AUC) | −0.001 vs PLE-softmax (within noise) | within noise vs PLE-softmax |
+| VRAM overhead | Low | Non-trivial (`retain_graph`) |
 | Warmup required | 10 epochs | None |
+| Production status | **not adopted** | **not adopted** |
 
 ### Configuration
 
