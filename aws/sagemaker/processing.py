@@ -59,7 +59,7 @@ from sagemaker.processing import (
 from sagemaker.pytorch.processing import PyTorchProcessor
 from sagemaker.sklearn.processing import SKLearnProcessor
 
-from ...core.pipeline.config import PipelineConfig
+from core.pipeline.config import PipelineConfig
 
 logger = logging.getLogger(__name__)
 

@@ -240,7 +240,7 @@ def _run_full(config, args, s3_base, ts, wait):
     # Step 4: Register Model (repackage into ModelRegistry)
     student_uri = f"{s3_base}/students/{ts}/"
     version = f"v{ts.replace('-', '.').replace('T', '-')}"
-    logger.info("--- Step 4: Register Model (version=%s) ---")
+    logger.info("--- Step 4: Register Model (version=%s) ---", version)
     if args.dry_run:
         logger.info("[DRY RUN] ModelRegistry.package(version=%s)", version)
         logger.info("[DRY RUN] artifacts: %s/artifacts/%s/", s3_base, version)

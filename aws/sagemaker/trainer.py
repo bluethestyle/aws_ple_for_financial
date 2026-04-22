@@ -34,7 +34,7 @@ import sagemaker
 from sagemaker.inputs import TrainingInput
 from sagemaker.pytorch import PyTorch
 
-from ...core.pipeline.config import PipelineConfig
+from core.pipeline.config import PipelineConfig
 
 logger = logging.getLogger(__name__)
 
