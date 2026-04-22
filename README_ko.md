@@ -75,18 +75,24 @@
 | 서빙 | AWS Lambda (서버리스, GPU 없음) |
 | 증류 | 태스크별 LightGBM 학생 |
 | 추천사유 생성 | LLM 에이전트 + 안전 게이트 |
-| 설정 | YAML 파일 2개가 전체 제어 |
+| 설정 | 3-layer split-config (`pipeline.yaml` + `datasets/{name}.yaml` + `feature_groups.yaml`) |
 
 ## 시작하기
 
 ```bash
 pip install -e ".[dev]"
 
-# 벤치마크 데이터 생성
+# 벤치마크 데이터 생성 (100만 합성 고객)
 PYTHONPATH=. python scripts/generate_benchmark_data.py --n-customers 1000000
 
-# 피처 엔지니어링
-PYTHONPATH=. python adapters/santander_adapter.py --input-dir data/benchmark --output-dir outputs/phase0
+# 전체 학습 파이프라인 실행 (Phase 0 전처리 + 학습).
+# 어댑터는 raw 데이터를 표준 DataFrame 으로 변환하는 역할만 맡고,
+# PipelineRunner 가 전처리 / 피처 생성 / 3-stage 정규화 / 레이블 파생 /
+# 텐서 저장 전 과정을 주도한다.
+PYTHONPATH=. python containers/training/train.py \
+  --config  configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
+  --phase0-only            # Phase 0 만 실행; 학습까지 이어가려면 이 플래그 제거
 
 # 어블레이션 실행 (로컬, Docker 없음)
 PYTHONPATH=. python scripts/run_local_ablation.py
@@ -104,7 +110,7 @@ core/recommendation/     점수화, 추천사유 생성, 규제 준수
 core/agent/              운영/감사 에이전트, 합의, 케이스 저장소
 adapters/                데이터 어댑터
 aws/                     SageMaker, Step Functions
-configs/santander/       pipeline.yaml, feature_groups.yaml
+configs/                 pipeline.yaml (공통) + datasets/{name}.yaml (데이터셋별) + feature_groups.yaml
 docs/                    설계 문서, 기술 레퍼런스 (KO/EN)
 paper/                   연구 논문 (Typst)
 ```
@@ -241,3 +247,12 @@ paper/                   연구 논문 (Typst)
 본 시스템의 모든 코드 — 아키텍처 설계, 7-전문가 모델, 에이전트 기반 추천사유 생성 파이프라인, 규제 준수 모듈, 260개 이상의 기술 문서, 그리고 두 개의 Zenodo 프리프린트 — 는 3인 팀이 **[Claude Code](https://claude.com/claude-code) (Anthropic)** 를 개인 구독 기반의 주요 개발 파트너로 삼아 구축하였습니다.
 
 **제약 조건**: 기관 자금 없음, 전용 ML 인프라 없음, 단일 소비자용 GPU (RTX 4070, 12GB VRAM), 저녁·주말만 활용. **결과**: 규제 수준 감사 인프라를 갖춘 13-태스크 멀티태스크 학습 시스템, 두 개의 Zenodo 프리프린트와 함께 오픈소스화.
+
+---
+
+### 연락처
+
+- **블로그** — [bluethestyle.github.io](https://bluethestyle.github.io) — 3개월 개발기, MRM/규제 관점, 논문 해설이 영/한 병행 시리즈로 진행 중
+- **Discussions** — [bluethestyle/aws_ple_for_financial/discussions](https://github.com/bluethestyle/aws_ple_for_financial/discussions) — 기술 질문, 워크플로우, 재현 논의
+- **Issues** — [bluethestyle/aws_ple_for_financial/issues](https://github.com/bluethestyle/aws_ple_for_financial/issues) — 버그 리포트, 재현성 노트
+- **ORCID** — [0009-0005-3291-9112](https://orcid.org/0009-0005-3291-9112)

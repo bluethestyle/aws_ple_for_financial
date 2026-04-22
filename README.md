@@ -75,18 +75,24 @@ Customer Data (bank/card transactions)
 | Serving | AWS Lambda (serverless, no GPU) |
 | Distillation | LightGBM per-task students |
 | Reason Generation | LLM agents with Safety Gate |
-| Config | 2 YAML files drive everything |
+| Config | 3-layer split-config (`pipeline.yaml` + `datasets/{name}.yaml` + `feature_groups.yaml`) |
 
 ## Getting Started
 
 ```bash
 pip install -e ".[dev]"
 
-# Generate benchmark data
+# Generate benchmark data (1M synthetic customers)
 PYTHONPATH=. python scripts/generate_benchmark_data.py --n-customers 1000000
 
-# Feature engineering
-PYTHONPATH=. python adapters/santander_adapter.py --input-dir data/benchmark --output-dir outputs/phase0
+# Run the full training pipeline (Phase 0 preprocessing + training).
+# The adapter only converts raw data to a standardized DataFrame;
+# PipelineRunner drives preprocessing, feature generation, 3-stage
+# normalization, label derivation, and tensor save.
+PYTHONPATH=. python containers/training/train.py \
+  --config  configs/pipeline.yaml \
+  --dataset configs/datasets/santander.yaml \
+  --phase0-only            # Phase 0 only; drop this flag to continue into training
 
 # Run ablation (local, no Docker)
 PYTHONPATH=. python scripts/run_local_ablation.py
@@ -104,7 +110,7 @@ core/recommendation/     Scoring, reason generation, compliance
 core/agent/              Ops/Audit agents, consensus, case store
 adapters/                Data adapters
 aws/                     SageMaker, Step Functions
-configs/santander/       pipeline.yaml, feature_groups.yaml
+configs/                 pipeline.yaml (common) + datasets/{name}.yaml (per-dataset) + feature_groups.yaml
 docs/                    Design docs, technical references (KO/EN)
 paper/                   Research papers (Typst)
 ```
@@ -258,7 +264,12 @@ Every line of this system — architecture design, 7-expert model, agentic reaso
 
 **Our methodology**: [AI Collaboration Guide (PDF, EN)](docs/typst/en/ai_collaboration_guide_en.pdf) · [Development Story (PDF, EN)](docs/typst/en/development_story_en.pdf) — full documentation of how a 3-person team with no institutional support collaborated with Claude across architecture, implementation, testing, and paper writing.
 
-If you are from Anthropic and this project is of interest for a customer story, blog post, or conversation, please reach out to the corresponding author (ORCID: [0009-0005-3291-9112](https://orcid.org/0009-0005-3291-9112)).
+### Where to find us
+
+- **Blog** — [bluethestyle.github.io](https://bluethestyle.github.io) — decision-journey notes covering the 3-month build, MRM / regulatory perspective, and paper walkthroughs (EN/KO pair)
+- **Discussions** — [bluethestyle/aws_ple_for_financial/discussions](https://github.com/bluethestyle/aws_ple_for_financial/discussions) — technical questions, workflow, reproduction
+- **Issues** — [bluethestyle/aws_ple_for_financial/issues](https://github.com/bluethestyle/aws_ple_for_financial/issues) — bug reports, reproducibility notes
+- **ORCID** — [0009-0005-3291-9112](https://orcid.org/0009-0005-3291-9112)
 
 ---
 
