@@ -890,15 +890,14 @@ _방향적_ 의존관계를 포착한다:
       align: left,
       stroke: 0.5pt,
       [*소스 → 타겟*], [*방법*], [*고객 경험*], [*인과 방향*],
-      [engagement → nba_primary], [hidden_concat], [활동 수준 → 구매 확률], [선행 지표],
-      // [spend_level → will_acquire\_\*], [residual], [소비 역량 → 카테고리 의향], [가능 요인],  // 제거됨: spend_level은 결정론적 피처 변환
-      [churn → nba_primary], [output_concat], [이탈 위험 → 획득 기회 (클래스 0 = NBA 없음)], [역상관],
+      [churn_signal → product_stability], [output_concat], [이탈 위험 → 상품 보유 안정성], [인과],
+      [next_mcc → nba_primary], [hidden_concat], [다음 카테고리 의향 → NBA 선택], [순차 / 피처 공유],
     )
   },
-  caption: [자연스러운 고객 경험 흐름을 반영하는 로짓 전이 관계.],
+  caption: [자연스러운 고객 경험 흐름을 반영하는 로짓 전이 관계 (Santander, v12 benchmark — 출처: `configs/datasets/santander.yaml::task_relationships`).],
 ) <tab:logit-transfer>
 
-이러한 전이는 @tab:dna-axis 에 정의된 태스크 그룹을 연결한다: 활동→소비(그룹 간: Engagement에서 Consumption으로)와 생애주기→소비(그룹 간: churn→nba_primary), 이는 고객 경험의 자연스러운 순서를 반영한다.
+두 전이는 고객 경험의 자연스러운 순서를 반영한다: 이탈 위험이 상품 보유 안정성을 게이팅하고(생애주기 축), 다음 카테고리 의향이 NBA 선택을 정보화한다(소비 축). 초기 드래프트는 `engagement_score → nba_primary` 엣지를 포함했으나, 해당 태스크는 2026-04-12 결정론적 피처 변환으로 제거되었고(§3 태스크 축소 참조), `has_nba → nba_primary` 엣지는 `nba_primary` 자체로 흡수되었다.
 전이 방향은 데이터로부터 학습되는 것이 아니라
 고객 여정에 대한 도메인 지식에 기반하여 지정된다.
 이는 의도적 설계 선택이다: 전이의 _강도_는

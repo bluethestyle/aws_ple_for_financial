@@ -1141,10 +1141,16 @@ model:
         members: [next_mcc, mcc_diversity_trend, product_stability]
         intra_strength: 0.7
 
-  # Logit transfer
+  # Logit transfer — 2 edges active in the Santander v12 benchmark
+  # (source of truth: configs/datasets/santander.yaml::task_relationships).
   logit_transfers:
     - source: churn_signal
-      target: will_acquire_deposits
+      target: product_stability
+      transfer_method: output_concat        # Retention risk → product-holding stability
+      enabled: true
+    - source: next_mcc
+      target: nba_primary
+      transfer_method: hidden_concat        # Next-category intent → next-best-action
       enabled: true
   logit_transfer_strength: 0.5
 

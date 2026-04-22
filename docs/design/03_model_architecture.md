@@ -107,20 +107,20 @@ class FeatureRouter:
         """전체 피처 텐서에서 해당 Expert의 서브셋 추출."""
 ```
 
-#### Expert별 실제 입력 차원 (Santander, 라우팅 활성 후)
+#### Expert별 실제 입력 차원 (Santander, 라우팅 활성 후, v12 benchmark)
 
 | Expert | 입력 차원 | 라우팅된 피처 그룹 |
 |--------|----------|--------------------|
-| `deepfm` | **109D** | demographics, product_holdings, txn_behavior, derived_temporal, gmm_clustering, model_derived |
-| `temporal_ensemble` | **129D** | txn_behavior, hmm_states, mamba_temporal, model_derived |
-| `hgcn` | **34D** | product_hierarchy (13D) + merchant_hierarchy (21D) |
+| `deepfm` | **168D** | demographics, product_holdings, txn_behavior, derived_temporal, gmm_clustering, model_derived |
+| `temporal_ensemble` | **139D** | txn_behavior, hmm_states, mamba_temporal, model_derived |
+| `hgcn` | **27D** | product_hierarchy + merchant_hierarchy |
 | `perslay` | **32D** | tda_global, tda_local only |
-| `causal` | **103D** | demographics, product_holdings, txn_behavior, derived_temporal, product_hierarchy, gmm_clustering |
-| `lightgcn` | **66D** | graph_collaborative only |
-| `optimal_transport` | **69D** | demographics, product_holdings, txn_behavior, derived_temporal, gmm_clustering |
+| `causal` | **161D** | demographics, product_holdings, txn_behavior, derived_temporal, product_hierarchy, gmm_clustering |
+| `lightgcn` | **100D** | graph_collaborative only |
+| `optimal_transport` | **127D** | demographics, product_holdings, txn_behavior, derived_temporal, gmm_clustering |
 
 라우팅 활성화로 모델 파라미터가 **4.77M → ~2.8M**으로 감소하였다.
-각 Expert가 관련 없는 피처를 무시하고 전문 피처 서브셋만 처리하기 때문이다.
+각 Expert가 관련 없는 피처를 무시하고 전문 피처 서브셋만 처리하기 때문이다. 위 차원은 `docs/guides/configuration_reference.md §PLE Model Config` 및 `paper/typst/paper1.typ §FeatureRouter` 의 값과 일치한다.
 
 ### Expert Pool — 11종 등록 (7종 Basket 활성)
 
@@ -129,13 +129,13 @@ FeatureRouter 활성화로 각 Expert는 이종(heterogeneous) 입력 차원을 
 
 | # | 등록 이름 | 파일 | 주요 Axis | Basket | 실제 input_dim | 설명 |
 |---|-----------|------|-----------|--------|---------------|------|
-| 1 | `deepfm` | `core/model/experts/deepfm.py` | State | **O** | **109D** | FM + Deep 피처 상호작용 |
-| 2 | `temporal_ensemble` | `core/model/experts/temporal.py` | Timeseries | **O** | **129D** | Mamba + PatchTST + LNN 앙상블 |
-| 3 | `hgcn` | `core/model/experts/hgcn.py` | Hierarchy | **O** | **34D** | 쌍곡 그래프 합성곱 |
+| 1 | `deepfm` | `core/model/experts/deepfm.py` | State | **O** | **168D** | FM + Deep 피처 상호작용 |
+| 2 | `temporal_ensemble` | `core/model/experts/temporal.py` | Timeseries | **O** | **139D** | Mamba + PatchTST + LNN 앙상블 |
+| 3 | `hgcn` | `core/model/experts/hgcn.py` | Hierarchy | **O** | **27D** | 쌍곡 그래프 합성곱 |
 | 4 | `perslay` | `core/model/experts/perslay.py` | Snapshot | **O** | **32D** | 위상 데이터 분석 (TDA global) |
-| 5 | `causal` | `core/model/experts/causal.py` | Snapshot | **O** | **103D** | NOTEARS DAG 인과 구조 |
-| 6 | `lightgcn` | `core/model/experts/lightgcn.py` | Item | **O** | **66D** | 경량 그래프 합성곱 |
-| 7 | `optimal_transport` | `core/model/experts/ot.py` | Snapshot | **O** | **69D** | Sinkhorn 최적 수송 |
+| 5 | `causal` | `core/model/experts/causal.py` | Snapshot | **O** | **161D** | NOTEARS DAG 인과 구조 (W init 0.1 + recon loss patch) |
+| 6 | `lightgcn` | `core/model/experts/lightgcn.py` | Item | **O** | **100D** | 경량 그래프 합성곱 |
+| 7 | `optimal_transport` | `core/model/experts/ot.py` | Snapshot | **O** | **127D** | Sinkhorn 최적 수송 |
 | 8 | `mlp` | `core/model/experts/mlp.py` | State | - | (full dim) | 기본 MLP (task expert용) |
 | 9 | `mamba` | `core/model/experts/mamba.py` | Timeseries | - | (full dim) | Selective SSM (S6, O(n)) |
 | 10 | `autoint` | `core/model/experts/autoint.py` | State | - | (full dim) | Self-Attention 상호작용 |
@@ -630,7 +630,7 @@ class PLEModel(nn.Module):
         self._build_task_experts()            # GroupTaskExpertBasket or MLP fallback
         self._build_hmm_projectors()          # 3 modes × projection
         self._build_adatt()                   # Adaptive Task Transfer
-        self._build_logit_transfer()          # 3-method dispatch, 5 edges
+        self._build_logit_transfer()          # 3-method dispatch, 2 edges active
         self._build_multidisciplinary_routing()  # 24D → 4 × 6D
         self._build_task_towers()             # TowerRegistry (standard/contrastive)
         self._build_evidential_layers()       # NIG for regression (config-gated)
@@ -719,4 +719,4 @@ class PLEInput:
 | Loss 함수 | 코드 내 하드코딩 | **build_loss() 팩토리 + focal_alpha calibrated** | config 선언적, 양성비율 반영 |
 | Scoring | 없음 | **FD-TVS + DNA modifier + constraints** | 규제 준수 추천 |
 | Tower | 단일 MLP | **TowerRegistry** (standard/contrastive) | 태스크 유형별 최적 tower |
-| 입력 차원 | 734D 균일 (모든 Expert 동일) | **이종(heterogeneous) Expert 입력 차원** — FeatureRouter 활성으로 Expert별 32D~129D; 모델 파라미터 4.77M → ~2.8M (감소) | 불필요한 피처 제거로 과적합 억제 및 연산 효율화 |
+| 입력 차원 | 734D 균일 (모든 Expert 동일) | **이종(heterogeneous) Expert 입력 차원** — FeatureRouter 활성으로 Expert별 **27D~168D** (v12 benchmark); 모델 파라미터 4.77M → ~2.8M (감소) | 불필요한 피처 제거로 과적합 억제 및 연산 효율화 |

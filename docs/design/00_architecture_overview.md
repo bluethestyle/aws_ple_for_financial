@@ -350,7 +350,7 @@ Phase 0 Generator는 cuDF primary → pandas fallback 패턴을 따른다.
 
 ## Santander 4-Dimension Ablation Framework
 
-`scripts/run_santander_ablation.py`가 6-Phase **23 시나리오** ablation을 오케스트레이션한다 (14 joint feature+expert + 9 structure). 모든 시나리오는 config에서 동적 생성된다 (bottom-up + top-down 학계 표준 설계):
+`scripts/run_santander_ablation.py`가 6-Phase ablation 파이프라인을 오케스트레이션한다. 모든 시나리오는 config에서 동적 생성된다 (bottom-up + top-down 학계 표준 설계):
 
 | Phase | 내용 | Job 수 |
 |-------|------|--------|
@@ -360,6 +360,9 @@ Phase 0 Generator는 cuDF primary → pandas fallback 패턴을 따른다.
 | **3** | Task x Structure Cross (4 tiers x 9 structures) | 36 |
 | **4** | Best-Config Teacher + Distillation | 2 |
 | **5** | Analysis + HTML Report | 1 |
+| **합계 (Job 수)** | | **72** |
+
+> **Job 수 vs 시나리오 수**: 상위 표의 "Job 수" 는 raw SageMaker Training Job 수이며, 시드 복제 및 쌍(bottom-up/top-down) 전개를 포함한다. **v1 논문이 보고하는 23 시나리오** (14 joint feature+expert + 9 structure cross) 는 tasks_13 행 기준 고유 ablation cell 수를 의미하며, Phase 3 의 36 cell 중 tasks_13 행의 9개만 v1 에 포함된다. 상세는 `docs/design/santander_ablation_design.md §5.4` 와 `docs/design/04_training_pipeline.md` 참조.
 
 4개 Ablation 차원:
 1. **Feature** — Bottom-up (base+X) + Top-down (full-X) → 독립 기여 vs irreplaceability 측정

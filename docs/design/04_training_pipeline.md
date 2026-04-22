@@ -377,15 +377,17 @@ LGBM Students (CPU, per-task)
 
 ### 6-Phase 실행 계획
 
-| Phase | 내용 | Scenario 수 | Instance |
+| Phase | 내용 | Job 수 | Instance |
 |-------|------|------------|----------|
 | **0** | Data Preparation (Processing Job) | 1 | CPU (ml.m5.xlarge) |
-| **1** | Feature Group Ablation (bottom-up + top-down) | 16 | GPU (g4dn.xlarge) |
-| **2** | Expert Ablation (bottom-up + top-down) | 16 | GPU |
-| **3** | Task x Structure Cross (4 tiers x 4 variants) | 16 | GPU |
+| **1** | Feature Group Ablation (full + base_only + bottom-up + top-down) | 16 | GPU (g4dn.xlarge) |
+| **2** | Expert Ablation (deepfm baseline + bottom-up + top-down + mlp_only) | 16 | GPU |
+| **3** | Task x Structure Cross (4 tiers × 9 structures) | 36 | GPU |
 | **4** | Best-Config Teacher + Distillation | 2 | GPU + CPU |
 | **5** | Analysis + HTML Report | 1 | CPU |
-| **합계** | | **48+** | |
+| **합계 (Job 수)** | | **72** | |
+
+> **Job 수 vs 시나리오 수**: 상위 표의 "Job 수" 는 raw SageMaker Training Job 수이며, Phase 1+2 의 16 + 16 job 은 seed 복제 및 bottom-up/top-down 쌍 전개를 포함한다. 한편 **v1 논문이 보고하는 23 시나리오** 는 `14 joint feature+expert + 9 structure cross` (tasks_13 행 기준) 로, 고유한 ablation cell 수를 의미한다. Phase 3 의 36 은 `4 tier × 9 structure` 전체 grid 이며 v1 은 tasks_13 행의 9개만 보고한다. 상세는 `docs/design/santander_ablation_design.md §5.4 Dimension 3: Task x Structure Cross (36 시나리오)` 참조.
 
 ### Dim 1: Feature Ablation (동적 생성)
 

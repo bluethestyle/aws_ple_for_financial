@@ -893,15 +893,13 @@ that reflect the natural sequence of customer experience:
     align: left,
     stroke: 0.5pt,
     [*Source → Target*], [*Method*], [*Customer Experience*], [*Causal Direction*],
-    [engagement → nba_primary], [hidden_concat], [Activity level → purchase probability], [Leading indicator],
-    // [spend_level → will_acquire\_\*], [residual], [Spending capacity → category intent], [Enabling factor],  // removed: spend_level is a deterministic feature transformation
-    [churn → nba_primary], [output_concat], [Retention risk → acquisition opportunity (class 0 = no NBA)], [Inverse correlation],
+    [churn_signal → product_stability], [output_concat], [Retention risk → product-holding stability], [Causal],
+    [next_mcc → nba_primary], [hidden_concat], [Next-category intent → next-best-action selection], [Sequential / feature sharing],
   ),
-  caption: [Logit transfer relationships reflecting natural customer experience flow.],
+  caption: [Logit transfer relationships reflecting natural customer experience flow (Santander, v12 benchmark — source: `configs/datasets/santander.yaml::task_relationships`).],
 ) <tab:logit-transfer>
 
-These transfers connect the task groups defined in @tab:dna-axis: engagement→consumption (inter-group: Engagement to Consumption)
-and lifecycle→consumption (inter-group: churn→nba_primary), reflecting the natural sequence of customer experience.
+These two transfers reflect the natural sequence of customer experience: churn risk gates product-holding stability (lifecycle axis), and next-category intent informs next-best-action selection (consumption axis). Earlier drafts listed an `engagement_score → nba_primary` edge; this task was removed in 2026-04-12 as a deterministic feature transformation (see Section 3 task reduction), and the `has_nba → nba_primary` edge was folded into `nba_primary` directly.
 The transfer directions are not learned from data but specified based on
 domain knowledge of the customer journey.
 This is a deliberate design choice: while the _strength_ of transfer
