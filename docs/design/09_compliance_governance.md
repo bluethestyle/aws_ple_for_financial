@@ -1,5 +1,13 @@
 # 09. Compliance & Governance — 감사 추적, 규제 준수, 파이프라인 감시
 
+> **현행화 배너 (2026-04-22 기준)** — 본 문서는 2026-04-11 기준으로 작성된 뒤 Sprint 0~4 + Phase 2 Should + Phase 3 Could 및 PromotionGate Live Wiring 이 AWS 측에 대거 반영되었습니다. 최신 규제 모듈 맵 및 운영 정책은 아래 순서로 읽으시기 바랍니다:
+> 1. `docs/aws_work_plan.md` §1.1~§1.3 — Must / Should / Could 이식 상태
+> 2. `docs/pipeline_comparison_matrix.md` §5.5~§5.10 — Sprint 및 PromotionGate 비교
+> 3. `CLAUDE.md` §1.10~§1.17 — 규제 모듈 운영 원칙
+> 4. `docs/guides/configuration_reference.md` §Compliance Config — YAML 스키마
+>
+> 본 장의 "현재 (On-Prem) 구현" 섹션은 온프렘 기준 스냅샷(2026-04-11)이며, 일부 기술(DVC, MLflow, DuckDB 단일 스토어)은 **AWS 에서는 네이티브 등가물로 재설계되었습니다** — CLAUDE.md §1.14 (S5 재정의), §1.15 (S6 재정의) 참조. AWS 측 `auto_promote=False` 강제, `--force-promote` 인간 감독, 4단계 `_decide_promotion` 사다리, fairness Lambda → archive 프로덕션 배선은 아래 "운영/감사 에이전트 통합" 및 `docs/design/06_orchestration_and_audit.md` 를 참조하십시오.
+
 ## 개요
 
 06장은 오케스트레이션(Step Functions)과 기본 감사 구조를 다뤘습니다.
@@ -84,8 +92,12 @@ DuckDB 기반, fcntl 락 동시성 제어:
 - **킬스위치**: 글로벌/태스크별/클러스터별 모델 즉시 비활성화
 - **학습 데이터 문서화**: AI 기본법 §34①⑤ 학습 데이터 투명성
 - **감사 패키지 빌더**: 7개 섹션 통합 외부 감사 대응 패키지
-- **DVC 버전 추적**: 규제 산출물 9개 유형 버전 관리
-- **MLflow 규제 메트릭**: 쏠림, XAI 품질, 공정성, 준수율 시계열 추적
+- **(온프렘) DVC 버전 추적**: 규제 산출물 9개 유형 버전 관리
+- **(온프렘) MLflow 규제 메트릭**: 쏠림, XAI 품질, 공정성, 준수율 시계열 추적
+
+> **AWS 측 재설계 (CLAUDE.md §1.14, S5)**: DVC + MLflow 를 AWS 로 그대로 이식하지 않습니다. 대신 SageMaker Experiments + Model Registry + Lineage Tracking + S3 versioning (Object Lock / WORM 결합) 으로 네이티브 등가물을 구성하며, `core/compliance/sagemaker_compliance_tracker.py::SageMakerComplianceTracker` 가 4개 규제 산출물 유형 (FRIA / AI Risk / Compliance Registry Sweep / Promotion Gate Verdict) 을 TrialComponent 로 자동 기록합니다. 인프라 비용 0, 기존 DVC/MLflow 운영 부담 제거.
+>
+> **SQL 배치 조회 재설계 (CLAUDE.md §1.15, S6)**: Athena 를 기본으로 두지 않습니다. DuckDB httpfs 확장이 s3:// URI 를 네이티브로 읽으므로, `core/compliance/audit_sql.py::ComplianceSQLHelper` 로 온프렘 DuckDB 경험을 AWS 에서 0 인프라 비용으로 유지합니다 (쿼리당 $5/TB Athena 비용 회피). **온라인 조회**는 DynamoDB (`ComplianceAuditStore`), **배치 조회**는 DuckDB httpfs (`ComplianceSQLHelper`) 로 역할을 분리합니다 — 두 경로는 read-only JOIN 으로만 연동하며 서로의 데이터를 덮어쓰지 않습니다.
 
 ---
 
@@ -659,18 +671,27 @@ CloudWatch 대시보드:
 
 | 규제 | 관련 조항 | 설계 반영 |
 |------|---------|----------|
-| **AI 기본법** | §31 (AI 생성물 표시) | AI 공시 + 추천 사유 L1/L2 |
+| **한국 AI 기본법** | §31 (AI 생성물 표시) | AI 공시 + 추천 사유 L1/L2 |
 | | §33 (고위험 AI 거버넌스) | 36항목 레지스트리 + 거버넌스 보고서 |
-| | §34 (위험 관리 기록) | 감사 로그 불변성 + 7개 감사 테이블 |
-| **금소법** | §19 (설명의무) | 피처 역매핑 + 태스크별 해석 |
-| **금감원 AI RMF** | ①합법성 | 36항목 자동 점검 |
+| | §34①⑤ (학습 데이터 투명성, 위험 관리 기록) | 감사 로그 불변성 + DataLineageTracker |
+| | **§35 (FRIA 사전 영향평가)** | **`KoreanFRIAAssessor`** (`core/compliance/fria_assessment.py`, 7-차원, 5-년 retention) |
+| **금소법 (KFCPA)** | §17 (적합성 원칙) | **`SuitabilityFilter`** (`core/recommendation/constraint_engine.py`): 고령 ≥65세 / 저소득 <30M KRW hard cap (CLAUDE.md §1.12) |
+| | §19 (설명의무) | 피처 역매핑 + 태스크별 해석 |
+| **금감원 AI RMF** | ①합법성 | 36항목 자동 점검 (A-18 + GAP-18) |
 | | ②안전·신뢰 | 킬스위치 + 인시던트 보고 |
 | | ④신뢰성 | 드리프트 감시 + 자동 재학습 |
 | | ⑤금융안정성 | 공정성 DI/SPD/EOD + 쏠림 탐지 |
-| **GDPR** | §17 (삭제권) | 30일 PII 보존 + 암호화 삭제 |
-| | §22 (자동화 거부) | opt_out_audit 테이블 |
-| | §35 (DPIA) | PIA GAP-15 항목 |
-| **개보법** | §28의2 (가명정보) | 가명 처리 기록 감사 |
+| **EU AI Act** | **Art. 9 (위험관리 시스템)** | **`FRIAEvaluator`** (`core/monitoring/fria_evaluator.py`, 5-차원) — 한국 §35 FRIA 와 **법적 기반이 달라 별도 class, 리포트 통합 시에도 내부 저장 분리** (CLAUDE.md §1.11) |
+| | **Art. 11 (기술문서)** | **`AnnexIVMapper`** (`core/compliance/annex_iv_mapper.py`): 12 Annex IV 섹션별 증거 소스 resolve + coverage rate 자동 추적 |
+| | **Art. 13 (투명성)** | 추천 사유 3계층 + CEH per-prediction 감사 트레일 (Paper 3 Finding 9) |
+| | **Art. 14 (인간 감독)** | **`auto_promote: false` 강제** — challenger 가 metric gate 통과해도 `--force-promote` 수동 override 필요 (CLAUDE.md §1.12) |
+| **SR 11-7 (MRM)** | 모델 리스크 관리 | `_decide_promotion` 4단계 사다리 + HMAC 서명 감사 로그 + fidelity safety floor |
+| **GDPR** | Art. 17 (삭제권) | 30일 PII 보존 + 암호화 삭제 |
+| | **Art. 22 (자동화 거부 / 설명권)** | `opt_out_audit` + CEH per-prediction attribution + HMAC 해시 체인 |
+| | Art. 35 (DPIA) | PIA GAP-15 항목 |
+| **PIPA (개보법)** | **§37의2 (자동화된 결정에 대한 정보주체 권리)** | `core/compliance/rights/` 서브패키지 (opt-out, profiling, explanation SLA) + `SLATracker` (Sprint 0 foundation) |
+| | §28의2 (가명정보) | 가명 처리 기록 감사 |
+| **신용정보법** | **§36의2 (자동화된 신용평가 설명 요구권)** | CEH attribution 을 SLA 내 제공 |
 
 ---
 
@@ -695,15 +716,47 @@ CloudWatch 대시보드:
 
 | 컴포넌트 | 에이전트 도구 | 역할 |
 |---|---|---|
-| FairnessMonitor | `evaluate_fairness` | AV1 공정성 (단일+교차 보호속성) |
+| FairnessMonitor (+ archive wiring) | `evaluate_fairness` | AV1 공정성 (단일+교차 보호속성). **Lambda `containers/lambda/fairness_evaluation.py` 가 매 평가마다 `monitor.archive_metrics()` 를 호출하여 S3 Parquet 아카이브를 채움** (commit 51149f3). |
 | HerdingDetector | `detect_herding` | AV2 집중도 |
 | SelfChecker + XAIQualityEvaluator | `check_reason_quality` + `evaluate_xai_quality` | AV3 추천사유 품질 |
-| RegulatoryComplianceChecker + EUAIActMapper + FRIAEvaluator | `run_regulatory_checks` + `evaluate_eu_ai_act` + `evaluate_fria` | AV4 규제 적합성 |
+| RegulatoryComplianceChecker | `run_regulatory_checks` | AV4-1 **36항목 (A-18 + GAP-18)** 자동 점검 |
+| `KoreanFRIAAssessor` (AI기본법 §35) | `evaluate_korean_fria` | AV4-2 한국 FRIA 7-차원, 5-년 retention |
+| `FRIAEvaluator` (EU AI Act Art. 9) | `evaluate_eu_fria` | AV4-3 EU FRIA 5-차원 — 한국 FRIA 와 **별도 class, 저장 분리** |
+| `AnnexIVMapper` (EU AI Act Art. 11) | `generate_annex_iv` | AV4-4 12 Annex IV 섹션 증거 소스 resolve + coverage 추적 |
+| `SuitabilityFilter` (KFCPA §17) | `filter_unsuitable` | AV4-5 고령 ≥65세 / 저소득 <30M KRW hard cap |
+| `AISecurityChecker` + `PromptSanitizer` + `wrap_provider` | `check_ai_security` | AV4-6 prompt injection (14 패턴) + output leak (8 패턴). `L2aSafetyGate` 와 결합하여 LLM 경로 4중 방어 (CLAUDE.md §1.17). |
+| `ComplianceSQLHelper` (DuckDB httpfs) | `query_audit_sql` | AV4-7 S3 Parquet 아카이브 batch 조회 — Athena 비용 회피 (S6) |
+| `SageMakerComplianceTracker` | `track_regulatory_artifact` | AV4-8 4개 산출물 (FRIA / AI Risk / Registry Sweep / Promotion Gate) TrialComponent 자동 기록 (S5) |
 | DataLineageTracker | `trace_feature_lineage` | AV5 데이터 계보 |
 | AuditLogger | `verify_audit_chain` | 감사 로그 무결성 검증 |
 | GovernanceReportGenerator | 9개 섹션에 에이전트 결과 공급 | 월간 통합 리포트 |
 
-48개 체크리스트 항목이 주기적으로 자동 실행되며, WARN/FAIL 항목은 3-에이전트 합의(Sonnet×3)를 거쳐 마이너리티 리포트를 포함한 진단 결과를 산출한다. 진단 이력은 DiagnosticCaseStore(LanceDB)에 축적되어 유사 케이스 검색과 대응 효과 추적에 활용된다.
+36개 체크리스트 항목이 주기적으로 자동 실행되며 (A-group 18 + GAP-group 18, 신규 체크는 GAP 에 추가 후 Sprint 진행 시 A 로 이동 — CLAUDE.md §1.11), WARN/FAIL 항목은 3-에이전트 합의(Sonnet×3)를 거쳐 마이너리티 리포트를 포함한 진단 결과를 산출한다. 진단 이력은 DiagnosticCaseStore(LanceDB)에 축적되어 유사 케이스 검색과 대응 효과 추적에 활용된다.
 
-상세 설계: `docs/design/11_ops_audit_agent.md`
-구현: `core/agent/` 패키지
+---
+
+### PromotionGate Live Wiring (2026-04-21, PR #2/#3)
+
+모델 승격 자체도 감사 대상이므로, 09장의 거버넌스 관점에서 재정리합니다.
+
+**4단계 의사결정 사다리** (`scripts/submit_pipeline.py::_decide_promotion`):
+1. `--force-promote` → 무조건 승격 (운영자 override, `trigger=manual`, EU AI Act Art. 14 인간 감독 근거)
+2. 챔피언 부재 → bootstrap 승격 (`trigger=auto`)
+3. `fidelity_summary.failed > 0` → 안전 floor reject (Competition 생략) — teacher-student fidelity 보증
+4. `ModelCompetition.evaluate` → primary metric `min_improvement ≥ 0.5%` + 보조 metric `max_degradation ≤ 2%` + optional paired-bootstrap 유의성 검정
+
+**PromotionGate dimension scoring** (`core/compliance/promotion_gate.py` + `MetadataAggregator`):
+- 6개 evidence source composite: (1) fairness archive Parquet, (2) drift archive Parquet, (3) review queue DynamoDB, (4) model registry DynamoDB, (5) lineage YAML, (6) LLM config
+- `GateVerdict.details` 에 per-dimension 유도 trail 임베드 → HMAC + hash-chain 감사 로그에 기록 + `SageMakerComplianceTracker::promotion_gate_verdict` TrialComponent 로 병행 기록
+- `compliance.promotion_gate.enabled: true` pipeline.yaml 기본값 (conservative LIMITED collapse 리스크 해소됨)
+
+**감사 연결 요건**:
+- 모든 판정 (`bootstrap` / `promote` / `reject` / `force_promote`) 은 `AuditLogger.log_model_promotion` 으로 **best-effort** 기록 — 로깅 실패가 승격 자체를 차단하지 않음 (SR 11-7 MRM 원칙, CLAUDE.md §1.10)
+- 외부 경로로 `registry.promote()` 호출 금지 — 모든 승격은 `_decide_promotion` 관문을 통과해야 함
+- 온라인 게이트 (`ModelMonitor.evaluate_champion_challenger`) 는 실 트래픽 누적 후 수동/스케줄 트리거로만 실행 — 오프라인 사다리에는 **의도적으로 포함되지 않음**
+
+---
+
+상세 설계: `docs/design/11_ops_audit_agent.md`, `docs/design/06_orchestration_and_audit.md`
+구현: `core/agent/` + `core/compliance/` + `core/monitoring/` 패키지
+운영 원칙: `CLAUDE.md` §1.10 ~ §1.17
