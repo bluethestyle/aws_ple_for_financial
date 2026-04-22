@@ -97,6 +97,14 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--attach-phase2-job", type=str, default="",
+        help=(
+            "Attach to an already-completed / running Phase 2 Training Job "
+            "by name. Lets the orchestrator skip both teacher phases and "
+            "resume at Distillation (used to recover after a distill crash)."
+        ),
+    )
+    parser.add_argument(
         "--force-promote", action="store_true",
         help=(
             "Promote the new model to champion unconditionally, bypassing the "
@@ -280,34 +288,55 @@ def _run_full(config, args, s3_base, ts, wait):
         )
         model_uri = f"{s3_base}/models/phase2/{ts}/model.tar.gz"
     else:
-        if args.attach_phase1_job:
+        if args.attach_phase2_job:
+            # Recovery path: both teacher phases are already done on the
+            # cluster. Skip submission, attach to Phase 2 by name, and go
+            # straight to Distillation.
             logger.info(
-                "Attaching to existing Phase 1 job: %s",
-                args.attach_phase1_job,
+                "Attaching to existing Phase 2 job: %s",
+                args.attach_phase2_job,
             )
-            phase1 = trainer.attach_running_job(args.attach_phase1_job)
-            if phase1.get("status") != "Completed":
+            phase2 = trainer.attach_running_job(args.attach_phase2_job)
+            if phase2.get("status") != "Completed":
                 logger.error(
-                    "Existing Phase 1 %s ended with status %s; aborting.",
-                    args.attach_phase1_job, phase1.get("status"),
+                    "Existing Phase 2 %s ended with status %s; aborting.",
+                    args.attach_phase2_job, phase2.get("status"),
                 )
                 sys.exit(2)
+            model_uri = phase2.get("s3_model_uri", "")
         else:
-            phase1 = trainer.launch_phase1(staging_dir=staging, wait=wait)
-            logger.info("Phase 1 complete: %s", phase1.get("job_name"))
-        phase1_uri = phase1.get("s3_model_uri", "")
-        if not phase1_uri:
-            logger.error(
-                "Phase 1 did not return an s3_model_uri; aborting.",
+            if args.attach_phase1_job:
+                logger.info(
+                    "Attaching to existing Phase 1 job: %s",
+                    args.attach_phase1_job,
+                )
+                phase1 = trainer.attach_running_job(args.attach_phase1_job)
+                if phase1.get("status") != "Completed":
+                    logger.error(
+                        "Existing Phase 1 %s ended with status %s; aborting.",
+                        args.attach_phase1_job, phase1.get("status"),
+                    )
+                    sys.exit(2)
+            else:
+                phase1 = trainer.launch_phase1(
+                    staging_dir=staging, wait=wait,
+                )
+                logger.info(
+                    "Phase 1 complete: %s", phase1.get("job_name"),
+                )
+            phase1_uri = phase1.get("s3_model_uri", "")
+            if not phase1_uri:
+                logger.error(
+                    "Phase 1 did not return an s3_model_uri; aborting.",
+                )
+                sys.exit(2)
+            phase2 = trainer.launch_phase2(
+                staging_dir=staging,
+                phase1_model_uri=phase1_uri,
+                wait=wait,
             )
-            sys.exit(2)
-        phase2 = trainer.launch_phase2(
-            staging_dir=staging,
-            phase1_model_uri=phase1_uri,
-            wait=wait,
-        )
-        logger.info("Phase 2 complete: %s", phase2.get("job_name"))
-        model_uri = phase2.get("s3_model_uri", phase1_uri)
+            logger.info("Phase 2 complete: %s", phase2.get("job_name"))
+            model_uri = phase2.get("s3_model_uri", phase1_uri)
         # distill_entry.py expects a directory of .pt/.pth files (best.pt +
         # epoch_*.pt), which the Spot checkpoint_s3_uri always holds; the
         # SageMaker output model.tar.gz, in contrast, is a single gzipped
