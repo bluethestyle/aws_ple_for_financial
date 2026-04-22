@@ -200,7 +200,7 @@ class DynamoDBFeatureStore(AbstractFeatureStore):
 
 ## A/B 테스트
 
-> **게이트 구분**: 이 섹션의 A/B 테스트는 **온라인 게이트**(실 트래픽 기반)다. 학습 직후 champion/challenger 판정은 `scripts/submit_pipeline.py`의 **오프라인 게이트**(`ModelCompetition`)가 담당하며, 자세한 흐름은 [04_training_pipeline.md § Champion/Challenger 평가](./04_training_pipeline.md)를 참조. 오프라인 게이트를 통과한 신규 challenger에게 실 트래픽 일부를 나눠주는 단계가 이 문서의 A/B 테스트다.
+> **게이트 구분**: 이 섹션의 A/B 테스트는 **온라인 게이트**(실 트래픽 기반)다. 학습 직후 champion/challenger 판정은 `scripts/submit_pipeline.py::_decide_promotion`의 **오프라인 게이트**가 담당한다. 오프라인 게이트는 고정된 4단계 short-circuit 의사결정 사다리를 적용한다: (1) `--force-promote` 운영자 오버라이드 → (2) 챔피언 부재 시 bootstrap 승격 → (3) `fidelity_summary.failed > 0` 이면 안전 floor 에 의한 reject → (4) `ModelCompetition.evaluate` 수행 (primary metric `min_improvement ≥ 0.5%`, 보조 metric `max_degradation ≤ 2%`, optional paired-bootstrap 유의성 검정). 모든 판정은 `AuditLogger.log_model_promotion` 을 통해 HMAC 서명 + 해시 체인 S3 WORM 로그에 기록된다. 자세한 흐름은 [04_training_pipeline.md § Champion/Challenger 평가](./04_training_pipeline.md) 및 [06_orchestration_and_audit.md](./06_orchestration_and_audit.md) 를 참조. 오프라인 게이트를 통과한 신규 challenger 에게 실 트래픽 일부를 나눠주는 단계가 이 문서의 A/B 테스트다.
 
 Lambda와 ECS 모두 API Gateway의 **스테이지 변수 + 가중 라우팅**으로 A/B 테스트를 지원합니다.
 
@@ -222,9 +222,17 @@ ab_test:
     min_sample_size: 10000
     significance_level: 0.05
 
-  auto_promote:
-    enabled: true
-    min_improvement: 0.02     # 2% 이상 개선 시 자동 전환
+# 프로덕션 posture: pipeline.yaml 에서 auto_promote 를 강제로 False 로 운영한다.
+# 모든 지표 임계값을 통과한 challenger 라도 승격되지 않으며, 운영자가
+# `--force-promote` 로 재실행해야만 승격이 확정된다 (EU AI Act 제14조 인간 감독,
+# SR 11-7 모델 리스크 관리 요건). 코드 수준 CompetitionConfig.auto_promote
+# default 는 레거시 테스트 픽스처 호환을 위해 True 로 보존되며, 런타임에
+# pipeline.yaml 의 False 가 우선한다.
+serving:
+  competition:
+    auto_promote: false
+    min_improvement: 0.005    # 0.5% 이상 개선 (오프라인 게이트와 동일 기준)
+    max_degradation: 0.02
 ```
 
 ```

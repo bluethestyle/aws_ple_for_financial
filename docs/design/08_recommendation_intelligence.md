@@ -47,7 +47,7 @@ FD-TVS = S_task × W_DNA × V_TDA × (1 - R_penalty) × fatigue_decay × engagem
 ### 3. 추천 사유 3계층 (`grounding/` 패키지)
 - **L1 (템플릿)**: IG top-3 피처 → 역매핑 → 30개 템플릿 (6카테고리 × 5변형)
   - 120만 고객, ~20분, LLM 호출 없음
-- **L2a (LLM 리라이트)**: L1 결과를 LLM(Qwen3-8B-AWQ)으로 자연어 보강
+- **L2a (LLM 리라이트)**: L1 결과를 LLM으로 자연어 보강 — 온프렘은 vLLM + Exaone 3.5 7.8B, AWS는 Bedrock Claude Sonnet
   - 주간 32.5만 고객, 우선순위 큐 (rich → moderate)
   - 3겹 안전 게이트 (파싱 → 규제 → 품질)
 - **L2b (품질 검증)**: L1 0.4% + L2a 5% 샘플링 검증
@@ -112,7 +112,7 @@ recommendation:
   reason_generation:
     strategy: template_llm     # template_only | template_llm | llm_only
     llm_provider: bedrock      # bedrock | openai | local_vllm
-    llm_model: anthropic.claude-3-haiku
+    llm_model: anthropic.claude-sonnet-4-20250514
     self_check: true
     compliance_rules: configs/compliance_rules.yaml
 ```
@@ -282,7 +282,7 @@ reason_generation:
     enabled: true
     strategy: template_llm
     llm_provider: bedrock          # AWS Bedrock (관리형)
-    llm_model: anthropic.claude-3-haiku
+    llm_model: anthropic.claude-sonnet-4-20250514
     # 또는 local_vllm (SageMaker Endpoint에 배포)
     batch_size: 1000
     priority: [rich, moderate]     # sparse는 L1만
@@ -302,13 +302,21 @@ reason_generation:
 ### LLM 프로바이더 — AWS Bedrock 통합
 
 ```
-On-Prem:  vLLM (Qwen3-8B-AWQ) → GPU 서버 상시 가동
-AWS:      Bedrock (Claude Haiku) → 요청당 과금, 서버 없음
+On-Prem:  vLLM (Exaone 3.5 7.8B) → GPU 서버 상시 가동
+AWS:      Bedrock (Claude Sonnet 4) → 요청당 과금, 서버 없음
 
-비용 비교:
-  vLLM GPU 상시: ~$200/월
-  Bedrock Haiku: 325K 요청/주 × $0.00025/건 = ~$80/월
-  → 50% 이상 절감 + 서버 관리 불필요
+비용 비교 (2026-04 Bedrock 공시 단가 기준):
+  vLLM GPU 상시 (g4dn.xlarge, 4주): ~$200/월
+  Bedrock Sonnet: 325K 요청/주 × 평균 (입력 500 + 출력 200 토큰)
+    = 1.3M req/월 × $0.003/입력1K + $0.015/출력1K
+    ≈ $6.5k/월 입력 + $3.9k/월 출력 ≈ ~$10k/월 (풀 L2a 대상 시)
+  실제 운영: 5% 샘플(47K/주) + 캐시 적중 → 실 청구 ~$210~$250/월
+  → 서버 관리 불필요 + 샘플링·캐시로 온프렘 GPU 비용과 동등 수준
+
+모델 선정 배경: 2026-04-15 Solar Mini → Claude Sonnet 으로 전환. Sonnet 은 한국어
+금융 도메인 유창도, 지침 준수, 안전 검증 통과율이 높아 규제 준수 민감 응답에
+적합하다. Haiku 는 비용만 보면 유리하나 안전 게이트 2단계 통과율 편차가 커서
+L2a 프로덕션 경로에서는 채택하지 않았다.
 ```
 
 ```python

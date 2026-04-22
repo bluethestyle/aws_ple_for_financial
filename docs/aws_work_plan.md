@@ -2,15 +2,17 @@
 
 **목적**: AWS 는 온프렘의 **클라우드 확장 버전** — 두 체계는 원칙적으로 동일해야 함. 이 문서는 **온프렘에 이식되어 있지만 AWS 에는 아직 없는 항목** 을 AWS 로 sync 하는 작업 계획.
 
-**기준 시점**: 2026-04-21
+**기준 시점**: 2026-04-22
 **AWS 기준**: `aws_ple_for_financial` main 브랜치 (commit 35a95e9 이후)
 **온프렘 기준**: `c:/Users/user/Desktop/ttm/gotothemoon/workspace/code/`
 
-**진행 현황 (2026-04-21)**:
+**진행 현황 (2026-04-22)**:
 - ✅ **Phase 1 Must (M1~M12) 완료** — 모든 규제 핵심 모듈 AWS 이식.
 - ✅ **Phase 2 Should 15/15 완료** — S1~S15 전체 완료.
 - ✅ **Phase 3 Could 4/5 완료** — C1, C3, C4, C5. C2는 Won't (AWS SageMaker 네이티브).
-- 누적 테스트: **606/606 PASS** (PR #1~#3 반영), 하드코딩 0건 (`ap-northeast-2` repo-wide 0 hits).
+- 누적 테스트: **620/620 PASS** (PR #1~#3 + §1.7 feature_group_ranges rebuild regression 14건 반영, commit ec8587b 2026-04-21), 하드코딩 0건 (`ap-northeast-2` repo-wide 0 hits).
+- **§1.7 Group Range Rebuild (commit ec8587b, 2026-04-21)**: 3-stage 정규화가 `_log` 접미사 컬럼을 append 한 뒤 `feature_group_ranges` 를 stale 상태로 남겨 FeatureRouter 가 잘못된 컬럼을 슬라이싱하던 silent bug 를 차단. `core/pipeline/runner.py` 에 longest-contiguous-block 헬퍼 추가 + 14 regression 테스트.
+- **Tracking Backend Flip (commit 9426162, 2026-04-21)**: `configs/pipeline.yaml::compliance.tracking.backend` 를 `in_memory → sagemaker` 전환. IAM 도달성 사전 검증 완료 (계정 795833413857, training-job 역할이 Experiments 권한 보유).
 - **PromotionGate Live Wiring (PR #2/#3)**: `core/compliance/metadata_aggregator.py` (신규) 로 lineage / fairness / review queue / model registry / LLM config / static overrides 6 source 를 composite 하여 차원 점수 공급. `GateVerdict.details` 가 per-dimension 유도 트레일을 `AuditLogger.log_model_promotion` 의 HMAC + hash-chain 레코드에 임베드하고, 동시에 SageMakerComplianceTracker 에 `promotion_gate_verdict` artifact 로 기록. 이로써 `compliance.promotion_gate.enabled: true` 가 pipeline.yaml 기본값으로 전환 (conservative LIMITED collapse 리스크 해소).
 - **S5 재정의**: 온프렘 MLflow+DVC 를 그대로 이식하지 않고, AWS 네이티브 서비스 (SageMaker Experiments + Model Registry + Lineage + S3 versioning) 기반으로 재설계. `core/compliance/sagemaker_compliance_tracker.py` 가 4개 규제 산출물 유형 (FRIA / AI Risk / Compliance Sweep / Promotion Gate) 을 Experiments TrialComponent 로 자동 기록.
 - **S6 재정의**: Athena 도입은 과잉. DuckDB httpfs 확장이 s3:// URI 를 네이티브로 읽으므로, `core/compliance/audit_sql.py::ComplianceSQLHelper` 로 온프렘 DuckDB 경험을 AWS 에서 0 인프라 비용으로 유지 (regulator 쿼리 + cross-view JOIN).
@@ -83,7 +85,7 @@ AWS 로 이식할 때는 **AWS 의 config-중심 / 모듈화 패턴** 에 맞게
 
 **Phase 2 Should 15/15 완료** (105 tests PASS). S5 는 SageMaker Experiments 네이티브, S6 는 Athena 대신 DuckDB-over-Parquet. 두 항목 모두 온프렘 스택을 그대로 이식하지 않고 AWS 에 더 맞는 접근으로 재설계했지만 기능은 동등.
 
-**Phase 3 Could + PromotionGate Live Wiring 후속 (PR #1~#3)**: 447 → 606 tests. 상세는 `docs/pipeline_comparison_matrix.md` §5.10.
+**Phase 3 Could + PromotionGate Live Wiring 후속 (PR #1~#3 + §1.7 rebuild)**: 447 → 606 → 620 tests. 상세는 `docs/pipeline_comparison_matrix.md` §5.10.
 
 ### 1.3 Could (v2 Optional 보강)
 

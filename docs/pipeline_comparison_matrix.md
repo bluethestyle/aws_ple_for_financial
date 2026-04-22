@@ -343,14 +343,14 @@ C2 Airflow DAG 는 AWS SageMaker managed orchestration 로 대체 (이식 불필
 - `tests/test_promotion_gate_tracker.py` — 194줄
 - `tests/test_metadata_archive_sources.py` — 321줄
 
-**누적 테스트 (2026-04-21 최종, PR #1~#3 반영)**: 447 + 34 (audit+tracker+archive) + 75 (metadata aggregator + live wiring) + 50 (기타 regression) = **606/606 PASS**.
+**누적 테스트 (2026-04-22 최종, PR #1~#3 + §1.7 group-range rebuild 반영)**: 447 + 34 (audit+tracker+archive) + 75 (metadata aggregator + live wiring) + 50 (기타 regression) + 14 (feature_group_ranges rebuild regression) = **620/620 PASS**.
 
 **운영 전환 체크리스트** (`compliance.promotion_gate.enabled: true` 를 프로덕션 활성화하기 전):
-1. ❌ **미결** — `monitoring.fairness.archive_parquet_path` 미설정. `compliance.promotion_gate.providers.aggregator.sources.fairness_archive_parquet_path: null`. fairness source 가 빈 결과 반환 → `fairness_risk` 차원이 heuristic fallback(0.5) 로 수렴. 프로덕션 활성화 전 fairness monitor 가 실제로 append 하는 경로 설정 필수.
+1. ✅ **완료** — `monitoring.fairness.archive_parquet_path` 가 S3 경로 `s3://aiops-ple-financial/compliance/fairness/metrics.parquet` 로 설정됨 (commit 51149f3, 2026-04-21). `containers/lambda/fairness_evaluation.py` 가 매 평가마다 `monitor.archive_metrics()` 를 호출하여 아카이브를 실제로 채움. `compliance.promotion_gate.providers.aggregator.sources.fairness_archive_parquet_path` 도 동일 경로를 가리키도록 wire 되어, `fairness_risk` 차원이 실증거를 읽고 더 이상 heuristic 0.5 로 silent collapse 하지 않는다.
 2. ✅ lineage YAML (`configs/financial/feature_groups.yaml`) 존재 확인. 피처 스키마 최신화 여부는 주기적 점검 필요.
-3. ⚠️ `compliance.tracking.backend: in_memory` — 개발 환경 기본값. 프로덕션 전환 시 `sagemaker` 로 변경 + IAM 권한 (CreateExperiment / CreateTrialComponent) 부여 필요.
+3. ✅ **완료** — `compliance.tracking.backend: sagemaker` 가 `configs/pipeline.yaml` 배포 기본값 (commit 9426162, 2026-04-21). IAM 도달성 사전 검증: 계정 795833413857 에서 `list_experiments` 성공, 미생성 experiment 이름에 대한 `describe_experiment` 는 access-denied 가 아닌 `ResourceNotFound` 반환 → training-job 역할이 필요 Experiments 권한 (CreateExperiment / CreateTrialComponent / DescribeExperiment / ListTrialComponents) 을 이미 보유. `in_memory` backend 는 단위 테스트와 로컬 개발용으로만 유지.
 4. `manual_overrides: {}` 비어있음 — critical model version override 는 선택사항 (heuristic 으로 충분한 경우 불필요).
-5. Dry-run: `--force-promote` 없이 테스트 환경에서 챌린저 1회 제출하여 게이트가 accept/reject 판정을 audit log + SageMaker TrialComponent 양쪽에 남기는지 확인.
+5. Dry-run: `--force-promote` 없이 테스트 환경에서 챌린저 1회 제출하여 게이트가 accept/reject 판정을 audit log + SageMaker TrialComponent 양쪽에 남기는지 확인. (SageMaker 비용 발생, 다음 submit_pipeline 실행 시 end-to-end 검증 예정.)
 
 ---
 
