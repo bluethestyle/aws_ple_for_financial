@@ -1899,10 +1899,41 @@ def main() -> None:
     torch.save(save_dict, model_path)
     logger.info("Model saved to %s", model_path)
 
-    # Save config
+    # Save config. We serialise the runtime-built task_group_map from
+    # ple_config so that teacher_loader can rebuild the exact same
+    # PLEModel architecture (group_task_expert path vs per-task MLP
+    # fallback) without re-deriving it from adatt.task_groups. The raw
+    # label_schema["task_group_map"] copied from YAML is always empty
+    # because the mapping is constructed at PLEConfig instantiation, not
+    # authored directly. Previously this mismatch caused distillation to
+    # rebuild the model on the fallback path and hit a state_dict
+    # missing/unexpected keys error on load.
+    label_schema_out = dict(label_schema)
+    runtime_tgm = getattr(ple_config, "task_group_map", None) or {}
+    if runtime_tgm:
+        label_schema_out["task_group_map"] = dict(runtime_tgm)
+    config_payload = {
+        "feature_schema": feature_schema,
+        "label_schema": label_schema_out,
+    }
     config_path_out = os.path.join(model_dir, "config.json")
     with open(config_path_out, "w") as f:
-        json.dump({"feature_schema": feature_schema, "label_schema": label_schema}, f, indent=2)
+        json.dump(config_payload, f, indent=2)
+    # Also drop the same config.json into the Spot checkpoint directory
+    # so teacher_loader can find it alongside best.pt / epoch_*.pt when
+    # downstream jobs consume the checkpoint dir directly (e.g.
+    # distillation's model input channel).
+    if checkpoint_dir and os.path.isdir(checkpoint_dir):
+        try:
+            with open(
+                os.path.join(checkpoint_dir, "config.json"), "w"
+            ) as f:
+                json.dump(config_payload, f, indent=2)
+        except Exception:  # best-effort — don't fail training on this
+            logger.exception(
+                "Failed to write config.json to checkpoint_dir %s",
+                checkpoint_dir,
+            )
 
     # Save eval report
     save_eval_report(
