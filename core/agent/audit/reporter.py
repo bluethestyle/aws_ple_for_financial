@@ -137,23 +137,38 @@ class AuditReporter:
         # Build reason quality dashboard
         rq_dashboard = self._build_reason_dashboard(reason_quality or {})
 
-        # 3-agent consensus on focus areas (if arbiter available)
-        consensus_results = {}
+        # 3-agent consensus on focus areas (if arbiter available). As
+        # with the Ops reporter, we keep every per-vote reasoning so
+        # the audit trail shows *why* the Regulator / Risk / AuditTrail
+        # personas reached their verdicts, including dissenting
+        # positions that would otherwise vanish behind the majority
+        # label.
+        consensus_results: Dict[str, Dict[str, Any]] = {}
         if self._consensus and focus_areas:
             for fa in focus_areas:
                 try:
                     cr = self._consensus.evaluate(
-                        item_description=fa.description,
+                        item_description=fa.finding,
                         measurements=fa.to_dict(),
                         rule_engine_verdict=fa.priority,
                     )
-                    consensus_results[fa.area_id] = {
+                    consensus_results[fa.area] = {
                         "verdict": cr.final_verdict,
                         "type": cr.consensus_type,
                         "minority_report": cr.minority_report,
+                        "votes": [
+                            {
+                                "agent_id": v.agent_id,
+                                "perspective": v.perspective,
+                                "verdict": v.verdict,
+                                "confidence": v.confidence,
+                                "reasoning": v.reasoning,
+                            }
+                            for v in cr.votes
+                        ],
                     }
                 except Exception as _ce:
-                    logger.warning("Consensus failed for %s: %s", fa.area_id, _ce)
+                    logger.warning("Consensus failed for %s: %s", fa.area, _ce)
 
         # Search similar past audit cases for context (non-fatal)
         try:
@@ -181,8 +196,8 @@ class AuditReporter:
         fa_dicts = []
         for fa in focus_areas:
             d = fa.to_dict()
-            if fa.area_id in consensus_results:
-                d["consensus"] = consensus_results[fa.area_id]
+            if fa.area in consensus_results:
+                d["consensus"] = consensus_results[fa.area]
             fa_dicts.append(d)
 
         report = AuditReport(
@@ -200,18 +215,29 @@ class AuditReporter:
                 for fa_d in fa_dicts:
                     case = {
                         "agent": "AuditAgent",
-                        "pipeline_part": fa_d.get("area_id", ""),
-                        "check_item": fa_d.get("area_id", ""),
+                        "pipeline_part": fa_d.get("area", ""),
+                        "check_item": fa_d.get("area", ""),
                         "verdict": fa_d.get("priority", "LOW"),
                         "severity": fa_d.get("priority", "LOW"),
-                        "finding": fa_d.get("description", ""),
+                        "finding": fa_d.get("finding", ""),
                         "likely_cause": "",
                         "suggested_action": "",
                         "metrics": {},
                         "consensus_type": fa_d.get("consensus", {}).get("type", "none"),
                     }
                     cs.save_case(case)
-                logger.debug("DiagnosticCaseStore: saved %d audit focus areas", len(fa_dicts))
+                # Flush to disk — save_case only appends in-memory.
+                try:
+                    cs.save()
+                except Exception:
+                    logger.debug(
+                        "DiagnosticCaseStore.save() flush failed (non-fatal)",
+                        exc_info=True,
+                    )
+                logger.info(
+                    "DiagnosticCaseStore: saved %d audit focus areas",
+                    len(fa_dicts),
+                )
         except Exception:
             logger.debug("DiagnosticCaseStore audit save failed (non-fatal)", exc_info=True)
 
@@ -230,13 +256,21 @@ class AuditReporter:
                 for fa_d in fa_dicts:
                     tfs.save_fact({
                         "entity_type": "audit_focus_area",
-                        "entity_id": fa_d.get("area_id", "unknown"),
+                        "entity_id": fa_d.get("area", "unknown"),
                         "attribute": "priority",
                         "value": fa_d.get("priority", "LOW"),
                         "source": "AuditAgent",
                     })
-                logger.debug(
-                    "TemporalFactStore: recorded audit event + %d focus areas", len(fa_dicts),
+                try:
+                    tfs.save()
+                except Exception:
+                    logger.debug(
+                        "TemporalFactStore.save() flush failed (non-fatal)",
+                        exc_info=True,
+                    )
+                logger.info(
+                    "TemporalFactStore: recorded audit event + %d focus areas",
+                    len(fa_dicts),
                 )
         except Exception:
             logger.debug("TemporalFactStore audit record failed (non-fatal)", exc_info=True)

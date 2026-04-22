@@ -143,7 +143,13 @@ class OpsReporter:
                 "suggested_action": diag.suggested_action,
             })
 
-        # 3-agent consensus on attention items (if arbiter available)
+        # 3-agent consensus on attention items (if arbiter available).
+        # We persist every vote's full reasoning — not just the aggregate
+        # verdict — because the per-persona argument IS the audit trail.
+        # Final verdict tells an operator what consensus decided; the
+        # per-vote reasoning tells auditors *why*, including the
+        # dissenting opinions that would otherwise disappear behind
+        # "majority".
         if self._consensus and attention:
             for item in attention:
                 try:
@@ -154,6 +160,16 @@ class OpsReporter:
                     )
                     item["consensus_verdict"] = consensus_result.final_verdict
                     item["consensus_type"] = consensus_result.consensus_type
+                    item["consensus_votes"] = [
+                        {
+                            "agent_id": v.agent_id,
+                            "perspective": v.perspective,
+                            "verdict": v.verdict,
+                            "confidence": v.confidence,
+                            "reasoning": v.reasoning,
+                        }
+                        for v in consensus_result.votes
+                    ]
                     if consensus_result.minority_report:
                         item["minority_report"] = consensus_result.minority_report
                 except Exception as _ce:
@@ -205,7 +221,21 @@ class OpsReporter:
                         "consensus_type": item.get("consensus_type", "none"),
                     }
                     cs.save_case(case)
-                logger.debug("DiagnosticCaseStore: saved %d ops attention items", len(attention))
+                # save_case() only appends in-memory; flush to disk
+                # (cases.jsonl + vectors.npy when applicable) so the
+                # findings survive across runs and are searchable by
+                # downstream retrieval code.
+                try:
+                    cs.save()
+                except Exception:
+                    logger.debug(
+                        "DiagnosticCaseStore.save() flush failed (non-fatal)",
+                        exc_info=True,
+                    )
+                logger.info(
+                    "DiagnosticCaseStore: saved %d ops attention items",
+                    len(attention),
+                )
         except Exception:
             logger.debug("DiagnosticCaseStore save failed (non-fatal)", exc_info=True)
 
