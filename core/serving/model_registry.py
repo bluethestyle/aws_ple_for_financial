@@ -664,8 +664,42 @@ class ModelRegistry:
                 manifest_path,
                 f"{self._s3_base}/{version}/manifest.json",
             )
+            # Also refresh the top-level ``_promoted`` marker so that
+            # downstream Lambda code (``_read_promoted_version`` in
+            # ``containers/lambda/predict.py``) can resolve the active
+            # version with a single S3 GET rather than scanning every
+            # manifest. Previously this marker was left stale after every
+            # promotion, and operators had to patch it by hand (observed
+            # 2026-04-22). Write an ASCII JSON file with a stable schema
+            # so both the Lambda and the Python registry agree on the
+            # current champion.
+            self._write_promoted_marker(version, now)
 
         logger.info("Promoted version '%s' at %s", version, now)
+
+    def _write_promoted_marker(self, version: str, promoted_at: str) -> None:
+        """Publish the top-level ``_promoted`` JSON marker to S3.
+
+        Best-effort: tracker / marker failures must not roll back the
+        already-persisted manifest flip on the version itself.
+        """
+        if not self._s3_base:
+            return
+        marker_local = os.path.join(self._local_base, "_promoted.json")
+        payload = {"active_version": version, "promoted_at": promoted_at}
+        try:
+            with open(marker_local, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            self._upload_file_to_s3(marker_local, f"{self._s3_base}/_promoted")
+            logger.info(
+                "Wrote _promoted marker s3://%s -> %s",
+                f"{self._s3_base}/_promoted", version,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to write _promoted marker (non-fatal, "
+                "manifest.promoted already reflects champion)",
+            )
 
     # ------------------------------------------------------------------
     # Internal helpers
