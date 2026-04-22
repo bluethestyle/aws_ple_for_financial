@@ -61,6 +61,7 @@ class PipelineJobContext:
         reason_cache_table: str = "ple-reason-cache",
         cloudwatch_namespace: str = "PLE/Serving",
         cloudwatch_lookback_minutes: int = 60,
+        audit_archive_parquet_glob: str = "",
     ) -> None:
         self.region = region
         self.phase0_job_name = phase0_job_name
@@ -71,6 +72,12 @@ class PipelineJobContext:
         self.reason_cache_table = reason_cache_table
         self.cloudwatch_namespace = cloudwatch_namespace
         self.cloudwatch_lookback_minutes = cloudwatch_lookback_minutes
+        # DuckDB glob against the serving-side reason-audit Parquet
+        # archive (e.g. s3://.../recommendation_audit/dt=*/events_*.parquet).
+        # When set, the audit reporter samples real reason records,
+        # runs them through GroundingValidator, and surfaces the tier-1
+        # grounding / readability / overall quality metrics.
+        self.audit_archive_parquet_glob = audit_archive_parquet_glob
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +146,112 @@ def _training_metrics(eval_metrics: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Audit tier-1 (DuckDB httpfs over the S3 Parquet reason archive)
+# ---------------------------------------------------------------------------
+
+def _compute_audit_tier1(parquet_glob: str) -> Dict[str, Any]:
+    """Grounding / readability / overall quality on the reason archive.
+
+    ``parquet_glob`` is a DuckDB-compatible glob such as
+    ``s3://bucket/recommendation_audit/dt=*/events_*.parquet``. When the
+    glob is unset or DuckDB cannot reach the data, we return empty
+    tiers and the report simply shows tier1 total_validated=0 — that's
+    the pre-archive state.
+    """
+    empty = {
+        "tier1": {"total_validated": 0, "avg_grounding": None,
+                  "avg_overall": None, "avg_readability": None},
+        "tier2": {},
+        "tier3": {},
+    }
+    if not parquet_glob:
+        return empty
+
+    try:
+        import duckdb  # type: ignore
+        from core.agent.audit.grounding_validator import GroundingValidator
+    except Exception:
+        logger.debug("tier1 audit: duckdb or validator import failed",
+                     exc_info=True)
+        return empty
+
+    try:
+        con = duckdb.connect(":memory:")
+        con.execute("INSTALL httpfs; LOAD httpfs;")
+        # Pull a bounded sample so the reporter stays fast even when
+        # the archive grows; 500 is the same cap the existing
+        # StratifiedReasonSampler defaults to.
+        rows = con.execute(f"""
+            SELECT
+                coalesce(reason_text, l2a_reason, l1_reason, '') AS reason,
+                coalesce(ig_top_features, CAST([] AS JSON)) AS ig_top_features,
+                coalesce(selfcheck_verdict, 'pass') AS selfcheck_verdict
+            FROM '{parquet_glob}'
+            WHERE reason_text IS NOT NULL OR l2a_reason IS NOT NULL OR l1_reason IS NOT NULL
+            LIMIT 500
+        """).fetchall()
+        con.close()
+    except Exception:
+        logger.debug(
+            "tier1 audit: DuckDB scan of %s failed", parquet_glob,
+            exc_info=True,
+        )
+        return empty
+
+    if not rows:
+        return empty
+
+    # Minimal feature glossary — production deployments should pull
+    # this from configs/financial/feature_glossary.yaml when it lands
+    # in the staging tree.
+    feature_glossary: Dict[str, str] = {}
+    validator = GroundingValidator(
+        feature_glossary=feature_glossary,
+        config={"min_grounding_score": 0.3, "max_sentence_length": 100},
+    )
+
+    grounding_scores: List[float] = []
+    overall_scores: List[float] = []
+    readability_scores: List[float] = []
+    for reason_text, ig_raw, verdict in rows:
+        try:
+            ig_feats = (
+                json.loads(ig_raw) if isinstance(ig_raw, str) else (ig_raw or [])
+            )
+        except Exception:
+            ig_feats = []
+        if not reason_text or not ig_feats:
+            continue
+        try:
+            gr = validator.validate(reason_text, ig_feats)
+            grounding_scores.append(gr.grounding_score)
+            qs = validator.compute_quality_score(
+                reason_text=reason_text,
+                ig_top_features=ig_feats,
+                faithfulness=0.7,
+                compliance=1.0 if verdict == "pass" else 0.0,
+            )
+            overall_scores.append(qs.overall)
+            readability_scores.append(qs.readability)
+        except Exception:
+            logger.debug("tier1 validate failed for one row", exc_info=True)
+
+    def _avg(values: List[float]) -> Optional[float]:
+        return round(sum(values) / len(values), 4) if values else None
+
+    return {
+        "tier1": {
+            "total_validated": len(grounding_scores),
+            "avg_grounding": _avg(grounding_scores),
+            "avg_overall": _avg(overall_scores),
+            "avg_readability": _avg(readability_scores),
+        },
+        "tier2": {},
+        "tier3": {},
+    }
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -165,6 +278,8 @@ def _build_aws_registry(ctx: PipelineJobContext):
     cw = boto3.client("cloudwatch", region_name=ctx.region)
     ddb = boto3.client("dynamodb", region_name=ctx.region)
     lmb = boto3.client("lambda", region_name=ctx.region)
+    logs_client = boto3.client("logs", region_name=ctx.region)
+    s3_client = boto3.client("s3", region_name=ctx.region)
     from datetime import datetime, timedelta, timezone
 
     def _describe(job_name: str) -> Dict[str, Any]:
@@ -235,11 +350,56 @@ def _build_aws_registry(ctx: PipelineJobContext):
 
     registry.register("read_pipeline_state", _phase0_state,
                       description="phase 0 state (CP2, AWS)", category="query")
+    # CP2 feature_stats — pulled from the Phase 0 model.tar.gz on S3.
+    # PipelineRunner.run writes feature_stats.json at the top of
+    # /opt/ml/model, which SageMaker tars; so we fetch the tarball,
+    # extract only feature_stats.json in-memory, and compute the
+    # {total_features, zero_variance_count, nan_ratio_max} summary the
+    # OpsDiagnoser expects.
+    _phase0_stats_cache: Dict[str, Any] = {}
+
+    def _read_feature_stats() -> Dict[str, Any]:
+        if _phase0_stats_cache:
+            return _phase0_stats_cache
+        desc = _describe(ctx.phase0_job_name)
+        model_uri = (desc.get("ModelArtifacts") or {}).get(
+            "S3ModelArtifacts", "",
+        )
+        if not model_uri:
+            return {"total_features": 0, "zero_variance_count": 0,
+                    "nan_ratio_max": 0.0}
+        try:
+            import io, tarfile
+            bucket, key = model_uri.replace("s3://", "").split("/", 1)
+            buf = io.BytesIO()
+            s3_client.download_fileobj(bucket, key, buf)
+            buf.seek(0)
+            raw_stats: Dict[str, Any] = {}
+            with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+                for member in tar.getmembers():
+                    if member.name.endswith("feature_stats.json"):
+                        fh = tar.extractfile(member)
+                        if fh is not None:
+                            raw_stats = json.loads(fh.read().decode("utf-8"))
+                        break
+            summary = _compute_feature_stats_summary(raw_stats)
+            logger.info(
+                "CP2 feature_stats pulled from %s: %d features, %d zero-variance, "
+                "max_nan_ratio=%.4f",
+                model_uri, summary.get("total_features", 0),
+                summary.get("zero_variance_count", 0),
+                summary.get("nan_ratio_max", 0.0),
+            )
+            _phase0_stats_cache.update(summary)
+            return summary
+        except Exception:
+            logger.debug("CP2 feature_stats fetch failed", exc_info=True)
+            return {"total_features": 0, "zero_variance_count": 0,
+                    "nan_ratio_max": 0.0}
+
     registry.register(
-        "read_feature_stats",
-        lambda: {"total_features": 0, "zero_variance_count": 0,
-                 "nan_ratio_max": 0.0},
-        description="feature stats (CP2, AWS — TODO read from S3 model tarball)",
+        "read_feature_stats", _read_feature_stats,
+        description="feature stats (CP2, AWS — model.tar.gz extract)",
         category="query",
     )
 
@@ -260,22 +420,73 @@ def _build_aws_registry(ctx: PipelineJobContext):
     registry.register("read_experiment_metrics", _training_metrics,
                       description="training metrics (CP3, AWS)", category="query")
 
-    # CP4 — Distillation. distill_entry.py's metric_definitions expose
-    # distill:passed_fidelity + distill:num_students. We approximate
-    # fidelity gap with 1 - passed/total.
+    # CP4 — Distillation. FinalMetricDataList first (SageMaker-collected
+    # from stdout via metric_definitions regex). When those fail to
+    # match the actual log lines — common for distillation because the
+    # fidelity line is logged once at end-of-job and sometimes slips the
+    # collector window — we fall back to CloudWatch Logs
+    # filter_log_events, which lets us scan every algo-1 stream in the
+    # /aws/sagemaker/TrainingJobs log group for the literal
+    # "Fidelity summary: X/Y" line the distill entrypoint prints. This
+    # is the same pattern surfaced at run_sagemaker_distillation.py
+    # metric_definitions (see docs/design/04_training_pipeline.md).
+    _distill_cache: Dict[str, Any] = {}
+
     def _distill_fidelity() -> Dict[str, Any]:
+        if _distill_cache:
+            return _distill_cache
         desc = _describe(ctx.distill_job_name)
-        metrics = {m["MetricName"]: m["Value"] for m in desc.get("FinalMetricDataList", [])}
+        metrics = {
+            m["MetricName"]: m["Value"]
+            for m in desc.get("FinalMetricDataList", [])
+        }
         passed = int(metrics.get("distill:passed_fidelity", 0))
         total = int(metrics.get("distill:num_students", 0))
+
+        if total <= 0 and ctx.distill_job_name:
+            # Stdout parse fallback. 16-char Job-name prefix is the
+            # convention SageMaker uses for log stream names
+            # ("<job>/algo-1-<suffix>"), so we scan the full group with
+            # a stream prefix to stay cheap.
+            try:
+                import re
+                resp = logs_client.filter_log_events(
+                    logGroupName="/aws/sagemaker/TrainingJobs",
+                    logStreamNamePrefix=ctx.distill_job_name,
+                    filterPattern='"Fidelity summary"',
+                    limit=200,
+                )
+                events = resp.get("events", []) or []
+                fid_re = re.compile(r"Fidelity summary:\s*(\d+)\s*/\s*(\d+)")
+                for ev in events:
+                    m = fid_re.search(ev.get("message", ""))
+                    if m:
+                        passed = int(m.group(1))
+                        total = int(m.group(2))
+                        logger.info(
+                            "CP4 fidelity parsed from logs: %d/%d", passed, total,
+                        )
+                        break
+            except Exception:
+                logger.debug("CP4 Logs filter failed", exc_info=True)
+
         if total <= 0:
             return {}
-        gap = 1.0 - (passed / total if total else 1.0)
-        return {
-            "task_fidelity": {"aggregate": round(passed / total, 4)},
+
+        ratio = passed / total
+        gap = 1.0 - ratio
+        out = {
+            "task_fidelity": {"aggregate": round(ratio, 4)},
             "max_fidelity_gap": round(gap, 4),
-            "tasks_above_threshold": [],
+            "tasks_above_threshold": (
+                ["aggregate"] if gap > 0.05 else []
+            ),
+            "source": "FinalMetricDataList" if total == int(
+                metrics.get("distill:num_students", 0),
+            ) else "cloudwatch_logs",
         }
+        _distill_cache.update(out)
+        return out
 
     registry.register("read_distillation_fidelity", _distill_fidelity,
                       description="distillation fidelity (CP4, AWS)", category="query")
@@ -312,8 +523,47 @@ def _build_aws_registry(ctx: PipelineJobContext):
     registry.register("check_feature_store_health", _predict_health,
                       description="serving health (CP5, AWS)", category="query")
 
-    # CP6 — Recommendation audit. DynamoDB row count + p95 Duration
-    # from CloudWatch.
+    # CP6 — Recommendation audit. DynamoDB row count + p50/p95 Duration
+    # from CloudWatch. p50/p95 use GetMetricData (not GetMetricStatistics)
+    # so we can request ExtendedStatistics like "p95" for the same
+    # AWS/Lambda Duration metric. SLA breaches on p95 are the signal
+    # OpsDiagnoser scores against ``latency_sla_ms``.
+    def _predict_percentile(stat: str) -> Optional[float]:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(minutes=ctx.cloudwatch_lookback_minutes)
+        try:
+            resp = cw.get_metric_data(
+                MetricDataQueries=[{
+                    "Id": "pct",
+                    "MetricStat": {
+                        "Metric": {
+                            "Namespace": "AWS/Lambda",
+                            "MetricName": "Duration",
+                            "Dimensions": [{
+                                "Name": "FunctionName",
+                                "Value": ctx.predict_lambda,
+                            }],
+                        },
+                        "Period": 60,
+                        "Stat": stat,
+                    },
+                    "ReturnData": True,
+                }],
+                StartTime=start,
+                EndTime=end,
+                ScanBy="TimestampDescending",
+            )
+            points = resp.get("MetricDataResults", [{}])[0].get("Values", [])
+            if not points:
+                return None
+            # For tail statistics we want the aggregate over the window,
+            # not just the most recent minute. Reducing by max here
+            # matches AWS Console's default "p95 over window" display.
+            return float(max(points))
+        except Exception:
+            logger.debug("CP6 p-stat %s failed", stat, exc_info=True)
+            return None
+
     def _audit_archive() -> Dict[str, Any]:
         try:
             item_count = ddb.scan(
@@ -321,13 +571,14 @@ def _build_aws_registry(ctx: PipelineJobContext):
             ).get("Count", 0)
         except Exception:
             item_count = 0
-        p50 = _cw_datapoints(
+        p50 = _predict_percentile("p50") or _cw_datapoints(
             "Duration", statistic="Average", namespace="AWS/Lambda",
             dimensions=[{"Name": "FunctionName", "Value": ctx.predict_lambda}],
-        )
+        ).get("value")
+        p95 = _predict_percentile("p95")
         return {
-            "p50_latency_ms": p50.get("value"),
-            "p95_latency_ms": None,  # get_metric_data with ExtendedStatistics (p95)
+            "p50_latency_ms": p50,
+            "p95_latency_ms": p95,
             "filter_pass_rate": None,
             "total_requests": int(item_count),
         }
@@ -600,21 +851,24 @@ def run_pipeline_reports(
     try:
         from core.agent.audit.reporter import AuditReporter
 
-        # Minimal regulatory_summary + reason_quality so the report is
-        # well-formed even when serving-side aggregators are not yet
-        # connected. Downstream operators extend this once real
-        # post-hoc data feeds land.
+        # Minimal regulatory_summary — downstream operators extend this
+        # once real post-hoc compliance feeds land (FRIA decisions,
+        # EU AI Act ART 26 approvals, etc.).
         reg_summary = {
             "domestic": {"status": "compliant", "checked_rules": 5},
             "eu_ai_act": {"status": "partial", "risk_category": "limited"},
             "fria": {"status": "pending"},
         }
-        reason_quality = {
-            "tier1": {"total_validated": 0, "avg_grounding": None,
-                      "avg_overall": None, "avg_readability": None},
-            "tier2": {},
-            "tier3": {},
-        }
+
+        # Tier-1 grounding / readability / overall quality pulled from
+        # the serving-side reason audit archive via DuckDB httpfs
+        # (CLAUDE.md §3.3 — DuckDB first for Parquet on S3). Uses the
+        # exact same GroundingValidator scripts/test_agents_local.py
+        # wires up, so the two paths stay byte-compatible.
+        reason_quality = _compute_audit_tier1(
+            aws_context.audit_archive_parquet_glob if aws_context else "",
+        )
+
         reporter = AuditReporter(consensus_arbiter=arbiter)
         audit_report = reporter.generate(
             focus_areas=[],
@@ -625,8 +879,10 @@ def run_pipeline_reports(
         audit_report.save(str(audit_path))
         audit_risk = audit_report.risk_level
         logger.info(
-            "Audit report: risk=%s, focus_areas=%d → %s",
-            audit_risk, len(audit_report.focus_areas), audit_path,
+            "Audit report: risk=%s, focus_areas=%d, tier1_validated=%d → %s",
+            audit_risk, len(audit_report.focus_areas),
+            reason_quality.get("tier1", {}).get("total_validated", 0),
+            audit_path,
         )
     except Exception:
         logger.exception("AuditReporter failed (non-fatal)")
