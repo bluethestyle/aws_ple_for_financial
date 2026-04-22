@@ -619,8 +619,8 @@ cold_start:
 # Data
 # ---------------------------------------------------------------------------
 data:
-  source: data/benchmark/benchmark_v2.parquet
-  s3_path: s3://YOUR_S3_BUCKET/data/santander/
+  source: s3://aiops-ple-financial/data/santander/santander_final.parquet
+  s3_path: s3://aiops-ple-financial/data/santander/
   id_col: customer_id
   backend: [cudf, duckdb, pandas]
   format: parquet

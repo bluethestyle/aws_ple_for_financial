@@ -52,12 +52,13 @@ from typing import Any
 import boto3
 import sagemaker
 from sagemaker.processing import (
+    FrameworkProcessor,
     ProcessingInput,
     ProcessingOutput,
     ScriptProcessor,
 )
 from sagemaker.pytorch.processing import PyTorchProcessor
-from sagemaker.sklearn.processing import SKLearnProcessor
+from sagemaker.sklearn.estimator import SKLearn
 
 from core.pipeline.config import PipelineConfig
 
@@ -339,19 +340,20 @@ class SageMakerProcessingJob:
         instance_count: int,
         volume_size_gb: int,
         max_runtime_seconds: int,
-    ) -> ScriptProcessor | SKLearnProcessor | PyTorchProcessor:
+    ) -> ScriptProcessor | FrameworkProcessor | PyTorchProcessor:
         """Build the appropriate processor.
 
         * ``image_uri`` provided  -> :class:`ScriptProcessor` (custom
           Docker fallback).
         * ``use_gpu=True``        -> :class:`PyTorchProcessor` with
           framework 2.1 / py310.
-        * ``use_gpu=False``       -> :class:`SKLearnProcessor` with
-          framework 1.2-1.
+        * ``use_gpu=False``       -> :class:`FrameworkProcessor` wrapping
+          the SKLearn 1.2-1 estimator (supports ``source_dir`` +
+          requirements.txt unlike the legacy ``SKLearnProcessor``).
 
         Returns
         -------
-        ScriptProcessor | SKLearnProcessor | PyTorchProcessor
+        ScriptProcessor | FrameworkProcessor | PyTorchProcessor
         """
         aws = self.config.aws
         common = dict(
@@ -387,11 +389,16 @@ class SageMakerProcessingJob:
                 **common,
             )
 
-        # CPU workloads: DuckDB, HMM, GMM, TDA generators
+        # CPU workloads: DuckDB, HMM, GMM, TDA generators.
+        # FrameworkProcessor(estimator_cls=SKLearn) is used instead of the
+        # legacy SKLearnProcessor because only the former supports the
+        # ``source_dir`` + auto requirements.txt contract used by the
+        # feature-engineering entrypoint.
         logger.info(
-            "Using AWS-managed SKLearn 1.2-1 image (CPU processing)"
+            "Using AWS-managed SKLearn 1.2-1 framework processor (CPU)"
         )
-        return SKLearnProcessor(
+        return FrameworkProcessor(
+            estimator_cls=SKLearn,
             framework_version="1.2-1",
             **common,
         )
