@@ -188,57 +188,110 @@ def _run_stepfunctions(config, args, s3_base, ts):
                 config.aws.region, config.aws.region)
 
 
+def _build_staging_dir() -> str:
+    """Build the shared SageMaker source staging dir once for every Job.
+
+    CLAUDE.md §1.5: ``source 패키지는 1회만 빌드하고 모든 Job에서 재사용한다``.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from package_source import build_staging  # type: ignore[import]
+    return build_staging()
+
+
 def _run_full(config, args, s3_base, ts, wait):
-    """Run the full pipeline: Feature Eng → Training → Distillation."""
-    from aws.sagemaker.processing import SageMakerProcessingJob
+    """Run the full pipeline: (Phase 0 →) Training → Distillation → Register.
+
+    Phase 0 cloud submission is TODO — see note below. For now, callers
+    must point ``--features-uri`` at a pre-built Phase 0 output on S3
+    (e.g. ``s3://aiops-ple-financial/data/phase0_v12/``).
+    """
     from aws.sagemaker.trainer import SageMakerTrainer
 
-    features_uri = args.features_uri or f"{s3_base}/features/{ts}/"
-
-    # Step 1: Feature Engineering (skip if features_uri provided)
-    if not args.features_uri:
-        logger.info("--- Step 1: Feature Engineering ---")
-        proc = SageMakerProcessingJob(config)
-        if args.dry_run:
-            logger.info("[DRY RUN] Processing Job: %s → %s", config.data.source, features_uri)
-        else:
-            proc.run(
-                script="entrypoint.py",
-                source_dir="containers/generators/base/",
-                input_s3=config.data.source,
-                output_s3=features_uri,
-                wait=wait,
-            )
+    # Step 0: Build source staging (reused by every Job in this run).
+    if args.dry_run:
+        staging = "<staging-dir>"
     else:
-        logger.info("--- Step 1: Skipped (features_uri provided) ---")
+        staging = _build_staging_dir()
+        logger.info("Staging dir: %s", staging)
 
-    # Step 2: PLE Training
+    # Phase 0 decision.
+    if args.features_uri:
+        logger.info(
+            "--- Step 1: Phase 0 skipped (features_uri=%s) ---",
+            args.features_uri,
+        )
+        # Trainer reads ``config.data.source`` for its TrainingInput, so
+        # override to the user-provided Phase 0 prefix.
+        config.data.source = args.features_uri
+        features_uri = args.features_uri
+    else:
+        # TODO(phase0-cloud): submit_pipeline does not yet produce a
+        # fresh Phase 0 output on SageMaker. An end-to-end Phase 0
+        # cloud path would need either
+        #   (a) a unifying entrypoint (``containers/phase0/entrypoint.py``)
+        #       running FeatureGroupPipeline.fit_transform inside a
+        #       single Training Job, or
+        #   (b) per-group Processing Jobs via
+        #       SageMakerProcessingJob.submit_feature_groups() *plus* a
+        #       downstream integration Job that concatenates the per-group
+        #       parquet outputs into the unified feature matrix + schema
+        #       the trainer expects (``feature_schema.json``,
+        #       ``feature_stats.json``, ``normalizer/``).
+        # Neither exists today. Until (a) lands, operators must supply
+        # ``--features-uri`` pointing at an existing Phase 0 output.
+        logger.error(
+            "Phase 0 cloud submission not yet supported. Re-run with "
+            "--features-uri s3://<bucket>/<phase0_prefix>/ pointing at an "
+            "existing Phase 0 output.",
+        )
+        if not args.dry_run:
+            sys.exit(2)
+        features_uri = f"{s3_base}/features/{ts}/"  # dry-run placeholder
+
+    # Step 2: Teacher training (Phase 1 warm-up + Phase 2 fine-tune).
     logger.info("--- Step 2: PLE Training (2-phase) ---")
     trainer = SageMakerTrainer(config)
     if args.dry_run:
-        logger.info("[DRY RUN] Training Job: Phase1 + Phase2")
-        logger.info("[DRY RUN] Instance: %s, Spot: %s", config.aws.instance_type, config.aws.use_spot)
-        model_uri = f"{s3_base}/models/{ts}/model.tar.gz"
+        logger.info(
+            "[DRY RUN] Training Job: Phase1 + Phase2 on %s", features_uri,
+        )
+        logger.info(
+            "[DRY RUN] Instance: %s, Spot: %s",
+            config.aws.instance_type, config.aws.use_spot,
+        )
+        model_uri = f"{s3_base}/models/phase2/{ts}/model.tar.gz"
     else:
-        phase1_result = trainer.launch_phase1(wait=wait)
-        logger.info("Phase 1 complete: %s", phase1_result.get("job_name"))
+        phase1 = trainer.launch_phase1(staging_dir=staging, wait=wait)
+        logger.info("Phase 1 complete: %s", phase1.get("job_name"))
+        phase1_uri = phase1.get("s3_model_uri", "")
+        if not phase1_uri:
+            logger.error(
+                "Phase 1 did not return an s3_model_uri; aborting.",
+            )
+            sys.exit(2)
+        phase2 = trainer.launch_phase2(
+            staging_dir=staging,
+            phase1_model_uri=phase1_uri,
+            wait=wait,
+        )
+        logger.info("Phase 2 complete: %s", phase2.get("job_name"))
+        model_uri = phase2.get("s3_model_uri", phase1_uri)
 
-        model_uri = phase1_result.get("s3_model_uri", "")
-        if wait and model_uri:
-            phase2_result = trainer.launch_phase2(model_uri, wait=wait)
-            model_uri = phase2_result.get("s3_model_uri", model_uri)
-            logger.info("Phase 2 complete: %s", phase2_result.get("job_name"))
-
-    # Step 3: Distillation
-    logger.info("--- Step 3: Knowledge Distillation (PLE → LGBM) ---")
+    # Step 3: Distillation (CPU instance, PyTorch estimator, 2 channels).
+    logger.info("--- Step 3: Knowledge Distillation (PLE → LGBM, CPU) ---")
     if args.dry_run:
         logger.info("[DRY RUN] Distillation Job: teacher=%s", model_uri)
-        logger.info("[DRY RUN] Output: %s/students/", s3_base)
+        student_uri = f"{s3_base}/students/{ts}/"
     else:
-        _submit_distillation_job(config, features_uri, model_uri, s3_base, ts, wait)
+        distill = trainer.launch_distillation(
+            staging_dir=staging,
+            teacher_uri=model_uri,
+            wait=wait,
+        )
+        student_uri = distill.get("output_path", f"{s3_base}/students/{ts}/")
+        logger.info("Distillation complete: %s", distill.get("job_name"))
 
-    # Step 4: Register Model (repackage into ModelRegistry)
-    student_uri = f"{s3_base}/students/{ts}/"
+    # Step 4: Register + PromotionGate + Audit + Tracker (local).
     version = f"v{ts.replace('-', '.').replace('T', '-')}"
     logger.info("--- Step 4: Register Model (version=%s) ---", version)
     if args.dry_run:
@@ -252,105 +305,66 @@ def _run_full(config, args, s3_base, ts, wait):
 
     logger.info("=" * 60)
     logger.info("Pipeline complete!")
-    logger.info("  Features: %s", features_uri)
-    logger.info("  Teacher (raw): %s", model_uri)
-    logger.info("  Students (raw): %s", student_uri)
-    logger.info("  Registry: %s/artifacts/%s/", s3_base, version)
+    logger.info("  Features:  %s", features_uri)
+    logger.info("  Teacher:   %s", model_uri)
+    logger.info("  Students:  %s", student_uri)
+    logger.info("  Registry:  %s/artifacts/%s/", s3_base, version)
     logger.info("=" * 60)
 
 
 def _run_training(config, args, s3_base, ts, wait):
-    """Training-only mode."""
+    """Training-only mode (Phase 1 + Phase 2)."""
     from aws.sagemaker.trainer import SageMakerTrainer
 
     if not args.features_uri:
         logger.error("--features-uri required for training mode")
         sys.exit(1)
-
-    trainer = SageMakerTrainer(config)
+    config.data.source = args.features_uri
 
     if args.dry_run:
-        logger.info("[DRY RUN] Training: Phase1 → Phase2")
+        logger.info("[DRY RUN] Training: Phase1 → Phase2 on %s", args.features_uri)
         return
 
-    phase1 = trainer.launch_phase1(wait=wait)
-    logger.info("Phase 1: %s", phase1.get("job_name"))
+    staging = _build_staging_dir()
+    trainer = SageMakerTrainer(config)
 
+    phase1 = trainer.launch_phase1(staging_dir=staging, wait=wait)
+    logger.info("Phase 1: %s", phase1.get("job_name"))
     if wait and phase1.get("s3_model_uri"):
-        phase2 = trainer.launch_phase2(phase1["s3_model_uri"], wait=wait)
+        phase2 = trainer.launch_phase2(
+            staging_dir=staging,
+            phase1_model_uri=phase1["s3_model_uri"],
+            wait=wait,
+        )
         logger.info("Phase 2: %s", phase2.get("job_name"))
         logger.info("Model: %s", phase2.get("s3_model_uri"))
 
 
 def _run_distill(config, args, s3_base, ts, wait):
-    """Distillation-only mode."""
+    """Distillation-only mode (CPU instance)."""
+    from aws.sagemaker.trainer import SageMakerTrainer
+
     if not args.teacher_uri:
         logger.error("--teacher-uri required for distill mode")
         sys.exit(1)
 
-    features_uri = args.features_uri or config.data.source
+    # Distillation reads features from config.data.source via TrainingInput.
+    if args.features_uri:
+        config.data.source = args.features_uri
 
     if args.dry_run:
         logger.info("[DRY RUN] Distillation: teacher=%s", args.teacher_uri)
         return
 
-    _submit_distillation_job(config, features_uri, args.teacher_uri, s3_base, ts, wait)
-
-
-def _submit_distillation_job(config, features_uri, model_uri, s3_base, ts, wait):
-    """Submit a SageMaker Processing Job for distillation."""
-    import boto3
-    import sagemaker
-    from sagemaker.processing import ProcessingInput, ProcessingOutput, ScriptProcessor
-
-    session = sagemaker.Session()
-    aws = config.aws
-    job_name = f"distill-{config.task_name}-{ts}"
-    output_uri = f"{s3_base}/students/{ts}/"
-
-    processor = ScriptProcessor(
-        role=aws.role_arn,
-        image_uri=sagemaker.image_uris.retrieve(
-            "sklearn", aws.region, version="1.2-1",
-        ),
-        instance_count=1,
-        instance_type="ml.m5.xlarge",
-        command=["python3"],
-        sagemaker_session=session,
-    )
-
-    processor.run(
-        code="scripts/run_distillation.py",
-        source_dir=".",
-        inputs=[
-            ProcessingInput(
-                source=model_uri,
-                destination="/opt/ml/processing/input/teacher",
-            ),
-            ProcessingInput(
-                source=features_uri,
-                destination="/opt/ml/processing/input/data",
-            ),
-        ],
-        outputs=[
-            ProcessingOutput(
-                source="/opt/ml/processing/output",
-                destination=output_uri,
-            ),
-        ],
-        arguments=[
-            "--teacher-checkpoint", "/opt/ml/processing/input/teacher/model.pth",
-            "--data-path", "/opt/ml/processing/input/data/",
-            "--output-dir", "/opt/ml/processing/output",
-            "--config", "configs/financial/pipeline.yaml",
-            "--soft-label-path", "/opt/ml/processing/output/soft_labels.parquet",
-        ],
-        job_name=job_name,
+    staging = _build_staging_dir()
+    trainer = SageMakerTrainer(config)
+    distill = trainer.launch_distillation(
+        staging_dir=staging,
+        teacher_uri=args.teacher_uri,
         wait=wait,
     )
-
-    logger.info("Distillation job submitted: %s", job_name)
-    logger.info("Output: %s", output_uri)
+    logger.info("Distillation: %s", distill.get("job_name"))
+    logger.info("Output: %s", distill.get("output_path"))
 
 
 def _audit_promotion(**kwargs) -> None:

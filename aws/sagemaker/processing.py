@@ -1,53 +1,43 @@
 """
-SageMaker Processing Job wrapper for feature engineering.
+SageMaker Processing Job launcher for Phase 0 feature engineering.
 
-Runs feature engineering scripts inside SageMaker Processing containers.
-Input/output channels are mapped to S3 URIs and the processing script
-receives them as local paths under ``/opt/ml/processing/``.
+Two public entry points:
 
-By default, uses **AWS-managed images** (SKLearn for CPU, PyTorch for GPU)
-with a ``requirements.txt`` that is pip-installed automatically when SageMaker
-unpacks the ``source_dir``.  A custom Docker image can still be used by
-passing ``image_uri`` explicitly (fallback mode).
+1. :meth:`SageMakerProcessingJob.submit_feature_groups` — the **production
+   path** used by ``scripts/submit_pipeline.py::_run_full``. It loops
+   over :class:`FeatureGroupConfig` objects and fires one Processing
+   Job per group, each configured with ``FEATURE_GROUP_NAME``,
+   ``FEATURE_GENERATOR``, and ``FEATURE_GENERATOR_PARAMS`` environment
+   variables. This matches the env-var contract in
+   ``containers/generators/base/entrypoint.py`` and mirrors the
+   long-standing behaviour of
+   :meth:`core.feature.group_pipeline.FeatureGroupPipeline._run_container_job`.
 
-Usage::
+2. :meth:`SageMakerProcessingJob.run` — a single-job helper left in place
+   for ad-hoc jobs (e.g. utilities). Uses a
+   :class:`FrameworkProcessor(estimator_cls=SKLearn)` so that
+   ``source_dir`` + ``requirements.txt`` auto-install works.
 
-    config = load_config("configs/my_problem.yaml")
-    proc = SageMakerProcessingJob(config)
+The verified submit patterns from
+``scripts/run_sagemaker_teacher.py`` and
+``scripts/run_sagemaker_distillation.py`` informed the design:
 
-    # CPU job (DuckDB, HMM, GMM, TDA generators)
-    result = proc.run(
-        script="entrypoint.py",
-        source_dir="containers/generators/base/",
-        input_s3="s3://bucket/raw/",
-        output_s3="s3://bucket/features/",
-    )
-
-    # GPU job (Graph, Mamba generators)
-    result = proc.run(
-        script="entrypoint.py",
-        source_dir="containers/generators/base/",
-        input_s3="s3://bucket/raw/",
-        output_s3="s3://bucket/features/",
-        use_gpu=True,
-        instance_type="ml.g4dn.xlarge",
-    )
-
-    # Custom Docker fallback
-    result = proc.run(
-        script="entrypoint.py",
-        image_uri="123456789.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
-        input_s3="s3://bucket/raw/",
-    )
+* Packaged ``source_dir`` built via
+  :func:`scripts.package_source.build_staging` — the staging tree
+  contains ``core/``, ``configs/``, ``containers/`` so every job has
+  the imports it needs.
+* Job names sanitised against SageMaker's regex.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterable
 
 import boto3
 import sagemaker
@@ -62,21 +52,17 @@ from sagemaker.sklearn.estimator import SKLearn
 
 from core.pipeline.config import PipelineConfig
 
+from .trainer import _sanitize_job_name  # shared regex-safe helper
+
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# SageMakerProcessingJob
+# ---------------------------------------------------------------------------
+
 class SageMakerProcessingJob:
     """Launch SageMaker Processing Jobs for feature engineering.
-
-    This wrapper handles:
-
-    * AWS-managed images (SKLearn for CPU, PyTorch for GPU) with
-      automatic ``requirements.txt`` installation via ``source_dir``
-    * Custom Docker image fallback via ``image_uri``
-    * S3 input/output channel management
-    * Instance type selection
-    * Wait/no-wait execution modes
-    * Job tagging for cost attribution
 
     Parameters
     ----------
@@ -96,6 +82,160 @@ class SageMakerProcessingJob:
         self._sm_client = boto3.client(
             "sagemaker", region_name=config.aws.region,
         )
+        self._run_stamp = time.strftime("%m%d-%H%M")
+
+    # ------------------------------------------------------------------
+    # Phase 0: submit one Processing Job per feature group
+    # ------------------------------------------------------------------
+
+    def submit_feature_groups(
+        self,
+        staging_dir: str,
+        input_s3: str,
+        output_s3_base: str,
+        groups: Iterable[dict[str, Any]] | None = None,
+        wait: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Launch one Processing Job per feature group.
+
+        Contract of ``containers/generators/base/entrypoint.py``
+        (unchanged):
+
+        * Input Parquet at ``/opt/ml/processing/input/data`` (single file
+          or directory).
+        * Output Parquet at ``/opt/ml/processing/output``.
+        * Environment variables ``FEATURE_GROUP_NAME``,
+          ``FEATURE_GROUP_TYPE``, ``FEATURE_GENERATOR``, and
+          ``FEATURE_GENERATOR_PARAMS`` (JSON) control which generator
+          runs.
+
+        Parameters
+        ----------
+        staging_dir : str
+            Local path produced by ``scripts.package_source.build_staging``.
+            Includes ``core/``, ``configs/``, ``containers/generators/``.
+        input_s3 : str
+            S3 URI to the ingestion output (hashed + indexed Parquet).
+        output_s3_base : str
+            S3 prefix under which each group's output is written:
+            ``{output_s3_base}/{group_name}/``.
+        groups : iterable of dict, optional
+            Sequence of feature-group dicts. When ``None``, falls back to
+            ``config.feature_groups`` (list form). Each dict must carry
+            ``name``, ``group_type``, and optionally ``generator`` and
+            ``generator_params``.
+        wait : bool
+            Block until every submitted job finishes. When False the
+            caller is responsible for polling each returned job name.
+
+        Returns
+        -------
+        list of dict
+            One entry per submitted job with
+            ``job_name``, ``group``, ``status``, ``output_s3``.
+        """
+        cfg = self.config
+        groups_iter = groups if groups is not None else cfg.feature_groups
+        if not groups_iter:
+            raise ValueError(
+                "No feature groups to submit — config.feature_groups is empty",
+            )
+
+        results: list[dict[str, Any]] = []
+        for group in groups_iter:
+            entry = self._submit_single_feature_group(
+                group=group,
+                staging_dir=staging_dir,
+                input_s3=input_s3,
+                output_s3_base=output_s3_base,
+                wait=wait,
+            )
+            results.append(entry)
+        return results
+
+    def _submit_single_feature_group(
+        self,
+        group: dict[str, Any],
+        staging_dir: str,
+        input_s3: str,
+        output_s3_base: str,
+        wait: bool,
+    ) -> dict[str, Any]:
+        cfg = self.config
+        aws = cfg.aws
+        name = group["name"]
+        group_type = group.get("group_type", "generate")
+        generator = group.get("generator", "")
+        generator_params = group.get("generator_params", {}) or {}
+
+        task_slug = _sanitize_job_name(cfg.task_name, max_len=16)
+        group_slug = _sanitize_job_name(name, max_len=20)
+        job_name = _sanitize_job_name(
+            f"{task_slug}-fg-{group_slug}-{self._run_stamp}",
+        )
+        output_s3 = f"{output_s3_base.rstrip('/')}/{name}/"
+
+        env = {
+            "FEATURE_GROUP_NAME": name,
+            "FEATURE_GROUP_TYPE": group_type,
+            "FEATURE_GENERATOR": generator,
+            "FEATURE_GENERATOR_PARAMS": json.dumps(generator_params),
+            "PYTHONPATH": "/opt/ml/code",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUNBUFFERED": "1",
+        }
+        processor = self._build_framework_processor(
+            use_gpu=bool(
+                (generator_params.get("prefer_gpu") is True)
+                or (generator in {"mamba", "graph"})
+            ),
+            instance_type=aws.cpu_instance_type,
+            environment=env,
+        )
+
+        inputs = [
+            ProcessingInput(
+                source=input_s3,
+                destination="/opt/ml/processing/input/data",
+                input_name="data",
+            ),
+        ]
+        outputs = [
+            ProcessingOutput(
+                source="/opt/ml/processing/output",
+                destination=output_s3,
+                output_name="features",
+            ),
+        ]
+
+        logger.info("Submitting Phase 0 feature group: %s", name)
+        logger.info("  Job name: %s", job_name)
+        logger.info("  Generator: %s (params=%s)", generator, generator_params)
+        logger.info("  Instance: %s", aws.cpu_instance_type)
+        logger.info("  Input:  %s", input_s3)
+        logger.info("  Output: %s", output_s3)
+
+        processor.run(
+            code="containers/generators/base/entrypoint.py",
+            source_dir=staging_dir,
+            inputs=inputs,
+            outputs=outputs,
+            arguments=[],
+            job_name=job_name,
+            wait=wait,
+            logs=wait,
+        )
+
+        return {
+            "job_name": job_name,
+            "group": name,
+            "status": "Submitted" if not wait else "Completed",
+            "output_s3": output_s3,
+        }
+
+    # ------------------------------------------------------------------
+    # Legacy one-shot helper (unchanged contract, now safe for source_dir)
+    # ------------------------------------------------------------------
 
     def run(
         self,
@@ -109,67 +249,12 @@ class SageMakerProcessingJob:
         max_runtime_seconds: int = 7200,
         extra_inputs: dict[str, str] | None = None,
         extra_args: list[str] | None = None,
+        environment: dict[str, str] | None = None,
         wait: bool = True,
         use_gpu: bool = False,
         image_uri: str | None = None,
     ) -> dict[str, Any]:
-        """Launch a processing job.
-
-        By default uses AWS-managed images with ``requirements.txt``
-        auto-installed from ``source_dir``.  When ``image_uri`` is
-        provided, falls back to a custom Docker container via
-        :class:`ScriptProcessor`.
-
-        Parameters
-        ----------
-        script : str
-            Processing script filename (relative to *source_dir* when
-            using managed images, or an absolute/relative path when
-            using a custom ``image_uri``).
-        source_dir : str, optional
-            Local directory containing the processing script **and**
-            ``requirements.txt``.  SageMaker uploads this directory to
-            S3 and pip-installs ``requirements.txt`` at job start.
-            Required when using managed images (``image_uri`` is None).
-            Typically ``"containers/generators/base/"`` for feature
-            generator jobs.
-        input_s3 : str, optional
-            S3 URI for the primary input data.  Defaults to
-            ``config.data.source``.
-        output_s3 : str, optional
-            S3 URI for output data.  Defaults to
-            ``s3://<bucket>/<task>/features/``.
-        instance_type : str
-            Processing instance type.  Defaults to ``ml.m5.2xlarge``
-            (CPU).  For GPU jobs use e.g. ``ml.g4dn.xlarge``.
-        instance_count : int
-            Number of processing instances.
-        volume_size_gb : int
-            EBS volume size in GB.
-        max_runtime_seconds : int
-            Maximum job runtime.
-        extra_inputs : dict[str, str], optional
-            Additional S3 input channels ``{name: s3_uri}``.
-        extra_args : list[str], optional
-            Extra CLI arguments for the processing script.
-        wait : bool
-            Block until the job completes.
-        use_gpu : bool
-            When *True* and ``image_uri`` is *None*, use a PyTorch
-            managed image (framework 2.1, py310) suitable for GPU
-            workloads (graph, mamba generators).  When *False* (default),
-            use an SKLearn managed image for CPU workloads (DuckDB, HMM,
-            GMM, TDA).
-        image_uri : str, optional
-            **Fallback**: explicit Docker image URI.  When provided,
-            ``source_dir`` is ignored and a plain :class:`ScriptProcessor`
-            is used (legacy custom-container behaviour).
-
-        Returns
-        -------
-        dict
-            ``job_name``, ``status``, ``output_s3``, ``instance_type``.
-        """
+        """Launch a single Processing Job (ad-hoc utility helper)."""
         cfg = self.config
         aws = cfg.aws
 
@@ -178,20 +263,21 @@ class SageMakerProcessingJob:
             f"s3://{aws.s3_bucket}/{cfg.task_name}/features/"
         )
 
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        job_name = f"{cfg.task_name}-processing-{ts}"
+        task_slug = _sanitize_job_name(cfg.task_name, max_len=20)
+        job_name = _sanitize_job_name(
+            f"{task_slug}-proc-{self._run_stamp}",
+        )
 
-        # -- Build processor --
-        processor = self._build_processor(
+        processor = self._build_framework_processor(
             image_uri=image_uri,
             use_gpu=use_gpu,
             instance_type=instance_type,
             instance_count=instance_count,
             volume_size_gb=volume_size_gb,
             max_runtime_seconds=max_runtime_seconds,
+            environment=environment,
         )
 
-        # -- Input channels --
         processing_inputs = [
             ProcessingInput(
                 source=input_s3,
@@ -209,7 +295,6 @@ class SageMakerProcessingJob:
                     )
                 )
 
-        # -- Output channels --
         processing_outputs = [
             ProcessingOutput(
                 source="/opt/ml/processing/output/features",
@@ -223,27 +308,19 @@ class SageMakerProcessingJob:
             ),
         ]
 
-        # -- Script arguments --
-        arguments = [
-            "--config", json.dumps(asdict(cfg)),
-            "--input-dir", "/opt/ml/processing/input/data",
-            "--output-dir", "/opt/ml/processing/output/features",
-            "--metadata-dir", "/opt/ml/processing/output/metadata",
-        ]
-        if extra_args:
-            arguments.extend(extra_args)
+        arguments = list(extra_args or [])
 
-        logger.info(f"Launching Processing Job: {job_name}")
-        logger.info(f"  Script: {script}")
+        logger.info("Launching Processing Job: %s", job_name)
+        logger.info("  Script: %s", script)
         if source_dir and image_uri is None:
-            logger.info(f"  Source dir: {source_dir}")
-        logger.info(f"  Instance: {instance_type} x {instance_count}")
-        logger.info(f"  GPU mode: {use_gpu}")
-        logger.info(f"  Image: {image_uri or 'AWS managed'}")
-        logger.info(f"  Input: {input_s3}")
-        logger.info(f"  Output: {output_s3}")
+            logger.info("  Source dir: %s", source_dir)
+        logger.info(
+            "  Instance: %s x %d", instance_type, instance_count,
+        )
+        logger.info("  GPU mode: %s", use_gpu)
+        logger.info("  Input:  %s", input_s3)
+        logger.info("  Output: %s", output_s3)
 
-        # -- Build run kwargs --
         run_kwargs: dict[str, Any] = dict(
             code=script,
             inputs=processing_inputs,
@@ -253,9 +330,6 @@ class SageMakerProcessingJob:
             wait=wait,
             logs=wait,
         )
-        # source_dir is supported by managed-image processors
-        # (SKLearnProcessor / PyTorchProcessor) but not by the plain
-        # ScriptProcessor fallback.
         if image_uri is None and source_dir is not None:
             run_kwargs["source_dir"] = source_dir
 
@@ -270,56 +344,8 @@ class SageMakerProcessingJob:
             desc = self._sm_client.describe_processing_job(
                 ProcessingJobName=job_name,
             )
-            result["status"] = desc["ProcessingJobStatus"]
+            result["status"] = desc.get("ProcessingJobStatus", "Unknown")
         return result
-
-    def run_duckdb_feature_engineering(
-        self,
-        sql_dir_s3: str | None = None,
-        wait: bool = True,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        """Convenience method for DuckDB-based feature engineering.
-
-        Wraps :meth:`run` with the standard DuckDB entry point script
-        and injects SQL template files as an extra input channel.
-        Uses CPU managed image (SKLearn) by default since DuckDB is
-        CPU-only.
-
-        Parameters
-        ----------
-        sql_dir_s3 : str, optional
-            S3 URI containing ``.sql`` templates for feature generation.
-        wait : bool
-            Block until the job completes.
-        **kwargs
-            Forwarded to :meth:`run`.
-
-        Returns
-        -------
-        dict
-            Same as :meth:`run`.
-        """
-        extra_inputs = kwargs.pop("extra_inputs", {}) or {}
-        if sql_dir_s3:
-            extra_inputs["sql_templates"] = sql_dir_s3
-
-        extra_args = kwargs.pop("extra_args", []) or []
-        extra_args.extend([
-            "--engine", "duckdb",
-            "--sql-dir", "/opt/ml/processing/input/sql_templates",
-        ])
-
-        # Default source_dir for managed-image mode
-        kwargs.setdefault("source_dir", "containers/generators/base/")
-
-        return self.run(
-            script="entrypoint.py",
-            extra_inputs=extra_inputs,
-            extra_args=extra_args,
-            wait=wait,
-            **kwargs,
-        )
 
     def describe_job(self, job_name: str) -> dict:
         """Return the SageMaker DescribeProcessingJob response."""
@@ -331,32 +357,30 @@ class SageMakerProcessingJob:
     # Internal
     # ------------------------------------------------------------------
 
-    def _build_processor(
+    def _build_framework_processor(
         self,
         *,
-        image_uri: str | None,
-        use_gpu: bool,
-        instance_type: str,
-        instance_count: int,
-        volume_size_gb: int,
-        max_runtime_seconds: int,
+        image_uri: str | None = None,
+        use_gpu: bool = False,
+        instance_type: str = "ml.m5.2xlarge",
+        instance_count: int = 1,
+        volume_size_gb: int = 100,
+        max_runtime_seconds: int = 7200,
+        environment: dict[str, str] | None = None,
     ) -> ScriptProcessor | FrameworkProcessor | PyTorchProcessor:
-        """Build the appropriate processor.
+        """Build a Processing instance of the appropriate type.
 
-        * ``image_uri`` provided  -> :class:`ScriptProcessor` (custom
-          Docker fallback).
-        * ``use_gpu=True``        -> :class:`PyTorchProcessor` with
-          framework 2.1 / py310.
-        * ``use_gpu=False``       -> :class:`FrameworkProcessor` wrapping
-          the SKLearn 1.2-1 estimator (supports ``source_dir`` +
-          requirements.txt unlike the legacy ``SKLearnProcessor``).
-
-        Returns
-        -------
-        ScriptProcessor | FrameworkProcessor | PyTorchProcessor
+        * ``image_uri`` provided → :class:`ScriptProcessor` (custom Docker
+          image, no ``source_dir`` auto-install).
+        * ``use_gpu=True`` → :class:`PyTorchProcessor` (framework 2.1 /
+          py310), supports ``source_dir``.
+        * otherwise → :class:`FrameworkProcessor` wrapping
+          :class:`SKLearn` 1.2-1, supports ``source_dir`` + auto
+          ``requirements.txt`` install unlike the legacy
+          ``SKLearnProcessor``.
         """
         aws = self.config.aws
-        common = dict(
+        common: dict[str, Any] = dict(
             role=aws.role_arn,
             instance_type=instance_type,
             instance_count=instance_count,
@@ -368,9 +392,10 @@ class SageMakerProcessingJob:
                 {"Key": "JobType", "Value": "processing"},
             ],
         )
+        if environment:
+            common["env"] = dict(environment)
 
         if image_uri is not None:
-            # Fallback: custom Docker container
             logger.info("Using custom Docker image: %s", image_uri)
             return ScriptProcessor(
                 image_uri=image_uri,
@@ -379,9 +404,8 @@ class SageMakerProcessingJob:
             )
 
         if use_gpu:
-            # GPU workloads: Graph, Mamba generators
             logger.info(
-                "Using AWS-managed PyTorch 2.1 image (GPU processing)"
+                "Using AWS-managed PyTorch 2.1 processor (GPU)",
             )
             return PyTorchProcessor(
                 framework_version="2.1",
@@ -389,13 +413,8 @@ class SageMakerProcessingJob:
                 **common,
             )
 
-        # CPU workloads: DuckDB, HMM, GMM, TDA generators.
-        # FrameworkProcessor(estimator_cls=SKLearn) is used instead of the
-        # legacy SKLearnProcessor because only the former supports the
-        # ``source_dir`` + auto requirements.txt contract used by the
-        # feature-engineering entrypoint.
         logger.info(
-            "Using AWS-managed SKLearn 1.2-1 framework processor (CPU)"
+            "Using AWS-managed SKLearn 1.2-1 framework processor (CPU)",
         )
         return FrameworkProcessor(
             estimator_cls=SKLearn,
