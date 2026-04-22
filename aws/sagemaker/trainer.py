@@ -184,6 +184,121 @@ class SageMakerTrainer:
             wait=wait,
         )
 
+    def launch_phase0(
+        self,
+        staging_dir: str,
+        raw_s3_uri: str,
+        wait: bool = True,
+        instance_type: str = DEFAULT_DISTILL_INSTANCE,
+        max_run_s: int = 14400,      # 4h cap — HMM/TDA/GMM are CPU-heavy
+        max_wait_s: int = 18000,     # max_run + 1h (CLAUDE.md §1.5)
+    ) -> dict[str, Any]:
+        """Phase 0 feature engineering on SageMaker.
+
+        Runs the 9-stage :class:`core.pipeline.runner.PipelineRunner`
+        inside ``containers/phase0/entrypoint.py`` on a CPU instance
+        (HMM / GMM / TDA generators are CPU-bound). The trained-ready
+        output parquet + schemas are packaged into ``model.tar.gz`` and
+        mirrored to ``/opt/ml/output/data`` so downstream Phase 1
+        training can read either path.
+
+        Parameters
+        ----------
+        staging_dir : str
+            Source staging built by
+            :func:`scripts.package_source.build_staging`. Must include
+            ``containers/phase0``, ``core/``, ``adapters/``, and the
+            dataset YAMLs (handled by the default
+            ``_INCLUDE_DIRS``).
+        raw_s3_uri : str
+            S3 URI (prefix or file) to the ingestion parquet that
+            Phase 0 should consume.
+        wait : bool
+            Block until the job finishes. ``False`` returns as soon as
+            SageMaker accepts the submission.
+        instance_type : str
+            Defaults to ``ml.m5.2xlarge`` (same family as distillation).
+        """
+        cfg = self.config
+        aws = cfg.aws
+        s3_base = f"s3://{aws.s3_bucket}/{cfg.task_name}"
+        output_uri = f"{s3_base}/phase0/{self._run_stamp}"
+
+        task_slug = _sanitize_job_name(cfg.task_name, max_len=16)
+        job_name = _sanitize_job_name(
+            f"{task_slug}-phase0-{self._run_stamp}",
+        )
+
+        hyperparams: dict[str, str] = {"config": CONTAINER_CONFIG}
+        dataset_yaml = _dataset_config_path(cfg)
+        if dataset_yaml:
+            hyperparams["dataset_config"] = dataset_yaml
+
+        logger.info("Launching SageMaker Phase 0 Job: %s", job_name)
+        logger.info("  Instance: %s (Spot=%s)", instance_type, aws.use_spot)
+        logger.info("  Raw input: %s", raw_s3_uri)
+        logger.info("  Output: %s", output_uri)
+
+        estimator = PyTorch(
+            entry_point="containers/phase0/entrypoint.py",
+            source_dir=staging_dir,
+            role=aws.role_arn,
+            instance_type=instance_type,
+            instance_count=1,
+            framework_version="2.1",
+            py_version="py310",
+            hyperparameters=hyperparams,
+            use_spot_instances=aws.use_spot,
+            max_run=max_run_s,
+            max_wait=max_wait_s if aws.use_spot else None,
+            output_path=output_uri,
+            disable_profiler=True,
+            environment={
+                "PYTHONPATH": "/opt/ml/code",
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONUNBUFFERED": "1",
+            },
+            sagemaker_session=self.session,
+            base_job_name=_sanitize_job_name(f"{task_slug}-phase0"),
+            tags=[
+                {"Key": "Project", "Value": cfg.task_name},
+                {"Key": "Phase", "Value": "phase0"},
+            ],
+        )
+
+        estimator.fit(
+            inputs={
+                "raw": TrainingInput(
+                    raw_s3_uri, content_type="application/x-parquet",
+                ),
+            },
+            job_name=job_name,
+            wait=False,
+            logs="None",
+        )
+        logger.info("Submitted: %s (wait=%s)", job_name, wait)
+
+        result: dict[str, Any] = {
+            "job_name": job_name,
+            "phase": "phase0",
+            "instance_type": instance_type,
+            "spot": aws.use_spot,
+            "output_path": output_uri,
+        }
+        if wait:
+            attached = self.attach_running_job(job_name)
+            result.update(
+                status=attached["status"],
+                s3_model_uri=attached["s3_model_uri"],
+                billable_seconds=attached["billable_seconds"],
+            )
+            if attached["status"] != "Completed":
+                raise RuntimeError(
+                    f"Phase 0 job {job_name} ended with status "
+                    f"{attached['status']} — aborting pipeline.",
+                )
+        return result
+
     def launch_phase1(
         self, staging_dir: str, wait: bool = True,
     ) -> dict[str, Any]:

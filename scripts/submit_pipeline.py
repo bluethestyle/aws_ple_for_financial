@@ -105,6 +105,25 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--raw-data-uri", type=str, default="",
+        help=(
+            "S3 URI pointing at the ingestion parquet that Phase 0 should "
+            "consume (e.g. s3://aiops-ple-financial/data/santander/"
+            "santander_final.parquet). Required when neither --features-uri "
+            "nor --attach-phase0-job is set — submit_pipeline will launch a "
+            "Phase 0 SageMaker Training Job to produce the training-ready "
+            "features."
+        ),
+    )
+    parser.add_argument(
+        "--attach-phase0-job", type=str, default="",
+        help=(
+            "Attach to an already-running Phase 0 Training Job by name. "
+            "Lets the orchestrator skip feature engineering and jump "
+            "straight to Phase 1 with the job's output prefix."
+        ),
+    )
+    parser.add_argument(
         "--attach-distill-output", type=str, default="",
         help=(
             "Skip Distillation submission and use the given S3 prefix "
@@ -251,43 +270,67 @@ def _run_full(config, args, s3_base, ts, wait):
         staging = _build_staging_dir()
         logger.info("Staging dir: %s", staging)
 
-    # Phase 0 decision.
+    # Phase 0 decision. Precedence:
+    #   1. --features-uri: re-use an existing Phase 0 output (cheapest).
+    #   2. --attach-phase0-job: attach to a running Phase 0 Training Job.
+    #   3. --raw-data-uri: submit a fresh Phase 0 Training Job
+    #      (containers/phase0/entrypoint.py).
+    trainer = SageMakerTrainer(config)
     if args.features_uri:
         logger.info(
             "--- Step 1: Phase 0 skipped (features_uri=%s) ---",
             args.features_uri,
         )
-        # Trainer reads ``config.data.source`` for its TrainingInput, so
-        # override to the user-provided Phase 0 prefix.
         config.data.source = args.features_uri
         features_uri = args.features_uri
-    else:
-        # TODO(phase0-cloud): submit_pipeline does not yet produce a
-        # fresh Phase 0 output on SageMaker. An end-to-end Phase 0
-        # cloud path would need either
-        #   (a) a unifying entrypoint (``containers/phase0/entrypoint.py``)
-        #       running FeatureGroupPipeline.fit_transform inside a
-        #       single Training Job, or
-        #   (b) per-group Processing Jobs via
-        #       SageMakerProcessingJob.submit_feature_groups() *plus* a
-        #       downstream integration Job that concatenates the per-group
-        #       parquet outputs into the unified feature matrix + schema
-        #       the trainer expects (``feature_schema.json``,
-        #       ``feature_stats.json``, ``normalizer/``).
-        # Neither exists today. Until (a) lands, operators must supply
-        # ``--features-uri`` pointing at an existing Phase 0 output.
-        logger.error(
-            "Phase 0 cloud submission not yet supported. Re-run with "
-            "--features-uri s3://<bucket>/<phase0_prefix>/ pointing at an "
-            "existing Phase 0 output.",
+    elif args.dry_run:
+        logger.info(
+            "--- Step 1: Phase 0 (dry-run placeholder on %s) ---",
+            args.raw_data_uri or config.data.source,
         )
-        if not args.dry_run:
+        features_uri = f"{s3_base}/features/{ts}/"
+    else:
+        if args.attach_phase0_job:
+            logger.info(
+                "--- Step 1: Attaching to Phase 0 job: %s ---",
+                args.attach_phase0_job,
+            )
+            phase0 = trainer.attach_running_job(args.attach_phase0_job)
+            if phase0.get("status") != "Completed":
+                logger.error(
+                    "Phase 0 %s ended with status %s; aborting.",
+                    args.attach_phase0_job, phase0.get("status"),
+                )
+                sys.exit(2)
+        else:
+            raw_uri = args.raw_data_uri or (
+                config.data.source
+                if config.data.source.startswith("s3://") else ""
+            )
+            if not raw_uri:
+                logger.error(
+                    "Phase 0 needs a raw input. Pass --raw-data-uri s3://... "
+                    "or --features-uri (to skip Phase 0) or --attach-phase0-job.",
+                )
+                sys.exit(2)
+            logger.info("--- Step 1: Phase 0 Feature Engineering (cloud) ---")
+            phase0 = trainer.launch_phase0(
+                staging_dir=staging,
+                raw_s3_uri=raw_uri,
+                wait=wait,
+            )
+            logger.info("Phase 0 complete: %s", phase0.get("job_name"))
+        # Trainer reads ``config.data.source`` for its TrainingInput —
+        # point it at the Phase 0 output prefix (the training channel
+        # will pick up the parquet + schemas produced by the runner).
+        features_uri = phase0.get("output_path", "")
+        if not features_uri:
+            logger.error("Phase 0 did not return output_path; aborting.")
             sys.exit(2)
-        features_uri = f"{s3_base}/features/{ts}/"  # dry-run placeholder
+        config.data.source = features_uri.rstrip("/") + "/"
 
     # Step 2: Teacher training (Phase 1 warm-up + Phase 2 fine-tune).
     logger.info("--- Step 2: PLE Training (2-phase) ---")
-    trainer = SageMakerTrainer(config)
     if args.dry_run:
         logger.info(
             "[DRY RUN] Training Job: Phase1 + Phase2 on %s", features_uri,

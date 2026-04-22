@@ -44,6 +44,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # continue to work while the new split-config pattern is adopted.
 _INCLUDE_DIRS = [
     "core",
+    "adapters",                  # Phase 0 adapter registrations (e.g. santander)
+    "containers/phase0",         # Phase 0 cloud entry point (9-stage runner)
     "containers/training",
     "containers/evaluation",
     "containers/distillation",   # PLE -> LGBM distillation entry point
