@@ -75,6 +75,9 @@ htmlcov/
 .ablation_state.json
 outreach/
 
+# Personal resume / CV / LinkedIn exports (local only)
+resume/
+
 # Typst compile / auxiliary artifacts
 *.pdf.bak
 typst-package/
