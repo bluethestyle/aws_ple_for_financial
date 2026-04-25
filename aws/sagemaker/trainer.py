@@ -189,7 +189,7 @@ class SageMakerTrainer:
         staging_dir: str,
         raw_s3_uri: str,
         wait: bool = True,
-        instance_type: str = DEFAULT_DISTILL_INSTANCE,
+        instance_type: Optional[str] = None,
         max_run_s: int = 14400,      # 4h cap — HMM/TDA/GMM are CPU-heavy
         max_wait_s: int = 18000,     # max_run + 1h (CLAUDE.md §1.5)
     ) -> dict[str, Any]:
@@ -223,6 +223,17 @@ class SageMakerTrainer:
         aws = cfg.aws
         s3_base = f"s3://{aws.s3_bucket}/{cfg.task_name}"
         output_uri = f"{s3_base}/phase0/{self._run_stamp}"
+
+        # Resolve instance type. Caller override > yaml aws.cpu_instance_type
+        # > module default. Phase 0 is CPU-bound and memory-heavy
+        # (1M rows × wide LIST columns × multiple generators), so the yaml
+        # is the right knob — operators bumping memory must not have to
+        # patch trainer.py.
+        if instance_type is None:
+            instance_type = (
+                getattr(aws, "cpu_instance_type", None)
+                or DEFAULT_DISTILL_INSTANCE
+            )
 
         task_slug = _sanitize_job_name(cfg.task_name, max_len=16)
         job_name = _sanitize_job_name(

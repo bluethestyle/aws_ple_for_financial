@@ -1113,7 +1113,12 @@ aws:
   region: ap-northeast-2
   s3_bucket: aiops-ple-financial
   instance_type: ml.g4dn.xlarge
-  cpu_instance_type: ml.m5.2xlarge  # 32GB RAM for Phase 0 (processing jobs)
+  # Phase 0 is CPU + memory heavy: 1M rows × wide LIST columns
+  # (txn_amount_seq up to 200, txn_mcc_seq, etc.) × 13 generators
+  # (incl. K=200 lag flatten -> 800D, rolling, multihot). 32GB OOMs;
+  # 64GB matches the local 64GB workstation that previously produced
+  # outputs/phase0_v12 successfully.
+  cpu_instance_type: ml.m5.4xlarge  # 64GB RAM for Phase 0
   use_spot: true
   max_run_seconds: 43200
   role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole
