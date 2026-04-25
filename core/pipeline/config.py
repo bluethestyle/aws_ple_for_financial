@@ -419,11 +419,32 @@ def load_config(path: Union[str, Path], dataset_path: Optional[Union[str, Path]]
     # auto-discover configs/<adapter>/feature_groups.yaml next to the
     # pipeline YAML (or next to the dataset YAML when using split configs).
     if not feature_groups_raw:
-        fg_path_str = raw.get("feature_groups_path", "")
+        # Accept both ``feature_groups_path`` (canonical) and
+        # ``feature_groups_file`` (the key the santander dataset YAML
+        # has been using). Without this alias the dataset's explicit
+        # pointer at ``configs/santander/feature_groups.yaml`` was
+        # silently ignored and auto-discovery served the legacy
+        # top-level ``configs/feature_groups.yaml`` instead.
+        fg_path_str = (
+            raw.get("feature_groups_path", "")
+            or raw.get("feature_groups_file", "")
+        )
         if fg_path_str:
             fg_path = Path(fg_path_str)
             if not fg_path.is_absolute():
-                fg_path = Path(path).parent / fg_path
+                # Resolve against the pipeline YAML's directory; if that
+                # resolution misses, fall back to the project root so
+                # values like "configs/santander/feature_groups.yaml"
+                # work regardless of which dir the pipeline YAML lives in.
+                resolved = Path(path).parent / fg_path
+                if not resolved.exists() and not str(fg_path).startswith("configs"):
+                    resolved = fg_path
+                elif not resolved.exists():
+                    project_root = Path(path).resolve().parents[1]
+                    candidate = project_root / fg_path
+                    if candidate.exists():
+                        resolved = candidate
+                fg_path = resolved
         else:
             # Auto-discover sibling feature_groups.yaml.
             # When using split configs, prefer the dataset YAML's directory
