@@ -1297,11 +1297,18 @@ class PipelineRunner:
         try:
             from .label_deriver import LabelDeriver, LabelConfig
 
-            # Build LabelConfig list from pipeline config
+            # Build LabelConfig list from pipeline config. Type-specific
+            # parameters (``indices`` for list_intersect, ``mapping`` for
+            # string_map, ``weights`` for weighted_sum, etc.) live on
+            # ``LabelSpec.extra`` because they are not part of the
+            # canonical dataclass schema; we unpack them so the LabelConfig
+            # ``**kwargs`` collector sees them as first-class config keys.
             label_configs_raw = self.config.labels
             if label_configs_raw:
-                label_configs = [
-                    LabelConfig(
+                label_configs = []
+                for lc in label_configs_raw:
+                    extras = dict(getattr(lc, "extra", {}) or {})
+                    label_configs.append(LabelConfig(
                         name=lc.name or lc.input_col,
                         source=lc.source,
                         type=lc.type,
@@ -1309,9 +1316,8 @@ class PipelineRunner:
                         method=lc.method,
                         input_col=lc.input_col,
                         num_classes=lc.num_classes,
-                    )
-                    for lc in label_configs_raw
-                ]
+                        **extras,
+                    ))
                 deriver = LabelDeriver()
                 labels = deriver.derive(df, label_configs)
                 logger.info("[Stage 4] Labels derived via LabelDeriver: %d cols",

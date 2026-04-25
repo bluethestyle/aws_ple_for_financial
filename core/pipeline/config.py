@@ -143,6 +143,14 @@ class LabelSpec:
     input_col: str = ""
     type: str = "binary"    # "binary" | "multiclass" | "regression"
     num_classes: int = 2
+    # Type-specific config (indices for list_intersect, mapping for
+    # string_map, mode/top_k for sequence_last, weights for weighted_sum,
+    # threshold/operator for threshold, etc). Stored verbatim so the
+    # downstream :class:`LabelDeriver` receives whatever the YAML author
+    # supplied. Without this field every non-canonical key gets dropped
+    # at dataclass-parse time (see ``load_config``) and label derivation
+    # blows up with KeyError mid-pipeline.
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -343,15 +351,28 @@ def load_config(path: Union[str, Path], dataset_path: Optional[Union[str, Path]]
     # labels: accept both list-of-dicts and dict-of-dicts (name→spec) formats
     _labels_raw = raw.get("labels", [])
     _label_fields = LabelSpec.__dataclass_fields__.keys()
+
+    def _build_label_spec(spec: Dict[str, Any], name: str = "") -> LabelSpec:
+        """Split spec dict into canonical LabelSpec fields + extras."""
+        canonical = {k: v for k, v in spec.items()
+                     if k in _label_fields and k != "extra"}
+        extras = {k: v for k, v in spec.items()
+                  if k not in _label_fields}
+        if name and "name" not in canonical:
+            canonical["name"] = name
+        if "extra" in spec and isinstance(spec["extra"], dict):
+            extras = {**spec["extra"], **extras}
+        return LabelSpec(extra=extras, **canonical)
+
     if isinstance(_labels_raw, dict):
         labels = [
-            LabelSpec(name=name, **{k: v for k, v in spec.items() if k in _label_fields})
+            _build_label_spec(spec, name=name)
             for name, spec in _labels_raw.items()
             if isinstance(spec, dict)
         ]
     elif isinstance(_labels_raw, list):
         labels = [
-            LabelSpec(**{k: v for k, v in lb.items() if k in _label_fields})
+            _build_label_spec(lb)
             for lb in _labels_raw
             if isinstance(lb, dict)
         ]
