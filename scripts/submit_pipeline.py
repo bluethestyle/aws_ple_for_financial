@@ -141,6 +141,18 @@ def parse_args():
             "or emergency rollback."
         ),
     )
+    parser.add_argument(
+        "--phase0-only", action="store_true",
+        help=(
+            "Stop after Phase 0 completes. Skips PLE training, distillation, "
+            "and registration so the operator can verify the new "
+            "feature_schema / group_ranges / expert_routing before paying for "
+            "GPU training. Combine with --raw-data-uri to launch a fresh "
+            "Phase 0 job, or --attach-phase0-job to attach to a running one. "
+            "Per CLAUDE.md §1.4 (pre-flight check) and the GPU-on-SageMaker "
+            "policy: stage Phase 0 first, validate, then submit training."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -328,6 +340,20 @@ def _run_full(config, args, s3_base, ts, wait):
             logger.error("Phase 0 did not return output_path; aborting.")
             sys.exit(2)
         config.data.source = features_uri.rstrip("/") + "/"
+
+    # Early-return gate: --phase0-only stops the pipeline after Phase 0
+    # so the operator can verify feature_schema / group_ranges /
+    # expert_routing before paying for downstream GPU training. The
+    # features URI is the contract for the next invocation
+    # (``--features-uri <returned_uri>``).
+    if args.phase0_only:
+        logger.info("=" * 60)
+        logger.info("--phase0-only: stopping after Phase 0")
+        logger.info("  Features URI: %s", features_uri)
+        logger.info("  Next: download artifacts, verify feature_schema.json,")
+        logger.info("        then resubmit with --features-uri %s", features_uri)
+        logger.info("=" * 60)
+        return
 
     # Step 2: Teacher training (Phase 1 warm-up + Phase 2 fine-tune).
     logger.info("--- Step 2: PLE Training (2-phase) ---")
