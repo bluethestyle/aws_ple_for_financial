@@ -222,6 +222,13 @@ class PipelineRunner:
 
     def __init__(self, config: PipelineConfig) -> None:
         self.config = config
+        # Adapter-supplied DuckDB context (CLAUDE.md §3.3). Set by Stage
+        # 1 when the adapter returns a :class:`DuckDBAdapterContext`,
+        # left ``None`` for legacy dict-returning adapters. SQL-native
+        # generators (lag/rolling/multihot) read ``self._adapter_ctx``
+        # in Stage 3 to query the source table directly without forcing
+        # a 1M-row pandas materialisation of the LIST columns.
+        self._adapter_ctx = None
 
     # ==================================================================
     # Phase 0: produce training-ready artifacts
@@ -277,7 +284,23 @@ class PipelineRunner:
 
         adapter = self._build_adapter()
         raw_data = adapter.load_raw()
-        df = raw_data["main"]
+
+        # CLAUDE.md §3.3 path. Modern adapters return a
+        # ``DuckDBAdapterContext`` with the raw data as a DuckDB table
+        # on a shared connection — no pandas materialisation. We pull
+        # only the SCALAR (and short-LIST) columns into pandas so the
+        # legacy stage 2-9 code path keeps working, and leave the long
+        # LIST columns (txn_amount_seq, txn_mcc_seq, ...) inside DuckDB
+        # for SQL-native generators to consume in Stage 3. This blocks
+        # the 10-15 GB pandas explode that OOM'd ml.m5.2xlarge /
+        # ml.m5.4xlarge SageMaker Phase-0 attempts (1-6).
+        from .adapter import DuckDBAdapterContext as _Ctx
+        if isinstance(raw_data, _Ctx):
+            self._adapter_ctx = raw_data
+            df = self._scalar_df_from_ctx(raw_data)
+        else:
+            self._adapter_ctx = None
+            df = raw_data["main"]
 
         results["stage1_load"] = {
             "rows": len(df),
@@ -285,12 +308,20 @@ class PipelineRunner:
             "adapter_metadata": adapter.metadata.__dict__
             if hasattr(adapter.metadata, "__dict__")
             else str(adapter.metadata),
+            "duckdb_native": self._adapter_ctx is not None,
+            "list_cols_in_duckdb": (
+                self._adapter_ctx.metadata.extra.get("list_cols_lazy", [])
+                if self._adapter_ctx is not None
+                and getattr(self._adapter_ctx.metadata, "extra", None)
+                else []
+            ),
             "time_seconds": round(time.time() - stage_start, 2),
         }
         state.mark_complete("stage1_load", {"rows": len(df), "cols": len(df.columns)})
         logger.info(
-            "[Stage 1] Loaded %d rows x %d cols in %.2fs",
+            "[Stage 1] Loaded %d rows x %d cols in %.2fs (duckdb_native=%s)",
             len(df), len(df.columns), time.time() - stage_start,
+            self._adapter_ctx is not None,
         )
 
         # ==============================================================
@@ -1053,6 +1084,17 @@ class PipelineRunner:
         with open(manifest_path, "w") as f:
             json.dump(results, f, indent=2, default=str)
 
+        # Close the adapter-supplied DuckDB connection now that all 9
+        # stages have read from it. This was held open across the whole
+        # pipeline so SQL-native generators in Stage 3 could query the
+        # LIST columns lazily.
+        if self._adapter_ctx is not None:
+            try:
+                self._adapter_ctx.con.close()
+            except Exception as exc:
+                logger.debug("adapter ctx close skipped: %s", exc)
+            self._adapter_ctx = None
+
         logger.info("=" * 60)
         logger.info(
             "[PIPELINE] Full pipeline complete in %.1fs. Artifacts: %s",
@@ -1140,8 +1182,12 @@ class PipelineRunner:
         raw_cfg = self._config_to_dict()
         fit_subsample = raw_cfg.get("preprocessing", {}).get("fit_subsample_limit", 50000)
         fit_df = df.sample(min(fit_subsample, len(df)), random_state=42) if len(df) > fit_subsample else df
-        pipeline.fit(fit_df)
-        df_features = pipeline.transform(df)
+        # CLAUDE.md §3.3: forward the adapter's DuckDB context so SQL-native
+        # generators (lag/rolling/multihot) read the full LIST columns from
+        # the lazy DuckDB table rather than re-registering the LIST-stripped
+        # pandas frame.
+        pipeline.fit(fit_df, adapter_ctx=self._adapter_ctx)
+        df_features = pipeline.transform(df, adapter_ctx=self._adapter_ctx)
 
         logger.info(
             "[Stage 3] FeatureGroupPipeline '%s': %d groups, total_dim=%d, "
@@ -1212,8 +1258,12 @@ class PipelineRunner:
         raw_cfg = self._config_to_dict()
         fit_subsample = raw_cfg.get("preprocessing", {}).get("fit_subsample_limit", 50000)
         fit_df = df.sample(min(fit_subsample, len(df)), random_state=42) if len(df) > fit_subsample else df
-        pipeline.fit(fit_df)
-        df_features = pipeline.transform(df)
+        # CLAUDE.md §3.3: forward the adapter's DuckDB context so SQL-native
+        # generators (lag/rolling/multihot) read the full LIST columns from
+        # the lazy DuckDB table rather than re-registering the LIST-stripped
+        # pandas frame.
+        pipeline.fit(fit_df, adapter_ctx=self._adapter_ctx)
+        df_features = pipeline.transform(df, adapter_ctx=self._adapter_ctx)
 
         logger.info(
             "[Stage 3] Auto-built FeatureGroupPipeline: %d groups, total_dim=%d, "
@@ -1532,6 +1582,71 @@ class PipelineRunner:
     # ==================================================================
     # Stage 1.5: Temporal preparation (sequence truncation)
     # ==================================================================
+
+    def _scalar_df_from_ctx(self, ctx) -> "pd.DataFrame":
+        """Materialise scalar + short-LIST columns from the DuckDB
+        adapter context into a pandas DataFrame, leaving the heavy LIST
+        columns lazy in DuckDB.
+
+        Heuristic: any LIST column with sample-mean length > ``LAZY_LIST_THRESHOLD``
+        (default 50) stays in DuckDB. Below the threshold the column is
+        small enough to materialise without OOM (e.g. nba_label averages
+        0.87 elements; seq_saving has 17 monthly snapshots).
+
+        Records the lazy column list onto ``ctx.metadata.extra`` so
+        downstream consumers and stage1 metadata can introspect.
+        """
+        LAZY_LIST_THRESHOLD = 50
+        SAMPLE_ROWS = 200
+
+        con = ctx.con
+        table = ctx.table_name
+        # Identify LIST-typed columns via DuckDB's column metadata. The
+        # ``DESCRIBE`` form is robust whether ``table`` is a real table
+        # or a VIEW (which is what the §3.3-friendly SantanderAdapter
+        # registers to keep the 1.4 GB parquet from being copied).
+        cols_info = con.execute(
+            f"SELECT column_name, column_type FROM (DESCRIBE {table})"
+        ).fetchall()
+        list_cols = [
+            c for c, t in cols_info
+            if t and ("[]" in str(t) or "LIST" in str(t).upper())
+        ]
+
+        # 2. Measure sample-mean length per LIST column.
+        lazy_cols = []
+        for col in list_cols:
+            try:
+                row = con.execute(
+                    f"SELECT AVG(len({col})) FROM {table} USING SAMPLE {SAMPLE_ROWS} ROWS"
+                ).fetchone()
+                avg_len = float(row[0]) if row and row[0] is not None else 0.0
+                if avg_len > LAZY_LIST_THRESHOLD:
+                    lazy_cols.append(col)
+            except Exception as exc:
+                logger.debug("len-sampling skipped for %s: %s", col, exc)
+
+        # 3. SELECT all columns except the lazy ones — these stay in DuckDB
+        all_cols = [r[0] for r in cols_info]
+        keep_cols = [c for c in all_cols if c not in set(lazy_cols)]
+        select_sql = ", ".join(f'"{c}"' for c in keep_cols)
+        df = con.execute(f"SELECT {select_sql} FROM {table}").df()
+
+        # 4. Record on context metadata for diagnostics
+        meta_extra = getattr(ctx.metadata, "extra", None) or {}
+        meta_extra["list_cols_lazy"] = lazy_cols
+        meta_extra["list_cols_materialised"] = [c for c in list_cols if c not in lazy_cols]
+        try:
+            ctx.metadata.extra = meta_extra
+        except Exception:
+            pass
+
+        logger.info(
+            "[Stage 1] DuckDB-native: %d LIST columns kept lazy in DuckDB "
+            "(%s), %d short-LIST + scalar columns materialised to pandas (%d rows x %d cols)",
+            len(lazy_cols), lazy_cols, len(keep_cols), len(df), len(df.columns),
+        )
+        return df
 
     def _prepare_temporal(self, df: "pd.DataFrame") -> "pd.DataFrame":
         """Truncate sequences and recompute product columns to prevent leakage.

@@ -459,8 +459,19 @@ class SantanderAdapter(DataAdapter):
     (demographics, product holdings, synthetic transaction features, etc.).
     """
 
-    def load_raw(self) -> Dict[str, pd.DataFrame]:
-        """Load raw parquet. Already user-level, no preprocessing needed."""
+    def load_raw(self) -> "DuckDBAdapterContext":
+        """Load raw parquet directly into a DuckDB table — no pandas
+        materialisation (CLAUDE.md §3.3).
+
+        The 1.4 GB Santander parquet contains LIST columns (txn_amount_seq,
+        txn_mcc_seq, ...) that explode to 10-15 GB when forced into a
+        pandas DataFrame, which is the OOM that bricked Phase 0 on
+        ml.m5.2xlarge / ml.m5.4xlarge. Returning a
+        :class:`DuckDBAdapterContext` keeps the data columnar; downstream
+        stages run as SQL on the same connection.
+        """
+        from core.pipeline.adapter import DuckDBAdapterContext
+
         backend = self._select_backend()
         source = self.config.get("data", {}).get(
             "source", "data/synthetic/santander_final.parquet",
@@ -469,52 +480,83 @@ class SantanderAdapter(DataAdapter):
         if not self._id_col:
             raise ValueError("data.id_col must be specified in adapter config")
 
-        logger.info("SantanderAdapter: loading %s with backend=%s", source, backend)
+        logger.info("SantanderAdapter: loading %s into DuckDB (backend=%s)",
+                    source, backend)
 
-        if backend == "cudf":
-            import cudf
-            df = cudf.read_parquet(source)
-        elif backend == "duckdb":
-            import duckdb
-            con = duckdb.connect()
-            df = con.execute(f"SELECT * FROM '{source}'").df()
-            con.close()
-        else:
-            # Use DuckDB for parquet loading even in pandas-fallback path
-            import duckdb as _ddb_load
-            _con_load = _ddb_load.connect()
-            try:
-                df = _con_load.execute(f"SELECT * FROM '{source}'").df()
-            finally:
-                _con_load.close()
+        import duckdb as _ddb
+        con = _ddb.connect()
+        # Modest memory budget. Phase 0 CPU instance is 32GB; we want
+        # DuckDB to spill to disk before pushing the python heap into OOM.
+        con.execute("PRAGMA memory_limit='8GB'")
+        con.execute("PRAGMA threads=8")
+
+        # Step 1: register parquet as a base VIEW (no copy, no materialise).
+        # This is the key §3.3 change vs prior CREATE TABLE — a 1.4 GB
+        # parquet now occupies essentially zero RAM until columns are
+        # actually queried.
+        con.execute(
+            f"CREATE OR REPLACE VIEW _raw_src AS "
+            f"SELECT * FROM read_parquet('{source}')"
+        )
+
+        # Step 2: introspect schema once (cheap — DuckDB pulls metadata
+        # only).
+        cols_info = con.execute(
+            "SELECT column_name, column_type FROM (DESCRIBE _raw_src)"
+        ).fetchall()
+        all_cols = [r[0] for r in cols_info]
+        numeric_cols = [
+            r[0] for r in cols_info
+            if r[1] and r[1].upper() in (
+                "TINYINT", "SMALLINT", "INTEGER", "BIGINT", "FLOAT", "DOUBLE"
+            )
+        ]
+        date_cols = [c for c in all_cols if "date" in c.lower()]
+
+        # Step 3: build a clean view that swaps the -999999 sentinel for
+        # NULL on numeric columns. This is a SELECT-time projection, not
+        # an UPDATE, so it works on a view and adds no memory overhead.
+        select_terms = []
+        sentinel = -99999
+        for c, dtype in cols_info:
+            if c in set(numeric_cols):
+                select_terms.append(
+                    f'CASE WHEN "{c}" < {sentinel} THEN NULL ELSE "{c}" END AS "{c}"'
+                )
+            else:
+                select_terms.append(f'"{c}"')
+        select_sql = ", ".join(select_terms)
+        con.execute(
+            f"CREATE OR REPLACE VIEW raw AS SELECT {select_sql} FROM _raw_src"
+        )
+
+        # Step 4: row count from view (DuckDB pushes COUNT down to parquet
+        # metadata when possible — sub-second on 1M rows).
+        n_rows = con.execute("SELECT COUNT(*) FROM raw").fetchone()[0]
+        n_cols = len(all_cols)
 
         self._metadata = AdapterMetadata(
             id_col=self._id_col,
             entity_granularity="user",
-            num_entities=len(df),
-            num_raw_rows=len(df),
+            num_entities=n_rows,
+            num_raw_rows=n_rows,
             source_files=[str(source)],
-            backend_used=backend,
+            backend_used="duckdb",
         )
-
-        # Expose timestamp column info for time-based sequence building.
-        # The sequence builder auto-detects, but explicit metadata helps.
-        _date_cols = [c for c in df.columns if "date" in c.lower()]
-        if _date_cols:
-            self._metadata.extra = getattr(self._metadata, "extra", {})
-            if isinstance(self._metadata.extra, dict):
-                self._metadata.extra["timestamp_columns"] = _date_cols
-            logger.info(
-                "SantanderAdapter: detected timestamp columns: %s",
-                _date_cols,
-            )
+        if date_cols:
+            self._metadata.extra = {"timestamp_columns": date_cols}
+            logger.info("SantanderAdapter: detected timestamp columns: %s", date_cols)
 
         logger.info(
-            "SantanderAdapter: loaded %d rows x %d cols (backend=%s)",
-            len(df), len(df.columns), backend,
+            "SantanderAdapter: loaded %d rows x %d cols into DuckDB (no pandas)",
+            n_rows, n_cols,
         )
 
-        return {"main": df}
+        return DuckDBAdapterContext(
+            con=con,
+            table_name="raw",
+            metadata=self._metadata,
+        )
 
 
 # ======================================================================

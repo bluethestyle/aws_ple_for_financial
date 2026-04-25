@@ -23,6 +23,35 @@ class AdapterMetadata:
     backend_used: str = "pandas"  # "cudf" | "duckdb" | "pandas"
 
 
+@dataclass
+class DuckDBAdapterContext:
+    """Pandas-free adapter result (CLAUDE.md §3.3).
+
+    Modern adapters expose the loaded data as a DuckDB table on a shared
+    connection rather than materialising a 1.4 GB parquet (with LIST
+    columns) into a 10-15 GB pandas DataFrame. ``PipelineRunner`` keeps
+    the connection open for the duration of all 9 stages.
+
+    Attributes
+    ----------
+    con : duckdb.DuckDBPyConnection
+        Connection that owns ``table_name``. The runner is responsible
+        for closing it at the end of the pipeline.
+    table_name : str
+        Name of the table to query (typically ``"raw"``).
+    metadata : AdapterMetadata
+        Same fields as the legacy contract — id_col, num_entities, etc.
+    extra_tables : Dict[str, str]
+        Optional extra-role -> table-name mapping (e.g.
+        ``{"transactions": "raw_txn"}``) for adapters that decompose the
+        source into multiple entity-level tables.
+    """
+    con: Any  # duckdb.DuckDBPyConnection (avoid hard import at module load)
+    table_name: str
+    metadata: AdapterMetadata
+    extra_tables: Dict[str, str] = field(default_factory=dict)
+
+
 class DataAdapter(ABC):
     """Abstract base for dataset-specific data loading.
 
@@ -30,7 +59,8 @@ class DataAdapter(ABC):
     The adapter is responsible for:
     - Loading raw files (CSV, Parquet, etc.)
     - Aggregating to entity-level if needed (e.g., transaction -> user)
-    - Returning a dict of DataFrames keyed by role name
+    - Returning EITHER a dict of DataFrames (legacy) OR a
+      :class:`DuckDBAdapterContext` (preferred, no pandas materialisation)
 
     The adapter is NOT responsible for:
     - Feature engineering (handled by FeatureGroupPipeline)
@@ -44,12 +74,19 @@ class DataAdapter(ABC):
         self._metadata: Optional[AdapterMetadata] = None
 
     @abstractmethod
-    def load_raw(self) -> Dict[str, pd.DataFrame]:
-        """Load and return raw data as dict of DataFrames.
+    def load_raw(self) -> Union[Dict[str, pd.DataFrame], DuckDBAdapterContext]:
+        """Load and return raw data.
 
-        Returns:
-            Dict with keys like "main", "transactions", "products", etc.
-            At minimum must contain "main" key with entity-level DataFrame.
+        Two return shapes are accepted:
+
+        * Legacy: ``Dict[str, pd.DataFrame]`` with keys like ``"main"``,
+          ``"transactions"``. Used by older adapters; the runner will
+          register the ``"main"`` frame into a fresh DuckDB connection
+          before running the 9 stages.
+        * Preferred: :class:`DuckDBAdapterContext` exposing the data on
+          an open DuckDB connection so the runner can flow the entire
+          pipeline through SQL without ever materialising the LIST
+          columns into pandas.
         """
         ...
 

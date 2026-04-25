@@ -273,7 +273,11 @@ class FeatureGroupPipeline:
     def fitted(self) -> bool:
         return self._fitted
 
-    def fit(self, df: Any) -> "FeatureGroupPipeline":
+    def fit(
+        self,
+        df: Any,
+        adapter_ctx: Any = None,
+    ) -> "FeatureGroupPipeline":
         """Fit all feature groups on training data.
 
         Generators call ``fit()``; transformer chains call ``fit()`` on
@@ -341,20 +345,30 @@ class FeatureGroupPipeline:
                         resolved_cols[:5],
                     )
                 # SQL-native generators (CLAUDE.md §3.3) want a DuckDB
-                # connection + table name in **context, not pandas. We
-                # spin a scratch connection per fit() call (cheap).
+                # connection + table name in **context, not pandas.
+                # Prefer the upstream adapter context (which holds the
+                # full LIST columns lazy in DuckDB) — falling back to
+                # registering ``pdf`` only when no context was provided
+                # (e.g. unit-test smoke runs).
                 if getattr(gen, "supports_sql_native", False):
-                    import duckdb as _duckdb
-                    _con = _duckdb.connect()
-                    try:
-                        _con.register("_grp_fit", pdf)
-                        gen.fit(None, duckdb_con=_con, source_table="_grp_fit")
-                    finally:
+                    if adapter_ctx is not None:
+                        gen.fit(
+                            None,
+                            duckdb_con=adapter_ctx.con,
+                            source_table=adapter_ctx.table_name,
+                        )
+                    else:
+                        import duckdb as _duckdb
+                        _con = _duckdb.connect()
                         try:
-                            _con.unregister("_grp_fit")
-                        except Exception:
-                            pass
-                        _con.close()
+                            _con.register("_grp_fit", pdf)
+                            gen.fit(None, duckdb_con=_con, source_table="_grp_fit")
+                        finally:
+                            try:
+                                _con.unregister("_grp_fit")
+                            except Exception:
+                                pass
+                            _con.close()
                 else:
                     gen.fit(pdf)
                 # Update output_dim and output_columns from generator
@@ -402,7 +416,7 @@ class FeatureGroupPipeline:
         )
         return self
 
-    def transform(self, df: Any) -> Any:
+    def transform(self, df: Any, adapter_ctx: Any = None) -> Any:
         """Apply all fitted feature groups and concatenate results.
 
         Parameters
@@ -431,19 +445,30 @@ class FeatureGroupPipeline:
         pdf = df_backend.to_pandas(df)
         n_input_rows = len(pdf)
 
-        # Lazy DuckDB connection for sql_native generators (CLAUDE.md §3.3).
-        # Only created when at least one generator advertises the
-        # capability, so the transform path stays free of DuckDB import
-        # weight when no SQL-native generator is configured.
+        # SQL-native dispatch (CLAUDE.md §3.3). Prefer the upstream
+        # adapter context (which keeps the full LIST columns lazy in
+        # DuckDB and is shared across stages), and only fall back to a
+        # scratch in-process connection when no context is supplied —
+        # which then has to re-register the (LIST-stripped) pdf and is
+        # therefore only useful for the SQL native generators that don't
+        # depend on the lazy LIST columns. We track _own_sql_con so we
+        # close exactly the connections we opened.
         _sql_con = None
         _sql_table = "_grp_input"
+        _own_sql_con = False
 
         def _ensure_sql_context():
-            nonlocal _sql_con
+            nonlocal _sql_con, _sql_table, _own_sql_con
             if _sql_con is None:
-                import duckdb as _duckdb
-                _sql_con = _duckdb.connect()
-                _sql_con.register(_sql_table, pdf)
+                if adapter_ctx is not None:
+                    _sql_con = adapter_ctx.con
+                    _sql_table = adapter_ctx.table_name
+                    _own_sql_con = False
+                else:
+                    import duckdb as _duckdb
+                    _sql_con = _duckdb.connect()
+                    _sql_con.register(_sql_table, pdf)
+                    _own_sql_con = True
             return _sql_con, _sql_table
 
         try:
@@ -488,7 +513,7 @@ class FeatureGroupPipeline:
                             group.name,
                         )
         finally:
-            if _sql_con is not None:
+            if _sql_con is not None and _own_sql_con:
                 try:
                     _sql_con.unregister(_sql_table)
                 except Exception:
