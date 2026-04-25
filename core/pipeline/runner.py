@@ -420,7 +420,7 @@ class PipelineRunner:
 
             sql = f"SELECT {', '.join(col_exprs)} FROM _df_impute"
             # Keep as Arrow — avoid pandas materialisation until Stage 3 boundary.
-            _arrow_after_impute = _con2.execute(sql).arrow()
+            _arrow_after_impute = _con2.execute(sql).fetch_arrow_table()
         finally:
             _con2.close()
         # Arrow table carries the imputed data forward; pandas df is no longer used.
@@ -1742,7 +1742,7 @@ class PipelineRunner:
             _lcols = ", ".join(f'_lbl."{c}"' for c in _lbl_reset.columns)
             tbl_combined: pa.Table = _con_dl.execute(
                 f"SELECT {_fcols}, {_lcols} FROM _feat POSITIONAL JOIN _lbl"
-            ).arrow()
+            ).fetch_arrow_table()
         finally:
             _con_dl.close()
 
@@ -2306,11 +2306,11 @@ class PipelineRunner:
                 _con_dist.register("_lbl", _lbl_reset)
                 _fcols = ", ".join(f'_feat."{c}"' for c in _feat_reset.columns)
                 _lcols = ", ".join(f'_lbl."{c}"' for c in _lbl_reset.columns)
-                # Use .arrow() instead of .df() — merged goes directly to
+                # Use .fetch_arrow_table() instead of .df() — merged goes directly to
                 # build_ple_dataloader / PLEDataset which natively accepts PyArrow Tables.
                 merged = _con_dist.execute(
                     f"SELECT {_fcols}, {_lcols} FROM _feat POSITIONAL JOIN _lbl"
-                ).arrow()
+                ).fetch_arrow_table()
                 logger.info(
                     "POSITIONAL JOIN: merged %d + %d cols → %d cols (distillation loader)",
                     len(_feat_reset.columns), len(_lbl_reset.columns), merged.num_columns,
