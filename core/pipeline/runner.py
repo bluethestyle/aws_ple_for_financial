@@ -298,6 +298,12 @@ class PipelineRunner:
         if isinstance(raw_data, _Ctx):
             self._adapter_ctx = raw_data
             df = self._scalar_df_from_ctx(raw_data)
+            # Normalise to legacy ``Dict[str, DataFrame]`` shape so the
+            # rest of the 9-stage runner (Stage 3 _engineer_features and
+            # Stage 8 _build_sequences both expect dict["main"]) can run
+            # untouched. The ctx remains accessible via ``self._adapter_ctx``
+            # for SQL-native code paths.
+            raw_data = {"main": df}
         else:
             self._adapter_ctx = None
             df = raw_data["main"]
