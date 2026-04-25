@@ -130,6 +130,13 @@ def main() -> None:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # ---- 4. Run the 9-stage Phase 0 runner --------------------------
+    # Import the adapters package so its @AdapterRegistry.register
+    # decorators fire — without this, AdapterRegistry stays empty and
+    # PipelineRunner._build_adapter raises KeyError("Adapter 'santander'
+    # not registered. Available: []"). Local CLI invocations sidestep
+    # this because they execute the adapter module directly; the
+    # SageMaker container goes through entrypoint -> runner instead.
+    import adapters  # noqa: F401
     from core.pipeline.runner import PipelineRunner
 
     logger.info("Starting Phase 0 (9-stage runner) → %s", output_dir)
