@@ -142,6 +142,18 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--epochs", type=int, default=0,
+        help=(
+            "Override ``training.epochs`` from the YAML config. The value "
+            "is the *total* training budget; the trainer splits it as "
+            "phase1 = epochs/3 (warm-up, shared layers) and phase2 = epochs "
+            "(fine-tune). Use 10 to match the historical ablation standard "
+            "(see outputs/ablation_v12/run_manifest.json: epochs=10, "
+            "batch=5632, amp=true, lr=0.0005, seed=42). "
+            "0 (default) keeps the YAML value."
+        ),
+    )
+    parser.add_argument(
         "--phase0-only", action="store_true",
         help=(
             "Stop after Phase 0 completes. Skips PLE training, distillation, "
@@ -173,6 +185,13 @@ def main():
         config.aws.instance_type = args.instance_type
     if args.no_spot:
         config.aws.use_spot = False
+    if args.epochs and args.epochs > 0:
+        prev = config.training.epochs
+        config.training.epochs = args.epochs
+        logger.info(
+            "Overriding training.epochs: %s -> %d (phase1=%d, phase2=%d)",
+            prev, args.epochs, max(1, args.epochs // 3), args.epochs,
+        )
 
     logger.info("=" * 60)
     logger.info("Pipeline Submission")
