@@ -558,8 +558,17 @@ class PipelineRunner:
 
         train_df = df.iloc[train_idx]
 
-        # Fit normalizer on TRAIN split only, transform ALL data
-        normalizer = FeatureNormalizer()
+        # Fit normalizer on TRAIN split only, transform ALL data.
+        # Read normalizer config from pipeline.yaml so suffix/prefix
+        # exclusion patterns (categorical_id_*, probability_*) are
+        # config-driven per §1.1.
+        normalizer_cfg: Dict[str, Any] = {}
+        raw_features = getattr(self.config, "features", None)
+        if raw_features is not None:
+            normalizer_cfg = getattr(raw_features, "normalizer", {}) or {}
+        if not normalizer_cfg and isinstance(getattr(self.config, "_raw", None), dict):
+            normalizer_cfg = (self.config._raw.get("features", {}) or {}).get("normalizer", {}) or {}
+        normalizer = FeatureNormalizer(config=normalizer_cfg)
         normalizer.fit(train_df, feature_cols)
         df_normed = normalizer.transform(df, feature_cols)
 

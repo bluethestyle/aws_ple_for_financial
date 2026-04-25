@@ -77,6 +77,72 @@ class TestFeatureNormalizerClassification:
         assert "powerlaw_z" in norm.continuous_cols
 
 
+class TestCategoricalIdPrefixExclusion:
+    """Prefix-based exclusion for nominal/cyclical int columns produced
+    by lag-style flatteners (e.g. txn_lag_mcc_001..200)."""
+
+    @staticmethod
+    def _make_lag_dataset(n=300, seed=0):
+        rng = np.random.RandomState(seed)
+        return pd.DataFrame({
+            "txn_lag_amount_001": rng.randn(n) * 50 + 100,    # continuous, scaled
+            "txn_lag_mcc_001":    rng.randint(0, 50, size=n),  # nominal MCC ID
+            "txn_lag_mcc_002":    rng.randint(0, 50, size=n),
+            "txn_lag_hour_001":   rng.randint(0, 24, size=n),  # cyclical hour
+            "txn_lag_hour_002":   rng.randint(0, 24, size=n),
+            "txn_roll_w7d_sum":   rng.randn(n) * 100 + 500,    # continuous
+        })
+
+    def test_prefix_excludes_mcc_columns(self):
+        df = self._make_lag_dataset()
+        cfg = {"categorical_id_prefixes": ["txn_lag_mcc_", "txn_lag_hour_"]}
+        norm = FeatureNormalizer(config=cfg)
+        norm.fit(df, list(df.columns))
+
+        for c in ("txn_lag_mcc_001", "txn_lag_mcc_002",
+                  "txn_lag_hour_001", "txn_lag_hour_002"):
+            assert c in norm.categorical_int_cols, f"{c} missing from categorical_int_cols"
+            assert c not in norm.continuous_cols, f"{c} leaked into continuous_cols"
+
+    def test_continuous_lag_still_scaled(self):
+        df = self._make_lag_dataset()
+        cfg = {"categorical_id_prefixes": ["txn_lag_mcc_", "txn_lag_hour_"]}
+        norm = FeatureNormalizer(config=cfg)
+        norm.fit(df, list(df.columns))
+
+        # amount + rolling stats remain in continuous_cols
+        assert "txn_lag_amount_001" in norm.continuous_cols
+        assert "txn_roll_w7d_sum" in norm.continuous_cols
+
+    def test_no_prefix_config_falls_back_to_continuous(self):
+        """Without categorical_id_prefixes, nominal int cols silently end
+        up in continuous_cols (the pre-fix behaviour we needed to override)."""
+        df = self._make_lag_dataset()
+        norm = FeatureNormalizer()  # no prefix config
+        norm.fit(df, list(df.columns))
+
+        # Documented regression: with no config, the int MCC cols become
+        # continuous (this is the bug the prefix option fixes).
+        assert "txn_lag_mcc_001" in norm.continuous_cols
+
+    def test_transform_passes_categorical_ids_through_unchanged(self):
+        df = self._make_lag_dataset(n=200)
+        cfg = {"categorical_id_prefixes": ["txn_lag_mcc_", "txn_lag_hour_"]}
+        norm = FeatureNormalizer(config=cfg)
+        norm.fit(df, list(df.columns))
+        out = norm.transform(df, list(df.columns))
+
+        # MCC values must be unchanged after transform (no scaling applied)
+        np.testing.assert_array_equal(
+            out["txn_lag_mcc_001"].values,
+            df["txn_lag_mcc_001"].values,
+        )
+        np.testing.assert_array_equal(
+            out["txn_lag_hour_001"].values,
+            df["txn_lag_hour_001"].values,
+        )
+
+
 class TestScalerFitOnTrainOnly:
     """Scaler must use train statistics, not train+val."""
 

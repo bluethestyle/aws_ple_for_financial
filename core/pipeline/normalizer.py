@@ -95,10 +95,19 @@ class FeatureNormalizer:
         self.power_law_details: Dict[str, Dict] = {}
         self._fitted: bool = False
 
-        # Patterns for columns that should NOT be StandardScaled
+        # Patterns for columns that should NOT be StandardScaled.
+        # Suffix-based: legacy convention (cluster_id, state_id, ...).
+        # Prefix-based: nominal-int columns produced by lag-style flatteners
+        #   (e.g. txn_lag_mcc_001..200 — MCC IDs encoded as integers, must
+        #   not get ordinal distance from a scaler) and cyclical-int columns
+        #   (e.g. txn_lag_hour_001..200 — 0..23 wraps, scaler distorts).
         self._categorical_id_suffixes: List[str] = cfg.get(
             "categorical_id_suffixes",
             ["_cluster_id", "_state_id", "_segment_id", "_group_id"],
+        )
+        self._categorical_id_prefixes: List[str] = cfg.get(
+            "categorical_id_prefixes",
+            [],
         )
         self._probability_prefixes: List[str] = cfg.get(
             "probability_prefixes",
@@ -134,10 +143,13 @@ class FeatureNormalizer:
 
         # Categorical integer columns (cluster_id, state_id, etc.)
         # These are nominal — scaler would impose ordinal distance semantics.
+        # Match either a suffix (legacy) OR a configured prefix (lag-style
+        # flatteners that emit nominal/cyclical int columns).
         self.categorical_int_cols = [
             c for c in feature_cols
             if c not in self.binary_cols
-            and any(c.endswith(sfx) for sfx in self._categorical_id_suffixes)
+            and (any(c.endswith(sfx) for sfx in self._categorical_id_suffixes)
+                 or any(c.startswith(pfx) for pfx in self._categorical_id_prefixes))
         ]
 
         # Probability columns already in [0, 1] — scaler destroys interpretability.

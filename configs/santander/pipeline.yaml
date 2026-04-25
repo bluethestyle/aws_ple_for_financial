@@ -688,6 +688,25 @@ features:
   meta_cols: [snapshot_date]
   input_dim: 512
 
+  # 3-stage normalizer (§1.9) — exclusion patterns for nominal / cyclical
+  # integer columns that StandardScaler would distort.
+  normalizer:
+    # Suffix-based legacy: GMM/HMM derived integer state IDs.
+    categorical_id_suffixes:
+      - _cluster_id
+      - _state_id
+      - _segment_id
+      - _group_id
+    # Prefix-based: lag-flattener output (post 2026-04-25 redesign).
+    # txn_lag_mcc_*  : nominal MCC IDs encoded as int (must NOT be scaled).
+    # txn_lag_hour_* : cyclical 0..23 hour-of-day (scaler distorts wrap).
+    categorical_id_prefixes:
+      - txn_lag_mcc_
+      - txn_lag_hour_
+    probability_prefixes:
+      - gmm_clustering_cluster_prob_
+      - model_derived_gmm_prob_
+
   # Categorical columns requiring embedding
   categorical:
     - name: gender
