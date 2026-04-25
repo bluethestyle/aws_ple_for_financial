@@ -1,0 +1,29 @@
+# Phase 0 / Phase 1+ SageMaker dependencies on top of the PyTorch 2.1 py310
+# DLC. Anything missing here that core/ imports must be `try/except
+# ImportError`-guarded — the registry-driven generator pool relies on
+# graceful skipping when a backend is unavailable.
+#
+# Already in PyTorch 2.1 DLC (do NOT pin here): torch, torchvision, numpy,
+# pandas, scikit-learn, scipy, boto3, sagemaker, joblib, pyyaml.
+#
+# CUDA / GPU-only deps (mamba_ssm, cripser, cupy, cudf, cuml) are
+# deliberately omitted because the Phase 0 instance is CPU
+# (ml.m5.2xlarge) and every consumer has a numpy/pandas fallback path.
+
+# Columnar SQL backend (SantanderAdapter, lag/rolling/multihot extractors)
+duckdb>=0.10,<2.0
+
+# Apache Arrow — parquet I/O, DuckDB↔pandas interop
+pyarrow>=14,<19
+
+# HMM-based product-state generator
+hmmlearn>=0.3,<0.4
+
+# TDA backends — pure-Python ripser + persistence images.
+# Heavier C++ alternatives (gph, cripser) stay optional via the 3-tier
+# fallback in core/feature/generators/tda.py.
+ripser>=0.6,<0.7
+persim>=0.3,<0.4
+
+# Graph features — LightGCN co-holding bipartite + product hierarchy.
+networkx>=3,<4

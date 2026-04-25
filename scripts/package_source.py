@@ -65,6 +65,12 @@ _INCLUDE_CONFIG_FILES = [
 _INCLUDE_FILES: list[str] = [
     "containers/__init__.py",        # makes `from containers.path_resolver import ...` work
     "containers/path_resolver.py",   # centralized SageMaker / local path resolution
+    # SageMaker auto-detects requirements.txt at source_dir root and runs
+    # ``pip install -r requirements.txt`` before invoking the entrypoint.
+    # Without this, Phase 0 hits ``ModuleNotFoundError: No module named
+    # 'duckdb'`` (and similar) because the PyTorch DLC ships only the
+    # baseline ML stack.
+    "requirements.txt",
 ]
 
 _DEFAULT_STAGING_DIR = PROJECT_ROOT / "outputs" / "_sagemaker_staging"
