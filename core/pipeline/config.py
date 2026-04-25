@@ -63,6 +63,12 @@ class DataSpec:
     parquet_file: str = ""
     temporal_split: Optional[Dict[str, Any]] = None  # temporal split config
     preprocessing: Optional[Dict[str, Any]] = None    # preprocessing config
+    # Adapter-required identifiers. SantanderAdapter (and any adapter that
+    # builds row-level joins) reads ``id_col`` from this section; without
+    # it the adapter raises ``data.id_col must be specified``.  Yaml has
+    # always carried these keys -- DataSpec just wasn't surfacing them.
+    id_col: Optional[str] = None
+    total_rows: Optional[int] = None
 
 
 @dataclass

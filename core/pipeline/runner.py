@@ -2549,6 +2549,15 @@ class PipelineRunner:
             "parquet_file": self.config.data.parquet_file,
         }
 
+        # Adapter-required identifiers. These live on DataSpec but were
+        # silently dropped in the dict export, so SantanderAdapter could
+        # not see ``id_col`` and aborted with "data.id_col must be
+        # specified". Forward them when present.
+        if getattr(self.config.data, "id_col", None):
+            data_dict["id_col"] = self.config.data.id_col
+        if getattr(self.config.data, "total_rows", None) is not None:
+            data_dict["total_rows"] = self.config.data.total_rows
+
         if getattr(self.config.data, "temporal_split", None):
             data_dict["temporal_split"] = self.config.data.temporal_split
         if getattr(self.config.data, "preprocessing", None):
