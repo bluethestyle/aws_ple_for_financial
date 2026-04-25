@@ -410,3 +410,129 @@ feature_groups:
       narrative_lens: lifecycle
       primary_tasks: [churn_signal, product_stability, nba_primary, spend_level]
     distill: false
+
+  # =========================================================================
+  # AXIS-1 -- Sequence Lag (on-prem 2026-04-25 redesign)
+  # =========================================================================
+
+  # -------------------------------------------------------------------------
+  # 13. Lag tensor (generate) -- 800D = K=200 * 4 features
+  #     Right-aligned lag flattening of txn LIST sequences.
+  #     K=200 chosen from EDA: matches Phase 0 max_len cap so 100% events
+  #     preserved within current cap; 93.2% event-coverage at K=180.
+  #     See: outputs/eda/santander_lag_design.html
+  #
+  #     truncate_seq_last=1 prevents next_mcc / top_mcc_shift label leakage
+  #     (mirrors merchant_hierarchy group).
+  # -------------------------------------------------------------------------
+  - name: txn_lag_tensor
+    group_type: generate
+    generator: lag_extractor
+    generator_params:
+      sequence_columns:
+        amount: txn_amount_seq
+        mcc: txn_mcc_seq
+        day: txn_day_offset_seq
+        hour: txn_hour_seq
+      k: 200
+      truncate_seq_last: 1
+      pad_value: 0.0
+      prefix: txn_lag
+    output_dim: 800
+    target_experts: [deepfm, lightgcn]   # PM intent: time signal to non-Temporal experts
+    interpretation:
+      category: temporal_lag
+      template: "Recent lag-{position} {feature} at {value} indicates {direction} pattern"
+      narrative_lens: engagement
+      primary_tasks: [next_mcc, top_mcc_shift, nba_primary, mcc_diversity_trend]
+    distill: false   # raw lag too high-dim for distill student
+
+  # =========================================================================
+  # AXIS-2 -- Rolling Window Stats (heavy-tail recovery)
+  # =========================================================================
+
+  # -------------------------------------------------------------------------
+  # 14. Rolling stats (generate) -- 20D = 4 windows * 5 metrics
+  #     Complements axis-1 lag: preserves total-volume signal that gets
+  #     truncated when len(seq) > K.  Anchored at most-recent observation
+  #     (elapsed = max(day_offset) - day_offset).
+  #
+  #     Windows tuned to Santander EDA: txn_day_offset spans ~360 days
+  #     so [7, 30, 90, 180] gives short/mid/quarter/half-year coverage.
+  # -------------------------------------------------------------------------
+  - name: txn_rolling_stats
+    group_type: generate
+    generator: rolling_stats_extractor
+    generator_params:
+      amount_column: txn_amount_seq
+      day_offset_column: txn_day_offset_seq
+      windows_days: [7, 30, 90, 180]
+      metrics: [sum, mean, std, count, days_active]
+      truncate_seq_last: 1
+      prefix: txn_roll
+    output_dim: 20
+    target_experts: [deepfm, causal, optimal_transport]
+    interpretation:
+      category: rolling_volume
+      template: "{window}-day {metric} at {value} indicates {direction} activity"
+      narrative_lens: engagement
+      primary_tasks: [churn_signal, spend_level, nba_primary]
+    distill: true
+    distill_weight: 0.7
+
+  # =========================================================================
+  # AXIS-3 helper -- Top-N / Fixed-vocab Multi-hot (product list flattening)
+  # =========================================================================
+
+  # -------------------------------------------------------------------------
+  # 15a. NBA product multi-hot (generate) -- 24D
+  #      Fixed vocabulary of 24 Santander products (matches prod_* slots).
+  #      Direct realization of PM intent "상품 list 평면화".
+  #      Note: 80.9% empty list (EDA), so most rows produce all-zero vector.
+  # -------------------------------------------------------------------------
+  - name: nba_label_multihot
+    group_type: generate
+    generator: topn_multihot_extractor
+    generator_params:
+      source_column: nba_label
+      mode: fixed_vocab
+      vocab: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+      truncate_seq_last: 0   # nba_label is a label-flavoured set, but contents
+                             # represent the recommendation surface, not a
+                             # leaked target.
+      binary: true
+      prefix: nba_mh
+    output_dim: 24
+    target_experts: [lightgcn, deepfm]
+    interpretation:
+      category: product_recommendation_set
+      template: "Customer is in recommendation set for product slot {value}"
+      narrative_lens: consumption
+      primary_tasks: [nba_primary, cross_sell_count]
+    distill: false
+
+  # -------------------------------------------------------------------------
+  # 15b. MCC top-30 multi-hot (generate) -- 31D (30 + others)
+  #      Top-N learned during fit().  Santander has cap=50 unique MCCs,
+  #      so top-30 covers ~73% (EDA).  "others" column counts MCCs outside
+  #      the top-30.
+  # -------------------------------------------------------------------------
+  - name: mcc_top30_multihot
+    group_type: generate
+    generator: topn_multihot_extractor
+    generator_params:
+      source_column: txn_mcc_seq
+      mode: top_n
+      top_n: 30
+      include_others: true
+      truncate_seq_last: 1   # last MCC == next_mcc label, drop to avoid leak
+      binary: true
+      prefix: mcc_mh
+    output_dim: 31
+    target_experts: [lightgcn, deepfm, hgcn]
+    interpretation:
+      category: merchant_category
+      template: "Customer transacted in MCC top-{rank} category"
+      narrative_lens: consumption
+      primary_tasks: [next_mcc, mcc_diversity_trend, top_mcc_shift, spend_level]
+    distill: false

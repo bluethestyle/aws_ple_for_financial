@@ -17,6 +17,9 @@ Available generators
 * ``economics``            -- Economic / financial behavior features (income decomposition + financial behavior).
 * ``merchant_hierarchy``   -- Merchant hierarchy features (MCC levels, brand SVD, aggregate stats, radius).
 * ``model_features``       -- Model-derived features: HMM summary + Bandit/MAB + LNN temporal dynamics (27D).
+* ``lag_extractor``        -- K-step right-aligned lag flattening of LIST sequence columns (axis-1).
+* ``rolling_stats_extractor`` -- Rolling-window stats (sum/mean/std/count/days_active) over LIST sequences (axis-2).
+* ``topn_multihot_extractor`` -- Top-N or fixed-vocab multi-hot encoding of LIST<int> columns (axis-3).
 
 Pool / Basket pattern
 ---------------------
@@ -60,6 +63,9 @@ from . import phase_transition   # noqa: F401
 from . import economics             # noqa: F401
 from . import merchant_hierarchy    # noqa: F401
 from . import model_features        # noqa: F401
+from . import lag_extractor         # noqa: F401
+from . import rolling_stats_extractor  # noqa: F401
+from . import topn_multihot_extractor  # noqa: F401
 
 # GPU utilities
 from . import gpu_utils       # noqa: F401

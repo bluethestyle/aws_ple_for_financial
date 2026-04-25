@@ -413,17 +413,20 @@ class FeatureGroupPipeline:
         start = time.time()
         group_outputs: List[Any] = []
         pdf = df_backend.to_pandas(df)
+        n_input_rows = len(pdf)
 
         for group in self._registry.enabled_groups:
             if group.runtime == "container":
                 container_result = self._run_container_job(group, pdf)
                 if container_result is not None:
+                    self._assert_row_invariant(group.name, container_result, n_input_rows)
                     group_outputs.append(container_result)
                 continue
 
             if group.group_type == "generate":
                 gen = self._generators[group.name]
                 generated = gen.generate(pdf)
+                self._assert_row_invariant(group.name, generated, n_input_rows)
                 group_outputs.append(generated)
 
             elif group.group_type == "transform":
@@ -434,7 +437,9 @@ class FeatureGroupPipeline:
                 # Extract only the group's output columns
                 out_cols = [c for c in group.output_columns if c in current.columns]
                 if out_cols:
-                    group_outputs.append(current[out_cols].copy())
+                    sliced = current[out_cols].copy()
+                    self._assert_row_invariant(group.name, sliced, n_input_rows)
+                    group_outputs.append(sliced)
                 else:
                     logger.warning(
                         "Transform group '%s' produced no matching output columns",
@@ -447,11 +452,44 @@ class FeatureGroupPipeline:
 
         result = df_backend.concat(group_outputs, axis=1)
 
+        # Hard invariant: 1 input row -> 1 output row.  This blocks the
+        # multi-row inflation pattern flagged by the on-prem audit (B1/C1)
+        # at the integrator boundary so it cannot propagate into training
+        # data even if a generator silently produces a duplicated frame.
+        if len(result) != n_input_rows:
+            raise RuntimeError(
+                f"[{self.name}] 1-customer-1-row invariant violated after concat: "
+                f"input_rows={n_input_rows}, output_rows={len(result)}. "
+                f"Check upstream generators for join inflation."
+            )
+
         logger.debug(
             "[%s] Transform complete in %.2fs -- %d rows x %d cols",
             self.name, time.time() - start, len(result), len(result.columns),
         )
         return result
+
+    @staticmethod
+    def _assert_row_invariant(group_name: str, output: Any, expected_rows: int) -> None:
+        """Hard assert: per-group output must have exactly ``expected_rows`` rows.
+
+        Generators are contractually obligated to return the same row count
+        as their input.  Failing this invariant indicates either a generator
+        bug or upstream data inflation; either way training data is no
+        longer aligned with the customer index.
+        """
+        actual = getattr(output, "shape", (None,))[0]
+        if actual is None:
+            try:
+                actual = len(output)
+            except TypeError:
+                return  # opaque object; downstream concat will surface mismatch
+        if actual != expected_rows:
+            raise RuntimeError(
+                f"Feature group '{group_name}' violated 1-customer-1-row invariant: "
+                f"expected {expected_rows} rows, got {actual}. "
+                f"Generators must preserve row count (input=output)."
+            )
 
     def fit_transform(self, df: Any) -> Any:
         """Convenience: ``fit(df)`` then ``transform(df)``."""
