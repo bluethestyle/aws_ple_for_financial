@@ -340,7 +340,23 @@ class FeatureGroupPipeline:
                         len(resolved_cols), group.name,
                         resolved_cols[:5],
                     )
-                gen.fit(pdf)
+                # SQL-native generators (CLAUDE.md §3.3) want a DuckDB
+                # connection + table name in **context, not pandas. We
+                # spin a scratch connection per fit() call (cheap).
+                if getattr(gen, "supports_sql_native", False):
+                    import duckdb as _duckdb
+                    _con = _duckdb.connect()
+                    try:
+                        _con.register("_grp_fit", pdf)
+                        gen.fit(None, duckdb_con=_con, source_table="_grp_fit")
+                    finally:
+                        try:
+                            _con.unregister("_grp_fit")
+                        except Exception:
+                            pass
+                        _con.close()
+                else:
+                    gen.fit(pdf)
                 # Update output_dim and output_columns from generator
                 if group.output_dim == 0:
                     group.output_dim = gen.output_dim
@@ -415,36 +431,69 @@ class FeatureGroupPipeline:
         pdf = df_backend.to_pandas(df)
         n_input_rows = len(pdf)
 
-        for group in self._registry.enabled_groups:
-            if group.runtime == "container":
-                container_result = self._run_container_job(group, pdf)
-                if container_result is not None:
-                    self._assert_row_invariant(group.name, container_result, n_input_rows)
-                    group_outputs.append(container_result)
-                continue
+        # Lazy DuckDB connection for sql_native generators (CLAUDE.md §3.3).
+        # Only created when at least one generator advertises the
+        # capability, so the transform path stays free of DuckDB import
+        # weight when no SQL-native generator is configured.
+        _sql_con = None
+        _sql_table = "_grp_input"
 
-            if group.group_type == "generate":
-                gen = self._generators[group.name]
-                generated = gen.generate(pdf)
-                self._assert_row_invariant(group.name, generated, n_input_rows)
-                group_outputs.append(generated)
+        def _ensure_sql_context():
+            nonlocal _sql_con
+            if _sql_con is None:
+                import duckdb as _duckdb
+                _sql_con = _duckdb.connect()
+                _sql_con.register(_sql_table, pdf)
+            return _sql_con, _sql_table
 
-            elif group.group_type == "transform":
-                chain = self._transformer_chains[group.name]
-                current = pdf
-                for t in chain:
-                    current = t.transform(current)
-                # Extract only the group's output columns
-                out_cols = [c for c in group.output_columns if c in current.columns]
-                if out_cols:
-                    sliced = current[out_cols].copy()
-                    self._assert_row_invariant(group.name, sliced, n_input_rows)
-                    group_outputs.append(sliced)
-                else:
-                    logger.warning(
-                        "Transform group '%s' produced no matching output columns",
-                        group.name,
-                    )
+        try:
+            for group in self._registry.enabled_groups:
+                if group.runtime == "container":
+                    container_result = self._run_container_job(group, pdf)
+                    if container_result is not None:
+                        self._assert_row_invariant(group.name, container_result, n_input_rows)
+                        group_outputs.append(container_result)
+                    continue
+
+                if group.group_type == "generate":
+                    gen = self._generators[group.name]
+                    if getattr(gen, "supports_sql_native", False):
+                        con, src = _ensure_sql_context()
+                        generated = gen.generate(
+                            None, duckdb_con=con, source_table=src,
+                        )
+                        # Convert pyarrow.Table -> pandas for downstream
+                        # concat / column slicing. zero-copy where possible.
+                        if hasattr(generated, "to_pandas"):
+                            generated = generated.to_pandas()
+                    else:
+                        generated = gen.generate(pdf)
+                    self._assert_row_invariant(group.name, generated, n_input_rows)
+                    group_outputs.append(generated)
+
+                elif group.group_type == "transform":
+                    chain = self._transformer_chains[group.name]
+                    current = pdf
+                    for t in chain:
+                        current = t.transform(current)
+                    # Extract only the group's output columns
+                    out_cols = [c for c in group.output_columns if c in current.columns]
+                    if out_cols:
+                        sliced = current[out_cols].copy()
+                        self._assert_row_invariant(group.name, sliced, n_input_rows)
+                        group_outputs.append(sliced)
+                    else:
+                        logger.warning(
+                            "Transform group '%s' produced no matching output columns",
+                            group.name,
+                        )
+        finally:
+            if _sql_con is not None:
+                try:
+                    _sql_con.unregister(_sql_table)
+                except Exception:
+                    pass
+                _sql_con.close()
 
         if not group_outputs:
             logger.warning("[%s] No group outputs produced", self.name)

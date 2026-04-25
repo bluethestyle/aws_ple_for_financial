@@ -127,6 +127,25 @@ class AbstractFeatureGenerator(ABC):
         """
         return ""
 
+    # -- SQL-native capability (CLAUDE.md §3.3) -----------------------
+
+    @property
+    def supports_sql_native(self) -> bool:
+        """Whether ``generate()`` can run as DuckDB SQL on a registered
+        source table without materialising 1M rows into pandas first.
+
+        SQL-native generators receive ``duckdb_con`` and ``source_table``
+        in the ``**context`` of ``generate()`` and return an Arrow Table
+        directly (no pandas/numpy intermediary). The adapter
+        (:func:`adapters.santander_adapter.run_generators_duckdb`) will
+        skip the per-generator ``con.execute(...).df()`` materialisation
+        for these.
+
+        Defaults to ``False`` for backward compatibility — legacy
+        generators continue to receive a pandas DataFrame.
+        """
+        return False
+
     @property
     def device(self) -> str:
         """Auto-detect the best device for this generator.

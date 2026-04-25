@@ -305,49 +305,73 @@ def run_generators_duckdb(
                 fit_cols = [entity_col] + fit_cols
                 gen_cols = [entity_col] + gen_cols
 
-            # --- Fit: extract subsample via DuckDB USING SAMPLE ---
-            _select_fit = ", ".join(f'"{c}"' for c in fit_cols)
-            if total_rows > fit_subsample_limit:
-                fit_sql = (
-                    f"SELECT {_select_fit} FROM {table} "
-                    f"USING SAMPLE {fit_subsample_limit} (reservoir, 42)"
-                )
-                logger.info(
-                    "Large dataset (%d rows): fitting generator '%s' on %d-row subsample",
-                    total_rows, group_name, fit_subsample_limit,
-                )
-            else:
-                fit_sql = f"SELECT {_select_fit} FROM {table}"
-            fit_df = con.execute(fit_sql).df().fillna(0).infer_objects()
-            gen.fit(fit_df)
-            del fit_df
+            # SQL-native dispatch (CLAUDE.md §3.3): generators that
+            # advertise ``supports_sql_native=True`` receive ``duckdb_con``
+            # and ``source_table`` in **context and run as SQL on the live
+            # source. We skip the per-generator pandas materialisation
+            # entirely — that was the OOM culprit on 1M-row × 800-D lag
+            # outputs.
+            sql_native = bool(getattr(gen, "supports_sql_native", False))
 
-            # --- Generate: materialise only the needed columns ---
-            _select_gen = ", ".join('"' + c + '"' for c in gen_cols)
-            gen_input_df = con.execute(
-                f"SELECT {_select_gen} FROM {table}"
-            ).df().fillna(0).infer_objects()
-            result = gen.generate(gen_input_df)
-            del gen_input_df
-
-            # Convert generator result to Arrow (handles cuDF, pandas, dict)
-            if hasattr(result, 'to_arrow'):
-                # cuDF DataFrame → Arrow directly (no pandas intermediary)
-                _arrow_result = result.to_arrow()
-            elif isinstance(result, pa.Table):
-                _arrow_result = result
-            elif isinstance(result, pd.DataFrame):
-                _arrow_result = pa.Table.from_pandas(result, preserve_index=False)
+            if sql_native:
+                # Fit: SQL generators self-fit by querying the source
+                # table; subsampling happens inside if needed.
+                gen.fit(None, duckdb_con=con, source_table=table)
+                # Generate: returns pyarrow.Table directly.
+                _arrow_result = gen.generate(
+                    None, duckdb_con=con, source_table=table,
+                )
+                if not isinstance(_arrow_result, pa.Table):
+                    raise TypeError(
+                        f"Generator '{group_name}' is sql_native but returned "
+                        f"{type(_arrow_result).__name__}; expected pyarrow.Table"
+                    )
+                n_cols = _arrow_result.num_columns
             else:
-                _arrow_result = pa.Table.from_pandas(pd.DataFrame(result), preserve_index=False)
+                # Legacy path: pandas materialise -> generator -> Arrow.
+                _select_fit = ", ".join(f'"{c}"' for c in fit_cols)
+                if total_rows > fit_subsample_limit:
+                    fit_sql = (
+                        f"SELECT {_select_fit} FROM {table} "
+                        f"USING SAMPLE {fit_subsample_limit} (reservoir, 42)"
+                    )
+                    logger.info(
+                        "Large dataset (%d rows): fitting generator '%s' on %d-row subsample",
+                        total_rows, group_name, fit_subsample_limit,
+                    )
+                else:
+                    fit_sql = f"SELECT {_select_fit} FROM {table}"
+                fit_df = con.execute(fit_sql).df().fillna(0).infer_objects()
+                gen.fit(fit_df)
+                del fit_df
+
+                _select_gen = ", ".join('"' + c + '"' for c in gen_cols)
+                gen_input_df = con.execute(
+                    f"SELECT {_select_gen} FROM {table}"
+                ).df().fillna(0).infer_objects()
+                result = gen.generate(gen_input_df)
+                del gen_input_df
+
+                if hasattr(result, 'to_arrow'):
+                    _arrow_result = result.to_arrow()
+                elif isinstance(result, pa.Table):
+                    _arrow_result = result
+                elif isinstance(result, pd.DataFrame):
+                    _arrow_result = pa.Table.from_pandas(result, preserve_index=False)
+                else:
+                    _arrow_result = pa.Table.from_pandas(pd.DataFrame(result), preserve_index=False)
+                n_cols = len(result.columns)
+                del result
 
             generated_frames.append(_arrow_result)
-            gen_summary[group_name] = len(result.columns)
+            gen_summary[group_name] = n_cols
             logger.info(
-                "Generator '%s': %d features in %.1fs",
-                group_name, len(result.columns), time.time() - t0,
+                "Generator '%s' (%s): %d features in %.1fs",
+                group_name,
+                "sql_native" if sql_native else "pandas",
+                n_cols,
+                time.time() - t0,
             )
-            del result
         except Exception as e:
             logger.warning("Generator '%s' failed: %s", group_name, e, exc_info=True)
             n_cols = group.get("output_dim", 10)
