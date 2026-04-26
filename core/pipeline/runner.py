@@ -1605,15 +1605,34 @@ class PipelineRunner:
                             "falling back to random",
                         )
                     else:
-                        # Materialise the row -> split assignment as a
-                        # one-shot SELECT — no pandas ``df.iloc`` slice.
-                        # Gap rows (within ``gap_days`` of a cut) are
-                        # dropped to avoid leakage between splits.
+                        # Detect whether ``date_col`` is a real DATE/
+                        # TIMESTAMP (gap = INTERVAL N DAY) or a numeric
+                        # encoding (e.g. yyyymm INT — gap = N units).
+                        # We probe the type via DESCRIBE; anything that
+                        # isn't a temporal type uses plain numeric subtraction.
+                        col_type_row = con.execute(
+                            f"SELECT column_type FROM (DESCRIBE {table}) "
+                            f"WHERE column_name = ?",
+                            [date_col],
+                        ).fetchone()
+                        col_type = (col_type_row[0] or "").upper() if col_type_row else ""
+                        is_temporal = any(
+                            t in col_type for t in ("DATE", "TIMESTAMP", "TIME")
+                        )
+                        if is_temporal:
+                            train_gap_expr = f"{repr(train_cut)} - INTERVAL {gap_days} DAY"
+                            val_gap_expr   = f"{repr(val_cut)} - INTERVAL {gap_days} DAY"
+                        else:
+                            # Numeric date (yyyymm / day_offset / etc).
+                            # Gap collapses to ``gap_days`` units of the
+                            # same numeric scale.
+                            train_gap_expr = f"({repr(train_cut)} - {gap_days})"
+                            val_gap_expr   = f"({repr(val_cut)} - {gap_days})"
                         rows = con.execute(
                             f'SELECT row_number() OVER () - 1 AS _idx, '
                             f'  CASE '
-                            f'    WHEN "{date_col}" < {repr(train_cut)} - INTERVAL {gap_days} DAY THEN 0 '
-                            f'    WHEN "{date_col}" < {repr(val_cut)} - INTERVAL {gap_days} DAY '
+                            f'    WHEN "{date_col}" < {train_gap_expr} THEN 0 '
+                            f'    WHEN "{date_col}" < {val_gap_expr} '
                             f'         AND "{date_col}" >= {repr(train_cut)} THEN 1 '
                             f'    WHEN "{date_col}" >= {repr(val_cut)} THEN 2 '
                             f'    ELSE -1 '
