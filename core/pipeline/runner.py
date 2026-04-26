@@ -2395,9 +2395,16 @@ class PipelineRunner:
         Returns ``(df, feature_pipeline, feature_schema, meta)``. ``df``
         is an Arrow-backed pandas DataFrame so memory stays bounded by
         the Arrow representation.
+
+        Any DECIMAL fields the source parquet inherited from the raw
+        Santander schema are promoted to DOUBLE here. Without this,
+        Stage 6's normalizer SQL (``(col - mean) / std``) overflows
+        DECIMAL(18,17) when the standardised value escapes ±9.99…
+        — typical for any column that isn't a [0, 1] probability.
         """
         import duckdb as _ddb_ckpt
         import pandas as pd  # types_mapper=pd.ArrowDtype below
+        import pyarrow as pa
         target = ckpt_dir / "post_stage3"
         parquet_path = target / "main.parquet"
         if not parquet_path.exists():
@@ -2412,6 +2419,31 @@ class PipelineRunner:
             ).fetch_arrow_table()
         finally:
             _con.close()
+
+        # Promote DECIMAL → DOUBLE to dodge the (±9.99…) overflow that
+        # the post-Stage-2 numeric round-trip can introduce.
+        decimal_fields = [
+            f.name for f in arrow_tbl.schema if pa.types.is_decimal(f.type)
+        ]
+        if decimal_fields:
+            logger.info(
+                "[Checkpoint] promoting %d DECIMAL columns to DOUBLE: %s%s",
+                len(decimal_fields), decimal_fields[:5],
+                " …" if len(decimal_fields) > 5 else "",
+            )
+            new_arrays = []
+            new_fields = []
+            for i, field in enumerate(arrow_tbl.schema):
+                col = arrow_tbl.column(i)
+                if pa.types.is_decimal(field.type):
+                    new_arrays.append(col.cast(pa.float64()))
+                    new_fields.append(pa.field(field.name, pa.float64()))
+                else:
+                    new_arrays.append(col)
+                    new_fields.append(field)
+            arrow_tbl = pa.Table.from_arrays(
+                new_arrays, schema=pa.schema(new_fields)
+            )
 
         try:
             df = arrow_tbl.to_pandas(types_mapper=pd.ArrowDtype)
