@@ -25,13 +25,10 @@ persim>=0.3,<0.4
 # Graph features — LightGCN co-holding bipartite + product hierarchy.
 networkx>=3,<4
 
-# Mamba SSM — selective state space model for the temporal expert.
-# CUDA-only wheels (causal-conv1d depends on cuda toolkit). Install
-# only succeeds on GPU instances (ml.g4dn.* / ml.g5.*); on CPU
-# instances the pip step will fail and we fall back to the
-# pure-torch SSM scan in core/feature/generators/mamba.py — that
-# fallback ran the 1M Mamba fit in 60 minutes on ml.m5.2xlarge,
-# which is the main reason Phase 0 should now run on a GPU
-# instance (ml.g4dn.xlarge spot ≈ $0.16/h, vs CPU ≈ $0.14/h × 60min).
-mamba-ssm>=2.0,<3.0; sys_platform == "linux"
-causal-conv1d>=1.4,<2.0; sys_platform == "linux"
+# NOTE: mamba-ssm / causal-conv1d are *not* listed here. Their pip
+# wheels need a CUDA toolkit at build time and the wheel build fails
+# on CPU instances (subprocess error in causal-conv1d's setup.py).
+# Phase 0 runs on CPU (ml.m5.2xlarge); the Mamba generator is
+# ``enabled: false`` in feature_groups.yaml. The forthcoming
+# scripts/precompute_mamba.py runs on a separate GPU SageMaker job
+# that ships its own requirements file with the CUDA wheels.
