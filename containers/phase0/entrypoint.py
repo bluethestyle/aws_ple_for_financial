@@ -22,6 +22,19 @@ Hyperparameters (all values strings per SageMaker convention):
   typically ``configs/pipeline.yaml``.
 * ``dataset_config`` — optional dataset-specific YAML, typically
   ``configs/datasets/santander.yaml``.
+* ``start_stage`` (optional, default ``"1"``) — first 9-stage runner
+  stage to execute. Must land at one of {1, 3, 4} which matches the
+  3-job split boundaries (1+2, 3, 4-9).
+* ``end_stage`` (optional, default ``"9"``) — last stage to execute
+  (inclusive). Must be one of {2, 3, 9}.
+* ``checkpoint_dir`` (optional) — local path holding inter-stage
+  ``post_stage2/`` and ``post_stage3/`` parquet checkpoints. When
+  ``start_stage > 1`` this is REQUIRED and is read from. When
+  ``end_stage < 9`` this is REQUIRED and is written to. SageMaker
+  multi-job orchestration mounts it via the ``checkpoint`` input/output
+  channels at ``/opt/ml/input/data/checkpoint`` (read) and
+  ``/opt/ml/checkpoints`` (write); this entrypoint resolves either
+  automatically when the explicit hyperparam is absent.
 
 Pandas is avoided where possible (CLAUDE.md §3.3); the runner itself
 uses the project's ``df_backend`` chain (cuDF → DuckDB → pandas) and
@@ -78,6 +91,30 @@ def _resolve_raw_input(explicit: str = "") -> str:
         if val:
             return val
     return "/opt/ml/input/data/raw"
+
+
+def _resolve_checkpoint_dir(explicit: str = "") -> str:
+    """Pick the inter-stage checkpoint directory.
+
+    Order of precedence:
+
+    1. ``explicit`` hyperparam (local CLI / SageMaker HP override).
+    2. ``SM_CHANNEL_CHECKPOINT`` → SageMaker mounts the previous job's
+       checkpoint here when this job is start_stage > 1.
+    3. ``/opt/ml/checkpoints`` → SageMaker's standard checkpoint
+       output directory (rsync'd to S3 by the training toolkit).
+    4. Empty string → no checkpoint (single-job mode).
+    """
+    if explicit:
+        return explicit
+    val = os.environ.get("SM_CHANNEL_CHECKPOINT")
+    if val:
+        return val
+    # SageMaker writes /opt/ml/checkpoints to S3 only if checkpoint_s3_uri
+    # was set on the estimator; otherwise this path is a no-op.
+    if os.path.isdir("/opt/ml/checkpoints"):
+        return "/opt/ml/checkpoints"
+    return ""
 
 
 def _pick_parquet_file(raw_dir: str) -> str:
@@ -139,9 +176,40 @@ def main() -> None:
     import adapters  # noqa: F401
     from core.pipeline.runner import PipelineRunner
 
+    # Multi-job split: parse start_stage / end_stage / checkpoint_dir
+    # from hyperparameters. Default values reproduce the historical
+    # single-job behaviour (1..9, no checkpoint).
+    try:
+        start_stage = int(hp.get("start_stage", 1))
+        end_stage = int(hp.get("end_stage", 9))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"start_stage / end_stage must parse as int; got hp={hp!r}"
+        ) from exc
+
+    explicit_ckpt = str(hp.get("checkpoint_dir", "") or "")
+    checkpoint_dir = _resolve_checkpoint_dir(explicit_ckpt)
+    if start_stage > 1 or end_stage < 9:
+        if not checkpoint_dir:
+            raise RuntimeError(
+                f"start_stage={start_stage}/end_stage={end_stage} requires "
+                f"checkpoint_dir but none was resolved (HP empty, "
+                f"SM_CHANNEL_CHECKPOINT empty, /opt/ml/checkpoints absent)."
+            )
+        Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "Multi-job mode: stages %d..%d, checkpoint_dir=%s",
+            start_stage, end_stage, checkpoint_dir,
+        )
+
     logger.info("Starting Phase 0 (9-stage runner) → %s", output_dir)
     runner = PipelineRunner(config)
-    results = runner.run(output_dir=output_dir)
+    results = runner.run(
+        output_dir=output_dir,
+        start_stage=start_stage,
+        end_stage=end_stage,
+        checkpoint_dir=checkpoint_dir or None,
+    )
 
     # ---- 5. Write a small summary next to the artifacts -------------
     summary_path = os.path.join(output_dir, "phase0_summary.json")

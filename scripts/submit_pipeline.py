@@ -165,6 +165,17 @@ def parse_args():
             "policy: stage Phase 0 first, validate, then submit training."
         ),
     )
+    parser.add_argument(
+        "--phase0-split", action="store_true",
+        help=(
+            "Run Phase 0 as 3 sequential SageMaker Jobs (A: stages 1-2, "
+            "B: stage 3 (feature gen), C: stages 4-9) sharing a single "
+            "S3 checkpoint prefix. Bypasses the OOM that hits a single "
+            "ml.m5.4xlarge during the contiguous 9-stage run on the new "
+            "1285-D feature set. Implies --phase0-only is wired through "
+            "(downstream phases use the Job-C model artefact)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -285,6 +296,117 @@ def _build_staging_dir() -> str:
     return build_staging()
 
 
+def _launch_phase0_split(
+    trainer,
+    staging_dir: str,
+    raw_s3_uri: str,
+    s3_base: str,
+    ts: str,
+    wait: bool,
+) -> dict:
+    """Run Phase 0 as 3 sequential SageMaker jobs.
+
+    The 9-stage runner is split into:
+      * Job A (stages 1-2): load + preprocess. Cheap on memory, writes
+        ``post_stage2/main.parquet`` to the shared S3 checkpoint prefix.
+      * Job B (stage 3):    feature engineering — the heaviest stage
+        memory-wise (1285-D output via lag/rolling/multihot/SQL-native
+        generators). Reads post_stage2, writes post_stage3.
+      * Job C (stages 4-9): labels + split + normalize + leakage +
+        sequences + save. Reads post_stage3 and writes the final
+        Phase-0 model artefact (``features.parquet``, ``feature_schema``,
+        scaler, etc).
+
+    The shared checkpoint prefix is
+    ``s3://{bucket}/{task}/phase0-ckpt/{ts}/`` and is mapped to
+    ``/opt/ml/checkpoints`` on each job by SageMaker's checkpoint
+    manager.
+
+    Returns a dict with the model URI of Job C (used as
+    ``output_path`` so the rest of the pipeline keeps working) plus
+    per-job metadata under ``jobs``.
+    """
+    if not wait:
+        # SageMaker auto-syncs checkpoints during training, but the
+        # parent script still needs to wait for each upstream job to
+        # complete before launching the next one — otherwise Job B
+        # would race against Job A's checkpoint write.
+        raise ValueError(
+            "--phase0-split requires waiting between jobs (drop --no-wait)."
+        )
+
+    bucket = trainer.config.aws.s3_bucket
+    task = trainer.config.task_name
+    checkpoint_s3_uri = f"s3://{bucket}/{task}/phase0-ckpt/{ts}/"
+
+    logger.info("Phase 0 split: shared checkpoint %s", checkpoint_s3_uri)
+
+    # ---- Job A: stages 1-2 (load + preprocess) ----------------------
+    logger.info("Phase 0 split [Job A] launching stages 1-2 …")
+    job_a = trainer.launch_phase0(
+        staging_dir=staging_dir,
+        raw_s3_uri=raw_s3_uri,
+        wait=True,
+        start_stage=1,
+        end_stage=2,
+        checkpoint_s3_uri=checkpoint_s3_uri,
+        job_label="a",
+    )
+    logger.info(
+        "Phase 0 split [Job A] done: %s (%.1fs billable)",
+        job_a["job_name"], job_a.get("billable_seconds", 0),
+    )
+
+    # ---- Job B: stage 3 (feature gen) -------------------------------
+    logger.info("Phase 0 split [Job B] launching stage 3 …")
+    job_b = trainer.launch_phase0(
+        staging_dir=staging_dir,
+        raw_s3_uri=raw_s3_uri,
+        wait=True,
+        start_stage=3,
+        end_stage=3,
+        checkpoint_s3_uri=checkpoint_s3_uri,
+        job_label="b",
+    )
+    logger.info(
+        "Phase 0 split [Job B] done: %s (%.1fs billable)",
+        job_b["job_name"], job_b.get("billable_seconds", 0),
+    )
+
+    # ---- Job C: stages 4-9 (labels + split + norm + save) -----------
+    logger.info("Phase 0 split [Job C] launching stages 4-9 …")
+    job_c = trainer.launch_phase0(
+        staging_dir=staging_dir,
+        raw_s3_uri=raw_s3_uri,
+        wait=True,
+        start_stage=4,
+        end_stage=9,
+        checkpoint_s3_uri=checkpoint_s3_uri,
+        job_label="c",
+    )
+    logger.info(
+        "Phase 0 split [Job C] done: %s (%.1fs billable)",
+        job_c["job_name"], job_c.get("billable_seconds", 0),
+    )
+
+    return {
+        "jobs": {"a": job_a, "b": job_b, "c": job_c},
+        "checkpoint_s3_uri": checkpoint_s3_uri,
+        # The downstream pipeline reads ``output_path`` for the
+        # Phase-0 features. Job C is the only one that produces a full
+        # Phase-0 artefact; A/B only emit the inter-stage checkpoint.
+        "output_path": job_c["output_path"],
+        "job_name": job_c["job_name"],
+        "status": job_c.get("status"),
+        "s3_model_uri": job_c.get("s3_model_uri"),
+        "billable_seconds": (
+            job_a.get("billable_seconds", 0)
+            + job_b.get("billable_seconds", 0)
+            + job_c.get("billable_seconds", 0)
+        ),
+    }
+
+
 def _run_full(config, args, s3_base, ts, wait):
     """Run the full pipeline: (Phase 0 →) Training → Distillation → Register.
 
@@ -344,13 +466,35 @@ def _run_full(config, args, s3_base, ts, wait):
                     "or --features-uri (to skip Phase 0) or --attach-phase0-job.",
                 )
                 sys.exit(2)
-            logger.info("--- Step 1: Phase 0 Feature Engineering (cloud) ---")
-            phase0 = trainer.launch_phase0(
-                staging_dir=staging,
-                raw_s3_uri=raw_uri,
-                wait=wait,
-            )
-            logger.info("Phase 0 complete: %s", phase0.get("job_name"))
+            if args.phase0_split:
+                logger.info(
+                    "--- Step 1: Phase 0 Feature Engineering "
+                    "(3-job split) ---"
+                )
+                phase0 = _launch_phase0_split(
+                    trainer=trainer,
+                    staging_dir=staging,
+                    raw_s3_uri=raw_uri,
+                    s3_base=s3_base,
+                    ts=ts,
+                    wait=wait,
+                )
+                logger.info(
+                    "Phase 0 split complete: A=%s  B=%s  C=%s",
+                    phase0["jobs"]["a"]["job_name"],
+                    phase0["jobs"]["b"]["job_name"],
+                    phase0["jobs"]["c"]["job_name"],
+                )
+            else:
+                logger.info(
+                    "--- Step 1: Phase 0 Feature Engineering (cloud) ---"
+                )
+                phase0 = trainer.launch_phase0(
+                    staging_dir=staging,
+                    raw_s3_uri=raw_uri,
+                    wait=wait,
+                )
+                logger.info("Phase 0 complete: %s", phase0.get("job_name"))
         # Trainer reads ``config.data.source`` for its TrainingInput —
         # point it at the Phase 0 output prefix (the training channel
         # will pick up the parquet + schemas produced by the runner).

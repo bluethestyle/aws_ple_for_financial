@@ -192,6 +192,10 @@ class SageMakerTrainer:
         instance_type: Optional[str] = None,
         max_run_s: int = 14400,      # 4h cap — HMM/TDA/GMM are CPU-heavy
         max_wait_s: int = 18000,     # max_run + 1h (CLAUDE.md §1.5)
+        start_stage: int = 1,
+        end_stage: int = 9,
+        checkpoint_s3_uri: Optional[str] = None,
+        job_label: str = "",
     ) -> dict[str, Any]:
         """Phase 0 feature engineering on SageMaker.
 
@@ -206,29 +210,39 @@ class SageMakerTrainer:
         ----------
         staging_dir : str
             Source staging built by
-            :func:`scripts.package_source.build_staging`. Must include
-            ``containers/phase0``, ``core/``, ``adapters/``, and the
-            dataset YAMLs (handled by the default
-            ``_INCLUDE_DIRS``).
+            :func:`scripts.package_source.build_staging`.
         raw_s3_uri : str
             S3 URI (prefix or file) to the ingestion parquet that
             Phase 0 should consume.
         wait : bool
-            Block until the job finishes. ``False`` returns as soon as
-            SageMaker accepts the submission.
+            Block until the job finishes.
         instance_type : str
-            Defaults to ``ml.m5.2xlarge`` (same family as distillation).
+            Defaults to ``aws.cpu_instance_type``.
+        start_stage, end_stage : int
+            9-stage runner subrange this job executes. Defaults run
+            the full pipeline (1..9). For a 3-job split:
+              * Job A: start=1, end=2  (load + preprocess)
+              * Job B: start=3, end=3  (feature gen — heaviest stage)
+              * Job C: start=4, end=9  (labels + split + norm + save)
+        checkpoint_s3_uri : str, optional
+            Shared S3 prefix where intermediate ``post_stage2/`` and
+            ``post_stage3/`` checkpoints live. SageMaker auto-syncs
+            ``/opt/ml/checkpoints`` to/from this prefix; jobs A & B
+            write here and jobs B & C read from here. Required when
+            ``start_stage > 1`` or ``end_stage < 9``.
+        job_label : str
+            Optional suffix tag (e.g. ``"a"``, ``"b"``, ``"c"``) so
+            multi-job names don't collide.
         """
         cfg = self.config
         aws = cfg.aws
         s3_base = f"s3://{aws.s3_bucket}/{cfg.task_name}"
         output_uri = f"{s3_base}/phase0/{self._run_stamp}"
+        if job_label:
+            output_uri = f"{output_uri}-{job_label}"
 
         # Resolve instance type. Caller override > yaml aws.cpu_instance_type
-        # > module default. Phase 0 is CPU-bound and memory-heavy
-        # (1M rows × wide LIST columns × multiple generators), so the yaml
-        # is the right knob — operators bumping memory must not have to
-        # patch trainer.py.
+        # > module default.
         if instance_type is None:
             instance_type = (
                 getattr(aws, "cpu_instance_type", None)
@@ -236,21 +250,45 @@ class SageMakerTrainer:
             )
 
         task_slug = _sanitize_job_name(cfg.task_name, max_len=16)
-        job_name = _sanitize_job_name(
-            f"{task_slug}-phase0-{self._run_stamp}",
-        )
+        if job_label:
+            job_name = _sanitize_job_name(
+                f"{task_slug}-p0{job_label}-{self._run_stamp}",
+            )
+        else:
+            job_name = _sanitize_job_name(
+                f"{task_slug}-phase0-{self._run_stamp}",
+            )
 
         hyperparams: dict[str, str] = {"config": CONTAINER_CONFIG}
         dataset_yaml = _dataset_config_path(cfg)
         if dataset_yaml:
             hyperparams["dataset_config"] = dataset_yaml
+        # Multi-job split — only emit when non-default to keep single-job
+        # runs free of clutter in CloudWatch.
+        if start_stage != 1:
+            hyperparams["start_stage"] = str(start_stage)
+        if end_stage != 9:
+            hyperparams["end_stage"] = str(end_stage)
 
-        logger.info("Launching SageMaker Phase 0 Job: %s", job_name)
+        # Validate checkpoint requirement.
+        if (start_stage > 1 or end_stage < 9) and not checkpoint_s3_uri:
+            raise ValueError(
+                f"checkpoint_s3_uri is required when start_stage>1 "
+                f"({start_stage}) or end_stage<9 ({end_stage}). Pass the "
+                f"shared S3 prefix used by the other split jobs."
+            )
+
+        logger.info(
+            "Launching SageMaker Phase 0 Job: %s (stages %d..%d)",
+            job_name, start_stage, end_stage,
+        )
         logger.info("  Instance: %s (Spot=%s)", instance_type, aws.use_spot)
         logger.info("  Raw input: %s", raw_s3_uri)
         logger.info("  Output: %s", output_uri)
+        if checkpoint_s3_uri:
+            logger.info("  Checkpoint: %s", checkpoint_s3_uri)
 
-        estimator = PyTorch(
+        estimator_kwargs: dict[str, Any] = dict(
             entry_point="containers/phase0/entrypoint.py",
             source_dir=staging_dir,
             role=aws.role_arn,
@@ -270,12 +308,23 @@ class SageMakerTrainer:
                 "PYTHONUNBUFFERED": "1",
             },
             sagemaker_session=self.session,
-            base_job_name=_sanitize_job_name(f"{task_slug}-phase0"),
+            base_job_name=_sanitize_job_name(
+                f"{task_slug}-phase0{job_label or ''}"
+            ),
             tags=[
                 {"Key": "Project", "Value": cfg.task_name},
-                {"Key": "Phase", "Value": "phase0"},
+                {"Key": "Phase", "Value": f"phase0{job_label or ''}"},
+                {"Key": "StageRange", "Value": f"{start_stage}-{end_stage}"},
             ],
         )
+        if checkpoint_s3_uri:
+            # SageMaker syncs /opt/ml/checkpoints <-> this S3 prefix
+            # in both directions. Stage 1+2 job writes; Stage 3 job
+            # reads + writes; Stage 4-9 job reads.
+            estimator_kwargs["checkpoint_s3_uri"] = checkpoint_s3_uri
+            estimator_kwargs["checkpoint_local_path"] = "/opt/ml/checkpoints"
+
+        estimator = PyTorch(**estimator_kwargs)
 
         estimator.fit(
             inputs={
@@ -291,10 +340,13 @@ class SageMakerTrainer:
 
         result: dict[str, Any] = {
             "job_name": job_name,
-            "phase": "phase0",
+            "phase": f"phase0{job_label or ''}",
             "instance_type": instance_type,
             "spot": aws.use_spot,
             "output_path": output_uri,
+            "start_stage": start_stage,
+            "end_stage": end_stage,
+            "checkpoint_s3_uri": checkpoint_s3_uri,
         }
         if wait:
             attached = self.attach_running_job(job_name)

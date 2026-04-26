@@ -234,7 +234,13 @@ class PipelineRunner:
     # Phase 0: produce training-ready artifacts
     # ==================================================================
 
-    def run(self, output_dir: str = "outputs/") -> dict:
+    def run(
+        self,
+        output_dir: str = "outputs/",
+        start_stage: int = 1,
+        end_stage: int = 9,
+        checkpoint_dir: Optional[str] = None,
+    ) -> dict:
         """Run the 9-stage Phase-0 pipeline and save training-ready artifacts.
 
         Stages:
@@ -248,8 +254,25 @@ class PipelineRunner:
           8. Sequence building (flat -> 3-D tensors)
           9. Save artifacts
 
+        For OOM-prone datasets the 9 stages can be split across multiple
+        SageMaker jobs:
+
+          * ``start_stage`` / ``end_stage`` constrain which stages run
+            in this invocation. Out-of-range stages are skipped.
+          * ``checkpoint_dir`` is a local directory (or SageMaker
+            channel) that holds inter-stage parquet files. When
+            ``start_stage > 1`` the runner loads ``post_stage<N-1>.parquet``
+            from this dir; when ``end_stage < 9`` it writes
+            ``post_stage<end_stage>.parquet`` here so the next job can
+            pick it up. Skipping checkpoints (single-job mode) keeps the
+            historical behaviour.
+
         Args:
             output_dir: Directory for all output artifacts.
+            start_stage: First stage to run (1-9). Default 1.
+            end_stage: Last stage to run (inclusive, 1-9). Default 9.
+            checkpoint_dir: Optional path for inter-stage parquet
+                checkpoints. Required when start_stage > 1.
 
         Returns:
             A result dict with metadata from each stage plus artifact paths.
@@ -260,6 +283,48 @@ class PipelineRunner:
 
         results: Dict[str, Any] = {}
         pipeline_start = time.time()
+
+        # --------------------------------------------------------------
+        # Stage gating + checkpoint setup (multi-job Phase 0 split)
+        # --------------------------------------------------------------
+        if not (1 <= start_stage <= 9 and 1 <= end_stage <= 9):
+            raise ValueError(
+                f"start_stage / end_stage must be in [1, 9]; got "
+                f"start_stage={start_stage}, end_stage={end_stage}"
+            )
+        if start_stage > end_stage:
+            raise ValueError(
+                f"start_stage ({start_stage}) > end_stage ({end_stage})"
+            )
+        # The 3-job split has checkpoints at boundaries 2->3 and 3->4
+        # only. start_stage must therefore land at one of {1, 3, 4}.
+        # (Higher values like 5..9 are disallowed because we never
+        # serialise inter-stage state for the 4-9 monolith.)
+        if start_stage not in (1, 3, 4):
+            raise ValueError(
+                f"start_stage must be 1, 3, or 4 (boundaries of the "
+                f"3-job split). Got {start_stage}."
+            )
+        # End boundaries: 2 (post Job A), 3 (post Job B), 9 (Job C / full).
+        if end_stage not in (2, 3, 9):
+            raise ValueError(
+                f"end_stage must be 2, 3, or 9 (boundaries of the "
+                f"3-job split). Got {end_stage}."
+            )
+        if start_stage > 1 and checkpoint_dir is None:
+            raise ValueError(
+                "checkpoint_dir is required when start_stage > 1 "
+                "(must point at the directory written by the previous job)"
+            )
+        if end_stage < 9 and checkpoint_dir is None:
+            raise ValueError(
+                "checkpoint_dir is required when end_stage < 9 "
+                "(downstream jobs need this checkpoint to resume)"
+            )
+        ckpt_dir: Optional[Path] = None
+        if checkpoint_dir is not None:
+            ckpt_dir = Path(checkpoint_dir)
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
 
         out = Path(output_dir)
         self._output_dir = out
@@ -273,272 +338,425 @@ class PipelineRunner:
 
         logger.info("=" * 60)
         logger.info("[PIPELINE] Phase 0: producing training-ready artifacts")
-        logger.info("[PIPELINE] Task: %s  Output: %s", self.config.task_name, output_dir)
+        logger.info(
+            "[PIPELINE] Task: %s  Output: %s  Stages: %d..%d  Checkpoint: %s",
+            self.config.task_name, output_dir,
+            start_stage, end_stage,
+            checkpoint_dir if checkpoint_dir else "<none>",
+        )
         logger.info("=" * 60)
 
-        # ==============================================================
-        # Stage 1: Load raw data via adapter
-        # ==============================================================
-        stage_start = time.time()
-        logger.info("[Stage 1] Loading raw data...")
+        # --------------------------------------------------------------
+        # State variables that flow between stages. They are populated
+        # either by stage execution (start_stage <= N) or by the
+        # checkpoint loader (start_stage > N).
+        # --------------------------------------------------------------
+        df = None  # main DataFrame (post-Stage-2 imputed; post-Stage-3 with merged generators)
+        raw_data: Dict[str, Any] = {}  # adapter dict — only Stage 8 needs this
+        feature_pipeline = None
+        feature_schema: Dict[str, Any] = {}
+        adapter = None
 
-        adapter = self._build_adapter()
-        raw_data = adapter.load_raw()
-
-        # CLAUDE.md §3.3 path. Modern adapters return a
-        # ``DuckDBAdapterContext`` with the raw data as a DuckDB table
-        # on a shared connection — no pandas materialisation. We pull
-        # only the SCALAR (and short-LIST) columns into pandas so the
-        # legacy stage 2-9 code path keeps working, and leave the long
-        # LIST columns (txn_amount_seq, txn_mcc_seq, ...) inside DuckDB
-        # for SQL-native generators to consume in Stage 3. This blocks
-        # the 10-15 GB pandas explode that OOM'd ml.m5.2xlarge /
-        # ml.m5.4xlarge SageMaker Phase-0 attempts (1-6).
-        from .adapter import DuckDBAdapterContext as _Ctx
-        if isinstance(raw_data, _Ctx):
-            self._adapter_ctx = raw_data
-            df = self._scalar_df_from_ctx(raw_data)
-            # Normalise to legacy ``Dict[str, DataFrame]`` shape so the
-            # rest of the 9-stage runner (Stage 3 _engineer_features and
-            # Stage 8 _build_sequences both expect dict["main"]) can run
-            # untouched. The ctx remains accessible via ``self._adapter_ctx``
-            # for SQL-native code paths.
-            raw_data = {"main": df}
-        else:
-            self._adapter_ctx = None
-            df = raw_data["main"]
-
-        results["stage1_load"] = {
-            "rows": len(df),
-            "cols": len(df.columns),
-            "adapter_metadata": adapter.metadata.__dict__
-            if hasattr(adapter.metadata, "__dict__")
-            else str(adapter.metadata),
-            "duckdb_native": self._adapter_ctx is not None,
-            "list_cols_in_duckdb": (
-                self._adapter_ctx.metadata.extra.get("list_cols_lazy", [])
-                if self._adapter_ctx is not None
-                and getattr(self._adapter_ctx.metadata, "extra", None)
-                else []
-            ),
-            "time_seconds": round(time.time() - stage_start, 2),
-        }
-        state.mark_complete("stage1_load", {"rows": len(df), "cols": len(df.columns)})
-        logger.info(
-            "[Stage 1] Loaded %d rows x %d cols in %.2fs (duckdb_native=%s)",
-            len(df), len(df.columns), time.time() - stage_start,
-            self._adapter_ctx is not None,
-        )
-
-        # ==============================================================
-        # Stage 1.5: Temporal preparation (sequence truncation)
-        # ==============================================================
-        stage_start = time.time()
-        df = self._prepare_temporal(df)
-        results["stage1_5_temporal_prep"] = {
-            "time_seconds": round(time.time() - stage_start, 2),
-        }
-
-        # ==============================================================
-        # Stage 2: Preprocessing
-        # ==============================================================
-        stage_start = time.time()
-        logger.info("[Stage 2] Preprocessing...")
-
+        # Config-derived state used after Stage 2; pre-compute so the
+        # checkpoint-loader path also has them.
         raw_cfg = self._config_to_dict()
         preproc_cfg = raw_cfg.get("preprocessing", {})
-
-        # 2a) Sentinel normalization (config-driven)
-        sentinel_rules = preproc_cfg.get("sentinels", {})
-        sentinel_applied = 0
-        for col, sentinel_val in sentinel_rules.items():
-            if col in df.columns:
-                mask = df[col] == sentinel_val
-                cnt = int(mask.sum())
-                if cnt > 0:
-                    df.loc[mask, col] = np.nan
-                    sentinel_applied += cnt
-        if sentinel_applied:
-            logger.info("[Stage 2] Sentinel normalization: replaced %d values", sentinel_applied)
-
-        # 2b) Categorical encoding
         id_cols = set(self.config.features.id_cols or [])
-        if not id_cols:
-            logger.warning("[Stage 2] No id_cols specified in config.features.id_cols — "
-                           "no columns will be excluded as ID columns")
         date_cols_cfg = preproc_cfg.get("date_cols", [])
         if isinstance(date_cols_cfg, str):
             date_cols_cfg = [date_cols_cfg]
         date_cols = set(date_cols_cfg)
-        exclude_encode = id_cols | date_cols
 
-        cat_cols = df.select_dtypes(include=["object", "string", "category"]).columns
-        encoded_cols: List[str] = []
-        for col in cat_cols:
-            if col not in exclude_encode:
-                le = LabelEncoder()
-                df[col] = le.fit_transform(df[col].astype(str))
-                encoded_cols.append(col)
-        if encoded_cols:
-            logger.info("[Stage 2] Categorical encoding: %d cols (%s...)",
-                        len(encoded_cols), encoded_cols[:5])
+        # --------------------------------------------------------------
+        # Checkpoint load path: start_stage > 1
+        # --------------------------------------------------------------
+        if start_stage >= 4:
+            # Job C (Stages 4-9): load post-stage-3 checkpoint
+            # — has df + feature_pipeline + feature_schema
+            df, feature_pipeline, feature_schema, _meta = (
+                self._load_checkpoint_post_stage3(ckpt_dir)
+            )
+            results["resumed_from"] = str(ckpt_dir / "post_stage3")
+            logger.info(
+                "[Stage 1-3 SKIPPED] Resumed from post_stage3 checkpoint: "
+                "df=%s, feature_pipeline_groups=%d, feature_schema_keys=%d",
+                getattr(df, "shape", "?"),
+                len(feature_pipeline) if feature_pipeline is not None else 0,
+                len(feature_schema),
+            )
+        elif start_stage == 3:
+            # Job B (Stage 3): load post-stage-2 checkpoint — has df only.
+            df, _meta = self._load_checkpoint_post_stage2(ckpt_dir)
+            results["resumed_from"] = str(ckpt_dir / "post_stage2")
+            logger.info(
+                "[Stage 1-2 SKIPPED] Resumed from post_stage2 checkpoint: df=%s",
+                getattr(df, "shape", "?"),
+            )
+            # Stage 3 SQL-native generators (lag tensor / rolling stats /
+            # topN multihot) read the LIST sequence columns directly out
+            # of the DuckDB ctx the adapter sets up. The post_stage2
+            # checkpoint only carries the imputed scalar table, so we
+            # rebuild the ctx by re-running adapter.load_raw() — Stage 2's
+            # modifications are scalar-only, so the LIST cols are
+            # identical to the raw ones the generator pool expects.
+            adapter = self._build_adapter()
+            raw_data = adapter.load_raw()
+            from .adapter import DuckDBAdapterContext as _Ctx
+            if isinstance(raw_data, _Ctx):
+                self._adapter_ctx = raw_data
+                # raw_data dict keeps the legacy ``main`` key so the
+                # Stage 3 _engineer_features signature is unchanged.
+                raw_data = {"main": self._scalar_df_from_ctx(raw_data)}
+            else:
+                self._adapter_ctx = None
 
-        # 2c) Missing value imputation (config-driven) -- single DuckDB pass
-        impute_rules = preproc_cfg.get("imputation", {})
-        numeric_cols_all = list(df.select_dtypes(include=[np.number]).columns)
+        # ==============================================================
+        # Stage 1: Load raw data via adapter
+        # ==============================================================
+        if start_stage <= 1:
+            stage_start = time.time()
+            logger.info("[Stage 1] Loading raw data...")
 
-        # Build a single SQL SELECT that handles all imputation in one pass
-        import duckdb as _ddb_stage2
-        _con2 = _ddb_stage2.connect()
-        try:
-            _con2.register("_df_impute", df)
-            col_exprs: List[str] = []
-            handled_cols = set()
-            for col, strategy in impute_rules.items():
-                if col not in df.columns:
-                    continue
-                handled_cols.add(col)
-                qcol = f'"{col}"'
-                if strategy == "median":
-                    col_exprs.append(
-                        f'COALESCE({qcol}, (SELECT MEDIAN({qcol}) FROM _df_impute)) AS {qcol}')
-                elif strategy == "mean":
-                    col_exprs.append(
-                        f'COALESCE({qcol}, (SELECT AVG({qcol}) FROM _df_impute)) AS {qcol}')
-                elif strategy == "zero":
-                    col_exprs.append(f'COALESCE({qcol}, 0) AS {qcol}')
-                elif strategy == "mode":
-                    col_exprs.append(
-                        f'COALESCE({qcol}, (SELECT MODE({qcol}) FROM _df_impute)) AS {qcol}')
-                else:
-                    col_exprs.append(qcol)
+            adapter = self._build_adapter()
+            raw_data = adapter.load_raw()
 
-            # Default: fillna(0) for remaining numeric NaN columns
-            for col in numeric_cols_all:
-                if col not in handled_cols:
-                    col_exprs.append(f'COALESCE("{col}", 0) AS "{col}"')
+            # CLAUDE.md §3.3 path. Modern adapters return a
+            # ``DuckDBAdapterContext`` with the raw data as a DuckDB
+            # table on a shared connection — no pandas materialisation.
+            # We pull only the SCALAR (and short-LIST) columns into
+            # pandas so the legacy stage 2-9 code path keeps working,
+            # and leave the long LIST columns inside DuckDB for SQL-
+            # native generators to consume in Stage 3.
+            from .adapter import DuckDBAdapterContext as _Ctx
+            if isinstance(raw_data, _Ctx):
+                self._adapter_ctx = raw_data
+                df = self._scalar_df_from_ctx(raw_data)
+                raw_data = {"main": df}
+            else:
+                self._adapter_ctx = None
+                df = raw_data["main"]
+
+            results["stage1_load"] = {
+                "rows": len(df),
+                "cols": len(df.columns),
+                "adapter_metadata": adapter.metadata.__dict__
+                if hasattr(adapter.metadata, "__dict__")
+                else str(adapter.metadata),
+                "duckdb_native": self._adapter_ctx is not None,
+                "list_cols_in_duckdb": (
+                    self._adapter_ctx.metadata.extra.get("list_cols_lazy", [])
+                    if self._adapter_ctx is not None
+                    and getattr(self._adapter_ctx.metadata, "extra", None)
+                    else []
+                ),
+                "time_seconds": round(time.time() - stage_start, 2),
+            }
+            state.mark_complete(
+                "stage1_load", {"rows": len(df), "cols": len(df.columns)}
+            )
+            logger.info(
+                "[Stage 1] Loaded %d rows x %d cols in %.2fs (duckdb_native=%s)",
+                len(df), len(df.columns), time.time() - stage_start,
+                self._adapter_ctx is not None,
+            )
+
+        # ==============================================================
+        # Stage 1.5: Temporal preparation (sequence truncation)
+        #
+        # Tied to the Stage-1 guard since 1.5 reads df produced by
+        # Stage 1; the post-Stage-2 checkpoint is the next persistence
+        # point.
+        # ==============================================================
+        if start_stage <= 1:
+            stage_start = time.time()
+            df = self._prepare_temporal(df)
+            results["stage1_5_temporal_prep"] = {
+                "time_seconds": round(time.time() - stage_start, 2),
+            }
+
+        # ==============================================================
+        # Stage 2: Preprocessing
+        # ==============================================================
+        if start_stage <= 1:
+            stage_start = time.time()
+            logger.info("[Stage 2] Preprocessing...")
+
+            # 2a) Sentinel normalization (config-driven)
+            sentinel_rules = preproc_cfg.get("sentinels", {})
+            sentinel_applied = 0
+            for col, sentinel_val in sentinel_rules.items():
+                if col in df.columns:
+                    mask = df[col] == sentinel_val
+                    cnt = int(mask.sum())
+                    if cnt > 0:
+                        df.loc[mask, col] = np.nan
+                        sentinel_applied += cnt
+            if sentinel_applied:
+                logger.info(
+                    "[Stage 2] Sentinel normalization: replaced %d values",
+                    sentinel_applied,
+                )
+
+            # 2b) Categorical encoding
+            if not id_cols:
+                logger.warning(
+                    "[Stage 2] No id_cols specified in config.features.id_cols — "
+                    "no columns will be excluded as ID columns"
+                )
+            exclude_encode = id_cols | date_cols
+
+            cat_cols = df.select_dtypes(include=["object", "string", "category"]).columns
+            encoded_cols: List[str] = []
+            for col in cat_cols:
+                if col not in exclude_encode:
+                    le = LabelEncoder()
+                    df[col] = le.fit_transform(df[col].astype(str))
+                    encoded_cols.append(col)
+            if encoded_cols:
+                logger.info(
+                    "[Stage 2] Categorical encoding: %d cols (%s...)",
+                    len(encoded_cols), encoded_cols[:5],
+                )
+
+            # 2c) Missing value imputation (config-driven) -- single DuckDB pass
+            impute_rules = preproc_cfg.get("imputation", {})
+            numeric_cols_all = list(df.select_dtypes(include=[np.number]).columns)
+
+            import duckdb as _ddb_stage2
+            _con2 = _ddb_stage2.connect()
+            try:
+                _con2.register("_df_impute", df)
+                col_exprs: List[str] = []
+                handled_cols = set()
+                for col, strategy in impute_rules.items():
+                    if col not in df.columns:
+                        continue
                     handled_cols.add(col)
+                    qcol = f'"{col}"'
+                    if strategy == "median":
+                        col_exprs.append(
+                            f'COALESCE({qcol}, (SELECT MEDIAN({qcol}) FROM _df_impute)) AS {qcol}')
+                    elif strategy == "mean":
+                        col_exprs.append(
+                            f'COALESCE({qcol}, (SELECT AVG({qcol}) FROM _df_impute)) AS {qcol}')
+                    elif strategy == "zero":
+                        col_exprs.append(f'COALESCE({qcol}, 0) AS {qcol}')
+                    elif strategy == "mode":
+                        col_exprs.append(
+                            f'COALESCE({qcol}, (SELECT MODE({qcol}) FROM _df_impute)) AS {qcol}')
+                    else:
+                        col_exprs.append(qcol)
 
-            # Non-numeric / non-imputed columns pass through unchanged
-            for col in df.columns:
-                if col not in handled_cols:
-                    col_exprs.append(f'"{col}"')
+                for col in numeric_cols_all:
+                    if col not in handled_cols:
+                        col_exprs.append(f'COALESCE("{col}", 0) AS "{col}"')
+                        handled_cols.add(col)
 
-            sql = f"SELECT {', '.join(col_exprs)} FROM _df_impute"
-            # Keep as Arrow — avoid pandas materialisation until Stage 3 boundary.
-            _arrow_after_impute = _con2.execute(sql).fetch_arrow_table()
-        finally:
-            _con2.close()
-        # Arrow table carries the imputed data forward; pandas df is no longer used.
-        import pyarrow as _pa
-        df = _arrow_after_impute  # type: ignore[assignment]  # now a pyarrow.Table
+                for col in df.columns:
+                    if col not in handled_cols:
+                        col_exprs.append(f'"{col}"')
 
-        results["stage2_preprocessing"] = {
-            "sentinel_values_replaced": sentinel_applied,
-            "categorical_encoded": encoded_cols,
-            "imputation_rules_applied": list(impute_rules.keys()),
-            "time_seconds": round(time.time() - stage_start, 2),
-        }
-        state.mark_complete("stage2_preprocessing")
-        logger.info("[Stage 2] Preprocessing complete in %.2fs", time.time() - stage_start)
+                sql = f"SELECT {', '.join(col_exprs)} FROM _df_impute"
+                _arrow_after_impute = _con2.execute(sql).fetch_arrow_table()
+            finally:
+                _con2.close()
+            import pyarrow as _pa
+            df = _arrow_after_impute  # type: ignore[assignment]
+
+            results["stage2_preprocessing"] = {
+                "sentinel_values_replaced": sentinel_applied,
+                "categorical_encoded": encoded_cols,
+                "imputation_rules_applied": list(impute_rules.keys()),
+                "time_seconds": round(time.time() - stage_start, 2),
+            }
+            state.mark_complete("stage2_preprocessing")
+            logger.info(
+                "[Stage 2] Preprocessing complete in %.2fs",
+                time.time() - stage_start,
+            )
+
+        # ==============================================================
+        # Boundary: Stage 2 -> Stage 3 checkpoint
+        # ==============================================================
+        if end_stage <= 2:
+            self._save_checkpoint_post_stage2(
+                ckpt_dir, df,
+                meta={
+                    "id_cols": sorted(id_cols),
+                    "date_cols": sorted(date_cols),
+                },
+            )
+            results["checkpoint_saved"] = str(ckpt_dir / "post_stage2")
+            results["total_time_seconds"] = round(
+                time.time() - pipeline_start, 2
+            )
+            logger.info(
+                "[Phase 0 partial] Stages %d..%d complete in %.1fs; "
+                "checkpoint at %s",
+                start_stage, end_stage,
+                results["total_time_seconds"], ckpt_dir / "post_stage2",
+            )
+            return results
 
         # ==============================================================
         # Stage 3: Feature engineering via FeatureGroupPipeline
         # ==============================================================
-        stage_start = time.time()
-        logger.info("[Stage 3] Feature engineering...")
+        if start_stage <= 3:
+            stage_start = time.time()
+            logger.info("[Stage 3] Feature engineering...")
 
-        # _engineer_features expects a pandas DataFrame.  Convert from Arrow here —
-        # this is the single materialisation point for Stage 2 → Stage 3.
-        import pyarrow as _pa
-        if isinstance(df, _pa.Table):
-            df_for_eng = df.to_pandas()
-        else:
-            df_for_eng = df
+            # _engineer_features expects a pandas DataFrame.  Convert
+            # from Arrow here — single materialisation point Stage 2->3.
+            import pyarrow as _pa
+            if isinstance(df, _pa.Table):
+                df_for_eng = df.to_pandas()
+            else:
+                df_for_eng = df
 
-        feature_pipeline, df_generated = self._engineer_features(df_for_eng, raw_data)
-        feature_schema = feature_pipeline.get_ple_input_metadata()
-
-        # Build / reuse Arrow table for the merge — avoids a second pandas round-trip.
-        _arrow_main: _pa.Table = (
-            df if isinstance(df, _pa.Table) else _pa.Table.from_pandas(df_for_eng)
-        )
-
-        # Merge generated features into main table
-        if df_generated is not None and len(df_generated.columns) > 0:
-            nonzero_ratio = (df_generated != 0).mean().mean()
-            zero_cols = [c for c in df_generated.columns if (df_generated[c] == 0).all()]
-            logger.info("[Stage 3] Generated features: nonzero_ratio=%.2f%%, zero_variance_cols=%d",
-                        nonzero_ratio * 100, len(zero_cols))
-            if zero_cols:
-                logger.warning("[Stage 3] All-zero generated columns: %s", zero_cols[:10])
-
-            # Only add columns that are truly new — append via PyArrow append_column
-            # (no copy of the main table data, no DuckDB positional join needed).
-            existing_cols = set(_arrow_main.schema.names)
-            new_cols = [c for c in df_generated.columns if c not in existing_cols]
-            if new_cols:
-                _df_gen = df_generated[new_cols].reset_index(drop=True)
-                for _col in new_cols:
-                    _arrow_main = _arrow_main.append_column(
-                        _col,
-                        _pa.array(
-                            _df_gen[_col].to_numpy(dtype=float, na_value=float("nan"))
-                        ),
-                    )
-                logger.info("[Stage 3] Merged %d generated features into main table", len(new_cols))
-
-        # CLAUDE.md §3.3: when the adapter exposed a DuckDB connection,
-        # we register _arrow_main on it AND keep a pandas reference for
-        # legacy stages still bound to pandas APIs. The pandas conversion
-        # uses Arrow-backed dtypes so the underlying buffers are shared
-        # zero-copy with the registered table — memory cost is roughly
-        # one Arrow copy (~4-5 GB on 1M × 1158) instead of the previous
-        # ~9 GB ``to_pandas()`` numpy explosion. Each downstream stage is
-        # being migrated to query the registered table directly so the
-        # pandas frame here will eventually shrink to id columns only.
-        if self._adapter_ctx is not None:
-            con = self._adapter_ctx.con
-            try:
-                con.unregister("_post_stage3")
-            except Exception:
-                pass
-            con.register("_arrow_post_stage3", _arrow_main)
-            con.execute(
-                "CREATE OR REPLACE TABLE _post_stage3 AS "
-                "SELECT * FROM _arrow_post_stage3"
+            feature_pipeline, df_generated = self._engineer_features(
+                df_for_eng, raw_data,
             )
-            try:
-                con.unregister("_arrow_post_stage3")
-            except Exception:
-                pass
-            self._post_stage3_table = "_post_stage3"
-            # Arrow-backed pandas to keep memory bounded by the Arrow
-            # representation, not the float64 numpy version. Legacy
-            # stages (4/5/7/8) read from this until they migrate to
-            # ``self._post_stage3_table``.
-            try:
-                df = _arrow_main.to_pandas(types_mapper=pd.ArrowDtype)
-            except TypeError:
-                # Older pandas: fall back to default; documented memory cost
-                df = _arrow_main.to_pandas()
-            del _arrow_main
-        else:
-            df = _arrow_main.to_pandas()
-            self._post_stage3_table = None
+            feature_schema = feature_pipeline.get_ple_input_metadata()
 
-        results["stage3_features"] = {
-            "num_groups": len(feature_pipeline),
-            "total_dim": feature_pipeline.total_dim,
-            "generated_cols": len(df_generated.columns) if df_generated is not None else 0,
-            "df_shape_after": list(df.shape),
-            "time_seconds": round(time.time() - stage_start, 2),
-        }
-        state.mark_complete("stage3_features", {"total_dim": feature_pipeline.total_dim})
-        logger.info(
-            "[Stage 3] Feature engineering complete in %.2fs: %d groups, total_dim=%d",
-            time.time() - stage_start, len(feature_pipeline), feature_pipeline.total_dim,
-        )
+            _arrow_main: _pa.Table = (
+                df if isinstance(df, _pa.Table) else _pa.Table.from_pandas(df_for_eng)
+            )
+
+            if df_generated is not None and len(df_generated.columns) > 0:
+                nonzero_ratio = (df_generated != 0).mean().mean()
+                zero_cols = [
+                    c for c in df_generated.columns
+                    if (df_generated[c] == 0).all()
+                ]
+                logger.info(
+                    "[Stage 3] Generated features: nonzero_ratio=%.2f%%, "
+                    "zero_variance_cols=%d",
+                    nonzero_ratio * 100, len(zero_cols),
+                )
+                if zero_cols:
+                    logger.warning(
+                        "[Stage 3] All-zero generated columns: %s",
+                        zero_cols[:10],
+                    )
+
+                existing_cols = set(_arrow_main.schema.names)
+                new_cols = [c for c in df_generated.columns if c not in existing_cols]
+                if new_cols:
+                    _df_gen = df_generated[new_cols].reset_index(drop=True)
+                    for _col in new_cols:
+                        _arrow_main = _arrow_main.append_column(
+                            _col,
+                            _pa.array(
+                                _df_gen[_col].to_numpy(dtype=float, na_value=float("nan"))
+                            ),
+                        )
+                    logger.info(
+                        "[Stage 3] Merged %d generated features into main table",
+                        len(new_cols),
+                    )
+
+            if self._adapter_ctx is not None:
+                con = self._adapter_ctx.con
+                try:
+                    con.unregister("_post_stage3")
+                except Exception:
+                    pass
+                con.register("_arrow_post_stage3", _arrow_main)
+                con.execute(
+                    "CREATE OR REPLACE TABLE _post_stage3 AS "
+                    "SELECT * FROM _arrow_post_stage3"
+                )
+                try:
+                    con.unregister("_arrow_post_stage3")
+                except Exception:
+                    pass
+                self._post_stage3_table = "_post_stage3"
+                try:
+                    df = _arrow_main.to_pandas(types_mapper=pd.ArrowDtype)
+                except TypeError:
+                    df = _arrow_main.to_pandas()
+                del _arrow_main
+            else:
+                df = _arrow_main.to_pandas()
+                self._post_stage3_table = None
+
+            results["stage3_features"] = {
+                "num_groups": len(feature_pipeline),
+                "total_dim": feature_pipeline.total_dim,
+                "generated_cols": len(df_generated.columns) if df_generated is not None else 0,
+                "df_shape_after": list(df.shape),
+                "time_seconds": round(time.time() - stage_start, 2),
+            }
+            state.mark_complete(
+                "stage3_features",
+                {"total_dim": feature_pipeline.total_dim},
+            )
+            logger.info(
+                "[Stage 3] Feature engineering complete in %.2fs: "
+                "%d groups, total_dim=%d",
+                time.time() - stage_start,
+                len(feature_pipeline), feature_pipeline.total_dim,
+            )
+
+        # ==============================================================
+        # Boundary: Stage 3 -> Stage 4 checkpoint
+        # ==============================================================
+        if end_stage <= 3:
+            self._save_checkpoint_post_stage3(
+                ckpt_dir, df, feature_pipeline, feature_schema,
+                meta={
+                    "id_cols": sorted(id_cols),
+                    "date_cols": sorted(date_cols),
+                },
+            )
+            results["checkpoint_saved"] = str(ckpt_dir / "post_stage3")
+            results["total_time_seconds"] = round(
+                time.time() - pipeline_start, 2
+            )
+            logger.info(
+                "[Phase 0 partial] Stages %d..%d complete in %.1fs; "
+                "checkpoint at %s",
+                start_stage, end_stage,
+                results["total_time_seconds"], ckpt_dir / "post_stage3",
+            )
+            return results
+
+        # ==============================================================
+        # Stage 4-9 prep: when resuming from post_stage3 checkpoint we
+        # have df but no DuckDB ctx and no raw_data; rebuild ctx + lazy-
+        # reload sequence cols so Stages 5-7 SQL paths and Stage 8
+        # SequenceBuilder both work.
+        # ==============================================================
+        if start_stage >= 4:
+            import pyarrow as _pa
+            adapter = self._build_adapter()
+            raw_data = adapter.load_raw()
+            from .adapter import DuckDBAdapterContext as _Ctx
+            if isinstance(raw_data, _Ctx):
+                self._adapter_ctx = raw_data
+                # Re-register the post-stage-3 df on the adapter's
+                # connection so Stage 6 SQL fit/transform can find it.
+                con = self._adapter_ctx.con
+                try:
+                    con.unregister("_post_stage3")
+                except Exception:
+                    pass
+                con.register("_arrow_post_stage3", _pa.Table.from_pandas(df))
+                con.execute(
+                    "CREATE OR REPLACE TABLE _post_stage3 AS "
+                    "SELECT * FROM _arrow_post_stage3"
+                )
+                try:
+                    con.unregister("_arrow_post_stage3")
+                except Exception:
+                    pass
+                self._post_stage3_table = "_post_stage3"
+                # raw_data["main"] keeps scalar df from ctx so Stage 8
+                # SequenceBuilder can fall back to it if needed.
+                raw_data = {"main": self._scalar_df_from_ctx(raw_data)}
+            else:
+                self._adapter_ctx = None
+                self._post_stage3_table = None
 
         # ==============================================================
         # Stage 4: Label derivation via LabelDeriver
@@ -1623,11 +1841,20 @@ class PipelineRunner:
                             train_gap_expr = f"{repr(train_cut)} - INTERVAL {gap_days} DAY"
                             val_gap_expr   = f"{repr(val_cut)} - INTERVAL {gap_days} DAY"
                         else:
-                            # Numeric date (yyyymm / day_offset / etc).
-                            # Gap collapses to ``gap_days`` units of the
-                            # same numeric scale.
-                            train_gap_expr = f"({repr(train_cut)} - {gap_days})"
-                            val_gap_expr   = f"({repr(val_cut)} - {gap_days})"
+                            # Numeric date (yyyymm DECIMAL / day_offset INT / etc).
+                            # We can't translate gap_days into the column's own
+                            # scale without metadata, so the safest behaviour is
+                            # no gap: cut at the quantile, no rows dropped.
+                            # Tests that need a gap should use a real DATE/
+                            # TIMESTAMP column.
+                            train_gap_expr = repr(train_cut)
+                            val_gap_expr   = repr(val_cut)
+                            if gap_days > 0:
+                                logger.warning(
+                                    "[Stage 5] date_col '%s' is numeric (type=%s); "
+                                    "ignoring gap_days=%d (no scale translation).",
+                                    date_col, col_type, gap_days,
+                                )
                         rows = con.execute(
                             f'SELECT row_number() OVER () - 1 AS _idx, '
                             f'  CASE '
@@ -2030,6 +2257,197 @@ class PipelineRunner:
             len(lazy_cols), lazy_cols, len(keep_cols), len(df), len(df.columns),
         )
         return df
+
+    # ==================================================================
+    # Multi-job Phase 0 split: checkpoint helpers
+    # ==================================================================
+
+    def _save_checkpoint_post_stage2(
+        self,
+        ckpt_dir: "Path",
+        df: Any,
+        meta: Dict[str, Any],
+    ) -> None:
+        """Persist post-Stage-2 state to ``ckpt_dir/post_stage2/``.
+
+        Output:
+          * ``main.parquet`` — imputed / encoded scalar table
+          * ``meta.json``   — id_cols, date_cols (so Stage 4-9 jobs can
+                              reconstruct the same set without re-reading
+                              the YAML)
+        """
+        import duckdb as _ddb_ckpt
+        target = ckpt_dir / "post_stage2"
+        target.mkdir(parents=True, exist_ok=True)
+
+        parquet_path = target / "main.parquet"
+        _con = _ddb_ckpt.connect()
+        try:
+            _con.register("_ckpt_main", df)
+            _con.execute(
+                f"COPY _ckpt_main TO '{parquet_path}' (FORMAT PARQUET)"
+            )
+        finally:
+            _con.close()
+
+        with open(target / "meta.json", "w") as f:
+            json.dump(meta, f, indent=2, default=str)
+
+        logger.info(
+            "[Checkpoint] post_stage2 written: %s (%s)",
+            parquet_path,
+            getattr(df, "shape", "?"),
+        )
+
+    def _load_checkpoint_post_stage2(
+        self, ckpt_dir: "Path"
+    ) -> Tuple[Any, Dict[str, Any]]:
+        """Load post-Stage-2 state from ``ckpt_dir/post_stage2/``.
+
+        Returns a pyarrow.Table (so the existing Stage 3 boundary code
+        path that converts Arrow → pandas continues to work) plus the
+        meta dict.
+        """
+        import duckdb as _ddb_ckpt
+        import pyarrow as _pa
+        target = ckpt_dir / "post_stage2"
+        parquet_path = target / "main.parquet"
+        if not parquet_path.exists():
+            raise FileNotFoundError(
+                f"post_stage2 checkpoint missing: {parquet_path}"
+            )
+
+        _con = _ddb_ckpt.connect()
+        try:
+            arrow_tbl = _con.execute(
+                f"SELECT * FROM read_parquet('{parquet_path}')"
+            ).fetch_arrow_table()
+        finally:
+            _con.close()
+
+        meta_path = target / "meta.json"
+        meta: Dict[str, Any] = {}
+        if meta_path.exists():
+            with open(meta_path) as f:
+                meta = json.load(f)
+
+        logger.info(
+            "[Checkpoint] post_stage2 loaded: %s (rows=%d, cols=%d)",
+            parquet_path, arrow_tbl.num_rows, arrow_tbl.num_columns,
+        )
+        return arrow_tbl, meta
+
+    def _save_checkpoint_post_stage3(
+        self,
+        ckpt_dir: "Path",
+        df: "pd.DataFrame",
+        feature_pipeline: Any,
+        feature_schema: Dict[str, Any],
+        meta: Dict[str, Any],
+    ) -> None:
+        """Persist post-Stage-3 state to ``ckpt_dir/post_stage3/``.
+
+        Output:
+          * ``main.parquet``       — df with merged generated features
+          * ``feature_schema.json`` — get_ple_input_metadata() result
+          * ``feature_pipeline/``  — feature_pipeline.save() target
+          * ``meta.json``          — id_cols, date_cols
+        """
+        import duckdb as _ddb_ckpt
+        target = ckpt_dir / "post_stage3"
+        target.mkdir(parents=True, exist_ok=True)
+
+        parquet_path = target / "main.parquet"
+        _con = _ddb_ckpt.connect()
+        try:
+            _con.register("_ckpt_main", df)
+            _con.execute(
+                f"COPY _ckpt_main TO '{parquet_path}' (FORMAT PARQUET)"
+            )
+        finally:
+            _con.close()
+
+        with open(target / "feature_schema.json", "w") as f:
+            json.dump(feature_schema, f, indent=2, default=str)
+
+        try:
+            feature_pipeline.save(str(target / "feature_pipeline"))
+        except Exception as exc:
+            logger.warning(
+                "[Checkpoint] feature_pipeline.save failed: %s — Stage 4-9 "
+                "job will rebuild from feature_schema.json", exc,
+            )
+
+        with open(target / "meta.json", "w") as f:
+            json.dump(meta, f, indent=2, default=str)
+
+        logger.info(
+            "[Checkpoint] post_stage3 written: %s (%s)",
+            parquet_path,
+            getattr(df, "shape", "?"),
+        )
+
+    def _load_checkpoint_post_stage3(
+        self, ckpt_dir: "Path"
+    ) -> Tuple["pd.DataFrame", Any, Dict[str, Any], Dict[str, Any]]:
+        """Load post-Stage-3 state from ``ckpt_dir/post_stage3/``.
+
+        Returns ``(df, feature_pipeline, feature_schema, meta)``. ``df``
+        is an Arrow-backed pandas DataFrame so memory stays bounded by
+        the Arrow representation.
+        """
+        import duckdb as _ddb_ckpt
+        target = ckpt_dir / "post_stage3"
+        parquet_path = target / "main.parquet"
+        if not parquet_path.exists():
+            raise FileNotFoundError(
+                f"post_stage3 checkpoint missing: {parquet_path}"
+            )
+
+        _con = _ddb_ckpt.connect()
+        try:
+            arrow_tbl = _con.execute(
+                f"SELECT * FROM read_parquet('{parquet_path}')"
+            ).fetch_arrow_table()
+        finally:
+            _con.close()
+
+        try:
+            df = arrow_tbl.to_pandas(types_mapper=pd.ArrowDtype)
+        except TypeError:
+            df = arrow_tbl.to_pandas()
+
+        schema_path = target / "feature_schema.json"
+        feature_schema: Dict[str, Any] = {}
+        if schema_path.exists():
+            with open(schema_path) as f:
+                feature_schema = json.load(f)
+
+        feature_pipeline = None
+        pipeline_path = target / "feature_pipeline"
+        if pipeline_path.exists():
+            try:
+                from core.feature.group_pipeline import FeatureGroupPipeline
+                feature_pipeline = FeatureGroupPipeline.load(str(pipeline_path))
+            except Exception as exc:
+                logger.warning(
+                    "[Checkpoint] feature_pipeline.load failed: %s — "
+                    "downstream stages must work from feature_schema.json", exc,
+                )
+
+        meta_path = target / "meta.json"
+        meta: Dict[str, Any] = {}
+        if meta_path.exists():
+            with open(meta_path) as f:
+                meta = json.load(f)
+
+        logger.info(
+            "[Checkpoint] post_stage3 loaded: %s (rows=%d, cols=%d, "
+            "groups=%d)",
+            parquet_path, arrow_tbl.num_rows, arrow_tbl.num_columns,
+            len(feature_pipeline) if feature_pipeline is not None else 0,
+        )
+        return df, feature_pipeline, feature_schema, meta
 
     def _prepare_temporal(self, df: "pd.DataFrame") -> "pd.DataFrame":
         """Truncate sequences and recompute product columns to prevent leakage.
