@@ -371,16 +371,16 @@ class PipelineRunner:
         # Checkpoint load path: start_stage > 1
         # --------------------------------------------------------------
         if start_stage >= 4:
-            # Job C (Stages 4-9): load post-stage-3 checkpoint
-            # — has df + feature_pipeline + feature_schema
-            df, feature_pipeline, feature_schema, _meta = (
+            # Job C (Stages 4-9): load post-stage-3 metadata only.
+            # The wide matrix stays on disk and is mounted as a DuckDB
+            # view inside the Stage-4-9 prep block below.
+            feature_pipeline, feature_schema, _meta = (
                 self._load_checkpoint_post_stage3(ckpt_dir)
             )
             results["resumed_from"] = str(ckpt_dir / "post_stage3")
             logger.info(
-                "[Stage 1-3 SKIPPED] Resumed from post_stage3 checkpoint: "
-                "df=%s, feature_pipeline_groups=%d, feature_schema_keys=%d",
-                getattr(df, "shape", "?"),
+                "[Stage 1-3 SKIPPED] Resumed from post_stage3 metadata: "
+                "feature_pipeline_groups=%d, feature_schema_keys=%d",
                 len(feature_pipeline) if feature_pipeline is not None else 0,
                 len(feature_schema),
             )
@@ -722,37 +722,89 @@ class PipelineRunner:
             return results
 
         # ==============================================================
-        # Stage 4-9 prep: when resuming from post_stage3 checkpoint we
-        # have df but no DuckDB ctx and no raw_data; rebuild ctx + lazy-
-        # reload sequence cols so Stages 5-7 SQL paths and Stage 8
-        # SequenceBuilder both work.
+        # Stage 4-9 prep (resumed-from-checkpoint path)
+        #
+        # Memory rule: never materialise the post-Stage-3 matrix in
+        # pandas more than absolutely necessary. The data lives in
+        # ``post_stage3/main.parquet`` on disk; we expose it as a
+        # DuckDB *view* on the adapter ctx (zero materialisation) and
+        # build a slim ``df_lite`` (only id / label-source / sequence
+        # columns) for the few legacy stage-4/5/7 helpers that still
+        # take pandas. The wide feature matrix never enters python.
         # ==============================================================
         if start_stage >= 4:
-            import pyarrow as _pa
             adapter = self._build_adapter()
             raw_data = adapter.load_raw()
             from .adapter import DuckDBAdapterContext as _Ctx
             if isinstance(raw_data, _Ctx):
                 self._adapter_ctx = raw_data
-                # Re-register the post-stage-3 df on the adapter's
-                # connection so Stage 6 SQL fit/transform can find it.
                 con = self._adapter_ctx.con
-                try:
-                    con.unregister("_post_stage3")
-                except Exception:
-                    pass
-                con.register("_arrow_post_stage3", _pa.Table.from_pandas(df))
+                ckpt_parquet = ckpt_dir / "post_stage3" / "main.parquet"
+                if not ckpt_parquet.exists():
+                    raise FileNotFoundError(
+                        f"post_stage3 checkpoint missing: {ckpt_parquet}"
+                    )
+                # Build a SELECT projection that casts every DECIMAL
+                # column to DOUBLE — same fix as the loader helper, but
+                # staying purely SQL (no Arrow round-trip).
+                schema_info = con.execute(
+                    f"DESCRIBE SELECT * FROM read_parquet("
+                    f"'{ckpt_parquet}') LIMIT 0"
+                ).fetchall()
+                proj_parts: List[str] = []
+                for row in schema_info:
+                    col_name, col_type = row[0], (row[1] or "").upper()
+                    if col_type.startswith("DECIMAL"):
+                        proj_parts.append(
+                            f'CAST("{col_name}" AS DOUBLE) AS "{col_name}"'
+                        )
+                    else:
+                        proj_parts.append(f'"{col_name}"')
                 con.execute(
-                    "CREATE OR REPLACE TABLE _post_stage3 AS "
-                    "SELECT * FROM _arrow_post_stage3"
+                    f"CREATE OR REPLACE VIEW _post_stage3 AS\n"
+                    f"  SELECT {', '.join(proj_parts)}\n"
+                    f"  FROM read_parquet('{ckpt_parquet}')"
                 )
-                try:
-                    con.unregister("_arrow_post_stage3")
-                except Exception:
-                    pass
                 self._post_stage3_table = "_post_stage3"
-                # raw_data["main"] keeps scalar df from ctx so Stage 8
-                # SequenceBuilder can fall back to it if needed.
+
+                # Build df_lite: only the non-feature columns Stage 4
+                # (label deriver) and Stage 7 (seq leakage check) still
+                # need on the pandas side. The 1100+ feature cols stay
+                # in DuckDB.
+                feature_col_set: set = set()
+                if feature_pipeline is not None:
+                    feature_col_set = set(
+                        getattr(feature_pipeline, "_output_columns", None)
+                        or feature_schema.get("output_columns", [])
+                    )
+                else:
+                    feature_col_set = set(
+                        feature_schema.get("output_columns", [])
+                    )
+                all_post3_cols = [
+                    r[0] for r in con.execute(
+                        "DESCRIBE _post_stage3"
+                    ).fetchall()
+                ]
+                df_lite_cols = [
+                    c for c in all_post3_cols if c not in feature_col_set
+                ]
+                if df_lite_cols:
+                    proj_lite = ", ".join(f'"{c}"' for c in df_lite_cols)
+                    df = con.execute(
+                        f"SELECT {proj_lite} FROM _post_stage3"
+                    ).df()
+                else:
+                    df = con.execute(
+                        "SELECT * FROM _post_stage3 LIMIT 0"
+                    ).df()
+                logger.info(
+                    "[Stage 4-9 prep] post_stage3 mounted as VIEW (parquet); "
+                    "df_lite=%d cols (%d feature cols stay in DuckDB)",
+                    len(df_lite_cols), len(feature_col_set),
+                )
+                # raw_data["main"] kept slim so Stage 8 SequenceBuilder
+                # can fall back to it if needed.
                 raw_data = {"main": self._scalar_df_from_ctx(raw_data)}
             else:
                 self._adapter_ctx = None
@@ -837,17 +889,54 @@ class PipelineRunner:
 
         from core.pipeline.normalizer import FeatureNormalizer
 
-        # Determine feature columns: exclude labels, IDs, dates, sequence (list) cols
+        # Determine feature columns. When the SQL-native path is on
+        # (post-Stage-3 lives as ``_post_stage3`` view on the adapter
+        # ctx), read the schema straight from DuckDB so we don't depend
+        # on df_lite / fat df having every feature column. This keeps
+        # the column list authoritative across single-job and resumed
+        # paths.
         label_col_set = set(labels_df.columns)
-        seq_col_set = set(c for c in df.columns
-                         if c.startswith("seq_") or c in self.config.features.sequence)
-        non_feature_cols = label_col_set | id_cols | date_cols | seq_col_set
-        feature_cols = [
-            c for c in df.select_dtypes(include=[np.number]).columns
-            if c not in non_feature_cols
-        ]
-
-        train_df = df.iloc[train_idx]
+        seq_col_set: set
+        non_feature_cols: set
+        if (
+            self._adapter_ctx is not None
+            and getattr(self, "_post_stage3_table", None) is not None
+        ):
+            con = self._adapter_ctx.con
+            descr_post3 = con.execute(
+                f"DESCRIBE {self._post_stage3_table}"
+            ).fetchall()
+            post3_cols = [r[0] for r in descr_post3]
+            post3_types = {r[0]: (r[1] or "").upper() for r in descr_post3}
+            seq_col_set = {
+                c for c in post3_cols
+                if c.startswith("seq_") or c in self.config.features.sequence
+            }
+            non_feature_cols = label_col_set | id_cols | date_cols | seq_col_set
+            numeric_keywords = (
+                "INT", "BIGINT", "SMALLINT", "TINYINT", "HUGEINT",
+                "DECIMAL", "DOUBLE", "FLOAT", "REAL",
+            )
+            feature_cols = [
+                c for c in post3_cols
+                if c not in non_feature_cols
+                and any(k in post3_types.get(c, "") for k in numeric_keywords)
+                # exclude LIST-typed sequence columns whose name doesn't
+                # match the seq_ prefix (e.g., txn_amount_seq)
+                and "[" not in post3_types.get(c, "")
+            ]
+            train_df = None  # not used on SQL-native path
+        else:
+            seq_col_set = {
+                c for c in df.columns
+                if c.startswith("seq_") or c in self.config.features.sequence
+            }
+            non_feature_cols = label_col_set | id_cols | date_cols | seq_col_set
+            feature_cols = [
+                c for c in df.select_dtypes(include=[np.number]).columns
+                if c not in non_feature_cols
+            ]
+            train_df = df.iloc[train_idx]
 
         # Fit normalizer on TRAIN split only, transform ALL data.
         # Read normalizer config from pipeline.yaml so suffix/prefix
@@ -869,20 +958,18 @@ class PipelineRunner:
         # produces a new table the runner reads only the slices it needs
         # from.  This avoids the ~10 GB pandas allocation that has been
         # OOMing Phase 0 even on the 64 GB instance.
-        sql_native = self._adapter_ctx is not None
+        sql_native = (
+            self._adapter_ctx is not None
+            and getattr(self, "_post_stage3_table", None) is not None
+        )
+        norm_output_table: Optional[str] = None
         if sql_native:
             con = self._adapter_ctx.con
-            # Register the current df (post-Stage-3 merge) into the same
-            # connection; the merged scalar columns are already in the
-            # ~1M × ~1285 pandas frame at this point. Registration is
-            # zero-copy for Arrow-backed columns and a single-pass
-            # walk for native pandas blocks.
-            con.register("_norm_input", df)
-            # Stage 5 produced index arrays. Mark train rows with a
-            # boolean column on the registered view so fit_sql can
-            # restrict the aggregate to the training split without a
-            # second pandas slice.
-            train_mask = np.zeros(len(df), dtype=bool)
+            src_table = self._post_stage3_table
+            n_rows = con.execute(
+                f"SELECT COUNT(*) FROM {src_table}"
+            ).fetchone()[0]
+            train_mask = np.zeros(n_rows, dtype=bool)
             train_mask[train_idx] = True
             con.execute("DROP TABLE IF EXISTS _split_mask")
             con.execute(
@@ -892,46 +979,41 @@ class PipelineRunner:
                 [train_mask.tolist()],
             )
             con.execute(
-                "CREATE OR REPLACE VIEW _norm_with_split AS "
-                "SELECT i.*, m._is_train "
-                "FROM _norm_input i POSITIONAL JOIN _split_mask m"
+                f"CREATE OR REPLACE VIEW _norm_with_split AS "
+                f"SELECT p.*, m._is_train "
+                f"FROM {src_table} p POSITIONAL JOIN _split_mask m"
             )
             normalizer.fit_sql(
                 con, "_norm_with_split", feature_cols,
                 train_predicate="_is_train",
             )
             normalizer.transform_sql(
-                con, "_norm_input", feature_cols,
+                con, src_table, feature_cols,
                 output_table="_norm_output",
             )
-            # Pull the normalised view back as pandas — at this point the
-            # *output* width is the only materialisation, so peak is
-            # bounded to the new shape, not the lag-tensor input shape.
-            df_normed = con.execute("SELECT * FROM _norm_output").df()
-            con.execute("DROP TABLE IF EXISTS _norm_output")
             con.execute("DROP TABLE IF EXISTS _split_mask")
-            try:
-                con.unregister("_norm_input")
-            except Exception:
-                pass
+            descr = con.execute("DESCRIBE _norm_output").fetchall()
+            feature_cols = [r[0] for r in descr]
+            norm_output_table = "_norm_output"
             logger.info(
-                "[Stage 6] DuckDB-native fit+transform (no pandas materialise of "
-                "input matrix); output shape = %s", df_normed.shape,
+                "[Stage 6] DuckDB-native fit+transform: %d post-norm cols "
+                "stay in DuckDB table '%s' (read straight from %s view, "
+                "no pandas materialise)",
+                len(feature_cols), norm_output_table, src_table,
             )
+            self._post_norm_table = norm_output_table
         else:
             normalizer.fit(train_df, feature_cols)
             df_normed = normalizer.transform(df, feature_cols)
+            for col in df_normed.columns:
+                df[col] = df_normed[col].values
+            feature_cols = list(df_normed.columns)
+            self._post_norm_table = None
 
         # Extract column classifications from fitted normalizer
         continuous_cols = normalizer.continuous_cols
         binary_cols = normalizer.binary_cols
         log_cols_created = [f"{c}_log" for c in normalizer.power_law_cols]
-
-        # Write normalized columns back into df so downstream stages can use df[feature_cols]
-        for col in df_normed.columns:
-            df[col] = df_normed[col].values
-        # Update feature_cols to match the normalizer output order
-        feature_cols = list(df_normed.columns)
 
         # Build scaler_params for backward-compatible scaler_params.json
         scaler_params: Dict[str, Any] = {}
@@ -995,8 +1077,20 @@ class PipelineRunner:
         stage_start = time.time()
         logger.info("[Stage 7] Validating for data leakage...")
 
-        # Build feature-only df for leakage check
-        df_features_only = df[feature_cols]
+        # When the SQL-native path is on, Stage 6 left the post-norm
+        # matrix in ``_norm_output`` and ``_post_stage3`` is still a
+        # cheap view. ``_validate_leakage`` only needs the *names* of
+        # the feature columns plus labels_df — actual values come from
+        # the DuckDB table. Pass an empty pandas frame whose columns
+        # match feature_cols so the legacy signature is satisfied
+        # without re-materialising the 1168 × 941K matrix.
+        if (
+            self._adapter_ctx is not None
+            and getattr(self, "_post_stage3_table", None) is not None
+        ):
+            df_features_only = pd.DataFrame(columns=feature_cols)
+        else:
+            df_features_only = df[feature_cols]
         leakage_result = self._validate_leakage(df_features_only, labels_df, df)
 
         results["stage7_leakage"] = {
@@ -1032,23 +1126,83 @@ class PipelineRunner:
 
         # ==============================================================
         # Stage 8: Sequence building
+        #
+        # CLAUDE.md §3.3 / memory-efficiency: build numpy tensors, write
+        # them to disk *immediately*, and replace the in-memory arrays
+        # with metadata stubs. Without this, the (941K, 50, 27) product
+        # tensor (~5 GB float32) plus the (941K, 50, 4) txn tensor
+        # (~0.75 GB) sit alongside Stage 9's features.parquet COPY work
+        # set and tip the 64 GB instance into OOM.
         # ==============================================================
         stage_start = time.time()
         logger.info("[Stage 8] Building sequences...")
 
         sequences = self._build_sequences(raw_data)
+        sequence_paths: Dict[str, str] = {}
+        sequence_meta: Dict[str, Dict[str, Any]] = {}
+        if sequences:
+            for name, arr in sequences.items():
+                npy_path = out / f"{name}.npy"
+                np.save(str(npy_path), arr)
+                sequence_paths[name] = str(npy_path)
+                sequence_meta[name] = {
+                    "path": str(npy_path),
+                    "shape": list(arr.shape),
+                    "dtype": str(arr.dtype),
+                }
+                logger.info(
+                    "[Stage 8] saved %s eagerly to %s shape=%s",
+                    name, npy_path, arr.shape,
+                )
+            # Canonical sequences.npy + seq_lengths.npy when there is
+            # exactly one tensor (matches the legacy contract).
+            if len(sequences) == 1:
+                only_arr = next(iter(sequences.values()))
+                np.save(str(out / "sequences.npy"), only_arr)
+                if only_arr.ndim == 3:
+                    nonzero_mask = np.any(only_arr != 0, axis=2)
+                    seq_lengths = nonzero_mask.sum(axis=1).astype(np.int32)
+                elif only_arr.ndim == 2:
+                    seq_lengths = (only_arr != 0).sum(axis=1).astype(np.int32)
+                else:
+                    seq_lengths = np.full(
+                        len(only_arr),
+                        only_arr.shape[1] if only_arr.ndim >= 2 else 1,
+                        dtype=np.int32,
+                    )
+                np.save(str(out / "seq_lengths.npy"), seq_lengths)
+                sequence_meta["seq_lengths"] = {
+                    "path": str(out / "seq_lengths.npy"),
+                    "shape": list(seq_lengths.shape),
+                    "dtype": str(seq_lengths.dtype),
+                }
+                del seq_lengths
+
+            # Free the in-memory tensors before Stage 9 starts. The
+            # caller has the npy paths in ``sequence_paths`` /
+            # ``sequence_meta`` for the manifest.
+            sequences.clear()
+            del sequences
+            sequences = None  # type: ignore[assignment]
+            import gc as _gc
+            _gc.collect()
+            logger.info(
+                "[Stage 8] in-memory sequence arrays freed; %d files on disk",
+                len(sequence_paths),
+            )
 
         results["stage8_sequences"] = {
-            "has_sequences": sequences is not None,
-            "keys": list(sequences.keys()) if sequences else [],
+            "has_sequences": bool(sequence_paths),
+            "keys": list(sequence_paths.keys()),
+            "paths": sequence_paths,
             "time_seconds": round(time.time() - stage_start, 2),
         }
         state.mark_complete("stage8_sequences", {
-            "has_sequences": sequences is not None,
+            "has_sequences": bool(sequence_paths),
         })
         logger.info(
             "[Stage 8] Sequences: %s in %.2fs",
-            f"{len(sequences)} tensors" if sequences else "none",
+            f"{len(sequence_paths)} tensors" if sequence_paths else "none",
             time.time() - stage_start,
         )
 
@@ -1058,49 +1212,72 @@ class PipelineRunner:
         stage_start = time.time()
         logger.info("[Stage 9] Saving artifacts to %s ...", out)
 
-        # 9a) features.parquet -- all numeric features, normalized (DuckDB COPY)
-        features_out = df[feature_cols].reset_index(drop=True)
+        # 9a) features.parquet -- when Stage 6 ran SQL-native, the
+        #     post-normalize matrix is already on the adapter ctx as
+        #     ``_norm_output``. COPY straight from there to parquet so
+        #     we never re-materialise the 1168 × 941K matrix in pandas
+        #     (CLAUDE.md §3.3 + the OOM mode that this fixes).
         features_path = out / "features.parquet"
-        import duckdb as _ddb_stage9
-        _con9 = _ddb_stage9.connect()
-        try:
-            _con9.register("_features_out", features_out)
-            _con9.execute(f"COPY _features_out TO '{features_path}' (FORMAT PARQUET)")
-        finally:
-            _con9.close()
-        logger.info("[Stage 9] features.parquet: %d rows x %d cols", *features_out.shape)
+        post_norm_table = getattr(self, "_post_norm_table", None)
+        if post_norm_table and self._adapter_ctx is not None:
+            con = self._adapter_ctx.con
+            con.execute(
+                f"COPY {post_norm_table} TO '{features_path}' "
+                f"(FORMAT PARQUET)"
+            )
+            n_rows = con.execute(
+                f"SELECT COUNT(*) FROM {post_norm_table}"
+            ).fetchone()[0]
+            n_cols = len(con.execute(
+                f"DESCRIBE {post_norm_table}"
+            ).fetchall())
+            logger.info(
+                "[Stage 9] features.parquet (DuckDB-native): %d rows x %d cols",
+                n_rows, n_cols,
+            )
+            # Free the DuckDB table after parquet write to release ~9 GB
+            # before the labels write touches the same connection.
+            con.execute(f"DROP TABLE IF EXISTS {post_norm_table}")
+            self._post_norm_table = None
+        else:
+            # Pandas fallback: write feature_cols slice via DuckDB COPY.
+            features_out = df[feature_cols].reset_index(drop=True)
+            import duckdb as _ddb_stage9
+            _con9 = _ddb_stage9.connect()
+            try:
+                _con9.register("_features_out", features_out)
+                _con9.execute(
+                    f"COPY _features_out TO '{features_path}' "
+                    f"(FORMAT PARQUET)"
+                )
+            finally:
+                _con9.close()
+            logger.info(
+                "[Stage 9] features.parquet (pandas fallback): %d rows x %d cols",
+                *features_out.shape,
+            )
+            del features_out
 
-        # 9b) labels.parquet (DuckDB COPY)
+        # 9b) labels.parquet (DuckDB COPY) — small (≤ 30 cols × 941K)
         labels_path = out / "labels.parquet"
-        _labels_out = labels_df.reset_index(drop=True)
-        _con9b = _ddb_stage9.connect()
+        import duckdb as _ddb_stage9b
+        _con9b = _ddb_stage9b.connect()
         try:
-            _con9b.register("_labels_out", _labels_out)
-            _con9b.execute(f"COPY _labels_out TO '{labels_path}' (FORMAT PARQUET)")
+            _con9b.register("_labels_out", labels_df.reset_index(drop=True))
+            _con9b.execute(
+                f"COPY _labels_out TO '{labels_path}' (FORMAT PARQUET)"
+            )
         finally:
             _con9b.close()
-        logger.info("[Stage 9] labels.parquet: %d rows x %d cols", *labels_df.shape)
+        logger.info(
+            "[Stage 9] labels.parquet: %d rows x %d cols",
+            len(labels_df), len(labels_df.columns),
+        )
 
-        # 9c) sequences.npy + seq_lengths.npy
-        if sequences:
-            for name, arr in sequences.items():
-                np.save(str(out / f"{name}.npy"), arr)
-                logger.info("[Stage 9] %s.npy: shape=%s", name, arr.shape)
-            # Also save as canonical sequences.npy if there is exactly one
-            if len(sequences) == 1:
-                arr = next(iter(sequences.values()))
-                np.save(str(out / "sequences.npy"), arr)
-                # Compute and save sequence lengths
-                # (number of non-zero timesteps along axis 1)
-                if arr.ndim == 3:
-                    nonzero_mask = np.any(arr != 0, axis=2)  # (n, seq_len)
-                    seq_lengths = nonzero_mask.sum(axis=1).astype(np.int32)
-                elif arr.ndim == 2:
-                    seq_lengths = (arr != 0).sum(axis=1).astype(np.int32)
-                else:
-                    seq_lengths = np.full(len(arr), arr.shape[1] if arr.ndim >= 2 else 1, dtype=np.int32)
-                np.save(str(out / "seq_lengths.npy"), seq_lengths)
-                logger.info("[Stage 9] seq_lengths.npy: shape=%s", seq_lengths.shape)
+        # 9c) sequence files were written eagerly in Stage 8. The
+        #     metadata stubs in ``sequence_meta`` describe them so the
+        #     manifest can pick them up without re-touching the (now
+        #     freed) numpy arrays.
 
         # 9d) scaler_params.json
         scaler_path = out / "scaler_params.json"
@@ -1178,10 +1355,8 @@ class PipelineRunner:
             "label_schema": str(label_schema_path),
             "split_indices": str(split_path),
         }
-        if sequences:
-            results["artifact_paths"]["sequences"] = {
-                name: str(out / f"{name}.npy") for name in sequences
-            }
+        if sequence_paths:
+            results["artifact_paths"]["sequences"] = dict(sequence_paths)
 
         manifest_path = out / "pipeline_manifest.json"
         with open(manifest_path, "w") as f:
@@ -2389,66 +2564,23 @@ class PipelineRunner:
 
     def _load_checkpoint_post_stage3(
         self, ckpt_dir: "Path"
-    ) -> Tuple["pd.DataFrame", Any, Dict[str, Any], Dict[str, Any]]:
-        """Load post-Stage-3 state from ``ckpt_dir/post_stage3/``.
+    ) -> Tuple[Any, Dict[str, Any], Dict[str, Any]]:
+        """Load post-Stage-3 *metadata* from ``ckpt_dir/post_stage3/``.
 
-        Returns ``(df, feature_pipeline, feature_schema, meta)``. ``df``
-        is an Arrow-backed pandas DataFrame so memory stays bounded by
-        the Arrow representation.
-
-        Any DECIMAL fields the source parquet inherited from the raw
-        Santander schema are promoted to DOUBLE here. Without this,
-        Stage 6's normalizer SQL (``(col - mean) / std``) overflows
-        DECIMAL(18,17) when the standardised value escapes ±9.99…
-        — typical for any column that isn't a [0, 1] probability.
+        Returns ``(feature_pipeline, feature_schema, meta)``. The
+        wide post-Stage-3 matrix itself stays on disk — the run()
+        prep block registers ``main.parquet`` as a DuckDB view on
+        the adapter ctx (zero materialise, with DECIMAL → DOUBLE
+        cast in the projection). This keeps Job C's resident set
+        bounded by the slim ``df_lite`` (id/label/seq columns) plus
+        whatever the SQL transform/save needs.
         """
-        import duckdb as _ddb_ckpt
-        import pandas as pd  # types_mapper=pd.ArrowDtype below
-        import pyarrow as pa
         target = ckpt_dir / "post_stage3"
         parquet_path = target / "main.parquet"
         if not parquet_path.exists():
             raise FileNotFoundError(
                 f"post_stage3 checkpoint missing: {parquet_path}"
             )
-
-        _con = _ddb_ckpt.connect()
-        try:
-            arrow_tbl = _con.execute(
-                f"SELECT * FROM read_parquet('{parquet_path}')"
-            ).fetch_arrow_table()
-        finally:
-            _con.close()
-
-        # Promote DECIMAL → DOUBLE to dodge the (±9.99…) overflow that
-        # the post-Stage-2 numeric round-trip can introduce.
-        decimal_fields = [
-            f.name for f in arrow_tbl.schema if pa.types.is_decimal(f.type)
-        ]
-        if decimal_fields:
-            logger.info(
-                "[Checkpoint] promoting %d DECIMAL columns to DOUBLE: %s%s",
-                len(decimal_fields), decimal_fields[:5],
-                " …" if len(decimal_fields) > 5 else "",
-            )
-            new_arrays = []
-            new_fields = []
-            for i, field in enumerate(arrow_tbl.schema):
-                col = arrow_tbl.column(i)
-                if pa.types.is_decimal(field.type):
-                    new_arrays.append(col.cast(pa.float64()))
-                    new_fields.append(pa.field(field.name, pa.float64()))
-                else:
-                    new_arrays.append(col)
-                    new_fields.append(field)
-            arrow_tbl = pa.Table.from_arrays(
-                new_arrays, schema=pa.schema(new_fields)
-            )
-
-        try:
-            df = arrow_tbl.to_pandas(types_mapper=pd.ArrowDtype)
-        except TypeError:
-            df = arrow_tbl.to_pandas()
 
         schema_path = target / "feature_schema.json"
         feature_schema: Dict[str, Any] = {}
@@ -2465,7 +2597,8 @@ class PipelineRunner:
             except Exception as exc:
                 logger.warning(
                     "[Checkpoint] feature_pipeline.load failed: %s — "
-                    "downstream stages must work from feature_schema.json", exc,
+                    "downstream stages must work from feature_schema.json",
+                    exc,
                 )
 
         meta_path = target / "meta.json"
@@ -2475,12 +2608,13 @@ class PipelineRunner:
                 meta = json.load(f)
 
         logger.info(
-            "[Checkpoint] post_stage3 loaded: %s (rows=%d, cols=%d, "
-            "groups=%d)",
-            parquet_path, arrow_tbl.num_rows, arrow_tbl.num_columns,
+            "[Checkpoint] post_stage3 metadata loaded: %s (groups=%d, "
+            "schema_keys=%d) — matrix stays on disk",
+            parquet_path,
             len(feature_pipeline) if feature_pipeline is not None else 0,
+            len(feature_schema),
         )
-        return df, feature_pipeline, feature_schema, meta
+        return feature_pipeline, feature_schema, meta
 
     def _prepare_temporal(self, df: "pd.DataFrame") -> "pd.DataFrame":
         """Truncate sequences and recompute product columns to prevent leakage.
