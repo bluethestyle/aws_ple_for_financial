@@ -1474,10 +1474,25 @@ class PipelineRunner:
 
         Uses temporal split if configured, otherwise random split.
 
+        When ``self._adapter_ctx`` is set, indices are computed via
+        DuckDB SQL on the registered ``_post_stage3`` table — no pandas
+        ``df.iloc`` view, no numpy permutation on a 1M-element array.
+        Returns the same tuple shape so legacy callers are unaffected.
+
         Returns:
             ``(train_indices, val_indices, test_indices)`` as lists of ints.
         """
         import numpy as np
+
+        # CLAUDE.md §3.3: SQL-native split when the adapter context is
+        # available. We still return python ``list[int]`` so Stage 6
+        # (already on the SQL path) can build the train_predicate
+        # boolean column from these indices.
+        if (self._adapter_ctx is not None
+            and getattr(self, "_post_stage3_table", None) is not None):
+            indices = self._compute_split_indices_sql()
+            if indices is not None:
+                return indices
 
         temporal_cfg = self._get_temporal_split_config()
 
@@ -1543,6 +1558,102 @@ class PipelineRunner:
 
         logger.info(
             "[Stage 5] Random split (seed=%d): train=%d, val=%d, test=%d",
+            seed, len(train_idx), len(val_idx), len(test_idx),
+        )
+        return train_idx, val_idx, test_idx
+
+    def _compute_split_indices_sql(
+        self,
+    ) -> Optional[Tuple[List[int], List[int], List[int]]]:
+        """SQL-native row index computation against ``_post_stage3``.
+
+        Returns ``None`` when no DuckDB context is wired (caller falls
+        back to the pandas path).
+        """
+        ctx = self._adapter_ctx
+        table = getattr(self, "_post_stage3_table", None)
+        if ctx is None or table is None:
+            return None
+
+        con = ctx.con
+        n = int(con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        if n == 0:
+            return [], [], []
+
+        temporal_cfg = self._get_temporal_split_config()
+        if temporal_cfg is not None and temporal_cfg.get("enabled", False):
+            date_col = temporal_cfg.get("date_col")
+            if date_col:
+                # Check column existence on the SQL side
+                col_exists = con.execute(
+                    f"SELECT COUNT(*) FROM (DESCRIBE {table}) WHERE column_name = ?",
+                    [date_col],
+                ).fetchone()[0]
+                if col_exists:
+                    train_ratio = float(temporal_cfg.get("train_ratio", 0.7))
+                    val_ratio = float(temporal_cfg.get("val_ratio", 0.15))
+                    gap_days = int(temporal_cfg.get("gap_days", 7))
+                    cuts = con.execute(
+                        f'SELECT QUANTILE_CONT("{date_col}", {train_ratio}), '
+                        f'QUANTILE_CONT("{date_col}", {train_ratio + val_ratio}) '
+                        f"FROM {table}"
+                    ).fetchone()
+                    train_cut, val_cut = cuts
+                    if train_cut is None or val_cut is None:
+                        logger.warning(
+                            "[Stage 5] SQL temporal split: NULL quantiles, "
+                            "falling back to random",
+                        )
+                    else:
+                        # Materialise the row -> split assignment as a
+                        # one-shot SELECT — no pandas ``df.iloc`` slice.
+                        # Gap rows (within ``gap_days`` of a cut) are
+                        # dropped to avoid leakage between splits.
+                        rows = con.execute(
+                            f'SELECT row_number() OVER () - 1 AS _idx, '
+                            f'  CASE '
+                            f'    WHEN "{date_col}" < {repr(train_cut)} - INTERVAL {gap_days} DAY THEN 0 '
+                            f'    WHEN "{date_col}" < {repr(val_cut)} - INTERVAL {gap_days} DAY '
+                            f'         AND "{date_col}" >= {repr(train_cut)} THEN 1 '
+                            f'    WHEN "{date_col}" >= {repr(val_cut)} THEN 2 '
+                            f'    ELSE -1 '
+                            f'  END AS _split '
+                            f'FROM {table}'
+                        ).fetchall()
+                        train_idx = [r[0] for r in rows if r[1] == 0]
+                        val_idx   = [r[0] for r in rows if r[1] == 1]
+                        test_idx  = [r[0] for r in rows if r[1] == 2]
+                        logger.info(
+                            "[Stage 5] SQL temporal split: train=%d, val=%d, "
+                            "test=%d, gap_days=%d (dropped=%d)",
+                            len(train_idx), len(val_idx), len(test_idx),
+                            gap_days, n - len(train_idx) - len(val_idx) - len(test_idx),
+                        )
+                        return train_idx, val_idx, test_idx
+
+        # Random split: deterministic via DuckDB HASH on row_number + seed.
+        train_frac = float(self.config.data.train_split or 0.8)
+        val_frac = float(getattr(self.config.data, "val_split", 0.1) or 0.1)
+        seed = int(self.config.training.seed or 42)
+        # HASH -> uniform [0, 1] via mod / range. Reproducible because
+        # ``row_number()`` order is stable and seed is config-driven.
+        rows = con.execute(
+            f'SELECT _idx, _r FROM ('
+            f'  SELECT row_number() OVER () - 1 AS _idx, '
+            f'         (HASH(row_number() OVER () + {seed}) % 1000000) / 1000000.0 AS _r '
+            f'  FROM {table}'
+            f')'
+        ).fetchall()
+        train_idx, val_idx, test_idx = [], [], []
+        for idx, r in rows:
+            if r < train_frac:
+                train_idx.append(idx)
+            elif r < train_frac + val_frac:
+                val_idx.append(idx)
+            else:
+                test_idx.append(idx)
+        logger.info(
+            "[Stage 5] SQL random split (seed=%d): train=%d, val=%d, test=%d",
             seed, len(train_idx), len(val_idx), len(test_idx),
         )
         return train_idx, val_idx, test_idx
