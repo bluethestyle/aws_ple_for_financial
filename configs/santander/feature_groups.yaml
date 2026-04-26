@@ -437,6 +437,10 @@ feature_groups:
   - name: txn_lag_tensor
     group_type: generate
     generator: lag_extractor
+    enabled: false  # 2026-04-26: disabled — santander_final.parquet ships
+                    # without txn_day_offset_seq, so the SQL binder fails.
+                    # Re-enable once the source extraction is rerun with
+                    # the day-offset list column populated.
     generator_params:
       sequence_columns:
         amount: txn_amount_seq
@@ -472,6 +476,9 @@ feature_groups:
   - name: txn_rolling_stats
     group_type: generate
     generator: rolling_stats_extractor
+    enabled: false  # 2026-04-26: disabled — same root cause as
+                    # txn_lag_tensor (missing txn_day_offset_seq in
+                    # the current santander_final.parquet).
     generator_params:
       amount_column: txn_amount_seq
       day_offset_column: txn_day_offset_seq
