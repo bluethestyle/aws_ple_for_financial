@@ -497,28 +497,36 @@ class FeatureNormalizer:
         proj: List[str] = []
 
         # Scaled continuous: (col - mean) / std
+        # CAST source to DOUBLE so DECIMAL(P,S) source columns don't
+        # constrain the output domain. Without this, a DECIMAL(18,17)
+        # source can't hold any standardised value outside ±9.99…
+        # (one integer digit only) and DuckDB raises ConversionException
+        # for any normalised magnitude that escapes that range.
         if self.continuous_cols and self._mean is not None and self._std is not None:
             for i, c in enumerate(self.continuous_cols):
                 m = float(self._mean[i])
                 s = float(self._std[i])
-                # DuckDB respects float literal precision; use repr() so the
-                # SQL matches the python-side parameters exactly.
                 proj.append(
-                    f'(COALESCE("{c}", 0) - {repr(m)}) / {repr(s)} AS "{c}"'
+                    f'(CAST(COALESCE("{c}", 0) AS DOUBLE) - {repr(m)}) '
+                    f'/ {repr(s)} AS "{c}"'
                 )
 
         # Pass-through: binary / categorical_int / probability
+        # CAST these to DOUBLE too — Stage 9 features.parquet is meant
+        # to be an even-typed numeric matrix the trainer can torch-tensor
+        # without per-column dtype handling.
         for c in self.binary_cols:
-            proj.append(f'"{c}"')
+            proj.append(f'CAST("{c}" AS DOUBLE) AS "{c}"')
         for c in self.categorical_int_cols:
-            proj.append(f'"{c}"')
+            proj.append(f'CAST("{c}" AS DOUBLE) AS "{c}"')
         for c in self.probability_cols:
-            proj.append(f'"{c}"')
+            proj.append(f'CAST("{c}" AS DOUBLE) AS "{c}"')
 
         # Power-law log copies (LN(x+1) on clipped values; left unscaled)
         for c in self.power_law_cols:
             proj.append(
-                f'LN(GREATEST(COALESCE("{c}", 0), 0) + 1) AS "{c}_log"'
+                f'LN(GREATEST(CAST(COALESCE("{c}", 0) AS DOUBLE), 0) + 1) '
+                f'AS "{c}_log"'
             )
 
         # Caller-requested pass-through (ids, label cols, LIST cols)
