@@ -606,8 +606,67 @@ class PipelineRunner:
         if not normalizer_cfg and isinstance(getattr(self.config, "_raw", None), dict):
             normalizer_cfg = (self.config._raw.get("features", {}) or {}).get("normalizer", {}) or {}
         normalizer = FeatureNormalizer(config=normalizer_cfg)
-        normalizer.fit(train_df, feature_cols)
-        df_normed = normalizer.transform(df, feature_cols)
+
+        # CLAUDE.md §3.3: when the adapter exposed a DuckDB context we
+        # do the entire fit + transform inside DuckDB, never letting the
+        # 1M × ~1285D continuous matrix touch pandas. The fit aggregates
+        # mean / std / skew / kurt in a single SELECT; the transform is
+        # a SELECT-time projection ((col - mean) / std, log1p, etc.) that
+        # produces a new table the runner reads only the slices it needs
+        # from.  This avoids the ~10 GB pandas allocation that has been
+        # OOMing Phase 0 even on the 64 GB instance.
+        sql_native = self._adapter_ctx is not None
+        if sql_native:
+            con = self._adapter_ctx.con
+            # Register the current df (post-Stage-3 merge) into the same
+            # connection; the merged scalar columns are already in the
+            # ~1M × ~1285 pandas frame at this point. Registration is
+            # zero-copy for Arrow-backed columns and a single-pass
+            # walk for native pandas blocks.
+            con.register("_norm_input", df)
+            # Stage 5 produced index arrays. Mark train rows with a
+            # boolean column on the registered view so fit_sql can
+            # restrict the aggregate to the training split without a
+            # second pandas slice.
+            train_mask = np.zeros(len(df), dtype=bool)
+            train_mask[train_idx] = True
+            con.execute("DROP TABLE IF EXISTS _split_mask")
+            con.execute(
+                "CREATE TABLE _split_mask AS "
+                "SELECT row_number() OVER () AS _rn, "
+                "       UNNEST(?) AS _is_train",
+                [train_mask.tolist()],
+            )
+            con.execute(
+                "CREATE OR REPLACE VIEW _norm_with_split AS "
+                "SELECT i.*, m._is_train "
+                "FROM _norm_input i POSITIONAL JOIN _split_mask m"
+            )
+            normalizer.fit_sql(
+                con, "_norm_with_split", feature_cols,
+                train_predicate="_is_train",
+            )
+            normalizer.transform_sql(
+                con, "_norm_input", feature_cols,
+                output_table="_norm_output",
+            )
+            # Pull the normalised view back as pandas — at this point the
+            # *output* width is the only materialisation, so peak is
+            # bounded to the new shape, not the lag-tensor input shape.
+            df_normed = con.execute("SELECT * FROM _norm_output").df()
+            con.execute("DROP TABLE IF EXISTS _norm_output")
+            con.execute("DROP TABLE IF EXISTS _split_mask")
+            try:
+                con.unregister("_norm_input")
+            except Exception:
+                pass
+            logger.info(
+                "[Stage 6] DuckDB-native fit+transform (no pandas materialise of "
+                "input matrix); output shape = %s", df_normed.shape,
+            )
+        else:
+            normalizer.fit(train_df, feature_cols)
+            df_normed = normalizer.transform(df, feature_cols)
 
         # Extract column classifications from fitted normalizer
         continuous_cols = normalizer.continuous_cols

@@ -282,6 +282,351 @@ class FeatureNormalizer:
         return self.fit(df, feature_cols).transform(df, feature_cols)
 
     # ------------------------------------------------------------------
+    # SQL-native API (CLAUDE.md §3.3)
+    # ------------------------------------------------------------------
+    # Pandas fit/transform above materialise a 1M × ~1285D matrix to
+    # numpy via ``df[cols].values.astype(float64)`` — the dominant
+    # Phase-0 memory hot-spot. The SQL versions below replace that with
+    # DuckDB column aggregates and a SELECT-time projection: nothing
+    # leaves the database except the per-column scaler parameters and
+    # an output table reference.
+
+    _NUMERIC_DUCKDB_TYPES = (
+        "TINYINT", "SMALLINT", "INTEGER", "BIGINT",
+        "FLOAT", "DOUBLE", "DECIMAL", "HUGEINT",
+    )
+
+    def fit_sql(
+        self,
+        con: Any,
+        source_table: str,
+        feature_cols: List[str],
+        train_predicate: Optional[str] = None,
+    ) -> "FeatureNormalizer":
+        """SQL-native fit on a DuckDB table or view.
+
+        Parameters
+        ----------
+        con : duckdb.DuckDBPyConnection
+            Connection that owns ``source_table``.
+        source_table : str
+            Table or view that contains all of ``feature_cols``.
+        feature_cols : list[str]
+            Columns to consider for normalisation.
+        train_predicate : str, optional
+            Optional ``WHERE`` clause to limit the fit to the training
+            split (e.g. ``"_split = 'train'"``). Without it the entire
+            table is used.
+
+        Notes
+        -----
+        Stage 1 (column classification): one ``DESCRIBE`` + one
+        per-column ``COUNT(DISTINCT)`` SQL. Cheap.
+        Stage 2 (power-law detection): one batched aggregate using
+        DuckDB's ``SKEWNESS`` / ``KURTOSIS`` / ``MIN`` / ``COUNT(DISTINCT)``;
+        then a log-log R² check on candidates only (small loop).
+        Stage 3 (mean / std): single SELECT with all ``AVG`` / ``STDDEV_SAMP``
+        aggregates. Returns one row → numpy-cheap.
+        """
+        where_sql = f"WHERE {train_predicate}" if train_predicate else ""
+
+        # --- Stage 1: classify columns (binary / cat / probability / cont) ---
+        # Numeric type filter via DESCRIBE → which feature_cols are present
+        type_rows = con.execute(
+            f"SELECT column_name, column_type FROM (DESCRIBE {source_table})"
+        ).fetchall()
+        type_map = {r[0]: (r[1] or "").upper() for r in type_rows}
+        present = [c for c in feature_cols if c in type_map]
+
+        # Binary detection: all distinct non-null values are subset of {0, 1}.
+        # Done in a single SQL by counting distinct values per column.
+        # Skip non-numeric types (binary lookup is meaningless on VARCHAR etc.)
+        # AND skip LIST/ARRAY columns (e.g. txn_amount_seq is "DOUBLE[]" in
+        # DESCRIBE; the substring 'DOUBLE' would otherwise pull it into the
+        # numeric set and break the IN (0, 1) cast).
+        def _is_scalar_numeric(t: str) -> bool:
+            return (
+                any(p in t for p in self._NUMERIC_DUCKDB_TYPES)
+                and "[" not in t
+                and "STRUCT" not in t
+                and "MAP" not in t
+            )
+        numeric_present = [c for c in present if _is_scalar_numeric(type_map[c])]
+
+        binary_cols: List[str] = []
+        if numeric_present:
+            # Per-column 'all values in {0,1}' check via boolean aggregate
+            checks = ", ".join(
+                f"BOOL_AND(\"{c}\" IS NULL OR \"{c}\" IN (0, 1)) AS \"_bin_{i}\""
+                for i, c in enumerate(numeric_present)
+            )
+            row = con.execute(
+                f"SELECT {checks} FROM {source_table} {where_sql}"
+            ).fetchone() or ()
+            for i, c in enumerate(numeric_present):
+                if i < len(row) and bool(row[i]):
+                    binary_cols.append(c)
+        self.binary_cols = binary_cols
+
+        # Categorical / probability classification (suffix / prefix only,
+        # type-independent → no extra SQL needed).
+        self.categorical_int_cols = [
+            c for c in present
+            if c not in self.binary_cols
+            and (any(c.endswith(s) for s in self._categorical_id_suffixes)
+                 or any(c.startswith(p) for p in self._categorical_id_prefixes))
+        ]
+        self.probability_cols = [
+            c for c in present
+            if c not in self.binary_cols
+            and c not in self.categorical_int_cols
+            and any(c.startswith(p) for p in self._probability_prefixes)
+        ]
+        excluded = set(self.binary_cols) | set(self.categorical_int_cols) | set(self.probability_cols)
+        self.continuous_cols = [c for c in present if c not in excluded
+                                and _is_scalar_numeric(type_map[c])]
+
+        if self.categorical_int_cols:
+            logger.info("Scaler-excluded categorical IDs: %d cols",
+                        len(self.categorical_int_cols))
+        if self.probability_cols:
+            logger.info("Scaler-excluded probabilities: %d cols",
+                        len(self.probability_cols))
+
+        # --- Stage 2: power-law detection (DuckDB SKEWNESS / KURTOSIS) ---
+        self.power_law_cols, self.power_law_details = self._detect_power_law_sql(
+            con, source_table, where_sql,
+        )
+        if self.power_law_cols:
+            logger.info(
+                "Power-law detected: %d columns confirmed (R²>%.1f): %s",
+                len(self.power_law_cols), self.R2_THRESH,
+                self.power_law_cols[:10],
+            )
+
+        # --- Stage 3: mean / std (single SQL, one row) ---
+        self._mean = None
+        self._std = None
+        if self.continuous_cols:
+            # Match the pandas path: NULLs become 0 *for the scaler
+            # statistics* so the same value substitution downstream
+            # (transform_sql also wraps each continuous column in
+            # COALESCE("c", 0)) produces consistent (x - mean) / std.
+            # We split the aggregate across batches so a single column
+            # overflow doesn't abort the whole fit.
+            n = len(self.continuous_cols)
+            mean = np.zeros(n, dtype=np.float64)
+            std = np.ones(n, dtype=np.float64)
+            BATCH = 64
+            for start in range(0, n, BATCH):
+                stop = min(start + BATCH, n)
+                agg_terms = []
+                for i in range(start, stop):
+                    c = self.continuous_cols[i]
+                    agg_terms.append(f'AVG(COALESCE("{c}", 0)) AS "_m{i}"')
+                    agg_terms.append(f'STDDEV_SAMP(COALESCE("{c}", 0)) AS "_s{i}"')
+                try:
+                    row = con.execute(
+                        f"SELECT {', '.join(agg_terms)} FROM {source_table} {where_sql}"
+                    ).fetchone() or ()
+                except Exception as exc:
+                    logger.debug(
+                        "mean/std batch %d-%d failed (%s), per-col fallback",
+                        start, stop, exc,
+                    )
+                    row = None
+                if row:
+                    for i in range(start, stop):
+                        idx = (i - start) * 2
+                        if idx < len(row) and row[idx] is not None:
+                            mean[i] = float(row[idx])
+                        if idx + 1 < len(row) and row[idx + 1] is not None:
+                            s = float(row[idx + 1])
+                            std[i] = s if s > 1e-10 else 1.0
+                else:
+                    # per-column fallback
+                    for i in range(start, stop):
+                        c = self.continuous_cols[i]
+                        try:
+                            r = con.execute(
+                                f'SELECT AVG(COALESCE("{c}", 0)), '
+                                f'STDDEV_SAMP(COALESCE("{c}", 0)) '
+                                f'FROM {source_table} {where_sql}'
+                            ).fetchone()
+                            if r:
+                                if r[0] is not None:
+                                    mean[i] = float(r[0])
+                                if r[1] is not None:
+                                    s = float(r[1])
+                                    std[i] = s if s > 1e-10 else 1.0
+                        except Exception as exc:
+                            logger.debug("mean/std skipped for %s: %s", c, exc)
+            self._mean = mean
+            self._std = std
+
+        self._fitted = True
+        logger.info(
+            "FeatureNormalizer.fit_sql: %d continuous, %d binary, "
+            "%d categorical_int, %d probability, %d power-law",
+            len(self.continuous_cols), len(self.binary_cols),
+            len(self.categorical_int_cols), len(self.probability_cols),
+            len(self.power_law_cols),
+        )
+        return self
+
+    def transform_sql(
+        self,
+        con: Any,
+        source_table: str,
+        feature_cols: List[str],
+        output_table: str,
+        extra_pass_through: Optional[List[str]] = None,
+    ) -> str:
+        """SQL-native transform — emits ``output_table`` with the
+        normalised columns plus ``extra_pass_through`` (id_cols, label
+        cols, lazy LIST columns, etc.) untouched.
+
+        Returns the output table name for chaining. The full 1M × ~1285D
+        matrix never leaves DuckDB; the caller can pull only the slices
+        it needs (e.g. label_df, train_idx) at the boundary downstream.
+        """
+        if not self._fitted:
+            raise RuntimeError("FeatureNormalizer.transform_sql() called before fit/fit_sql")
+
+        feature_cols = [c for c in feature_cols if c]
+        proj: List[str] = []
+
+        # Scaled continuous: (col - mean) / std
+        if self.continuous_cols and self._mean is not None and self._std is not None:
+            for i, c in enumerate(self.continuous_cols):
+                m = float(self._mean[i])
+                s = float(self._std[i])
+                # DuckDB respects float literal precision; use repr() so the
+                # SQL matches the python-side parameters exactly.
+                proj.append(
+                    f'(COALESCE("{c}", 0) - {repr(m)}) / {repr(s)} AS "{c}"'
+                )
+
+        # Pass-through: binary / categorical_int / probability
+        for c in self.binary_cols:
+            proj.append(f'"{c}"')
+        for c in self.categorical_int_cols:
+            proj.append(f'"{c}"')
+        for c in self.probability_cols:
+            proj.append(f'"{c}"')
+
+        # Power-law log copies (LN(x+1) on clipped values; left unscaled)
+        for c in self.power_law_cols:
+            proj.append(
+                f'LN(GREATEST(COALESCE("{c}", 0), 0) + 1) AS "{c}_log"'
+            )
+
+        # Caller-requested pass-through (ids, label cols, LIST cols)
+        if extra_pass_through:
+            seen = {p.split(' AS ')[-1].strip(' "') for p in proj}
+            for c in extra_pass_through:
+                if c and c not in seen:
+                    proj.append(f'"{c}"')
+
+        select_sql = ",\n    ".join(proj) if proj else "*"
+        con.execute(
+            f'CREATE OR REPLACE TABLE {output_table} AS\n'
+            f'SELECT {select_sql}\nFROM {source_table}'
+        )
+        n_out_cols = con.execute(
+            f"SELECT COUNT(*) FROM (DESCRIBE {output_table})"
+        ).fetchone()[0]
+        logger.info(
+            "FeatureNormalizer.transform_sql: -> %s (%d cols)",
+            output_table, n_out_cols,
+        )
+        return output_table
+
+    def _detect_power_law_sql(
+        self,
+        con: Any,
+        source_table: str,
+        where_sql: str,
+    ) -> tuple[List[str], Dict[str, Dict]]:
+        """SQL version of ``_detect_power_law``: one batched aggregate
+        for skew/kurt/min/n_unique on every continuous column, then a
+        log-log R² check on the small set of candidates (still SQL —
+        no full-column pandas materialisation)."""
+        if not self.continuous_cols:
+            return [], {}
+
+        # Per-column aggregates with try/except. SKEWNESS / KURTOSIS can
+        # overflow on degenerate columns (constant + a single outlier);
+        # we want to skip those without aborting the whole batch. NULL
+        # values stay NULL — coalescing to 0 distorts moments and was
+        # the original cause of the OutOfRange skew error.
+        candidates: List[tuple[str, float, float]] = []
+        for c in self.continuous_cols:
+            try:
+                row = con.execute(
+                    f'SELECT SKEWNESS("{c}"), KURTOSIS("{c}"), '
+                    f'MIN("{c}"), COUNT(DISTINCT "{c}") '
+                    f'FROM {source_table} {where_sql}'
+                ).fetchone()
+            except Exception as exc:
+                logger.debug("skew/kurt skipped for %s: %s", c, exc)
+                continue
+            if not row:
+                continue
+            skew_v, kurt_v, min_v, nuniq = row
+            try:
+                if (skew_v is not None and kurt_v is not None
+                    and min_v is not None and nuniq is not None
+                    and abs(float(skew_v)) > self.SKEW_THRESH
+                    and float(kurt_v) > self.KURT_THRESH
+                    and float(min_v) >= 0.0
+                    and int(nuniq) > self._min_nunique):
+                    candidates.append((c, float(skew_v), float(kurt_v)))
+            except (TypeError, ValueError):
+                pass
+
+        if not candidates:
+            return [], {}
+
+        # Log-log R² check per candidate (still SQL — fetch only the
+        # small log-frequency table, not the full column).
+        confirmed: List[str] = []
+        details: Dict[str, Dict] = {}
+        for col, skew, kurt in candidates:
+            try:
+                # Build histogram via SQL: log10(value+1) vs log10(rank).
+                # We use a simple value-frequency table (small, distinct
+                # values <= n_unique cap) and fit log-log on rank-frequency.
+                hist = con.execute(
+                    f'SELECT "{col}" AS v, COUNT(*) AS c '
+                    f'FROM {source_table} {where_sql} '
+                    f'WHERE "{col}" IS NOT NULL AND "{col}" > 0 '
+                    f'GROUP BY "{col}" ORDER BY c DESC LIMIT 1000'
+                ).fetchall()
+                if len(hist) < self._min_samples:
+                    continue
+                ranks = np.arange(1, len(hist) + 1, dtype=np.float64)
+                freqs = np.array([h[1] for h in hist], dtype=np.float64)
+                log_r = np.log10(ranks)
+                log_f = np.log10(freqs)
+                # R² of linear fit
+                slope, intercept = np.polyfit(log_r, log_f, 1)
+                pred = slope * log_r + intercept
+                ss_res = float(np.sum((log_f - pred) ** 2))
+                ss_tot = float(np.sum((log_f - log_f.mean()) ** 2)) or 1e-9
+                r2 = 1.0 - ss_res / ss_tot
+                if r2 >= self.R2_THRESH:
+                    confirmed.append(col)
+                    details[col] = {
+                        "skew": round(skew, 2),
+                        "kurt": round(kurt, 2),
+                        "loglog_r2": round(r2, 4),
+                    }
+            except Exception as exc:
+                logger.debug("loglog R² skipped for %s: %s", col, exc)
+        return confirmed, details
+
+    # ------------------------------------------------------------------
     # Column introspection
     # ------------------------------------------------------------------
 
