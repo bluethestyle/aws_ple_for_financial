@@ -1113,14 +1113,15 @@ aws:
   region: ap-northeast-2
   s3_bucket: aiops-ple-financial
   instance_type: ml.g4dn.xlarge
-  # Phase 0 instance — CPU. SQL-native stages 4/5/6/7 keep host peak
-  # under 6 GB on 1M rows, so 32GB is plenty. Mamba was the only
-  # CUDA-bound generator; it gets pre-computed in a separate GPU
-  # SageMaker job (see scripts/precompute_mamba.py — pending) and the
-  # CPU Phase 0 reuses the cached embedding. Running Phase 0 on a GPU
-  # instance just for Mamba would have left the GPU idle for 95 % of
-  # the wall clock (other 16 generators are CPU-only).
-  cpu_instance_type: ml.m5.2xlarge  # 32GB RAM
+  # Phase 0 CPU instance. 1M rows × ~1235 cols × 8byte = ~10 GB just
+  # for the post-Stage-3 matrix; with the per-generator numpy buffers
+  # (GMM, HMM, Graph, TDA fits) accumulating during Stage 3, 32 GB is
+  # too tight (job 0426-1616 OOM'd at the gmm fit stage). 64 GB gives
+  # ~50 GB headroom and the rest of the pipeline (SQL-native stages
+  # 4/5/6/7) doesn't add to the peak. Once the pending §3.3 cleanups
+  # (Stage 3 generator output → DuckDB table direct, Stage 8 padding
+  # SQL) drop the in-process numpy footprint, this can return to 32GB.
+  cpu_instance_type: ml.m5.4xlarge  # 64GB RAM
   use_spot: true
   max_run_seconds: 43200
   role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole
