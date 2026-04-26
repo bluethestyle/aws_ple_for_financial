@@ -488,8 +488,44 @@ class PipelineRunner:
                     )
                 logger.info("[Stage 3] Merged %d generated features into main table", len(new_cols))
 
-        # Single pandas materialisation — downstream Stages 4–7 use pandas df.
-        df = _arrow_main.to_pandas()
+        # CLAUDE.md §3.3: when the adapter exposed a DuckDB connection,
+        # we register _arrow_main on it AND keep a pandas reference for
+        # legacy stages still bound to pandas APIs. The pandas conversion
+        # uses Arrow-backed dtypes so the underlying buffers are shared
+        # zero-copy with the registered table — memory cost is roughly
+        # one Arrow copy (~4-5 GB on 1M × 1158) instead of the previous
+        # ~9 GB ``to_pandas()`` numpy explosion. Each downstream stage is
+        # being migrated to query the registered table directly so the
+        # pandas frame here will eventually shrink to id columns only.
+        if self._adapter_ctx is not None:
+            con = self._adapter_ctx.con
+            try:
+                con.unregister("_post_stage3")
+            except Exception:
+                pass
+            con.register("_arrow_post_stage3", _arrow_main)
+            con.execute(
+                "CREATE OR REPLACE TABLE _post_stage3 AS "
+                "SELECT * FROM _arrow_post_stage3"
+            )
+            try:
+                con.unregister("_arrow_post_stage3")
+            except Exception:
+                pass
+            self._post_stage3_table = "_post_stage3"
+            # Arrow-backed pandas to keep memory bounded by the Arrow
+            # representation, not the float64 numpy version. Legacy
+            # stages (4/5/7/8) read from this until they migrate to
+            # ``self._post_stage3_table``.
+            try:
+                df = _arrow_main.to_pandas(types_mapper=pd.ArrowDtype)
+            except TypeError:
+                # Older pandas: fall back to default; documented memory cost
+                df = _arrow_main.to_pandas()
+            del _arrow_main
+        else:
+            df = _arrow_main.to_pandas()
+            self._post_stage3_table = None
 
         results["stage3_features"] = {
             "num_groups": len(feature_pipeline),
