@@ -381,7 +381,12 @@ txn_sequences:
 
 **txn_mcc_seq 절단 (merchant_hierarchy 누수 방지)**: `txn_mcc_seq`는 merchant_hierarchy generator에 전달되기 전에 마지막 1개 원소가 제거된다. 마지막 원소가 `next_mcc` 레이블과 동일한 값이기 때문이다 — 이 원소를 포함한 채 MCC 임베딩을 생성하면 레이블 정보가 피처로 누수된다.
 
-**txn_day_offset_seq**: YYYYMMDD 절대 날짜 대신 `snap_date` 기준 상대 일수 오프셋을 사용한다 (augment 스크립트에서 생성). 이로써 시계열 모델이 절대 날짜가 아닌 시간 간격 패턴을 학습한다.
+**txn_day_offset_seq**: YYYYMMDD 절대 날짜 대신 `snap_date` 기준 상대 일수 오프셋을 사용한다. 두 가지 생성 경로가 있다.
+
+1. **정규 경로**: `scripts/augment_santander_with_real_txns.py`가 ealtman2019 거래 풀에 매칭하면서 실제 inter-txn gap에서 산출한다 — `data/santander_linked.parquet` + ealtman 풀이 가용할 때만 동작한다.
+2. **합성 경로 (현행 v2 파일에서 사용)**: `scripts/patch_santander_add_day_offset.py`가 `txn_amount_seq` 길이를 기준으로 0~`day_window` (기본 360일) 사이에 균등 분포된 정수를 right-aligned 로 채운다 (가장 최근 txn = offset 0). 정규 경로 입력 데이터가 부재할 때 lag/rolling SQL 생성기를 unblock 하기 위한 placeholder 이며, 의미는 시간 간격 패턴 *모양* 만 보장한다 — 실제 거래 일자와는 무관하므로, 이 컬럼만으로 산출된 lag/rolling 결과는 *구조 검증* 용으로만 사용한다.
+
+`s3://aiops-ple-financial/data/santander/santander_final_v2.parquet` 가 합성 경로 결과물이다. `pipeline.yaml > data.source` 가 v2 를 가리키며, 정규 데이터가 들어오면 `santander_final.parquet` 또는 새 키로 덮어쓰고 source 만 갱신한다.
 
 ### 상품 보유 시퀀스 (Santander 17개월)
 
@@ -409,7 +414,8 @@ s3://aiops-ple-financial/
 │   │   ├── user_profiles/
 │   │   └── product_catalog/
 │   ├── santander/                    ← Santander 데이터
-│   │   └── santander_final.parquet
+│   │   ├── santander_final.parquet     # 추출 원본 (txn_day_offset_seq 없음)
+│   │   └── santander_final_v2.parquet  # 합성 day_offset 포함 (현행 data.source)
 │   ├── encrypted/                    ← Stage 3 출력
 │   ├── processed/                    ← 전처리 완료
 │   └── validated/                    ← 검증 통과

@@ -619,7 +619,7 @@ cold_start:
 # Data
 # ---------------------------------------------------------------------------
 data:
-  source: s3://aiops-ple-financial/data/santander/santander_final.parquet
+  source: s3://aiops-ple-financial/data/santander/santander_final_v2.parquet  # v2 adds synthetic txn_day_offset_seq (2026-04-26)
   s3_path: s3://aiops-ple-financial/data/santander/
   id_col: customer_id
   backend: [cudf, duckdb, pandas]

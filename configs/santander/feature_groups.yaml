@@ -437,10 +437,14 @@ feature_groups:
   - name: txn_lag_tensor
     group_type: generate
     generator: lag_extractor
-    enabled: false  # 2026-04-26: disabled — santander_final.parquet ships
-                    # without txn_day_offset_seq, so the SQL binder fails.
-                    # Re-enable once the source extraction is rerun with
-                    # the day-offset list column populated.
+    # 2026-04-26: re-enabled now that pipeline.yaml > data.source points
+    # at santander_final_v2.parquet, which carries a synthetic
+    # txn_day_offset_seq populated by
+    # scripts/patch_santander_add_day_offset.py. The values are evenly-
+    # spaced placeholders (right-aligned, 0..360 days), NOT real txn
+    # dates — interpret lag/rolling outputs as structural validation
+    # only until augment_santander_with_real_txns.py is rerun against
+    # the ealtman pool. See docs/design/01_data_layer.md.
     generator_params:
       sequence_columns:
         amount: txn_amount_seq
@@ -476,9 +480,10 @@ feature_groups:
   - name: txn_rolling_stats
     group_type: generate
     generator: rolling_stats_extractor
-    enabled: false  # 2026-04-26: disabled — same root cause as
-                    # txn_lag_tensor (missing txn_day_offset_seq in
-                    # the current santander_final.parquet).
+    # 2026-04-26: re-enabled with the same santander_final_v2.parquet
+    # (synthetic txn_day_offset_seq). Output rolls over the placeholder
+    # offsets so windows_days = [7, 30, 90, 180] no longer correspond to
+    # real calendar windows — see txn_lag_tensor caveat above.
     generator_params:
       amount_column: txn_amount_seq
       day_offset_column: txn_day_offset_seq
