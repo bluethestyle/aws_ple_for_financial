@@ -1114,13 +1114,9 @@ aws:
   s3_bucket: aiops-ple-financial
   instance_type: ml.g4dn.xlarge
   # Phase 0 memory budget. SQL-native generators (lag/rolling/multihot)
-  # are streaming-friendly, but Stage 6 still runs a sklearn-bound
-  # FeatureNormalizer fit_transform on a 1M × ~1285D pandas matrix
-  # (+ continuous slice + power-law detection + log copies). 32GB OOMs
-  # at that step; 64GB has ~20GB headroom. The full §3.3 cleanup of
-  # Stage 6 (SQL window function normalisation) would let this drop
-  # back to 32GB; that's tracked as Phase 2 of the §3.3 refactor.
-  cpu_instance_type: ml.m5.4xlarge  # 64GB RAM
+  # + SQL-native Stage 6 normalizer (commit c09fbf6) keep peak below
+  # 6 GB on 1M rows. ml.m5.2xlarge (32 GB) has ~26 GB headroom.
+  cpu_instance_type: ml.m5.2xlarge  # 32GB RAM
   use_spot: true
   max_run_seconds: 43200
   role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole
