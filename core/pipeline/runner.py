@@ -1420,7 +1420,19 @@ class PipelineRunner:
                         **extras,
                     ))
                 deriver = LabelDeriver()
-                labels = deriver.derive(df, label_configs)
+                # CLAUDE.md §3.3: forward the post-Stage-3 DuckDB table
+                # so LabelDeriver runs SQL against it directly without
+                # opening a scratch connection or registering a fresh
+                # copy of df.
+                ctx = self._adapter_ctx
+                src_table = getattr(self, "_post_stage3_table", None)
+                if ctx is not None and src_table is not None:
+                    labels = deriver.derive(
+                        df, label_configs,
+                        con=ctx.con, source_table=src_table,
+                    )
+                else:
+                    labels = deriver.derive(df, label_configs)
                 logger.info("[Stage 4] Labels derived via LabelDeriver: %d cols",
                             len(labels.columns))
                 return labels

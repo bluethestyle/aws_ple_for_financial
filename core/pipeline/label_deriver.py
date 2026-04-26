@@ -707,6 +707,8 @@ class LabelDeriver:
         self,
         df: pd.DataFrame,
         label_configs: Optional[Union[Dict[str, dict], List[LabelConfig]]] = None,
+        con: Any = None,
+        source_table: Optional[str] = None,
     ) -> pd.DataFrame:
         """Derive all configured label columns.
 
@@ -720,6 +722,14 @@ class LabelDeriver:
             Raw input data.
         label_configs : dict | list[LabelConfig] | None
             Label definitions.  If *None*, falls back to ``self._config``.
+        con : duckdb.DuckDBPyConnection, optional
+            Caller-supplied DuckDB connection. When given together with
+            ``source_table`` we run the SQL derivation paths against
+            that table directly — no scratch ``duckdb.connect()``, no
+            ``con.register(df)`` materialisation. CLAUDE.md §3.3.
+        source_table : str, optional
+            Table name on ``con`` that holds the post-Stage-3 feature
+            matrix. Required when ``con`` is supplied.
 
         Returns
         -------
@@ -729,14 +739,15 @@ class LabelDeriver:
         cfgs = self._resolve_configs(label_configs)
         results: Dict[str, pd.Series] = {}
 
-        # ---- Try DuckDB path for eligible derivation types ----
-        con = None
-        table_name = "_label_src"
-        if _HAS_DUCKDB:
+        # ---- DuckDB connection: caller-supplied (preferred) or scratch ----
+        own_con = False
+        table_name = source_table or "_label_src"
+        if con is None and _HAS_DUCKDB:
             try:
                 con = duckdb.connect()
                 con.register(table_name, df)
-                logger.debug("LabelDeriver: DuckDB connection opened for %d rows", len(df))
+                own_con = True
+                logger.debug("LabelDeriver: scratch DuckDB connection opened for %d rows", len(df))
             except Exception:
                 logger.debug("LabelDeriver: DuckDB init failed, using pandas", exc_info=True)
                 con = None
@@ -808,8 +819,8 @@ class LabelDeriver:
                         label_name, derive_type,
                     )
 
-        # Cleanup DuckDB
-        if con is not None:
+        # Cleanup DuckDB — only the scratch connection we owned
+        if con is not None and own_con:
             try:
                 con.unregister(table_name)
                 con.close()
