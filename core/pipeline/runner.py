@@ -2397,6 +2397,7 @@ class PipelineRunner:
         the Arrow representation.
         """
         import duckdb as _ddb_ckpt
+        import pandas as pd  # types_mapper=pd.ArrowDtype below
         target = ckpt_dir / "post_stage3"
         parquet_path = target / "main.parquet"
         if not parquet_path.exists():
