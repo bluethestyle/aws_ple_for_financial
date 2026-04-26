@@ -1113,10 +1113,14 @@ aws:
   region: ap-northeast-2
   s3_bucket: aiops-ple-financial
   instance_type: ml.g4dn.xlarge
-  # Phase 0 memory budget. SQL-native generators (lag/rolling/multihot)
-  # + SQL-native Stage 6 normalizer (commit c09fbf6) keep peak below
-  # 6 GB on 1M rows. ml.m5.2xlarge (32 GB) has ~26 GB headroom.
-  cpu_instance_type: ml.m5.2xlarge  # 32GB RAM
+  # Phase 0 instance. We run on GPU (ml.g4dn.xlarge) so MambaFeatureGenerator
+  # picks up the CUDA mamba_ssm + causal-conv1d wheels (requirements.txt)
+  # instead of the pure-torch fallback that took 60 minutes on CPU.
+  # Spot price ($0.16/h) is actually cheaper than the 60-min CPU run on
+  # ml.m5.2xlarge ($0.14/h × 1h vs $0.16/h × ~10min). Memory budget is
+  # 16 GB host + 16 GB GPU; SQL-native stages 4/5/6/7 keep peak host
+  # memory <6 GB on 1M rows so the smaller box is fine.
+  cpu_instance_type: ml.g4dn.xlarge  # 16GB host + 16GB T4 GPU
   use_spot: true
   max_run_seconds: 43200
   role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole

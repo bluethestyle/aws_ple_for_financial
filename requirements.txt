@@ -5,12 +5,9 @@
 #
 # Already in PyTorch 2.1 DLC (do NOT pin here): torch, torchvision, numpy,
 # pandas, scikit-learn, scipy, boto3, sagemaker, joblib, pyyaml.
-#
-# CUDA / GPU-only deps (mamba_ssm, cripser, cupy, cudf, cuml) are
-# deliberately omitted because the Phase 0 instance is CPU
-# (ml.m5.2xlarge) and every consumer has a numpy/pandas fallback path.
 
-# Columnar SQL backend (SantanderAdapter, lag/rolling/multihot extractors)
+# Columnar SQL backend (SantanderAdapter, lag/rolling/multihot extractors,
+# all SQL-native stages 4/5/6/7)
 duckdb>=0.10,<2.0
 
 # Apache Arrow — parquet I/O, DuckDB↔pandas interop
@@ -27,3 +24,14 @@ persim>=0.3,<0.4
 
 # Graph features — LightGCN co-holding bipartite + product hierarchy.
 networkx>=3,<4
+
+# Mamba SSM — selective state space model for the temporal expert.
+# CUDA-only wheels (causal-conv1d depends on cuda toolkit). Install
+# only succeeds on GPU instances (ml.g4dn.* / ml.g5.*); on CPU
+# instances the pip step will fail and we fall back to the
+# pure-torch SSM scan in core/feature/generators/mamba.py — that
+# fallback ran the 1M Mamba fit in 60 minutes on ml.m5.2xlarge,
+# which is the main reason Phase 0 should now run on a GPU
+# instance (ml.g4dn.xlarge spot ≈ $0.16/h, vs CPU ≈ $0.14/h × 60min).
+mamba-ssm>=2.0,<3.0; sys_platform == "linux"
+causal-conv1d>=1.4,<2.0; sys_platform == "linux"
