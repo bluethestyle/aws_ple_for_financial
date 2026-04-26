@@ -1793,7 +1793,29 @@ class PipelineRunner:
             max_seq_len_expected=max_seq_len,
         )
 
-        result = validator.validate(df_features, df_labels)
+        # CLAUDE.md §3.3: SQL-native correlation when DuckDB context
+        # is available. We compute CORR(label, feat) for every pair via
+        # batched SELECT aggregates against ``_post_stage3`` (already
+        # holds the post-normalize feature matrix from Stage 6 if it
+        # ran SQL-native, otherwise the pre-normalize columns — both
+        # work for leakage detection because the threshold is on
+        # absolute correlation). No 1M × N pandas .to_numpy().
+        if (self._adapter_ctx is not None
+            and getattr(self, "_post_stage3_table", None) is not None):
+            try:
+                result = self._validate_leakage_sql(
+                    feature_cols=list(df_features.columns),
+                    labels_df=df_labels,
+                    threshold=0.95,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[Stage 7] SQL leakage path failed (%s), falling back to pandas",
+                    exc,
+                )
+                result = validator.validate(df_features, df_labels)
+        else:
+            result = validator.validate(df_features, df_labels)
 
         # Check sequence leakage if raw data available
         if raw_df is not None:
@@ -1807,6 +1829,118 @@ class PipelineRunner:
                     raw_df, prod_cols, seq_cols, result=result
                 )
 
+        return result
+
+    def _validate_leakage_sql(
+        self,
+        feature_cols: List[str],
+        labels_df: "pd.DataFrame",
+        threshold: float = 0.95,
+    ) -> Any:
+        """SQL-native feature-label correlation check via DuckDB CORR.
+
+        Computes ``CORR(label, feature)`` for every pair as batched
+        SELECT aggregates on the shared ``_post_stage3`` table joined
+        with the labels frame. No per-feature numpy materialisation.
+        """
+        from .leakage_validator import ValidationResult
+
+        ctx = self._adapter_ctx
+        table = getattr(self, "_post_stage3_table", None)
+        if ctx is None or table is None:
+            raise RuntimeError("SQL leakage path requires adapter context")
+
+        con = ctx.con
+        result = ValidationResult()
+
+        # Register labels (zero-copy) and join positionally with the
+        # feature table so CORR can operate on aligned rows.
+        import pyarrow as _pa
+        labels_arrow = _pa.Table.from_pandas(labels_df, preserve_index=False)
+        con.register("_leak_labels_arrow", labels_arrow)
+        con.execute(
+            "CREATE OR REPLACE TABLE _leak_labels AS "
+            "SELECT * FROM _leak_labels_arrow"
+        )
+        try:
+            con.unregister("_leak_labels_arrow")
+        except Exception:
+            pass
+
+        # Join: features have row_number 0..n-1 from Stage 3; labels
+        # share that order. POSITIONAL JOIN preserves alignment.
+        con.execute(
+            f"CREATE OR REPLACE TABLE _leak_joined AS "
+            f"SELECT f.*, l.* FROM {table} f "
+            f"POSITIONAL JOIN _leak_labels l"
+        )
+
+        # Filter to numeric feature/label cols actually in the joined
+        # table. DuckDB's CORR returns NULL for non-numeric / constants.
+        joined_cols_info = con.execute(
+            "SELECT column_name, column_type FROM (DESCRIBE _leak_joined)"
+        ).fetchall()
+        type_map = {r[0]: (r[1] or "").upper() for r in joined_cols_info}
+        numeric_types = ("TINYINT", "SMALLINT", "INTEGER", "BIGINT",
+                         "FLOAT", "DOUBLE", "DECIMAL", "HUGEINT")
+        def _scalar_numeric(t: str) -> bool:
+            return any(p in t for p in numeric_types) and "[" not in t
+
+        feat_present = [
+            c for c in feature_cols
+            if c in type_map and _scalar_numeric(type_map[c])
+        ]
+        label_present = [
+            c for c in labels_df.columns
+            if c in type_map and _scalar_numeric(type_map[c])
+        ]
+
+        suspicious = 0
+        BATCH = 100
+        for label_col in label_present:
+            for start in range(0, len(feat_present), BATCH):
+                batch = feat_present[start:start + BATCH]
+                terms = ", ".join(
+                    f'CORR("{label_col}", "{f}") AS "_c{i}"'
+                    for i, f in enumerate(batch)
+                )
+                try:
+                    row = con.execute(
+                        f"SELECT {terms} FROM _leak_joined"
+                    ).fetchone() or ()
+                except Exception as exc:
+                    logger.debug("CORR batch failed: %s", exc)
+                    continue
+                for i, f in enumerate(batch):
+                    if f == label_col or i >= len(row):
+                        continue
+                    val = row[i]
+                    if val is None:
+                        continue
+                    try:
+                        corr = abs(float(val))
+                    except (TypeError, ValueError):
+                        continue
+                    if not (corr == corr):  # NaN
+                        continue
+                    if corr >= threshold:
+                        suspicious += 1
+                        result.fail(
+                            f"Feature '{f}' has {corr:.4f} correlation "
+                            f"with label '{label_col}' (>= {threshold})"
+                        )
+
+        # Cleanup
+        for tbl in ("_leak_joined", "_leak_labels"):
+            try:
+                con.execute(f"DROP TABLE IF EXISTS {tbl}")
+            except Exception:
+                pass
+
+        logger.info(
+            "[Stage 7] SQL CORR scan: %d feat x %d label, %d suspicious",
+            len(feat_present), len(label_present), suspicious,
+        )
         return result
 
     # ==================================================================
