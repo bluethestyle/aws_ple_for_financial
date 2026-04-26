@@ -1113,14 +1113,14 @@ aws:
   region: ap-northeast-2
   s3_bucket: aiops-ple-financial
   instance_type: ml.g4dn.xlarge
-  # Phase 0 instance. We run on GPU (ml.g4dn.xlarge) so MambaFeatureGenerator
-  # picks up the CUDA mamba_ssm + causal-conv1d wheels (requirements.txt)
-  # instead of the pure-torch fallback that took 60 minutes on CPU.
-  # Spot price ($0.16/h) is actually cheaper than the 60-min CPU run on
-  # ml.m5.2xlarge ($0.14/h × 1h vs $0.16/h × ~10min). Memory budget is
-  # 16 GB host + 16 GB GPU; SQL-native stages 4/5/6/7 keep peak host
-  # memory <6 GB on 1M rows so the smaller box is fine.
-  cpu_instance_type: ml.g4dn.xlarge  # 16GB host + 16GB T4 GPU
+  # Phase 0 instance — CPU. SQL-native stages 4/5/6/7 keep host peak
+  # under 6 GB on 1M rows, so 32GB is plenty. Mamba was the only
+  # CUDA-bound generator; it gets pre-computed in a separate GPU
+  # SageMaker job (see scripts/precompute_mamba.py — pending) and the
+  # CPU Phase 0 reuses the cached embedding. Running Phase 0 on a GPU
+  # instance just for Mamba would have left the GPU idle for 95 % of
+  # the wall clock (other 16 generators are CPU-only).
+  cpu_instance_type: ml.m5.2xlarge  # 32GB RAM
   use_spot: true
   max_run_seconds: 43200
   role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole
