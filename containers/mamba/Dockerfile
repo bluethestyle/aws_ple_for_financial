@@ -32,13 +32,25 @@ RUN apt-get update \
         build-essential \
  && rm -rf /var/lib/apt/lists/*
 
-# Install ninja into the same conda environment SageMaker uses.
+# Install ninja + the build prereqs into the conda env SageMaker uses.
 # The DLC's site-packages live under /opt/conda; pip-installed
 # packages here are what the entry script will see at runtime.
-RUN /opt/conda/bin/pip install --no-cache-dir ninja
+#
+# packaging/wheel/setuptools are required by --no-build-isolation
+# below — without them pip can't run causal-conv1d's setup.py.
+RUN /opt/conda/bin/pip install --no-cache-dir \
+        ninja packaging wheel setuptools
 
 # CUDA selective-scan wheels (causal-conv1d first — mamba-ssm
 # imports it at module load time).
+#
+# --no-build-isolation is critical: pip's default isolated build env
+# pulls the *latest* torch from PyPI (currently cu130), but the DLC
+# has cu121. The wheel build then fails with
+#   "RuntimeError: detected CUDA version (12.1) mismatches the
+#    version that was used to compile PyTorch (13.0)".
+# Disabling isolation makes the build reuse the DLC's own cu121
+# torch — which matches the system nvcc.
 #
 # CAUSAL_CONV1D_FORCE_BUILD=TRUE makes the build use the local
 # CUDA toolkit instead of trying to download NVIDIA headers from
@@ -47,7 +59,7 @@ ENV CAUSAL_CONV1D_FORCE_BUILD=TRUE \
     MAMBA_FORCE_BUILD=TRUE \
     TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;9.0"
 
-RUN /opt/conda/bin/pip install --no-cache-dir \
+RUN /opt/conda/bin/pip install --no-cache-dir --no-build-isolation \
         "causal-conv1d>=1.1,<2.0" \
         "mamba-ssm>=1.2,<3.0"
 
