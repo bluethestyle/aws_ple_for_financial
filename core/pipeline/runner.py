@@ -781,10 +781,45 @@ class PipelineRunner:
                     gen_cols = []
 
                 _spill_con.register("_spill_main", df_for_eng)
-                proj_main = ", ".join(f'm."{c}"' for c in main_cols)
+
+                def _proj_with_double_cast(
+                    table_alias: str, col_names: List[str], schema: Dict[str, str]
+                ) -> str:
+                    """Build SELECT projection that promotes DECIMAL → DOUBLE.
+
+                    DuckDB infers narrow DECIMAL(1,1) for binary 0/1 cols
+                    that happen to look [0, 0.99] in a sample window. The
+                    moment a "1.0" lands inside such a column the COPY
+                    SQL fails with "Casting value 1.0 to type DECIMAL(1,1)
+                    failed". Cast every DECIMAL field to DOUBLE up front.
+                    """
+                    parts = []
+                    for c in col_names:
+                        t = (schema.get(c) or "").upper()
+                        if t.startswith("DECIMAL"):
+                            parts.append(
+                                f'CAST({table_alias}."{c}" AS DOUBLE) AS "{c}"'
+                            )
+                        else:
+                            parts.append(f'{table_alias}."{c}"')
+                    return ", ".join(parts)
+
+                main_schema = {
+                    r[0]: r[1] for r in
+                    _spill_con.execute("DESCRIBE _spill_main").fetchall()
+                }
+                proj_main = _proj_with_double_cast(
+                    "m", main_cols, main_schema,
+                )
                 if gen_cols:
                     _spill_con.register("_spill_gen", df_generated)
-                    proj_gen = ", ".join(f'g."{c}"' for c in gen_cols)
+                    gen_schema = {
+                        r[0]: r[1] for r in
+                        _spill_con.execute("DESCRIBE _spill_gen").fetchall()
+                    }
+                    proj_gen = _proj_with_double_cast(
+                        "g", gen_cols, gen_schema,
+                    )
                     sql_copy = (
                         f"COPY (\n"
                         f"  SELECT {proj_main}, {proj_gen}\n"
