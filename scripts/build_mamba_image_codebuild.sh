@@ -58,27 +58,38 @@ if [ -z "${ROLE_ARN}" ]; then
     aws iam create-role \
         --role-name "${ROLE_NAME}" \
         --assume-role-policy-document "${TRUST_JSON}" >/dev/null
-    aws iam attach-role-policy \
-        --role-name "${ROLE_NAME}" \
-        --policy-arn arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess
-    aws iam attach-role-policy \
-        --role-name "${ROLE_NAME}" \
-        --policy-arn arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilderECRContainerBuilds
-    aws iam attach-role-policy \
-        --role-name "${ROLE_NAME}" \
-        --policy-arn arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
-    aws iam attach-role-policy \
-        --role-name "${ROLE_NAME}" \
-        --policy-arn arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
-    aws iam put-role-policy \
-        --role-name "${ROLE_NAME}" \
-        --policy-name DLCPull \
-        --policy-document "${DLC_PULL_JSON}"
     ROLE_ARN=$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.Arn' --output text)
-    echo "[codebuild] role created: ${ROLE_ARN} (waiting 10s for IAM eventual consistency …)"
-    sleep 10
+    echo "[codebuild] role created: ${ROLE_ARN}"
+    NEEDS_IAM_WAIT=1
 else
     echo "[codebuild] role already exists: ${ROLE_ARN}"
+    NEEDS_IAM_WAIT=0
+fi
+
+# Attach managed policies idempotently — attach-role-policy is a no-op if
+# already attached, so always run it. This keeps the role in sync if we
+# add new perms (e.g. ECR PowerUser added after build#5 AccessDenied).
+for POLICY_ARN in \
+    arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess \
+    arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilderECRContainerBuilds \
+    arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess \
+    arn:aws:iam::aws:policy/CloudWatchLogsFullAccess \
+    arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser ; do
+    aws iam attach-role-policy --role-name "${ROLE_NAME}" --policy-arn "${POLICY_ARN}" >/dev/null
+done
+aws iam put-role-policy \
+    --role-name "${ROLE_NAME}" \
+    --policy-name DLCPull \
+    --policy-document "${DLC_PULL_JSON}" >/dev/null
+
+# Pre-create the ECR repo so the buildspec doesn't need ecr:CreateRepository
+# at minimum (PowerUser does grant it, but pre-creating shortens PRE_BUILD).
+aws ecr describe-repositories --repository-names "${IMAGE_REPO}" --region "${REGION}" >/dev/null 2>&1 \
+    || aws ecr create-repository --repository-name "${IMAGE_REPO}" --region "${REGION}" --image-scanning-configuration scanOnPush=true >/dev/null
+
+if [ "${NEEDS_IAM_WAIT}" = "1" ]; then
+    echo "[codebuild] waiting 10s for IAM eventual consistency …"
+    sleep 10
 fi
 
 # ─── 2. CodeBuild project ─────────────────────────────────────
