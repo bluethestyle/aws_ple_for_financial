@@ -55,9 +55,19 @@ RUN /opt/conda/bin/pip install --no-cache-dir \
 # CAUSAL_CONV1D_FORCE_BUILD=TRUE makes the build use the local
 # CUDA toolkit instead of trying to download NVIDIA headers from
 # the network (which has been flaky inside SageMaker).
+#
+# TORCH_CUDA_ARCH_LIST narrowed to 7.5 only (T4) — the Mamba
+# precompute job runs on ml.g4dn.xlarge per pipeline.yaml, no
+# A100/A10G/H100 needed. Each kernel compiles once-per-arch, so
+# pruning 4 archs → 1 cuts the wheel build time by ~4×.
+#
+# MAX_JOBS=2 caps parallel nvcc invocations so mamba-ssm doesn't
+# OOM on BUILD_GENERAL1_LARGE's 15GB RAM (one nvcc can use 4-5GB
+# during register allocation; default = nproc which would OOM).
 ENV CAUSAL_CONV1D_FORCE_BUILD=TRUE \
     MAMBA_FORCE_BUILD=TRUE \
-    TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;9.0"
+    TORCH_CUDA_ARCH_LIST="7.5" \
+    MAX_JOBS=2
 
 RUN /opt/conda/bin/pip install --no-cache-dir --no-build-isolation \
         "causal-conv1d>=1.1,<2.0" \

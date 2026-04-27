@@ -93,22 +93,31 @@ if [ "${NEEDS_IAM_WAIT}" = "1" ]; then
 fi
 
 # ─── 2. CodeBuild project ─────────────────────────────────────
+# computeType=LARGE (8 vCPU / 15 GB RAM) is needed for the
+# mamba-ssm wheel build: build#7 on MEDIUM had causal-conv1d
+# alone take 40 min, mamba-ssm did not finish in 60 min. LARGE
+# halves wheel time; combined with TORCH_CUDA_ARCH_LIST=7.5 it
+# completes well under the 90-min cap.
+ENV_SPEC="type=LINUX_CONTAINER,image=aws/codebuild/standard:7.0,computeType=BUILD_GENERAL1_LARGE,privilegedMode=true,environmentVariables=[{name=ACCOUNT_ID,value=${ACCOUNT_ID}},{name=IMAGE_REPO,value=${IMAGE_REPO}},{name=DLC_ACCOUNT,value=${DLC_ACCOUNT}}]"
+SRC_SPEC="type=S3,location=${S3_BUCKET}/${SRC_KEY},buildspec=containers/mamba/buildspec.yml"
 if aws codebuild batch-get-projects --names "${PROJECT_NAME}" --region "${REGION}" --query 'projects[0].name' --output text 2>/dev/null | grep -q "${PROJECT_NAME}"; then
-    echo "[codebuild] project ${PROJECT_NAME} already exists — updating source location"
+    echo "[codebuild] project ${PROJECT_NAME} already exists — updating source + environment"
     aws codebuild update-project \
         --name "${PROJECT_NAME}" \
         --region "${REGION}" \
-        --source "type=S3,location=${S3_BUCKET}/${SRC_KEY},buildspec=containers/mamba/buildspec.yml" >/dev/null
+        --source "${SRC_SPEC}" \
+        --environment "${ENV_SPEC}" \
+        --timeout-in-minutes 90 >/dev/null
 else
     echo "[codebuild] creating project ${PROJECT_NAME} …"
     aws codebuild create-project \
         --region "${REGION}" \
         --name "${PROJECT_NAME}" \
-        --source "type=S3,location=${S3_BUCKET}/${SRC_KEY},buildspec=containers/mamba/buildspec.yml" \
+        --source "${SRC_SPEC}" \
         --artifacts "type=NO_ARTIFACTS" \
-        --environment "type=LINUX_CONTAINER,image=aws/codebuild/standard:7.0,computeType=BUILD_GENERAL1_MEDIUM,privilegedMode=true,environmentVariables=[{name=ACCOUNT_ID,value=${ACCOUNT_ID}},{name=IMAGE_REPO,value=${IMAGE_REPO}},{name=DLC_ACCOUNT,value=${DLC_ACCOUNT}}]" \
+        --environment "${ENV_SPEC}" \
         --service-role "${ROLE_ARN}" \
-        --timeout-in-minutes 60 >/dev/null
+        --timeout-in-minutes 90 >/dev/null
     echo "[codebuild] project created"
 fi
 
