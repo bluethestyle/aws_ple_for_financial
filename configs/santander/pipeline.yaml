@@ -1122,6 +1122,13 @@ aws:
   # (Stage 3 generator output → DuckDB table direct, Stage 8 padding
   # SQL) drop the in-process numpy footprint, this can return to 32GB.
   cpu_instance_type: ml.m5.4xlarge  # 64GB RAM
+  gpu_instance_type: ml.g4dn.xlarge   # Mamba precompute (T4)
   use_spot: true
   max_run_seconds: 43200
   role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole
+  # Custom training image with mamba_ssm + causal-conv1d (cu122 prebuilt
+  # wheels) baked into the SageMaker PyTorch 2.1 GPU DLC. Built via
+  # scripts/build_mamba_image_codebuild.sh; rebuild whenever the
+  # Dockerfile changes. Empty string falls back to stock DLC + the
+  # entry script's pure-torch SSM scan (~100× slower).
+  mamba_image_uri: 795833413857.dkr.ecr.ap-northeast-2.amazonaws.com/ple-mamba-precompute:1908a1e3

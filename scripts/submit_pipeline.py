@@ -331,8 +331,39 @@ def _run_mamba_precompute(config, args, s3_base, ts, wait):
     from aws.sagemaker.trainer import SageMakerTrainer
 
     if args.dry_run:
-        logger.info("[DRY RUN] Mamba pre-compute would launch on %s",
-                    getattr(config.aws, "gpu_instance_type", "ml.g4dn.xlarge"))
+        gpu_instance = (
+            getattr(config.aws, "gpu_instance_type", None)
+            or "ml.g4dn.xlarge"
+        )
+        mamba_image = getattr(config.aws, "mamba_image_uri", None) or ""
+        raw_uri = args.raw_data_uri or (
+            config.data.source if config.data.source.startswith("s3://") else ""
+        )
+        output_uri = f"{s3_base}/mamba/{ts}"
+        logger.info("=" * 60)
+        logger.info("[DRY RUN] Mamba pre-compute would launch:")
+        logger.info("  Region:        %s", config.aws.region)
+        logger.info("  Bucket:        s3://%s/", config.aws.s3_bucket)
+        logger.info("  Instance:      %s (Spot=%s)", gpu_instance,
+                    config.aws.use_spot)
+        logger.info("  Image:         %s",
+                    mamba_image or "<stock DLC, runtime build>")
+        logger.info("  Raw input:    %s", raw_uri or "<unset!>")
+        logger.info("  Output path:  %s", output_uri)
+        logger.info("  Entity col:   %s",
+                    getattr(config, "entity_column", "customer_id"))
+        logger.info("  Role:         %s", config.aws.role_arn)
+        if not raw_uri:
+            logger.warning(
+                "  WARN: raw S3 URI unresolved — pass --raw-data-uri or "
+                "set data.source to an s3://… parquet."
+            )
+        if not mamba_image:
+            logger.warning(
+                "  WARN: aws.mamba_image_uri empty — job will fall back "
+                "to runtime wheel build (~30 min slower per job)."
+            )
+        logger.info("=" * 60)
         return
 
     staging = _build_staging_dir()
