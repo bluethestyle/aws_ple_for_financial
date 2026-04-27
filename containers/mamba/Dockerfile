@@ -47,7 +47,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ARG CAUSAL_CONV1D_VERSION=1.2.0.post2
 ARG MAMBA_SSM_VERSION=1.2.0.post1
 
+# transformers must be pinned <5: mamba_ssm imports it at module
+# load time, and the latest transformers (5.6+) hard-requires
+# PyTorch 2.4+. Build#14 hit:
+#   ImportError: cannot import name 'GreedySearchDecoderOnlyOutput'
+#                from 'transformers.generation'
+# (because transformers 5.x moved/removed that API and disabled
+# PyTorch under 2.4). 4.40.x is the last release that supports
+# torch 2.1 cleanly.
 RUN /opt/conda/bin/pip install --no-cache-dir \
+        "transformers>=4.30,<5" \
         "https://github.com/Dao-AILab/causal-conv1d/releases/download/v${CAUSAL_CONV1D_VERSION}/causal_conv1d-${CAUSAL_CONV1D_VERSION}+cu122torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl" \
         "https://github.com/state-spaces/mamba/releases/download/v${MAMBA_SSM_VERSION}/mamba_ssm-${MAMBA_SSM_VERSION}+cu122torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
 
