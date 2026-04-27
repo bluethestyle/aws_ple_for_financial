@@ -169,6 +169,13 @@ class EconomicsFeatureGenerator(AbstractFeatureGenerator):
         # Fitted state
         self._income_cols: List[str] = []
         self._spending_cols: List[str] = []
+        self._stress_cols: List[str] = []
+        self._liquid_cols: List[str] = []
+        self._debt_cols: List[str] = []
+        self._invest_cols: List[str] = []
+        self._digital_cols: List[str] = []
+        self._cash_cols: List[str] = []
+        self._all_numeric_cols: List[str] = []
         self._global_income_mean: float = 0.0
         self._global_spending_mean: float = 0.0
 
@@ -210,6 +217,37 @@ class EconomicsFeatureGenerator(AbstractFeatureGenerator):
             "financial_behavior_dim", 9
         )
 
+    # -- Input columns declaration -----------------------------------------
+
+    @property
+    def input_cols(self) -> List[str]:
+        """Source columns consumed by fit() and generate().
+
+        Before fit(), returns the union of income and spending pattern
+        matches seeded to empty lists.  After fit(), returns the full
+        set of resolved columns including the dynamically discovered
+        stress, liquid, debt, invest, digital, and cash groups.
+        Derivable from fitted state with no new __init__ variables.
+        """
+        seen: Dict[str, None] = {}
+        for c in self._income_cols:
+            seen[c] = None
+        for c in self._spending_cols:
+            seen[c] = None
+        # Add the ancillary groups stored at fit-time
+        for group in (
+            self._stress_cols,
+            self._liquid_cols,
+            self._debt_cols,
+            self._invest_cols,
+            self._digital_cols,
+            self._cash_cols,
+            self._all_numeric_cols,
+        ):
+            for c in group:
+                seen[c] = None
+        return list(seen.keys())
+
     # -- Core API ----------------------------------------------------------
 
     def fit(self, df: Any, **context: Any) -> "EconomicsFeatureGenerator":
@@ -228,6 +266,35 @@ class EconomicsFeatureGenerator(AbstractFeatureGenerator):
             len(self._income_cols),
             len(self._spending_cols),
         )
+
+        # Discover and cache all ancillary column groups at fit-time so that
+        # input_cols is derivable without re-scanning the DataFrame.
+        all_cols = _columns_list(df)
+        self._stress_cols: List[str] = [
+            c for c in all_cols
+            if re.search(r"(late|overdue|overdraft|penalty|delinq)", c, re.IGNORECASE)
+        ]
+        self._liquid_cols: List[str] = [
+            c for c in all_cols
+            if re.search(r"(liquid|cash|saving|balance|deposit)", c, re.IGNORECASE)
+        ]
+        self._debt_cols: List[str] = [
+            c for c in all_cols
+            if re.search(r"(debt|loan|mortgage|emi|installment)", c, re.IGNORECASE)
+        ]
+        self._invest_cols: List[str] = [
+            c for c in all_cols
+            if re.search(r"(invest|mutual|stock|bond|fund)", c, re.IGNORECASE)
+        ]
+        self._digital_cols: List[str] = [
+            c for c in all_cols
+            if re.search(r"(digital|online|upi|card|electronic|mobile)", c, re.IGNORECASE)
+        ]
+        self._cash_cols: List[str] = [
+            c for c in all_cols
+            if re.search(r"(cash|atm|withdraw)", c, re.IGNORECASE)
+        ]
+        self._all_numeric_cols: List[str] = _select_dtypes_numeric(df)
 
         # Cache global means for normalisation / fallback heuristics
         income_vals = _col_sum(df, self._income_cols)
@@ -257,22 +324,67 @@ class EconomicsFeatureGenerator(AbstractFeatureGenerator):
                 "EconomicsFeatureGenerator must be fitted before generate()."
             )
 
-        all_cols = _columns_list(df)
+        # Extract all needed columns once as numpy arrays.
+        col_arrays = self._input_to_numpy(df, columns=self.input_cols)
+
+        # Derive row count and index from the slim extracted frame.
+        n = len(next(iter(col_arrays.values()))) if col_arrays else 0
         _pdf_ref = _to_pandas_safe(df)
-        n = len(_pdf_ref)
         _index = _pdf_ref.index
         del _pdf_ref  # free reference after extracting index
         p = self.prefix
 
-        # Resolve columns present in this DataFrame (may differ from fit)
-        income_cols = [c for c in self._income_cols if c in all_cols]
-        spending_cols = [c for c in self._spending_cols if c in all_cols]
+        # Resolve which fitted columns are present in this batch.
+        present = set(col_arrays.keys())
+        income_cols = [c for c in self._income_cols if c in present]
+        spending_cols = [c for c in self._spending_cols if c in present]
+        stress_cols = [c for c in self._stress_cols if c in present]
+        liquid_cols = [c for c in self._liquid_cols if c in present]
+        debt_cols = [c for c in self._debt_cols if c in present]
+        invest_cols = [c for c in self._invest_cols if c in present]
+        digital_cols = [c for c in self._digital_cols if c in present]
+        cash_cols = [c for c in self._cash_cols if c in present]
+        all_numeric_cols = [c for c in self._all_numeric_cols if c in present]
+
+        # ------------------------------------------------------------------
+        # Helper closures that operate on col_arrays instead of df
+        # ------------------------------------------------------------------
+        def _arr_sum(cols: List[str]) -> np.ndarray:
+            if not cols:
+                return np.zeros(n, dtype=np.float64)
+            vals = np.stack([col_arrays[c].astype(np.float64) for c in cols], axis=1)
+            return np.nan_to_num(vals.sum(axis=1), nan=0.0)
+
+        def _arr_mean(cols: List[str]) -> np.ndarray:
+            if not cols:
+                return np.zeros(n, dtype=np.float64)
+            vals = np.stack([col_arrays[c].astype(np.float64) for c in cols], axis=1)
+            return np.nan_to_num(vals.mean(axis=1), nan=0.0)
+
+        def _arr_std(cols: List[str]) -> np.ndarray:
+            if not cols:
+                return np.zeros(n, dtype=np.float64)
+            vals = np.stack([col_arrays[c].astype(np.float64) for c in cols], axis=1)
+            if vals.shape[1] < 2:
+                return np.zeros(n, dtype=np.float64)
+            return np.nan_to_num(np.nanstd(vals, axis=1), nan=0.0)
+
+        def _arr_count_nonzero(cols: List[str]) -> np.ndarray:
+            if not cols:
+                return np.zeros(n, dtype=np.float64)
+            vals = np.stack([col_arrays[c].astype(np.float64) for c in cols], axis=1)
+            return (np.abs(vals) > 1e-12).sum(axis=1).astype(np.float64)
+
+        def _arr_matrix(cols: List[str]) -> np.ndarray:
+            if not cols:
+                return np.zeros((n, 0), dtype=np.float64)
+            return np.stack([col_arrays[c].astype(np.float64) for c in cols], axis=1)
 
         # Aggregate row-level signals
-        income_sum = _col_sum(df, income_cols)
-        income_mean = _col_mean(df, income_cols)
-        income_std = _col_std(df, income_cols)
-        spending_sum = _col_sum(df, spending_cols)
+        income_sum = _arr_sum(income_cols)
+        income_mean = _arr_mean(income_cols)
+        income_std = _arr_std(income_cols)
+        spending_sum = _arr_sum(spending_cols)
 
         results: Dict[str, np.ndarray] = {}
 
@@ -290,8 +402,8 @@ class EconomicsFeatureGenerator(AbstractFeatureGenerator):
         #    last income column value and the first income column value
         #    normalised by the number of income columns.
         if len(income_cols) >= 2:
-            first_vals = _to_numpy_safe(df, [income_cols[0]]).ravel()
-            last_vals = _to_numpy_safe(df, [income_cols[-1]]).ravel()
+            first_vals = col_arrays[income_cols[0]].astype(np.float64)
+            last_vals = col_arrays[income_cols[-1]].astype(np.float64)
             slope = _safe_divide(last_vals - first_vals, np.full(n, len(income_cols), dtype=np.float64))
         else:
             slope = np.zeros(n, dtype=np.float64)
@@ -299,7 +411,7 @@ class EconomicsFeatureGenerator(AbstractFeatureGenerator):
 
         # 3. Income seasonality: amplitude of dominant FFT component
         if len(income_cols) >= 4:
-            income_matrix = _to_numpy_safe(df, income_cols)
+            income_matrix = _arr_matrix(income_cols)
             fft_vals = np.fft.rfft(income_matrix, axis=1)
             # Skip DC component (index 0), take max amplitude
             if fft_vals.shape[1] > 1:
@@ -313,7 +425,7 @@ class EconomicsFeatureGenerator(AbstractFeatureGenerator):
 
         # 4. Income diversification: entropy across income sources
         if len(income_cols) >= 2:
-            income_matrix = np.abs(_to_numpy_safe(df, income_cols))
+            income_matrix = np.abs(_arr_matrix(income_cols))
             row_totals = income_matrix.sum(axis=1, keepdims=True)
             row_totals = np.where(row_totals < 1e-12, 1.0, row_totals)
             probs = income_matrix / row_totals
@@ -346,8 +458,8 @@ class EconomicsFeatureGenerator(AbstractFeatureGenerator):
         #    Proxy: second half mean / first half mean - 1
         if len(income_cols) >= 2:
             mid = len(income_cols) // 2
-            first_half = _to_numpy_safe(df, income_cols[:mid]).mean(axis=1)
-            second_half = _to_numpy_safe(df, income_cols[mid:]).mean(axis=1)
+            first_half = _arr_matrix(income_cols[:mid]).mean(axis=1)
+            second_half = _arr_matrix(income_cols[mid:]).mean(axis=1)
             growth = _safe_divide(second_half - first_half, np.abs(first_half))
         else:
             growth = np.zeros(n, dtype=np.float64)
@@ -372,68 +484,43 @@ class EconomicsFeatureGenerator(AbstractFeatureGenerator):
         ).astype(np.float32)
 
         # 3. Financial stress index: late payments + overdrafts normalised
-        #    Look for columns indicating stress signals
-        stress_cols = [
-            c for c in all_cols
-            if re.search(r"(late|overdue|overdraft|penalty|delinq)", c, re.IGNORECASE)
-        ]
-        stress_sum = _col_sum(df, stress_cols)
+        stress_sum = _arr_sum(stress_cols)
         # Normalise by income
         results[f"{p}_financial_stress_index"] = _safe_divide(
             stress_sum, income_sum
         ).astype(np.float32)
 
         # 4. Liquidity ratio: liquid assets / monthly expenses
-        liquid_cols = [
-            c for c in all_cols
-            if re.search(r"(liquid|cash|saving|balance|deposit)", c, re.IGNORECASE)
-        ]
-        liquid_sum = _col_sum(df, liquid_cols)
+        liquid_sum = _arr_sum(liquid_cols)
         monthly_expenses = spending_sum  # proxy
         results[f"{p}_liquidity_ratio"] = _safe_divide(
             liquid_sum, monthly_expenses
         ).astype(np.float32)
 
         # 5. Debt service ratio: debt payments / income
-        debt_cols = [
-            c for c in all_cols
-            if re.search(r"(debt|loan|mortgage|emi|installment)", c, re.IGNORECASE)
-        ]
-        debt_sum = _col_sum(df, debt_cols)
+        debt_sum = _arr_sum(debt_cols)
         results[f"{p}_debt_service_ratio"] = _safe_divide(
             debt_sum, income_sum
         ).astype(np.float32)
 
         # 6. Investment propensity: investment txn count / total txn count
-        invest_cols = [
-            c for c in all_cols
-            if re.search(r"(invest|mutual|stock|bond|fund)", c, re.IGNORECASE)
-        ]
-        invest_count = _col_count_nonzero(df, invest_cols)
-        total_count = _col_count_nonzero(df, income_cols + spending_cols + invest_cols)
+        invest_count = _arr_count_nonzero(invest_cols)
+        total_count = _arr_count_nonzero(
+            list(dict.fromkeys(income_cols + spending_cols + invest_cols))
+        )
         results[f"{p}_investment_propensity"] = _safe_divide(
             invest_count, total_count
         ).astype(np.float32)
 
         # 7. Digital payment ratio: digital txns / total txns
-        digital_cols = [
-            c for c in all_cols
-            if re.search(r"(digital|online|upi|card|electronic|mobile)", c, re.IGNORECASE)
-        ]
-        digital_count = _col_count_nonzero(df, digital_cols)
-        all_txn_count = _col_count_nonzero(
-            df, _select_dtypes_numeric(df)
-        )
+        digital_count = _arr_count_nonzero(digital_cols)
+        all_txn_count = _arr_count_nonzero(all_numeric_cols)
         results[f"{p}_digital_payment_ratio"] = _safe_divide(
             digital_count, all_txn_count
         ).astype(np.float32)
 
         # 8. Cash preference index: cash withdrawals / total spending
-        cash_cols = [
-            c for c in all_cols
-            if re.search(r"(cash|atm|withdraw)", c, re.IGNORECASE)
-        ]
-        cash_sum = _col_sum(df, cash_cols)
+        cash_sum = _arr_sum(cash_cols)
         results[f"{p}_cash_preference_index"] = _safe_divide(
             cash_sum, spending_sum
         ).astype(np.float32)

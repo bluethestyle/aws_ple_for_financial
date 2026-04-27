@@ -762,11 +762,38 @@ class TDAGlobalGenerator(TDAFeatureGenerator):
         self.entity_column = entity_column
         self._global_features: Optional[Dict[str, float]] = None
 
+    @property
+    def input_cols(self) -> List[str]:
+        """Source columns consumed by fit() and generate().
+
+        Includes the declared numeric input_columns plus the entity
+        grouping column (needed in fit for per-entity mean aggregation).
+        The entity column is declared here so the runner can slim the
+        frame accordingly; the numeric cols may be empty if not yet
+        resolved (they will be resolved at runtime from the df).
+        """
+        cols: List[str] = list(self.input_columns)
+        if self.entity_column and self.entity_column not in cols:
+            cols.append(self.entity_column)
+        return cols
+
     def fit(self, df: Any, **context: Any) -> "TDAGlobalGenerator":
         """Group by entity, compute mean per entity -> population point cloud -> persistence."""
-        cols = self._resolve_input_columns(df)
-        data = _to_numpy_safe(df, cols)
+        # Only request columns that actually exist in the input frame
+        present = set(_columns_list(df))
+        requested = [c for c in self.input_cols if c in present]
+        col_arrays = self._input_to_numpy(df, columns=requested) if requested else {}
+        # Resolve numeric cols from those present in col_arrays (exclude entity col)
+        entity_col_key = self.entity_column
+        cols = [c for c in col_arrays if c != entity_col_key]
+        if not cols:
+            # Fall back: use all extracted cols if no numeric cols can be separated
+            cols = list(col_arrays)
+
+        # Reconstruct pandas df for index and groupby operations
         pdf = _to_pandas_safe(df)
+        n_rows = len(next(iter(col_arrays.values()))) if col_arrays else len(pdf)
+        data = np.column_stack([col_arrays[c].astype(np.float64) for c in cols]) if cols else np.empty((n_rows, 0))
 
         # Learn normalisation parameters (reuse parent logic)
         self._col_means = np.nanmean(data, axis=0)
@@ -789,9 +816,9 @@ class TDAGlobalGenerator(TDAFeatureGenerator):
         # --- Global TDA: one point per entity (mean of their features) ---
         normed = (data - self._col_means) / self._col_stds
         pdf_normed = pd.DataFrame(normed, columns=cols, index=pdf.index)
-        if self.entity_column in pdf.columns:
-            pdf_normed[self.entity_column] = pdf[self.entity_column].values
-            entity_means = pdf_normed.groupby(self.entity_column)[cols].mean()
+        if entity_col_key in col_arrays:
+            pdf_normed[entity_col_key] = col_arrays[entity_col_key]
+            entity_means = pdf_normed.groupby(entity_col_key)[cols].mean()
         else:
             # No entity column -- treat each row as an entity
             entity_means = pdf_normed[cols]
@@ -856,8 +883,18 @@ class TDAGlobalGenerator(TDAFeatureGenerator):
         if not self._fitted:
             raise RuntimeError("TDAGlobalGenerator must be fitted before generate().")
 
+        # generate() reads no per-row source columns (global features are precomputed);
+        # only need row count and index — extract any present input col for n_rows, or
+        # fall back to pandas for the index.
+        present = set(_columns_list(df))
+        available = [c for c in self.input_cols if c in present]
+        if available:
+            col_arrays = self._input_to_numpy(df, columns=available)
+            n_rows = len(next(iter(col_arrays.values())))
+        else:
+            pdf_tmp = _to_pandas_safe(df)
+            n_rows = len(pdf_tmp)
         pdf = _to_pandas_safe(df)
-        n_rows = len(pdf)
 
         # Broadcast global features to all rows
         result_dict = {}
@@ -975,10 +1012,31 @@ class TDALocalGenerator(TDAFeatureGenerator):
         self.entity_column = entity_column
         self.n_jobs = n_jobs
 
+    @property
+    def input_cols(self) -> List[str]:
+        """Source columns consumed by fit() and generate().
+
+        Includes the declared numeric input_columns plus the entity
+        grouping column (needed in generate for per-entity grouping).
+        """
+        cols: List[str] = list(self.input_columns)
+        if self.entity_column and self.entity_column not in cols:
+            cols.append(self.entity_column)
+        return cols
+
     def fit(self, df: Any, **context: Any) -> "TDALocalGenerator":
         """Store normalisation parameters (actual computation is per-entity at generate time)."""
-        cols = self._resolve_input_columns(df)
-        data = _to_numpy_safe(df, cols)
+        present = set(_columns_list(df))
+        requested = [c for c in self.input_cols if c in present]
+        col_arrays = self._input_to_numpy(df, columns=requested) if requested else {}
+        entity_col_key = self.entity_column
+        cols = [c for c in col_arrays if c != entity_col_key]
+        if not cols:
+            cols = list(col_arrays)
+
+        pdf_tmp = _to_pandas_safe(df)
+        n_rows = len(next(iter(col_arrays.values()))) if col_arrays else len(pdf_tmp)
+        data = np.column_stack([col_arrays[c].astype(np.float64) for c in cols]) if cols else np.empty((n_rows, 0))
 
         # Learn normalisation parameters
         self._col_means = np.nanmean(data, axis=0)
@@ -1017,10 +1075,17 @@ class TDALocalGenerator(TDAFeatureGenerator):
         if not self._fitted:
             raise RuntimeError("TDALocalGenerator must be fitted before generate().")
 
+        present = set(_columns_list(df))
+        requested = [c for c in self.input_cols if c in present]
+        col_arrays = self._input_to_numpy(df, columns=requested) if requested else {}
+        entity_col_key = self.entity_column
+        cols = [c for c in col_arrays if c != entity_col_key]
+        if not cols:
+            cols = list(col_arrays)
+
         pdf = _to_pandas_safe(df)
-        cols = self._resolve_input_columns(df)
-        data = _to_numpy_safe(df, cols)
-        n_rows = data.shape[0]
+        n_rows = len(next(iter(col_arrays.values()))) if col_arrays else len(pdf)
+        data = np.column_stack([col_arrays[c].astype(np.float64) for c in cols]) if cols else np.empty((n_rows, 0))
         _index = pdf.index
 
         # Normalise
@@ -1028,7 +1093,7 @@ class TDALocalGenerator(TDAFeatureGenerator):
 
         result = np.zeros((n_rows, self.output_dim), dtype=np.float32)
 
-        if self.entity_column not in pdf.columns:
+        if entity_col_key not in col_arrays:
             logger.warning(
                 "TDALocalGenerator: entity_column '%s' not found — returning zeros "
                 "(row-by-row TDA on %d rows is infeasible)",
@@ -1044,7 +1109,7 @@ class TDALocalGenerator(TDAFeatureGenerator):
             )
 
         # Group rows by entity
-        entity_col = pdf[self.entity_column].values
+        entity_col = col_arrays[entity_col_key]
         unique_entities = pd.unique(entity_col)
 
         # Short-circuit: if most entities have <=1 row, TDA is meaningless

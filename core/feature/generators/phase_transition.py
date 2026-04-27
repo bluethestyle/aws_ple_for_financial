@@ -313,13 +313,40 @@ class PhaseTransitionGenerator(AbstractFeatureGenerator):
         ])
         return cols
 
+    # -- Input column declaration -----------------------------------------
+
+    @property
+    def input_cols(self) -> List[str]:
+        """Source columns consumed by fit() and generate().
+
+        Returns the explicitly configured ``input_columns`` when set.
+        When ``input_columns`` is empty the columns are resolved at runtime
+        from all numeric columns in the DataFrame (``_resolve_input_columns``
+        fallback), so only the declared columns are returned here.
+        """
+        return list(self.input_columns)
+
     # -- Core API ----------------------------------------------------------
 
     def fit(self, df: Any, **context: Any) -> "PhaseTransitionGenerator":
         """Learn normalisation parameters and baseline transition statistics."""
+        # Extract declared input columns up-front (slim frame boundary).
+        if self.input_cols:
+            col_arrays = self._input_to_numpy(df, columns=self.input_cols)
+        else:
+            col_arrays = self._input_to_numpy(df)
+
         pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
         cols = self._resolve_input_columns(pdf)
-        data = pdf[cols].values.astype(np.float64)
+
+        if self.input_cols and col_arrays:
+            # Build data matrix directly from col_arrays (avoids re-reading df).
+            data = np.stack(
+                [col_arrays[c].astype(np.float64) for c in cols if c in col_arrays],
+                axis=1,
+            ) if cols else np.empty((len(next(iter(col_arrays.values()))), 0))
+        else:
+            data = pdf[cols].values.astype(np.float64)
 
         self._col_means = np.nanmean(data, axis=0)
         self._col_stds = np.nanstd(data, axis=0)
@@ -354,10 +381,24 @@ class PhaseTransitionGenerator(AbstractFeatureGenerator):
                 "PhaseTransitionGenerator must be fitted before generate()."
             )
 
+        # Extract declared input columns up-front (slim frame boundary).
+        if self.input_cols:
+            col_arrays = self._input_to_numpy(df, columns=self.input_cols)
+        else:
+            col_arrays = self._input_to_numpy(df)
+        n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0
+
         pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
         cols = self._resolve_input_columns(pdf)
-        data = pdf[cols].values.astype(np.float64)
-        n_rows = len(pdf)
+
+        if self.input_cols and col_arrays:
+            # Build data matrix directly from col_arrays (avoids re-reading df).
+            data = np.stack(
+                [col_arrays[c].astype(np.float64) for c in cols if c in col_arrays],
+                axis=1,
+            ) if cols else np.empty((n_rows, 0))
+        else:
+            data = pdf[cols].values.astype(np.float64)
 
         # Normalise
         normed = (data - self._col_means) / self._col_stds

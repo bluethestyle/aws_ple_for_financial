@@ -260,10 +260,40 @@ class TemporalPatternGenerator(AbstractFeatureGenerator):
 
         return cols
 
+    # -- Input columns declaration -----------------------------------------
+
+    @property
+    def input_cols(self) -> List[str]:
+        """Source columns consumed by fit() and generate().
+
+        Returns the union of ``time_column`` (if set) and ``value_columns``
+        (if explicitly declared), plus any additional resolved value columns
+        discovered during fit().  Derivable from existing config attrs and
+        fitted state with no new __init__ variables.
+        """
+        cols: List[str] = []
+        if self.time_column:
+            cols.append(self.time_column)
+        for c in self.value_columns:
+            if c not in cols:
+                cols.append(c)
+        # After fit, include any auto-resolved value cols not in the explicit list
+        for c in self._resolved_value_cols:
+            if c not in cols:
+                cols.append(c)
+        return cols
+
     # -- Core API ----------------------------------------------------------
 
     def fit(self, df: Any, **context: Any) -> "TemporalPatternGenerator":
         """Learn normalisation statistics from training data."""
+        # Extract declared input columns once to bound memory access.
+        # _resolved_value_cols is empty before fit so input_cols = time_col + value_columns.
+        fit_input_cols = (
+            ([self.time_column] if self.time_column else []) + list(self.value_columns)
+        ) or None  # None -> extract all for the auto-resolve path
+        col_arrays = self._input_to_numpy(df, columns=fit_input_cols)
+
         gdf = self._to_working_frame(df)
 
         col_list = list(gdf.columns) if hasattr(gdf, "columns") else []
@@ -276,9 +306,16 @@ class TemporalPatternGenerator(AbstractFeatureGenerator):
         self._value_means = {}
         self._value_stds = {}
         for col in self._resolved_value_cols:
-            self._value_means[col] = float(gdf[col].mean())
-            std = float(gdf[col].std())
-            self._value_stds[col] = std if std > 0 else 1.0
+            if col in col_arrays:
+                arr = col_arrays[col].astype(np.float64)
+                mean_val = float(np.nanmean(arr))
+                std_val = float(np.nanstd(arr))
+            else:
+                # Fallback to working frame for cols discovered by auto-resolve
+                mean_val = float(gdf[col].mean())
+                std_val = float(gdf[col].std())
+            self._value_means[col] = mean_val
+            self._value_stds[col] = std_val if std_val > 0 else 1.0
 
         self._fitted = True
         logger.info(
@@ -308,8 +345,16 @@ class TemporalPatternGenerator(AbstractFeatureGenerator):
                 "TemporalPatternGenerator must be fitted before generate()."
             )
 
+        # Extract declared input columns once to bound memory access.
+        gen_input_cols = self.input_cols or None  # None -> extract all when empty
+        col_arrays = self._input_to_numpy(df, columns=gen_input_cols) if gen_input_cols else {}
+
         gdf = self._to_working_frame(df)
-        n_rows = len(gdf)
+        n_rows = (
+            len(next(iter(col_arrays.values())))
+            if col_arrays
+            else len(gdf)
+        )
         results: Dict[str, np.ndarray] = {}
 
         # -- Decide GPU vs CPU path ----------------------------------------

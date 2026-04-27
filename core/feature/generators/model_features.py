@@ -177,6 +177,22 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
         lnn = config.get("lnn_dim", 18)
         return gmm + bandit + lnn
 
+    # -- Input columns declaration -----------------------------------------
+
+    @property
+    def input_cols(self) -> List[str]:
+        """Source columns consumed by fit() and generate().
+
+        Returns the union of feature_columns, engagement_columns, and
+        temporal_columns declared at construction time.  When a group is
+        empty the generator falls back to all numeric columns at runtime.
+        Derivable from existing config attrs with no new state.
+        """
+        seen: Dict[str, None] = {}
+        for col in self.feature_columns + self.engagement_columns + self.temporal_columns:
+            seen[col] = None
+        return list(seen.keys())
+
     # -- Core API ----------------------------------------------------------
 
     def fit(self, df: Any, **context: Any) -> "ModelFeaturesGenerator":
@@ -250,10 +266,18 @@ class ModelFeaturesGenerator(AbstractFeatureGenerator):
                 "ModelFeaturesGenerator must be fitted before generate()."
             )
 
+        # Extract declared input columns once to bound memory access.
+        # When input_cols is empty (all columns needed), fall back to full df.
+        col_arrays = self._input_to_numpy(df, columns=self.input_cols) if self.input_cols else {}
+
         # Convert to pandas for sub-generators that do row-level iteration;
         # the heavy numeric extraction already uses the GPU path.
         pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        n_rows = len(pdf)
+        n_rows = (
+            len(next(iter(col_arrays.values())))
+            if col_arrays
+            else len(pdf)
+        )
         results: Dict[str, np.ndarray] = {}
 
         p = f"{self.prefix}_" if self.prefix else ""

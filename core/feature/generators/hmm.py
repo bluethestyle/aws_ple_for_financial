@@ -391,6 +391,21 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
         p_self = transmat[state, state]
         return float(1.0 / (1.0 - p_self + 1e-10))
 
+    # -- Input column declaration -----------------------------------------
+
+    @property
+    def input_cols(self) -> List[str]:
+        """Source columns consumed by fit() and generate().
+
+        Returns the explicitly configured ``sequence_columns`` when set.
+        When ``sequence_columns`` is empty the observation columns are
+        resolved at runtime from all numeric columns in the DataFrame
+        (``_resolve_observation_columns`` fallback), so only the declared
+        columns are returned here; the runner is expected to include them
+        in the slim frame.
+        """
+        return list(self.sequence_columns)
+
     # -- Output description ------------------------------------------------
 
     @property
@@ -418,6 +433,14 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
 
     def fit(self, df: Any, **context: Any) -> "HMMFeatureGenerator":
         """Fit a Gaussian HMM per mode on the observation matrix."""
+        # Extract declared input columns up-front; fall back to full
+        # column resolution when no columns were pre-declared.
+        if self.input_cols:
+            col_arrays = self._input_to_numpy(df, columns=self.input_cols)
+            n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0
+        else:
+            col_arrays = self._input_to_numpy(df)
+            n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0
         obs_cols = self._resolve_observation_columns(df)
 
         if not obs_cols:
@@ -426,7 +449,7 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
                 "uniform state assignments."
             )
 
-        X = self._extract_numeric(df, obs_cols) if obs_cols else np.zeros((len(df), 1))
+        X = self._extract_numeric(df, obs_cols) if obs_cols else np.zeros((n_rows, 1))
         # Replace NaN with column means
         col_means = np.nanmean(X, axis=0)
         nan_mask = np.isnan(X)
@@ -472,7 +495,12 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
                 "HMMFeatureGenerator must be fitted before generate()."
             )
 
-        n_rows = len(df)
+        # Extract declared input columns up-front.
+        if self.input_cols:
+            col_arrays = self._input_to_numpy(df, columns=self.input_cols)
+        else:
+            col_arrays = self._input_to_numpy(df)
+        n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0
         obs_cols = self._resolve_observation_columns(df)
         X = self._extract_numeric(df, obs_cols) if obs_cols else np.zeros((n_rows, 1))
 

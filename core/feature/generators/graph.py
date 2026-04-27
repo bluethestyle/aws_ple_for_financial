@@ -291,6 +291,26 @@ class GraphEmbeddingGenerator(AbstractFeatureGenerator):
         device_desc = get_device_description(self._device) if torch is not None else "cpu (torch unavailable)"
         logger.info("GraphEmbeddingGenerator: using %s", device_desc)
 
+    # -- Input column declaration -----------------------------------------
+
+    @property
+    def input_cols(self) -> List[str]:
+        """Source columns consumed by fit() and generate().
+
+        Always includes the entity column.  When ``feature_columns`` is
+        explicitly declared the declared list is returned; otherwise the
+        list is limited to ``[entity_column]`` and the actual feature
+        columns are resolved at runtime from the DataFrame's numeric
+        columns (since the caller cannot know which numerics exist before
+        receiving a DataFrame).
+        """
+        cols: List[str] = []
+        if self.entity_column:
+            cols.append(self.entity_column)
+        if self.feature_columns:
+            cols.extend(c for c in self.feature_columns if c not in cols)
+        return cols
+
     # -- Output description ------------------------------------------------
 
     @property
@@ -314,6 +334,13 @@ class GraphEmbeddingGenerator(AbstractFeatureGenerator):
         (GPU/CPU), and stores per-entity vectors.  Falls back to
         numpy SVD if torch is unavailable.
         """
+        # Slim extraction: pull only the columns we declared up-front.
+        # _extract_entities_features receives the full pandas df for
+        # groupby; the runner will eventually pass a slim df containing
+        # only input_cols (+ any numeric cols it adds for the "all numeric"
+        # fallback path), so no further change is needed here.
+        col_arrays = self._input_to_numpy(df, columns=self.input_cols)  # noqa: F841
+        n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0  # noqa: F841
         pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
         rng = np.random.RandomState(self.random_state)
 
@@ -359,8 +386,11 @@ class GraphEmbeddingGenerator(AbstractFeatureGenerator):
                 "GraphEmbeddingGenerator must be fitted before generate()."
             )
 
+        # Extract only the declared input columns up-front.
+        col_arrays = self._input_to_numpy(df, columns=self.input_cols)
+        n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0
+
         pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
-        n_rows = len(pdf)
 
         embeddings = np.zeros(
             (n_rows, self.cfg.embedding_dim), dtype=np.float32
@@ -368,9 +398,9 @@ class GraphEmbeddingGenerator(AbstractFeatureGenerator):
         norms = np.zeros(n_rows, dtype=np.float32)
         depths = np.zeros(n_rows, dtype=np.float32)
 
-        # Resolve entity keys
-        if self.entity_column in pdf.columns:
-            entity_keys = pdf[self.entity_column].values
+        # Resolve entity keys from col_arrays when available, else index.
+        if self.entity_column in col_arrays:
+            entity_keys = col_arrays[self.entity_column]
         else:
             entity_keys = pdf.index.values
 

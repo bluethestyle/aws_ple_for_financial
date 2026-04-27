@@ -199,6 +199,21 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
         # Fitted parameters for each sub-model
         self._fitted_params: Dict[str, Dict[str, Any]] = {}
 
+    # -- Input column declaration -----------------------------------------
+
+    @property
+    def input_cols(self) -> List[str]:
+        """Source columns consumed by fit() and generate().
+
+        Returns the declared ``observation_columns`` plus ``time_column``
+        when set.  When ``observation_columns`` is empty the columns are
+        resolved at runtime from all numeric columns in the DataFrame.
+        """
+        cols: List[str] = list(self.observation_columns)
+        if self.time_column and self.time_column not in cols:
+            cols.append(self.time_column)
+        return cols
+
     # -- Output description ------------------------------------------------
 
     @property
@@ -228,6 +243,14 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
         - Interference: base frequencies via FFT analysis.
         - Crime pattern: KDE bandwidth and baseline density.
         """
+        # Extract declared input columns up-front (slim frame boundary).
+        if self.input_cols:
+            col_arrays = self._input_to_numpy(df, columns=self.input_cols)
+        else:
+            col_arrays = self._input_to_numpy(df)
+        # n_rows derivable from col_arrays for future use.
+        _n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0  # noqa: F841
+
         rng = np.random.RandomState(self.random_state)
         obs_cols = self._resolve_observation_columns(df)
 
@@ -268,10 +291,16 @@ class MultidisciplinaryGenerator(AbstractFeatureGenerator):
                 "MultidisciplinaryGenerator must be fitted before generate()."
             )
 
+        # Extract declared input columns up-front (slim frame boundary).
+        if self.input_cols:
+            col_arrays = self._input_to_numpy(df, columns=self.input_cols)
+        else:
+            col_arrays = self._input_to_numpy(df)
+        n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0
+
         obs_cols = self._resolve_observation_columns(df)
         obs_data = _to_numpy_safe(df, obs_cols) if obs_cols else None
         _pdf_ref = _to_pandas_safe(df)
-        n_rows = obs_data.shape[0] if obs_data is not None else len(_pdf_ref)
         _index = _pdf_ref.index
         del _pdf_ref
         results: Dict[str, np.ndarray] = {}

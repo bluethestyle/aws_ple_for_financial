@@ -167,6 +167,20 @@ class GMMClusteringGenerator(AbstractFeatureGenerator):
         # Eagerly resolve the GMM backend so it is cached
         _resolve_gmm_backend()
 
+    # -- Input columns declaration -----------------------------------------
+
+    @property
+    def input_cols(self) -> List[str]:
+        """Source columns consumed by fit() and generate().
+
+        Returns the explicitly configured feature columns.  When
+        ``feature_columns`` is empty the generator falls back to all
+        numeric columns at runtime; in that case the list is empty here
+        because the exact set is unknown until the DataFrame is seen.
+        Derivable from ``self.feature_columns`` with no new state.
+        """
+        return list(self.feature_columns)
+
     # -- Output description ------------------------------------------------
 
     @property
@@ -263,7 +277,15 @@ class GMMClusteringGenerator(AbstractFeatureGenerator):
                 "GMMClusteringGenerator must be fitted before generate()."
             )
 
-        n_rows = len(df)
+        # Extract declared input columns once; derive row count from the result.
+        # When feature_columns is empty input_cols is [] so col_arrays is empty;
+        # fall back to len(df) in that case.
+        col_arrays = self._input_to_numpy(df, columns=self.input_cols) if self.input_cols else {}
+        n_rows = (
+            len(next(iter(col_arrays.values())))
+            if col_arrays
+            else len(df)
+        )
         K = self.config.n_clusters
         results: Dict[str, np.ndarray] = {}
 

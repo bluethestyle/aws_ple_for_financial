@@ -718,73 +718,88 @@ class PipelineRunner:
             stage_start = time.time()
             logger.info("[Stage 3] Feature engineering...")
 
-            # _engineer_features expects a pandas DataFrame.  Convert
-            # from Arrow here — single materialisation point Stage 2->3.
+            # Memory plan (what stays vs what gets freed when):
+            #   • df (post-Stage-2 Arrow) is materialised to pandas only
+            #     once (df_for_eng), then df is dropped immediately so
+            #     the Arrow buffer is released before generators run.
+            #   • df_generated (the generators' output) lives in pandas
+            #     only long enough to be COPY'd to the spill parquet
+            #     alongside df_for_eng — the runner never builds a
+            #     ~9 GB combined Arrow Table in python.
+            #   • All three (df_for_eng, df_generated, post_stage3
+            #     parquet) are then dropped before Stage 4 begins.
             import pyarrow as _pa
+            import gc as _gc_stage3
             if isinstance(df, _pa.Table):
                 df_for_eng = df.to_pandas()
+                del df
+                df = None  # type: ignore[assignment]
+                _gc_stage3.collect()
             else:
                 df_for_eng = df
+                df = None  # type: ignore[assignment]
 
             feature_pipeline, df_generated = self._engineer_features(
                 df_for_eng, raw_data,
             )
             feature_schema = feature_pipeline.get_ple_input_metadata()
 
-            _arrow_main: _pa.Table = (
-                df if isinstance(df, _pa.Table) else _pa.Table.from_pandas(df_for_eng)
-            )
-
-            if df_generated is not None and len(df_generated.columns) > 0:
-                nonzero_ratio = (df_generated != 0).mean().mean()
-                zero_cols = [
-                    c for c in df_generated.columns
-                    if (df_generated[c] == 0).all()
-                ]
-                logger.info(
-                    "[Stage 3] Generated features: nonzero_ratio=%.2f%%, "
-                    "zero_variance_cols=%d",
-                    nonzero_ratio * 100, len(zero_cols),
-                )
-                if zero_cols:
-                    logger.warning(
-                        "[Stage 3] All-zero generated columns: %s",
-                        zero_cols[:10],
-                    )
-
-                existing_cols = set(_arrow_main.schema.names)
-                new_cols = [c for c in df_generated.columns if c not in existing_cols]
-                if new_cols:
-                    _df_gen = df_generated[new_cols].reset_index(drop=True)
-                    for _col in new_cols:
-                        _arrow_main = _arrow_main.append_column(
-                            _col,
-                            _pa.array(
-                                _df_gen[_col].to_numpy(dtype=float, na_value=float("nan"))
-                            ),
-                        )
-                    logger.info(
-                        "[Stage 3] Merged %d generated features into main table",
-                        len(new_cols),
-                    )
-
-            # Always spill _arrow_main to parquet. Both single-job and
-            # split modes then proceed via the view-based Stage 4-9
-            # path. Spilling here releases the ~9 GB Arrow buffer
-            # before Stage 4 ever runs.
             spill_post3_dir = spill_root / "post_stage3"
             spill_post3_dir.mkdir(parents=True, exist_ok=True)
             spill_parquet = spill_post3_dir / "main.parquet"
+
+            # Combined COPY: join df_for_eng + df_generated positionally
+            # in DuckDB and stream the result to parquet. No 1100-loop
+            # ``append_column`` on a ~9 GB Arrow Table; no second
+            # ``_pa.Table.from_pandas(df_for_eng)`` round-trip. The two
+            # registered frames are zero-copy views from DuckDB's POV.
             import duckdb as _ddb_spill
             _spill_con = _ddb_spill.connect()
             try:
-                _spill_con.register("_spill_arrow", _arrow_main)
-                _spill_con.execute(
-                    f"COPY _spill_arrow TO '{spill_parquet}' "
-                    f"(FORMAT PARQUET)"
-                )
+                main_cols = list(df_for_eng.columns)
+                main_set = set(main_cols)
+                if df_generated is not None and len(df_generated.columns):
+                    gen_cols = [
+                        c for c in df_generated.columns if c not in main_set
+                    ]
+                    nonzero_ratio = (df_generated != 0).mean().mean()
+                    zero_cols = [
+                        c for c in df_generated.columns
+                        if (df_generated[c] == 0).all()
+                    ]
+                    logger.info(
+                        "[Stage 3] Generated features: nonzero_ratio=%.2f%%, "
+                        "zero_variance_cols=%d",
+                        nonzero_ratio * 100, len(zero_cols),
+                    )
+                    if zero_cols:
+                        logger.warning(
+                            "[Stage 3] All-zero generated columns: %s",
+                            zero_cols[:10],
+                        )
+                else:
+                    gen_cols = []
+
+                _spill_con.register("_spill_main", df_for_eng)
+                proj_main = ", ".join(f'm."{c}"' for c in main_cols)
+                if gen_cols:
+                    _spill_con.register("_spill_gen", df_generated)
+                    proj_gen = ", ".join(f'g."{c}"' for c in gen_cols)
+                    sql_copy = (
+                        f"COPY (\n"
+                        f"  SELECT {proj_main}, {proj_gen}\n"
+                        f"  FROM _spill_main m POSITIONAL JOIN _spill_gen g\n"
+                        f") TO '{spill_parquet}' (FORMAT PARQUET)"
+                    )
+                else:
+                    sql_copy = (
+                        f"COPY (SELECT {proj_main} FROM _spill_main m) "
+                        f"TO '{spill_parquet}' (FORMAT PARQUET)"
+                    )
+                _spill_con.execute(sql_copy)
             finally:
                 _spill_con.close()
+
             # Persist sidecars so split-resumes can pick everything up.
             with open(spill_post3_dir / "feature_schema.json", "w") as f:
                 json.dump(feature_schema, f, indent=2, default=str)
@@ -804,18 +819,19 @@ class PipelineRunner:
                     },
                     f, indent=2, default=str,
                 )
+
+            spill_rows = len(df_for_eng)
+            spill_cols = len(main_cols) + len(gen_cols)
             logger.info(
                 "[Stage 3] post_stage3 spilled to %s (%d rows x %d cols); "
                 "in-memory Arrow + pandas about to be freed",
-                spill_parquet,
-                _arrow_main.num_rows, _arrow_main.num_columns,
+                spill_parquet, spill_rows, spill_cols,
             )
-            spill_rows = _arrow_main.num_rows
-            spill_cols = _arrow_main.num_columns
-            del _arrow_main, df_for_eng
-            df = None  # type: ignore[assignment]
+            del df_for_eng
+            if df_generated is not None:
+                del df_generated
+            df_generated = None  # type: ignore[assignment]
             self._post_stage3_table = None
-            import gc as _gc_stage3
             _gc_stage3.collect()
 
             results["stage3_features"] = {

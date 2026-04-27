@@ -346,6 +346,11 @@ class MerchantHierarchyGenerator(AbstractFeatureGenerator):
         self._svd_model:    Any = None
 
     @property
+    def input_cols(self) -> List[str]:
+        """Source columns consumed by fit() and generate()."""
+        return [self._mcc_col, self._amount_col, self._day_col]
+
+    @property
     def output_dim(self) -> int:
         return self._OUTPUT_DIM
 
@@ -392,15 +397,17 @@ class MerchantHierarchyGenerator(AbstractFeatureGenerator):
             len(self._l1_names), len(self._l2_names), len(self._mcc_to_l1),
         )
 
-        # Fit SVD on training L2 histograms
-        pdf = _to_pandas_safe(df)
-        n_rows = len(pdf)
+        # Fit SVD on training L2 histograms — only extract cols present in df
+        available_cols = [c for c in self.input_cols if c in _columns_list(df)]
+        col_arrays = self._input_to_numpy(df, columns=available_cols) if available_cols else {}
+        n_rows = len(next(iter(col_arrays.values()))) if col_arrays else len(_to_pandas_safe(df))
         self._svd_model = None
-        if self._mcc_col in pdf.columns and n_l2 > 1:
+        if self._mcc_col in col_arrays and n_l2 > 1:
             try:
+                mcc_arr = col_arrays[self._mcc_col]
                 hists = np.zeros((n_rows, n_l2), dtype=np.float32)
-                for ri, raw in enumerate(pdf[self._mcc_col]):
-                    for mcc in _parse_seq(raw):
+                for ri in range(n_rows):
+                    for mcc in _parse_seq(mcc_arr[ri]):
                         l2i = self._l2_index.get(self._mcc_to_l2.get(mcc, ""), -1)
                         if l2i >= 0:
                             hists[ri, l2i] += 1.0
@@ -426,24 +433,27 @@ class MerchantHierarchyGenerator(AbstractFeatureGenerator):
         if not self._fitted:
             raise RuntimeError("MerchantHierarchyGenerator must be fitted before generate().")
 
+        # Extract only present columns — graceful fallback for absent LIST cols
+        available_cols = [c for c in self.input_cols if c in _columns_list(df)]
+        col_arrays = self._input_to_numpy(df, columns=available_cols) if available_cols else {}
         pdf = _to_pandas_safe(df)
-        n_rows = len(pdf)
+        n_rows = len(next(iter(col_arrays.values()))) if col_arrays else len(pdf)
         n_l1 = max(len(self._l1_names), 1)
         n_l2 = max(len(self._l2_names), 1)
         assert self._l1_pos is not None and self._l2_pos is not None
 
-        present = set(_columns_list(pdf))
-        mcc_col    = self._mcc_col    if self._mcc_col    in present else None
-        amount_col = self._amount_col if self._amount_col in present else None
-        day_col    = self._day_col    if self._day_col    in present else None
+        # Graceful fallback: use None sentinel if a LIST col is absent from the frame
+        mcc_arr    = col_arrays.get(self._mcc_col)    # object-dtype ndarray or None
+        amount_arr = col_arrays.get(self._amount_col) # object-dtype ndarray or None
+        day_arr    = col_arrays.get(self._day_col)    # object-dtype ndarray or None
 
         trunc = self._truncate_last  # drop last N elements to prevent label leakage
 
         out_matrix = np.zeros((n_rows, self._OUTPUT_DIM), dtype=np.float32)
         for ri in range(n_rows):
-            mcc_seq    = _parse_seq(pdf[mcc_col].iat[ri])          if mcc_col    else []
-            amount_seq = _parse_float_seq(pdf[amount_col].iat[ri]) if amount_col else []
-            day_seq    = _parse_float_seq(pdf[day_col].iat[ri])    if day_col    else []
+            mcc_seq    = _parse_seq(mcc_arr[ri])          if mcc_arr    is not None else []
+            amount_seq = _parse_float_seq(amount_arr[ri]) if amount_arr is not None else []
+            day_seq    = _parse_float_seq(day_arr[ri])    if day_arr    is not None else []
             # Truncate sequences to prevent next_mcc / top_mcc_shift leakage
             if trunc > 0:
                 mcc_seq    = mcc_seq[:-trunc]    if len(mcc_seq)    > trunc else []
