@@ -69,9 +69,19 @@ ENV CAUSAL_CONV1D_FORCE_BUILD=TRUE \
     TORCH_CUDA_ARCH_LIST="7.5" \
     MAX_JOBS=2
 
+# Version pins are critical:
+#   * causal-conv1d 1.6.x switched to ``torch.library.custom_op``,
+#     which is only available in PyTorch 2.4+. The DLC base ships
+#     PyTorch 2.1, so pin <1.6 to keep the older C++-extension
+#     dispatcher path. Build#8 installed 1.6.1 and the import-time
+#     sanity check failed with
+#         AttributeError: module 'torch.library' has no attribute 'custom_op'
+#   * mamba-ssm 2.3.x bumped its causal-conv1d floor to 1.6, so
+#     pin <2.3 for the same reason.
+# The 1.5.x / 2.2.x line is the last torch-2.1-compatible major.
 RUN /opt/conda/bin/pip install --no-cache-dir --no-build-isolation \
-        "causal-conv1d>=1.1,<2.0" \
-        "mamba-ssm>=1.2,<3.0"
+        "causal-conv1d>=1.4,<1.6" \
+        "mamba-ssm>=2.0,<2.3"
 
 # Sanity-check the install at build time so a regression here
 # fails the image build instead of a downstream training job.
