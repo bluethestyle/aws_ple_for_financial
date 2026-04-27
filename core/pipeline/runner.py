@@ -1794,6 +1794,51 @@ class PipelineRunner:
         # the lazy DuckDB table rather than re-registering the LIST-stripped
         # pandas frame.
         pipeline.fit(fit_df, adapter_ctx=self._adapter_ctx)
+        del fit_df
+
+        # Slim-frame transform (CLAUDE.md §3.3 / memory).
+        # Take the union of every enabled non-SQL generator's
+        # ``input_cols`` and drop everything else from the frame
+        # before we hand it to pipeline.transform. SQL-native
+        # generators ignore the frame anyway.
+        union_cols: set = set()
+        slim_eligible = True
+        pipeline_gens: Dict[str, Any] = (
+            getattr(pipeline, "_generators", {}) or {}
+        )
+        for group in getattr(pipeline, "_all_groups", []) or []:
+            if not getattr(group, "enabled", True):
+                continue
+            gen = pipeline_gens.get(group.name)
+            if gen is None:
+                continue
+            if getattr(gen, "supports_sql_native", False):
+                continue  # ignores df, no slimming needed
+            ic = getattr(gen, "input_cols", None)
+            if ic is None or not ic:
+                slim_eligible = False
+                break
+            union_cols.update(ic)
+        if slim_eligible and union_cols:
+            keep_cols = [c for c in df.columns if c in union_cols]
+            if keep_cols and len(keep_cols) < len(df.columns):
+                logger.info(
+                    "[Stage 3] slim-frame transform: %d / %d input cols "
+                    "(union of non-SQL generator.input_cols)",
+                    len(keep_cols), len(df.columns),
+                )
+                df_slim = df[keep_cols].copy()
+                df = df_slim
+                import gc as _gc_engr
+                _gc_engr.collect()
+        else:
+            logger.info(
+                "[Stage 3] slim-frame skipped (eligible=%s, union=%d): "
+                "at least one generator has empty input_cols, keeping "
+                "the full frame for the all-numeric fallback path",
+                slim_eligible, len(union_cols),
+            )
+
         df_features = pipeline.transform(df, adapter_ctx=self._adapter_ctx)
 
         logger.info(
