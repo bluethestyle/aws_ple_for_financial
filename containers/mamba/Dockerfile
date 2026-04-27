@@ -33,11 +33,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # mamba-ssm 1.2.0.post1, both pre-built against torch 2.1 / cp310.
 #
 # CUDA: neither project publishes a cu121 wheel for the 1.2.x line
-# (only cu118 + cu122). cu118 is the safe choice — its kernels run
-# on any modern driver (cu121 / cu122 host included) thanks to
-# CUDA's forward-driver compatibility. cu122 binaries on a cu121
-# host can fail symbol resolution.
-# (Verified via GitHub Releases API on 2026-04-27.)
+# (only cu118 + cu122 — verified via GitHub Releases API
+# 2026-04-27). cu118 wheels link against libcudart.so.11.0 which
+# the DLC doesn't ship, so build#13 failed at import:
+#   ImportError: libcudart.so.11.0: cannot open shared object file
+# cu122 wheels link against libcudart.so.12, which matches the
+# DLC's cu121 libcudart (CUDA 12.x is binary-compatible at the
+# library level within the same major).
 #
 # These versions still use torch.utils.cpp_extension (no
 # torch.library.custom_op dependency) so they import cleanly under
@@ -46,8 +48,8 @@ ARG CAUSAL_CONV1D_VERSION=1.2.0.post2
 ARG MAMBA_SSM_VERSION=1.2.0.post1
 
 RUN /opt/conda/bin/pip install --no-cache-dir \
-        "https://github.com/Dao-AILab/causal-conv1d/releases/download/v${CAUSAL_CONV1D_VERSION}/causal_conv1d-${CAUSAL_CONV1D_VERSION}+cu118torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl" \
-        "https://github.com/state-spaces/mamba/releases/download/v${MAMBA_SSM_VERSION}/mamba_ssm-${MAMBA_SSM_VERSION}+cu118torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
+        "https://github.com/Dao-AILab/causal-conv1d/releases/download/v${CAUSAL_CONV1D_VERSION}/causal_conv1d-${CAUSAL_CONV1D_VERSION}+cu122torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl" \
+        "https://github.com/state-spaces/mamba/releases/download/v${MAMBA_SSM_VERSION}/mamba_ssm-${MAMBA_SSM_VERSION}+cu122torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
 
 # Sanity-check the install at build time so a regression here
 # fails the image build instead of a downstream training job.
