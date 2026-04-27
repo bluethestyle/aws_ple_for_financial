@@ -788,7 +788,21 @@ class PipelineRunner:
                 # CAST(... AS DOUBLE) projection can't override it.
                 # numpy float64 forces DuckDB to pick DOUBLE.
                 import pandas as _pd_dt
+                from decimal import Decimal as _PyDecimal
                 def _force_double_numeric(frame):
+                    """Convert numeric-ish pandas columns to numpy float64.
+
+                    Catches three classes of "DECIMAL inference trap":
+                      1. Direct numpy numeric dtypes (b/i/u/f) — astype is
+                         a no-op for already-float64.
+                      2. Arrow-backed pandas dtypes whose name contains
+                         decimal/float/int/bool (kind tag varies).
+                      3. ``object`` dtype where the *cells* are
+                         ``decimal.Decimal`` (this is what
+                         ``arrow.to_pandas()`` produces for DECIMAL
+                         columns by default — easy to miss because the
+                         column-level dtype is just "O").
+                    """
                     if frame is None:
                         return frame
                     for col in list(frame.columns):
@@ -798,25 +812,45 @@ class PipelineRunner:
                             kind = s.dtype.kind  # numpy
                         except AttributeError:
                             kind = ""
-                        # Skip object / string / list / category cols.
-                        if kind == "O" or kind == "U":
+                        if kind in "biuf":
+                            try:
+                                frame[col] = s.astype("float64", copy=False)
+                            except (ValueError, TypeError):
+                                pass
                             continue
-                        # Convert anything that looks numeric (or
-                        # arrow-backed numeric) to numpy float64.
+                        # Arrow-backed dtypes carry their type in the
+                        # repr string.
                         if (
-                            kind in "biuf"
-                            or "decimal" in dtype_str
+                            "decimal" in dtype_str
                             or "float" in dtype_str
-                            or "int" in dtype_str
+                            or ("int" in dtype_str and kind != "O")
                             or "bool" in dtype_str
                         ):
                             try:
-                                frame[col] = s.astype(
-                                    "float64", copy=False,
-                                )
+                                frame[col] = s.astype("float64", copy=False)
                             except (ValueError, TypeError):
-                                # Leave it for the SELECT-time CAST
                                 pass
+                            continue
+                        # object-dtype: peek the first non-null cell. If
+                        # it's a Python Decimal (the arrow.to_pandas
+                        # default for DECIMAL columns), convert via the
+                        # generic astype path. Other object payloads
+                        # (strings, lists, arrays) are left alone.
+                        if kind == "O":
+                            try:
+                                first = next(
+                                    (v for v in s if v is not None),
+                                    None,
+                                )
+                            except Exception:
+                                first = None
+                            if isinstance(first, _PyDecimal):
+                                try:
+                                    frame[col] = s.astype(
+                                        "float64", copy=False,
+                                    )
+                                except (ValueError, TypeError):
+                                    pass
                     return frame
 
                 df_for_eng = _force_double_numeric(df_for_eng)
