@@ -1,0 +1,18 @@
+# Mamba GPU pre-compute job dependencies on top of the PyTorch 2.1
+# CUDA DLC (g4dn / g5 instance types).
+#
+# Already in PyTorch 2.1 DLC: torch, numpy, pandas, scikit-learn,
+# scipy, boto3, sagemaker, joblib, pyyaml.
+
+duckdb>=0.10,<2.0
+pyarrow>=14,<19
+
+# CUDA-optimised selective scan kernel. Wheel build needs nvcc which
+# the DLC ships, so this works on g4dn / g5 hosts (unlike the CPU
+# Phase 0 instance where these wheels fail). Pure-torch fallback in
+# core/feature/generators/mamba.py kicks in if the import fails.
+mamba-ssm>=1.2,<3.0
+causal-conv1d>=1.1,<2.0
+
+# Mamba's _NumpyGaussianHMM fallback uses hmmlearn for sanity ops.
+hmmlearn>=0.3,<0.4

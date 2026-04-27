@@ -46,6 +46,7 @@ _INCLUDE_DIRS = [
     "core",
     "adapters",                  # Phase 0 adapter registrations (e.g. santander)
     "containers/phase0",         # Phase 0 cloud entry point (9-stage runner)
+    "containers/mamba",          # Mamba GPU pre-compute entry point
     "containers/training",
     "containers/evaluation",
     "containers/distillation",   # PLE -> LGBM distillation entry point

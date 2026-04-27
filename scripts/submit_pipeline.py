@@ -176,6 +176,19 @@ def parse_args():
             "(downstream phases use the Job-C model artefact)."
         ),
     )
+    parser.add_argument(
+        "--mamba-precompute", action="store_true",
+        help=(
+            "Run the Mamba temporal-embedding pre-compute job on a GPU "
+            "SageMaker instance. Produces a per-customer "
+            "embedding.parquet under s3://{bucket}/{task}/mamba/{ts}/. "
+            "After it succeeds, set ``feature_groups.yaml::mamba_temporal."
+            "generator_params.cached_embedding_uri`` to that path and "
+            "flip ``enabled: true`` so the next Phase 0 run picks up "
+            "the +50D mamba block. Job exits on completion; this flag "
+            "does NOT chain into Phase 0 / training."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -213,6 +226,14 @@ def main():
     logger.info("  Instance: %s (Spot=%s)", aws.instance_type, aws.use_spot)
     logger.info("  Tasks: %d", len(config.tasks))
     logger.info("=" * 60)
+
+    # The mamba-precompute side-track runs *before* every other mode
+    # check because it's a standalone GPU job that doesn't chain into
+    # Phase 0 / training. Operators run it once, copy the resulting S3
+    # path into feature_groups.yaml, then resubmit a normal Phase 0.
+    if args.mamba_precompute:
+        _run_mamba_precompute(config, args, s3_base, ts, wait)
+        return
 
     if args.mode == "stepfunctions":
         _run_stepfunctions(config, args, s3_base, ts)
@@ -294,6 +315,55 @@ def _build_staging_dir() -> str:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from package_source import build_staging  # type: ignore[import]
     return build_staging()
+
+
+def _run_mamba_precompute(config, args, s3_base, ts, wait):
+    """Standalone GPU SageMaker job that produces the Mamba embedding parquet.
+
+    Output (set on the estimator's ``output_path``):
+      ``s3://{bucket}/{task}/mamba/{ts}/<job_name>/output/model.tar.gz``
+
+    The tar contains ``embedding.parquet``. To consume it, set
+    ``feature_groups.yaml::mamba_temporal.generator_params.
+    cached_embedding_uri`` to a (post-extraction) S3 prefix and
+    flip ``enabled: true``.
+    """
+    from aws.sagemaker.trainer import SageMakerTrainer
+
+    if args.dry_run:
+        logger.info("[DRY RUN] Mamba pre-compute would launch on %s",
+                    getattr(config.aws, "gpu_instance_type", "ml.g4dn.xlarge"))
+        return
+
+    staging = _build_staging_dir()
+    logger.info("Staging dir: %s", staging)
+
+    raw_uri = args.raw_data_uri or (
+        config.data.source if config.data.source.startswith("s3://") else ""
+    )
+    if not raw_uri:
+        logger.error(
+            "Mamba pre-compute needs --raw-data-uri s3://... or "
+            "data.source pointing at an S3 parquet."
+        )
+        sys.exit(2)
+
+    trainer = SageMakerTrainer(config)
+    result = trainer.launch_mamba_precompute(
+        staging_dir=staging,
+        raw_s3_uri=raw_uri,
+        wait=wait,
+    )
+    logger.info("=" * 60)
+    logger.info("Mamba pre-compute complete: %s", result.get("job_name"))
+    logger.info("  Model URI: %s", result.get("s3_model_uri"))
+    logger.info("  Billable seconds: %s", result.get("billable_seconds"))
+    logger.info("  Next: download model.tar.gz, extract embedding.parquet")
+    logger.info("        upload to s3://{bucket}/{task}/mamba/<ts>/embedding.parquet")
+    logger.info("        set feature_groups.yaml::mamba_temporal."
+                "generator_params.cached_embedding_uri to that path,")
+    logger.info("        flip enabled: true, resubmit Phase 0.")
+    logger.info("=" * 60)
 
 
 def _launch_phase0_split(

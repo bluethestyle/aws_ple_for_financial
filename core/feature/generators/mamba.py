@@ -354,6 +354,7 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
         random_state: int = 42,
         prefer_gpu: bool = True,
         base_batch_size: int = 512,
+        cached_embedding_uri: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -375,6 +376,12 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
         self.prefix = prefix
         self.random_state = random_state
         self.prefer_gpu = prefer_gpu
+        # When set, ``fit()`` skips the (CUDA-only) Mamba training and
+        # ``generate()`` reads the precomputed embedding parquet from
+        # this URI (local path or s3://...). The parquet must contain
+        # one row per entity, with ``entity_column`` plus 50 columns
+        # named per ``output_columns``.
+        self.cached_embedding_uri = cached_embedding_uri
 
         # Fitted state
         self._pca_components: Optional[np.ndarray] = None
@@ -405,6 +412,23 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
     def output_columns(self) -> List[str]:
         return [f"{self.prefix}_d{i}" for i in range(self.cfg.output_dim)]
 
+    @property
+    def input_cols(self) -> List[str]:
+        """Source columns Mamba reads at fit/generate.
+
+        On the cached path only ``entity_column`` is needed (the
+        embeddings come from disk). On the training path we need the
+        full sequence-feature set plus the time ordering column.
+        """
+        cols: List[str] = [self.entity_column]
+        if self.cached_embedding_uri:
+            return cols
+        if self.time_column:
+            cols.append(self.time_column)
+        if self.feature_columns:
+            cols.extend(c for c in self.feature_columns if c not in cols)
+        return cols
+
     # -- Core API ----------------------------------------------------------
 
     def fit(self, df: Any, **context: Any) -> "MambaFeatureGenerator":
@@ -414,7 +438,26 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
         and passes each entity's sequence through a Mamba encoder.
         Falls back to numpy state space approximation if torch is
         unavailable.
+
+        When ``cached_embedding_uri`` is set, training is skipped
+        entirely: we just load the per-entity embedding parquet that
+        a separate GPU pre-compute job (scripts/precompute_mamba.py)
+        already produced, and ``generate()`` becomes a lookup. This
+        is the production path on CPU Phase-0 instances that lack
+        the CUDA wheel for ``mamba_ssm``.
         """
+        if self.cached_embedding_uri:
+            self._load_cached_embeddings(self.cached_embedding_uri)
+            self._fitted = True
+            logger.info(
+                "MambaFeatureGenerator: skipped fit() — loaded %d cached "
+                "embeddings from %s (output_dim=%d)",
+                len(self._entity_embeddings or {}),
+                self.cached_embedding_uri,
+                self.cfg.output_dim,
+            )
+            return self
+
         pdf = df_backend.to_pandas(df) if not isinstance(df, pd.DataFrame) else df
         rng = np.random.RandomState(self.random_state)
 
@@ -451,6 +494,42 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
             n_entities, self.cfg.output_dim,
         )
         return self
+
+    def _load_cached_embeddings(self, uri: str) -> None:
+        """Load per-entity Mamba embeddings produced by the GPU pre-compute job.
+
+        ``uri`` may be a local path or an ``s3://`` URI; DuckDB's
+        ``read_parquet`` handles both (with httpfs for S3). The
+        parquet must contain ``self.entity_column`` plus the columns
+        named in ``self.output_columns`` (one row per entity).
+        """
+        import duckdb as _ddb_mamba
+        emb_cols = self.output_columns
+        proj = ", ".join(f'"{c}"' for c in [self.entity_column] + emb_cols)
+        _con = _ddb_mamba.connect()
+        try:
+            if uri.startswith("s3://"):
+                _con.execute("INSTALL httpfs; LOAD httpfs;")
+            arr = _con.execute(
+                f"SELECT {proj} FROM read_parquet('{uri}')"
+            ).fetch_arrow_table()
+        finally:
+            _con.close()
+        # Build the lookup dict. Arrow → numpy avoids per-row Python
+        # object overhead.
+        entity_arr = arr.column(self.entity_column).to_numpy(
+            zero_copy_only=False
+        )
+        emb_matrix = np.stack(
+            [arr.column(c).to_numpy(zero_copy_only=False) for c in emb_cols],
+            axis=1,
+        ).astype(np.float32, copy=False)
+        self._entity_embeddings = {
+            entity_arr[i]: emb_matrix[i] for i in range(len(entity_arr))
+        }
+        self._default_embedding = np.zeros(
+            self.cfg.output_dim, dtype=np.float32
+        )
 
     def generate(self, df: Any, **context: Any) -> Any:
         """Look up pre-computed Mamba embeddings for each row."""
