@@ -105,11 +105,20 @@ fi
 ZIP_FILE="${TEMP:-/tmp}/mamba-image-source-${TS}.zip"
 echo "[codebuild] packaging source → ${ZIP_FILE}"
 rm -f "${ZIP_FILE}"
-# Limit to what the Dockerfile + buildspec actually need
+# Python's zipfile is portable across OSes; Git Bash on Windows
+# doesn't ship the ``zip`` cli, so use python instead.
 ( cd "$(git rev-parse --show-toplevel)" && \
-  zip -qr "${ZIP_FILE}" \
-      containers/mamba/Dockerfile \
-      containers/mamba/buildspec.yml )
+  python -c "
+import zipfile, os
+files = [
+    'containers/mamba/Dockerfile',
+    'containers/mamba/buildspec.yml',
+]
+with zipfile.ZipFile(r'${ZIP_FILE}', 'w', zipfile.ZIP_DEFLATED) as zf:
+    for f in files:
+        zf.write(f, arcname=f)
+print('zip written:', r'${ZIP_FILE}')
+" )
 ZIP_SIZE=$(du -h "${ZIP_FILE}" | cut -f1)
 echo "[codebuild] zip size: ${ZIP_SIZE}"
 
