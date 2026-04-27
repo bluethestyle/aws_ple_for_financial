@@ -780,46 +780,53 @@ class PipelineRunner:
                 else:
                     gen_cols = []
 
+                # Force every numeric pandas column to numpy float64
+                # *before* DuckDB registers the frame. DuckDB peeks at
+                # pandas dtype metadata at register-time; an Arrow-
+                # backed DECIMAL(1, scale) column will be locked in as
+                # DECIMAL(1,1) before any SELECT runs, and the later
+                # CAST(... AS DOUBLE) projection can't override it.
+                # numpy float64 forces DuckDB to pick DOUBLE.
+                import pandas as _pd_dt
+                def _force_double_numeric(frame):
+                    if frame is None:
+                        return frame
+                    for col in list(frame.columns):
+                        s = frame[col]
+                        dtype_str = str(s.dtype).lower()
+                        try:
+                            kind = s.dtype.kind  # numpy
+                        except AttributeError:
+                            kind = ""
+                        # Skip object / string / list / category cols.
+                        if kind == "O" or kind == "U":
+                            continue
+                        # Convert anything that looks numeric (or
+                        # arrow-backed numeric) to numpy float64.
+                        if (
+                            kind in "biuf"
+                            or "decimal" in dtype_str
+                            or "float" in dtype_str
+                            or "int" in dtype_str
+                            or "bool" in dtype_str
+                        ):
+                            try:
+                                frame[col] = s.astype(
+                                    "float64", copy=False,
+                                )
+                            except (ValueError, TypeError):
+                                # Leave it for the SELECT-time CAST
+                                pass
+                    return frame
+
+                df_for_eng = _force_double_numeric(df_for_eng)
+                df_generated = _force_double_numeric(df_generated)
+
                 _spill_con.register("_spill_main", df_for_eng)
-
-                def _proj_with_double_cast(
-                    table_alias: str, col_names: List[str], schema: Dict[str, str]
-                ) -> str:
-                    """Build SELECT projection that promotes DECIMAL → DOUBLE.
-
-                    DuckDB infers narrow DECIMAL(1,1) for binary 0/1 cols
-                    that happen to look [0, 0.99] in a sample window. The
-                    moment a "1.0" lands inside such a column the COPY
-                    SQL fails with "Casting value 1.0 to type DECIMAL(1,1)
-                    failed". Cast every DECIMAL field to DOUBLE up front.
-                    """
-                    parts = []
-                    for c in col_names:
-                        t = (schema.get(c) or "").upper()
-                        if t.startswith("DECIMAL"):
-                            parts.append(
-                                f'CAST({table_alias}."{c}" AS DOUBLE) AS "{c}"'
-                            )
-                        else:
-                            parts.append(f'{table_alias}."{c}"')
-                    return ", ".join(parts)
-
-                main_schema = {
-                    r[0]: r[1] for r in
-                    _spill_con.execute("DESCRIBE _spill_main").fetchall()
-                }
-                proj_main = _proj_with_double_cast(
-                    "m", main_cols, main_schema,
-                )
+                proj_main = ", ".join(f'm."{c}"' for c in main_cols)
                 if gen_cols:
                     _spill_con.register("_spill_gen", df_generated)
-                    gen_schema = {
-                        r[0]: r[1] for r in
-                        _spill_con.execute("DESCRIBE _spill_gen").fetchall()
-                    }
-                    proj_gen = _proj_with_double_cast(
-                        "g", gen_cols, gen_schema,
-                    )
+                    proj_gen = ", ".join(f'g."{c}"' for c in gen_cols)
                     sql_copy = (
                         f"COPY (\n"
                         f"  SELECT {proj_main}, {proj_gen}\n"
