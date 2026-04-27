@@ -755,9 +755,13 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
 
         use_amp = device_str.startswith("cuda")
         if use_amp:
+            # torch.amp.GradScaler is the 2.4+ API; PyTorch 2.1 (the
+            # SageMaker GPU DLC ships 2.1) raises AttributeError when
+            # accessing it, so fall back to the legacy
+            # torch.cuda.amp.GradScaler path on that error class too.
             try:
                 scaler = torch.amp.GradScaler()
-            except TypeError:
+            except (TypeError, AttributeError):
                 scaler = torch.cuda.amp.GradScaler()
         else:
             scaler = None
@@ -814,7 +818,15 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
                         optimiser.zero_grad()
 
                         if use_amp:
-                            with torch.amp.autocast("cuda"):
+                            # PyTorch 2.1 doesn't have torch.amp.autocast,
+                            # only torch.cuda.amp.autocast. Use the legacy
+                            # path to stay compatible with the SageMaker
+                            # GPU DLC.
+                            try:
+                                _amp_ctx = torch.amp.autocast("cuda")
+                            except (TypeError, AttributeError):
+                                _amp_ctx = torch.cuda.amp.autocast()
+                            with _amp_ctx:
                                 encoded = model(batch)
                                 # Self-supervised: predict mean of input
                                 target = batch.mean(dim=1)
