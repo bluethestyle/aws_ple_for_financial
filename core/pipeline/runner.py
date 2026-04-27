@@ -564,19 +564,40 @@ class PipelineRunner:
                         sentinel_applied,
                     )
 
+                # Build per-column mapping tables for categorical
+                # encoding. Each mapping is tiny (one row per distinct
+                # value) so the 39 LEFT JOIN against them in the main
+                # SELECT is cheap on memory — far cheaper than the 39
+                # simultaneous global DENSE_RANK windows that OOM'd
+                # the 64 GB instance.
+                cat_map_tables: Dict[str, str] = {}
+                for i, col in enumerate(cat_cols_to_encode):
+                    tname = f"_stage2_map_{i}"
+                    qcol_inner = f'"{col}"'
+                    _con2.execute(
+                        f"CREATE OR REPLACE TABLE {tname} AS "
+                        f"SELECT "
+                        f"  COALESCE(CAST({qcol_inner} AS VARCHAR), 'nan') AS val, "
+                        f"  ROW_NUMBER() OVER ("
+                        f"    ORDER BY COALESCE(CAST({qcol_inner} AS VARCHAR), 'nan')"
+                        f"  ) - 1 AS code "
+                        f"FROM (SELECT DISTINCT {qcol_inner} FROM _df_input)"
+                    )
+                    cat_map_tables[col] = tname
+
                 # Build the unified projection
                 proj_parts: List[str] = []
                 for col_name in schema_dict:
                     qcol = f'"{col_name}"'
                     if col_name in cat_cols_to_encode:
-                        # sklearn LabelEncoder semantics: codes are
-                        # 0..n-1 in sorted order over the str-cast values.
-                        # COALESCE(..., 'nan') matches astype(str)'s
-                        # NaN→"nan" rendering.
+                        # Look up the encoded code from the per-col
+                        # mapping table. The COALESCE(...,'nan') match
+                        # mirrors sklearn LabelEncoder's astype(str)
+                        # behaviour for NaN.
+                        tname = cat_map_tables[col_name]
+                        alias = f"_m_{list(cat_map_tables).index(col_name)}"
                         proj_parts.append(
-                            f"(DENSE_RANK() OVER (ORDER BY "
-                            f"COALESCE(CAST({qcol} AS VARCHAR), 'nan')) - 1)"
-                            f"::INTEGER AS {qcol}"
+                            f"{alias}.code::INTEGER AS {qcol}"
                         )
                     elif col_name in numeric_cols_all:
                         base_expr = qcol
@@ -615,8 +636,27 @@ class PipelineRunner:
                         # LIST cols / non-numeric, non-cat → passthrough
                         proj_parts.append(qcol)
 
-                sql = f"SELECT {', '.join(proj_parts)} FROM _df_input"
+                join_clauses: List[str] = []
+                for i, col in enumerate(cat_cols_to_encode):
+                    tname = cat_map_tables[col]
+                    qcol = f'"{col}"'
+                    join_clauses.append(
+                        f"LEFT JOIN {tname} _m_{i} ON "
+                        f"COALESCE(CAST(_df_input.{qcol} AS VARCHAR), 'nan') "
+                        f"= _m_{i}.val"
+                    )
+                sql = (
+                    f"SELECT {', '.join(proj_parts)}\n"
+                    f"FROM _df_input\n"
+                    + "\n".join(join_clauses)
+                )
                 _arrow_after_stage2 = _con2.execute(sql).fetch_arrow_table()
+                # Cleanup mapping tables (each tiny, but tidy up)
+                for tname in cat_map_tables.values():
+                    try:
+                        _con2.execute(f"DROP TABLE IF EXISTS {tname}")
+                    except Exception:
+                        pass
             finally:
                 _con2.close()
 
