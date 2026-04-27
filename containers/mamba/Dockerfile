@@ -2,19 +2,25 @@
 #
 # Bakes mamba_ssm + causal-conv1d (the CUDA selective-scan kernels)
 # into the image so the entry script doesn't have to compile them
-# at job start. Without this image the wheel build fails on the
-# stock AWS PyTorch GPU DLC because:
-#   * ninja is not preinstalled (distutils fallback is slow + fragile)
-#   * causal-conv1d's setup.py downloads NVIDIA headers via urllib
-#     which intermittently 403s on SageMaker hosts
-#   * the from-source build takes ~7 minutes per job, which we don't
-#     need since these wheels are stable
+# at job start.
 #
 # Base: SageMaker PyTorch 2.1 GPU training DLC for ap-northeast-2.
-# Built once with scripts/build_mamba_image.sh and pushed to ECR;
-# launch_mamba_precompute() in aws/sagemaker/trainer.py reads
-# ``aws.mamba_image_uri`` from pipeline.yaml and passes it as
+# Built once with scripts/build_mamba_image_codebuild.sh and pushed
+# to ECR; launch_mamba_precompute() in aws/sagemaker/trainer.py
+# reads ``aws.mamba_image_uri`` from pipeline.yaml and passes it as
 # ``image_uri`` to the PyTorch estimator.
+#
+# Strategy: pre-built wheels from each project's GitHub Releases.
+# The from-source path was tried in builds #5–#11 and hit:
+#   * BuildKit "tls: bad record MAC" (local Docker on Windows)
+#   * pip build-isolation pulling latest torch (cu130) → CUDA
+#     mismatch with DLC nvcc (cu121)
+#   * causal-conv1d ≥1.4.0 importing torch.library.custom_op
+#     (PyTorch 2.4+ only; DLC has 2.1)
+#   * sdist of causal-conv1d 1.2.x / 1.3.x missing csrc/*.cpp
+# Pre-built wheels skip the entire compile path — they were built
+# by the project authors against the exact PyTorch + CUDA combo
+# we run, so the ABI matches end-to-end.
 
 ARG REGION=ap-northeast-2
 FROM 763104351884.dkr.ecr.${REGION}.amazonaws.com/pytorch-training:2.1.0-gpu-py310-cu121-ubuntu20.04-sagemaker
@@ -23,72 +29,18 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# System build prereqs the wheels need:
-#   * ninja-build  — accelerates torch.utils.cpp_extension
-#   * build-essential — gcc / g++ for the CUDA host compiler
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-        ninja-build \
-        build-essential \
- && rm -rf /var/lib/apt/lists/*
+# Pre-built wheels — pinned to causal-conv1d 1.2.0.post2 and
+# mamba-ssm 1.2.0.post1, which both publish
+# cu121 + torch2.1 + cxx11abiFALSE + cp310 + linux_x86_64 wheels.
+# These versions still use torch.utils.cpp_extension (no
+# torch.library.custom_op dependency) so they import cleanly under
+# the DLC's PyTorch 2.1.
+ARG CAUSAL_CONV1D_VERSION=1.2.0.post2
+ARG MAMBA_SSM_VERSION=1.2.0.post1
 
-# Install ninja + the build prereqs into the conda env SageMaker uses.
-# The DLC's site-packages live under /opt/conda; pip-installed
-# packages here are what the entry script will see at runtime.
-#
-# packaging/wheel/setuptools are required by --no-build-isolation
-# below — without them pip can't run causal-conv1d's setup.py.
 RUN /opt/conda/bin/pip install --no-cache-dir \
-        ninja packaging wheel setuptools
-
-# CUDA selective-scan wheels (causal-conv1d first — mamba-ssm
-# imports it at module load time).
-#
-# --no-build-isolation is critical: pip's default isolated build env
-# pulls the *latest* torch from PyPI (currently cu130), but the DLC
-# has cu121. The wheel build then fails with
-#   "RuntimeError: detected CUDA version (12.1) mismatches the
-#    version that was used to compile PyTorch (13.0)".
-# Disabling isolation makes the build reuse the DLC's own cu121
-# torch — which matches the system nvcc.
-#
-# CAUSAL_CONV1D_FORCE_BUILD=TRUE makes the build use the local
-# CUDA toolkit instead of trying to download NVIDIA headers from
-# the network (which has been flaky inside SageMaker).
-#
-# TORCH_CUDA_ARCH_LIST narrowed to 7.5 only (T4) — the Mamba
-# precompute job runs on ml.g4dn.xlarge per pipeline.yaml, no
-# A100/A10G/H100 needed. Each kernel compiles once-per-arch, so
-# pruning 4 archs → 1 cuts the wheel build time by ~4×.
-#
-# MAX_JOBS=2 caps parallel nvcc invocations so mamba-ssm doesn't
-# OOM on BUILD_GENERAL1_LARGE's 15GB RAM (one nvcc can use 4-5GB
-# during register allocation; default = nproc which would OOM).
-ENV CAUSAL_CONV1D_FORCE_BUILD=TRUE \
-    MAMBA_FORCE_BUILD=TRUE \
-    TORCH_CUDA_ARCH_LIST="7.5" \
-    MAX_JOBS=2
-
-# Version pins are critical:
-#   * causal-conv1d 1.4.0 introduced ``cpp_functions.py`` which
-#     uses ``torch.library.custom_op`` — only available in PyTorch
-#     2.4+. The DLC base ships PyTorch 2.1.
-#   * Build#8 (1.6.1) and Build#9 (1.5.3.post1) both failed at
-#     import with
-#         AttributeError: module 'torch.library' has no attribute 'custom_op'
-#   * 1.2.x / 1.1.x is the legacy ``torch.utils.cpp_extension``
-#     path that compiles a single .so and avoids the new dispatcher.
-#   * mamba-ssm 2.x line uses causal-conv1d's new dispatcher
-#     callable; mamba-ssm 1.x line uses the legacy pytest-style
-#     import. Pin both to <1.4 / <2.0.
-# Pin to 1.2.x specifically (last release before the cpp_functions
-# refactor in 1.3.x → 1.4.x). Build#10 with <1.4 picked 1.3.0.post1
-# whose sdist is missing csrc/causal_conv1d.cpp:
-#   ninja: error: 'csrc/causal_conv1d.cpp' needed by ... missing
-# 1.2.2.post1 has a complete sdist.
-RUN /opt/conda/bin/pip install --no-cache-dir --no-build-isolation \
-        "causal-conv1d>=1.2,<1.3" \
-        "mamba-ssm>=1.2,<1.3"
+        "https://github.com/Dao-AILab/causal-conv1d/releases/download/v${CAUSAL_CONV1D_VERSION}/causal_conv1d-${CAUSAL_CONV1D_VERSION}+cu121torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl" \
+        "https://github.com/state-spaces/mamba/releases/download/v${MAMBA_SSM_VERSION}/mamba_ssm-${MAMBA_SSM_VERSION}+cu121torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
 
 # Sanity-check the install at build time so a regression here
 # fails the image build instead of a downstream training job.
