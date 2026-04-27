@@ -279,7 +279,10 @@ class PipelineRunner:
         """
         import numpy as np
         import pandas as pd
-        from sklearn.preprocessing import LabelEncoder
+        # Stage 2 used to use sklearn LabelEncoder for categorical
+        # encoding; that path is now SQL-native (DENSE_RANK over the
+        # registered DuckDB view). Import kept commented for traceability.
+        # from sklearn.preprocessing import LabelEncoder  # deprecated
 
         results: Dict[str, Any] = {}
         pipeline_start = time.time()
@@ -488,29 +491,22 @@ class PipelineRunner:
             }
 
         # ==============================================================
-        # Stage 2: Preprocessing
+        # Stage 2: Preprocessing — single DuckDB SELECT
+        #
+        # Sentinel replacement, categorical LabelEncoder-equivalent
+        # encoding (DENSE_RANK over distinct values, sklearn-compatible
+        # 0..n-1 codes) and config-driven imputation are fused into one
+        # SQL pass on the registered Arrow / pandas frame. This avoids
+        # the 39 × 941K LabelEncoder.fit_transform loop that was
+        # producing string buffers large enough to OOM the 64 GB
+        # instance in single-job mode (CLAUDE.md §3.3).
         # ==============================================================
         if start_stage <= 1:
             stage_start = time.time()
-            logger.info("[Stage 2] Preprocessing...")
+            logger.info("[Stage 2] Preprocessing (DuckDB-native)...")
 
-            # 2a) Sentinel normalization (config-driven)
             sentinel_rules = preproc_cfg.get("sentinels", {})
-            sentinel_applied = 0
-            for col, sentinel_val in sentinel_rules.items():
-                if col in df.columns:
-                    mask = df[col] == sentinel_val
-                    cnt = int(mask.sum())
-                    if cnt > 0:
-                        df.loc[mask, col] = np.nan
-                        sentinel_applied += cnt
-            if sentinel_applied:
-                logger.info(
-                    "[Stage 2] Sentinel normalization: replaced %d values",
-                    sentinel_applied,
-                )
-
-            # 2b) Categorical encoding
+            impute_rules = preproc_cfg.get("imputation", {})
             if not id_cols:
                 logger.warning(
                     "[Stage 2] No id_cols specified in config.features.id_cols — "
@@ -518,63 +514,126 @@ class PipelineRunner:
                 )
             exclude_encode = id_cols | date_cols
 
-            cat_cols = df.select_dtypes(include=["object", "string", "category"]).columns
-            encoded_cols: List[str] = []
-            for col in cat_cols:
-                if col not in exclude_encode:
-                    le = LabelEncoder()
-                    df[col] = le.fit_transform(df[col].astype(str))
-                    encoded_cols.append(col)
-            if encoded_cols:
-                logger.info(
-                    "[Stage 2] Categorical encoding: %d cols (%s...)",
-                    len(encoded_cols), encoded_cols[:5],
-                )
-
-            # 2c) Missing value imputation (config-driven) -- single DuckDB pass
-            impute_rules = preproc_cfg.get("imputation", {})
-            numeric_cols_all = list(df.select_dtypes(include=[np.number]).columns)
-
             import duckdb as _ddb_stage2
+            import pyarrow as _pa
             _con2 = _ddb_stage2.connect()
             try:
-                _con2.register("_df_impute", df)
-                col_exprs: List[str] = []
-                handled_cols = set()
-                for col, strategy in impute_rules.items():
-                    if col not in df.columns:
+                _con2.register("_df_input", df)
+                schema_rows = _con2.execute("DESCRIBE _df_input").fetchall()
+                schema_dict = {r[0]: (r[1] or "").upper() for r in schema_rows}
+
+                varchar_keywords = ("VARCHAR", "TEXT", "STRING")
+                numeric_keywords = (
+                    "BIGINT", "INTEGER", "INT", "SMALLINT",
+                    "TINYINT", "HUGEINT",
+                    "DECIMAL", "DOUBLE", "FLOAT", "REAL",
+                )
+
+                cat_cols_to_encode: List[str] = []
+                numeric_cols_all: List[str] = []
+                for c, t in schema_dict.items():
+                    is_list = "[" in t
+                    if is_list:
+                        # LIST columns pass through unchanged
                         continue
-                    handled_cols.add(col)
-                    qcol = f'"{col}"'
-                    if strategy == "median":
-                        col_exprs.append(
-                            f'COALESCE({qcol}, (SELECT MEDIAN({qcol}) FROM _df_impute)) AS {qcol}')
-                    elif strategy == "mean":
-                        col_exprs.append(
-                            f'COALESCE({qcol}, (SELECT AVG({qcol}) FROM _df_impute)) AS {qcol}')
-                    elif strategy == "zero":
-                        col_exprs.append(f'COALESCE({qcol}, 0) AS {qcol}')
-                    elif strategy == "mode":
-                        col_exprs.append(
-                            f'COALESCE({qcol}, (SELECT MODE({qcol}) FROM _df_impute)) AS {qcol}')
+                    if any(k in t for k in varchar_keywords):
+                        if c not in exclude_encode:
+                            cat_cols_to_encode.append(c)
+                    elif any(k in t for k in numeric_keywords):
+                        numeric_cols_all.append(c)
+
+                # Sentinel-applied count is informational; compute via
+                # one aggregate SELECT before transformation.
+                sentinel_applied = 0
+                if sentinel_rules:
+                    agg_terms = ", ".join(
+                        f"SUM(CASE WHEN \"{c}\" = {repr(v)} THEN 1 ELSE 0 END) "
+                        f"AS \"_s_{i}\""
+                        for i, (c, v) in enumerate(sentinel_rules.items())
+                        if c in schema_dict
+                    )
+                    if agg_terms:
+                        row = _con2.execute(
+                            f"SELECT {agg_terms} FROM _df_input"
+                        ).fetchone() or ()
+                        sentinel_applied = sum(int(x or 0) for x in row)
+                if sentinel_applied:
+                    logger.info(
+                        "[Stage 2] Sentinel normalization: %d values will "
+                        "be replaced with NULL via NULLIF",
+                        sentinel_applied,
+                    )
+
+                # Build the unified projection
+                proj_parts: List[str] = []
+                for col_name in schema_dict:
+                    qcol = f'"{col_name}"'
+                    if col_name in cat_cols_to_encode:
+                        # sklearn LabelEncoder semantics: codes are
+                        # 0..n-1 in sorted order over the str-cast values.
+                        # COALESCE(..., 'nan') matches astype(str)'s
+                        # NaN→"nan" rendering.
+                        proj_parts.append(
+                            f"(DENSE_RANK() OVER (ORDER BY "
+                            f"COALESCE(CAST({qcol} AS VARCHAR), 'nan')) - 1)"
+                            f"::INTEGER AS {qcol}"
+                        )
+                    elif col_name in numeric_cols_all:
+                        base_expr = qcol
+                        if col_name in sentinel_rules:
+                            base_expr = (
+                                f"NULLIF({qcol}, "
+                                f"{repr(sentinel_rules[col_name])})"
+                            )
+                        strategy = impute_rules.get(col_name)
+                        if strategy == "median":
+                            proj_parts.append(
+                                f"COALESCE({base_expr}, "
+                                f"(SELECT MEDIAN({qcol}) FROM _df_input)) "
+                                f"AS {qcol}"
+                            )
+                        elif strategy == "mean":
+                            proj_parts.append(
+                                f"COALESCE({base_expr}, "
+                                f"(SELECT AVG({qcol}) FROM _df_input)) "
+                                f"AS {qcol}"
+                            )
+                        elif strategy == "mode":
+                            proj_parts.append(
+                                f"COALESCE({base_expr}, "
+                                f"(SELECT MODE({qcol}) FROM _df_input)) "
+                                f"AS {qcol}"
+                            )
+                        elif strategy is None or strategy == "zero":
+                            # Default: zero-impute
+                            proj_parts.append(
+                                f"COALESCE({base_expr}, 0) AS {qcol}"
+                            )
+                        else:
+                            proj_parts.append(f"{base_expr} AS {qcol}")
                     else:
-                        col_exprs.append(qcol)
+                        # LIST cols / non-numeric, non-cat → passthrough
+                        proj_parts.append(qcol)
 
-                for col in numeric_cols_all:
-                    if col not in handled_cols:
-                        col_exprs.append(f'COALESCE("{col}", 0) AS "{col}"')
-                        handled_cols.add(col)
-
-                for col in df.columns:
-                    if col not in handled_cols:
-                        col_exprs.append(f'"{col}"')
-
-                sql = f"SELECT {', '.join(col_exprs)} FROM _df_impute"
-                _arrow_after_impute = _con2.execute(sql).fetch_arrow_table()
+                sql = f"SELECT {', '.join(proj_parts)} FROM _df_input"
+                _arrow_after_stage2 = _con2.execute(sql).fetch_arrow_table()
             finally:
                 _con2.close()
-            import pyarrow as _pa
-            df = _arrow_after_impute  # type: ignore[assignment]
+
+            # Free the pandas frame Stage 1/1.5 produced. Stage 3 will
+            # rebuild df_for_eng from this Arrow table at its boundary.
+            del df
+            import gc as _gc_stage2
+            _gc_stage2.collect()
+            df = _arrow_after_stage2  # type: ignore[assignment]
+            encoded_cols = list(cat_cols_to_encode)
+            if encoded_cols:
+                logger.info(
+                    "[Stage 2] Categorical encoding via DENSE_RANK: %d cols "
+                    "(%s%s)",
+                    len(encoded_cols), encoded_cols[:5],
+                    " …" if len(encoded_cols) > 5 else "",
+                )
 
             results["stage2_preprocessing"] = {
                 "sentinel_values_replaced": sentinel_applied,
@@ -584,7 +643,8 @@ class PipelineRunner:
             }
             state.mark_complete("stage2_preprocessing")
             logger.info(
-                "[Stage 2] Preprocessing complete in %.2fs",
+                "[Stage 2] Preprocessing complete in %.2fs (single SQL pass, "
+                "result is Arrow-backed)",
                 time.time() - stage_start,
             )
 
