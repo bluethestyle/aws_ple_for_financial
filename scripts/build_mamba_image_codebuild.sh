@@ -44,22 +44,20 @@ echo "[codebuild] project=${PROJECT_NAME} role=${ROLE_NAME}"
 echo "[codebuild] source S3 = ${SRC_S3}"
 
 # ─── 1. IAM role ──────────────────────────────────────────────
+# Pass JSON inline (single-line, escaped) instead of via file://
+# to dodge the Windows MSYS path translation issue when this
+# script is run from Git Bash on Windows: AWS CLI is a Windows
+# python process and doesn't understand /tmp or /c/Users
+# MSYS-style paths.
+TRUST_JSON='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"codebuild.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+DLC_PULL_JSON='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["ecr:GetAuthorizationToken","ecr:BatchCheckLayerAvailability","ecr:GetDownloadUrlForLayer","ecr:BatchGetImage"],"Resource":"*"}]}'
+
 ROLE_ARN=$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.Arn' --output text 2>/dev/null || true)
 if [ -z "${ROLE_ARN}" ]; then
     echo "[codebuild] creating IAM role ${ROLE_NAME} …"
-    cat > /tmp/codebuild-trust.json <<'JSON'
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": {"Service": "codebuild.amazonaws.com"},
-    "Action": "sts:AssumeRole"
-  }]
-}
-JSON
     aws iam create-role \
         --role-name "${ROLE_NAME}" \
-        --assume-role-policy-document file:///tmp/codebuild-trust.json >/dev/null
+        --assume-role-policy-document "${TRUST_JSON}" >/dev/null
     aws iam attach-role-policy \
         --role-name "${ROLE_NAME}" \
         --policy-arn arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess
@@ -72,26 +70,10 @@ JSON
     aws iam attach-role-policy \
         --role-name "${ROLE_NAME}" \
         --policy-arn arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
-    # Inline policy for cross-account ECR pull on the public DLC repo
-    cat > /tmp/codebuild-dlc-pull.json <<JSON
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": [
-      "ecr:GetAuthorizationToken",
-      "ecr:BatchCheckLayerAvailability",
-      "ecr:GetDownloadUrlForLayer",
-      "ecr:BatchGetImage"
-    ],
-    "Resource": "*"
-  }]
-}
-JSON
     aws iam put-role-policy \
         --role-name "${ROLE_NAME}" \
         --policy-name DLCPull \
-        --policy-document file:///tmp/codebuild-dlc-pull.json
+        --policy-document "${DLC_PULL_JSON}"
     ROLE_ARN=$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.Arn' --output text)
     echo "[codebuild] role created: ${ROLE_ARN} (waiting 10s for IAM eventual consistency …)"
     sleep 10
@@ -108,38 +90,19 @@ if aws codebuild batch-get-projects --names "${PROJECT_NAME}" --region "${REGION
         --source "type=S3,location=${S3_BUCKET}/${SRC_KEY},buildspec=containers/mamba/buildspec.yml" >/dev/null
 else
     echo "[codebuild] creating project ${PROJECT_NAME} …"
-    cat > /tmp/codebuild-project.json <<JSON
-{
-  "name": "${PROJECT_NAME}",
-  "source": {
-    "type": "S3",
-    "location": "${S3_BUCKET}/${SRC_KEY}",
-    "buildspec": "containers/mamba/buildspec.yml"
-  },
-  "artifacts": {"type": "NO_ARTIFACTS"},
-  "environment": {
-    "type": "LINUX_CONTAINER",
-    "image": "aws/codebuild/standard:7.0",
-    "computeType": "BUILD_GENERAL1_MEDIUM",
-    "privilegedMode": true,
-    "environmentVariables": [
-      {"name": "ACCOUNT_ID", "value": "${ACCOUNT_ID}"},
-      {"name": "IMAGE_REPO", "value": "${IMAGE_REPO}"},
-      {"name": "DLC_ACCOUNT", "value": "${DLC_ACCOUNT}"}
-    ]
-  },
-  "serviceRole": "${ROLE_ARN}",
-  "timeoutInMinutes": 60
-}
-JSON
     aws codebuild create-project \
         --region "${REGION}" \
-        --cli-input-json file:///tmp/codebuild-project.json >/dev/null
+        --name "${PROJECT_NAME}" \
+        --source "type=S3,location=${S3_BUCKET}/${SRC_KEY},buildspec=containers/mamba/buildspec.yml" \
+        --artifacts "type=NO_ARTIFACTS" \
+        --environment "type=LINUX_CONTAINER,image=aws/codebuild/standard:7.0,computeType=BUILD_GENERAL1_MEDIUM,privilegedMode=true,environmentVariables=[{name=ACCOUNT_ID,value=${ACCOUNT_ID}},{name=IMAGE_REPO,value=${IMAGE_REPO}},{name=DLC_ACCOUNT,value=${DLC_ACCOUNT}}]" \
+        --service-role "${ROLE_ARN}" \
+        --timeout-in-minutes 60 >/dev/null
     echo "[codebuild] project created"
 fi
 
 # ─── 3. Package + upload source zip ───────────────────────────
-ZIP_FILE="/tmp/mamba-image-source-${TS}.zip"
+ZIP_FILE="${TEMP:-/tmp}/mamba-image-source-${TS}.zip"
 echo "[codebuild] packaging source → ${ZIP_FILE}"
 rm -f "${ZIP_FILE}"
 # Limit to what the Dockerfile + buildspec actually need
