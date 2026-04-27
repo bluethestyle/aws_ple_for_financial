@@ -1,0 +1,42 @@
+version: 0.2
+
+# CodeBuild project that builds the Mamba GPU custom image and
+# pushes it to our ECR. Triggered by scripts/build_mamba_image_codebuild.sh
+# which uploads the source zip to S3 and starts the build.
+#
+# Env vars expected on the project:
+#   AWS_DEFAULT_REGION    — e.g. ap-northeast-2 (auto from project)
+#   ACCOUNT_ID            — AWS account number (target ECR owner)
+#   IMAGE_REPO            — ECR repository name (default ple-mamba-precompute)
+#   IMAGE_TAG             — git short SHA or timestamp; defaults to CODEBUILD_RESOLVED_SOURCE_VERSION
+#   DLC_ACCOUNT           — AWS public DLC account (763104351884)
+
+phases:
+  pre_build:
+    commands:
+      - echo "[mamba-codebuild] region=${AWS_DEFAULT_REGION} account=${ACCOUNT_ID}"
+      - export IMAGE_TAG="${IMAGE_TAG:-${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}}"
+      - export ECR_HOST="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+      - export DLC_HOST="${DLC_ACCOUNT}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+      - export IMAGE_URI="${ECR_HOST}/${IMAGE_REPO}:${IMAGE_TAG}"
+      - echo "[mamba-codebuild] target URI = ${IMAGE_URI}"
+      - echo "[mamba-codebuild] base DLC host = ${DLC_HOST}"
+      - aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${DLC_HOST}"
+      - aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "${ECR_HOST}"
+      - aws ecr describe-repositories --repository-names "${IMAGE_REPO}" --region "${AWS_DEFAULT_REGION}" >/dev/null 2>&1 || aws ecr create-repository --repository-name "${IMAGE_REPO}" --region "${AWS_DEFAULT_REGION}" --image-scanning-configuration scanOnPush=true
+  build:
+    commands:
+      - echo "[mamba-codebuild] building …"
+      - docker build --build-arg "REGION=${AWS_DEFAULT_REGION}" -f containers/mamba/Dockerfile -t "${IMAGE_URI}" .
+  post_build:
+    commands:
+      - echo "[mamba-codebuild] pushing …"
+      - docker push "${IMAGE_URI}"
+      - echo "${IMAGE_URI}" > /tmp/image_uri.txt
+      - echo "[mamba-codebuild] DONE"
+      - cat /tmp/image_uri.txt
+artifacts:
+  files:
+    - /tmp/image_uri.txt
+  discard-paths: yes
+  base-directory: /
