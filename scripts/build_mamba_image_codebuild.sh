@@ -102,25 +102,30 @@ else
 fi
 
 # ─── 3. Package + upload source zip ───────────────────────────
-ZIP_FILE="${TEMP:-/tmp}/mamba-image-source-${TS}.zip"
+# Write the zip into a project-local ``.tmp`` dir so that python
+# (Windows native) and bash (MSYS on Git Bash) agree on the path.
+# /tmp doesn't survive that translation on Windows.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+TMP_DIR="${REPO_ROOT}/.codebuild_tmp"
+mkdir -p "${TMP_DIR}"
+ZIP_FILE="${TMP_DIR}/mamba-image-source-${TS}.zip"
 echo "[codebuild] packaging source → ${ZIP_FILE}"
 rm -f "${ZIP_FILE}"
-# Python's zipfile is portable across OSes; Git Bash on Windows
-# doesn't ship the ``zip`` cli, so use python instead.
-( cd "$(git rev-parse --show-toplevel)" && \
+( cd "${REPO_ROOT}" && \
   python -c "
-import zipfile, os
+import zipfile
 files = [
     'containers/mamba/Dockerfile',
     'containers/mamba/buildspec.yml',
 ]
-with zipfile.ZipFile(r'${ZIP_FILE}', 'w', zipfile.ZIP_DEFLATED) as zf:
+out = '.codebuild_tmp/mamba-image-source-${TS}.zip'
+with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zf:
     for f in files:
         zf.write(f, arcname=f)
-print('zip written:', r'${ZIP_FILE}')
+print('zip written:', out)
 " )
-ZIP_SIZE=$(du -h "${ZIP_FILE}" | cut -f1)
-echo "[codebuild] zip size: ${ZIP_SIZE}"
+ZIP_SIZE=$(stat -c%s "${ZIP_FILE}" 2>/dev/null || wc -c < "${ZIP_FILE}")
+echo "[codebuild] zip size: ${ZIP_SIZE} bytes"
 
 echo "[codebuild] uploading to ${SRC_S3} …"
 aws s3 cp "${ZIP_FILE}" "${SRC_S3}"
