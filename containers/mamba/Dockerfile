@@ -30,8 +30,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Pre-built wheels — pinned to causal-conv1d 1.2.0.post2 and
-# mamba-ssm 1.2.0.post1, which both publish
-# cu121 + torch2.1 + cxx11abiFALSE + cp310 + linux_x86_64 wheels.
+# mamba-ssm 1.2.0.post1, both pre-built against torch 2.1 / cp310.
+#
+# CUDA: neither project publishes a cu121 wheel for the 1.2.x line
+# (only cu118 + cu122). cu118 is the safe choice — its kernels run
+# on any modern driver (cu121 / cu122 host included) thanks to
+# CUDA's forward-driver compatibility. cu122 binaries on a cu121
+# host can fail symbol resolution.
+# (Verified via GitHub Releases API on 2026-04-27.)
+#
 # These versions still use torch.utils.cpp_extension (no
 # torch.library.custom_op dependency) so they import cleanly under
 # the DLC's PyTorch 2.1.
@@ -39,8 +46,8 @@ ARG CAUSAL_CONV1D_VERSION=1.2.0.post2
 ARG MAMBA_SSM_VERSION=1.2.0.post1
 
 RUN /opt/conda/bin/pip install --no-cache-dir \
-        "https://github.com/Dao-AILab/causal-conv1d/releases/download/v${CAUSAL_CONV1D_VERSION}/causal_conv1d-${CAUSAL_CONV1D_VERSION}+cu121torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl" \
-        "https://github.com/state-spaces/mamba/releases/download/v${MAMBA_SSM_VERSION}/mamba_ssm-${MAMBA_SSM_VERSION}+cu121torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
+        "https://github.com/Dao-AILab/causal-conv1d/releases/download/v${CAUSAL_CONV1D_VERSION}/causal_conv1d-${CAUSAL_CONV1D_VERSION}+cu118torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl" \
+        "https://github.com/state-spaces/mamba/releases/download/v${MAMBA_SSM_VERSION}/mamba_ssm-${MAMBA_SSM_VERSION}+cu118torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
 
 # Sanity-check the install at build time so a regression here
 # fails the image build instead of a downstream training job.
