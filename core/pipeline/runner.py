@@ -331,6 +331,19 @@ class PipelineRunner:
         out.mkdir(parents=True, exist_ok=True)
         (out / "audit").mkdir(exist_ok=True)
 
+        # Memory-efficiency: Stage 3's output is always spilled to parquet
+        # and the in-memory pandas / Arrow copies are dropped. Stages 4-9
+        # then re-read it via a DuckDB ``read_parquet(...)`` view (the
+        # ``_prepare_stage4_9_view`` helper). For split mode the spill
+        # root is the operator's checkpoint dir; for single-job mode we
+        # use a hidden subdir of ``output_dir`` and clean it up at the
+        # end of run(). Either way, both modes share the same Stage 4-9
+        # entry point.
+        spill_root: Path = (
+            ckpt_dir if ckpt_dir is not None else (out / ".stage3_spill")
+        )
+        spill_root.mkdir(parents=True, exist_ok=True)
+
         state = _PipelineState(output_dir)
         if state.state["start_time"] is None:
             state.state["start_time"] = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -655,36 +668,62 @@ class PipelineRunner:
                         len(new_cols),
                     )
 
-            if self._adapter_ctx is not None:
-                con = self._adapter_ctx.con
-                try:
-                    con.unregister("_post_stage3")
-                except Exception:
-                    pass
-                con.register("_arrow_post_stage3", _arrow_main)
-                con.execute(
-                    "CREATE OR REPLACE TABLE _post_stage3 AS "
-                    "SELECT * FROM _arrow_post_stage3"
+            # Always spill _arrow_main to parquet. Both single-job and
+            # split modes then proceed via the view-based Stage 4-9
+            # path. Spilling here releases the ~9 GB Arrow buffer
+            # before Stage 4 ever runs.
+            spill_post3_dir = spill_root / "post_stage3"
+            spill_post3_dir.mkdir(parents=True, exist_ok=True)
+            spill_parquet = spill_post3_dir / "main.parquet"
+            import duckdb as _ddb_spill
+            _spill_con = _ddb_spill.connect()
+            try:
+                _spill_con.register("_spill_arrow", _arrow_main)
+                _spill_con.execute(
+                    f"COPY _spill_arrow TO '{spill_parquet}' "
+                    f"(FORMAT PARQUET)"
                 )
-                try:
-                    con.unregister("_arrow_post_stage3")
-                except Exception:
-                    pass
-                self._post_stage3_table = "_post_stage3"
-                try:
-                    df = _arrow_main.to_pandas(types_mapper=pd.ArrowDtype)
-                except TypeError:
-                    df = _arrow_main.to_pandas()
-                del _arrow_main
-            else:
-                df = _arrow_main.to_pandas()
-                self._post_stage3_table = None
+            finally:
+                _spill_con.close()
+            # Persist sidecars so split-resumes can pick everything up.
+            with open(spill_post3_dir / "feature_schema.json", "w") as f:
+                json.dump(feature_schema, f, indent=2, default=str)
+            try:
+                feature_pipeline.save(str(spill_post3_dir / "feature_pipeline"))
+            except Exception as exc:
+                logger.warning(
+                    "[Stage 3 spill] feature_pipeline.save failed: %s — "
+                    "split-resume from this dir would have to rebuild "
+                    "from feature_schema.json", exc,
+                )
+            with open(spill_post3_dir / "meta.json", "w") as f:
+                json.dump(
+                    {
+                        "id_cols": sorted(id_cols),
+                        "date_cols": sorted(date_cols),
+                    },
+                    f, indent=2, default=str,
+                )
+            logger.info(
+                "[Stage 3] post_stage3 spilled to %s (%d rows x %d cols); "
+                "in-memory Arrow + pandas about to be freed",
+                spill_parquet,
+                _arrow_main.num_rows, _arrow_main.num_columns,
+            )
+            spill_rows = _arrow_main.num_rows
+            spill_cols = _arrow_main.num_columns
+            del _arrow_main, df_for_eng
+            df = None  # type: ignore[assignment]
+            self._post_stage3_table = None
+            import gc as _gc_stage3
+            _gc_stage3.collect()
 
             results["stage3_features"] = {
                 "num_groups": len(feature_pipeline),
                 "total_dim": feature_pipeline.total_dim,
                 "generated_cols": len(df_generated.columns) if df_generated is not None else 0,
-                "df_shape_after": list(df.shape),
+                "spill_path": str(spill_parquet),
+                "spill_shape": [spill_rows, spill_cols],
                 "time_seconds": round(time.time() - stage_start, 2),
             }
             state.mark_complete(
@@ -699,17 +738,14 @@ class PipelineRunner:
             )
 
         # ==============================================================
-        # Boundary: Stage 3 -> Stage 4 checkpoint
+        # Boundary: Stage 3 -> Stage 4. Stage 3 (or its absence on the
+        # resume path) has already produced ``post_stage3/main.parquet``
+        # under ``spill_root``. If end_stage <= 3 we just emit the
+        # manifest and exit; otherwise we proceed to the unified Stage
+        # 4-9 prep below.
         # ==============================================================
         if end_stage <= 3:
-            self._save_checkpoint_post_stage3(
-                ckpt_dir, df, feature_pipeline, feature_schema,
-                meta={
-                    "id_cols": sorted(id_cols),
-                    "date_cols": sorted(date_cols),
-                },
-            )
-            results["checkpoint_saved"] = str(ckpt_dir / "post_stage3")
+            results["checkpoint_saved"] = str(spill_root / "post_stage3")
             results["total_time_seconds"] = round(
                 time.time() - pipeline_start, 2
             )
@@ -717,20 +753,22 @@ class PipelineRunner:
                 "[Phase 0 partial] Stages %d..%d complete in %.1fs; "
                 "checkpoint at %s",
                 start_stage, end_stage,
-                results["total_time_seconds"], ckpt_dir / "post_stage3",
+                results["total_time_seconds"], spill_root / "post_stage3",
             )
             return results
 
         # ==============================================================
-        # Stage 4-9 prep (resumed-from-checkpoint path)
+        # Stage 4-9 prep (single-job AND resumed paths share this).
         #
-        # Memory rule: never materialise the post-Stage-3 matrix in
-        # pandas more than absolutely necessary. The data lives in
-        # ``post_stage3/main.parquet`` on disk; we expose it as a
-        # DuckDB *view* on the adapter ctx (zero materialisation) and
-        # build a slim ``df_lite`` (only id / label-source / sequence
-        # columns) for the few legacy stage-4/5/7 helpers that still
-        # take pandas. The wide feature matrix never enters python.
+        # Memory rule: the wide post-Stage-3 matrix lives on disk only
+        # (``post_stage3/main.parquet`` under spill_root). The view-
+        # registration + df_lite build is encapsulated in
+        # ``_prepare_stage4_9_view``.
+        #
+        # On the resume path (start_stage>=4) the adapter ctx and
+        # raw_data still need to be (re)built because Stage 1 was
+        # skipped; on the single-job path Stage 1 already populated
+        # both, so we reuse them.
         # ==============================================================
         if start_stage >= 4:
             adapter = self._build_adapter()
@@ -738,77 +776,17 @@ class PipelineRunner:
             from .adapter import DuckDBAdapterContext as _Ctx
             if isinstance(raw_data, _Ctx):
                 self._adapter_ctx = raw_data
-                con = self._adapter_ctx.con
-                ckpt_parquet = ckpt_dir / "post_stage3" / "main.parquet"
-                if not ckpt_parquet.exists():
-                    raise FileNotFoundError(
-                        f"post_stage3 checkpoint missing: {ckpt_parquet}"
-                    )
-                # Build a SELECT projection that casts every DECIMAL
-                # column to DOUBLE — same fix as the loader helper, but
-                # staying purely SQL (no Arrow round-trip).
-                schema_info = con.execute(
-                    f"DESCRIBE SELECT * FROM read_parquet("
-                    f"'{ckpt_parquet}') LIMIT 0"
-                ).fetchall()
-                proj_parts: List[str] = []
-                for row in schema_info:
-                    col_name, col_type = row[0], (row[1] or "").upper()
-                    if col_type.startswith("DECIMAL"):
-                        proj_parts.append(
-                            f'CAST("{col_name}" AS DOUBLE) AS "{col_name}"'
-                        )
-                    else:
-                        proj_parts.append(f'"{col_name}"')
-                con.execute(
-                    f"CREATE OR REPLACE VIEW _post_stage3 AS\n"
-                    f"  SELECT {', '.join(proj_parts)}\n"
-                    f"  FROM read_parquet('{ckpt_parquet}')"
-                )
-                self._post_stage3_table = "_post_stage3"
-
-                # Build df_lite: only the non-feature columns Stage 4
-                # (label deriver) and Stage 7 (seq leakage check) still
-                # need on the pandas side. The 1100+ feature cols stay
-                # in DuckDB.
-                feature_col_set: set = set()
-                if feature_pipeline is not None:
-                    feature_col_set = set(
-                        getattr(feature_pipeline, "_output_columns", None)
-                        or feature_schema.get("output_columns", [])
-                    )
-                else:
-                    feature_col_set = set(
-                        feature_schema.get("output_columns", [])
-                    )
-                all_post3_cols = [
-                    r[0] for r in con.execute(
-                        "DESCRIBE _post_stage3"
-                    ).fetchall()
-                ]
-                df_lite_cols = [
-                    c for c in all_post3_cols if c not in feature_col_set
-                ]
-                if df_lite_cols:
-                    proj_lite = ", ".join(f'"{c}"' for c in df_lite_cols)
-                    df = con.execute(
-                        f"SELECT {proj_lite} FROM _post_stage3"
-                    ).df()
-                else:
-                    df = con.execute(
-                        "SELECT * FROM _post_stage3 LIMIT 0"
-                    ).df()
-                logger.info(
-                    "[Stage 4-9 prep] post_stage3 mounted as VIEW (parquet); "
-                    "df_lite=%d cols (%d feature cols stay in DuckDB)",
-                    len(df_lite_cols), len(feature_col_set),
-                )
-                # raw_data["main"] kept slim so Stage 8 SequenceBuilder
-                # can fall back to it if needed.
+                # raw_data["main"] kept slim for Stage 8 fallback.
                 raw_data = {"main": self._scalar_df_from_ctx(raw_data)}
             else:
                 self._adapter_ctx = None
-                self._post_stage3_table = None
+
+        if self._adapter_ctx is not None:
+            df = self._prepare_stage4_9_view(
+                spill_root, feature_pipeline, feature_schema,
+            )
+        else:
+            self._post_stage3_table = None
 
         # ==============================================================
         # Stage 4: Label derivation via LabelDeriver
@@ -1364,6 +1342,25 @@ class PipelineRunner:
 
         state.mark_complete("stage9_save")
         logger.info("[Stage 9] Artifacts saved in %.2fs", time.time() - stage_start)
+
+        # Single-job mode: clean up the local Stage-3 spill directory so
+        # SageMaker's automatic ``/opt/ml/model`` -> model.tar.gz packing
+        # doesn't ship the (now-redundant) post_stage3 parquet alongside
+        # the real artefacts. Split mode keeps spill_root intact because
+        # it equals the operator's checkpoint dir (used by other jobs).
+        if ckpt_dir is None and spill_root.exists():
+            try:
+                import shutil as _shutil
+                _shutil.rmtree(spill_root)
+                logger.info(
+                    "[Phase 0 cleanup] removed local stage3 spill dir: %s",
+                    spill_root,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[Phase 0 cleanup] failed to remove spill dir %s: %s",
+                    spill_root, exc,
+                )
 
         logger.info("=" * 60)
         logger.info(
@@ -2615,6 +2612,88 @@ class PipelineRunner:
             len(feature_schema),
         )
         return feature_pipeline, feature_schema, meta
+
+    def _prepare_stage4_9_view(
+        self,
+        spill_root: "Path",
+        feature_pipeline: Any,
+        feature_schema: Dict[str, Any],
+    ) -> "pd.DataFrame":
+        """Mount the post-Stage-3 parquet as a DuckDB view + build df_lite.
+
+        Used by both modes:
+          * Single-job (start_stage <= 3, end_stage = 9): right after
+            Stage 3 spills its output to parquet.
+          * Resumed (start_stage >= 4): right after the adapter ctx is
+            (re)built and the prior job's checkpoint is on disk.
+
+        The 1100+ feature columns stay in DuckDB (the view reads from
+        ``read_parquet(...)`` with a CAST(... AS DOUBLE) projection
+        over every DECIMAL field). df_lite carries only the non-feature
+        columns the legacy stage-4/5/7 helpers still take as pandas.
+        """
+        if self._adapter_ctx is None:
+            raise RuntimeError(
+                "_prepare_stage4_9_view requires an active adapter ctx; "
+                "got None"
+            )
+        con = self._adapter_ctx.con
+        parquet_path = spill_root / "post_stage3" / "main.parquet"
+        if not parquet_path.exists():
+            raise FileNotFoundError(
+                f"post_stage3 parquet missing: {parquet_path}"
+            )
+
+        schema_info = con.execute(
+            f"DESCRIBE SELECT * FROM read_parquet("
+            f"'{parquet_path}') LIMIT 0"
+        ).fetchall()
+        proj_parts: List[str] = []
+        for row in schema_info:
+            col_name, col_type = row[0], (row[1] or "").upper()
+            if col_type.startswith("DECIMAL"):
+                proj_parts.append(
+                    f'CAST("{col_name}" AS DOUBLE) AS "{col_name}"'
+                )
+            else:
+                proj_parts.append(f'"{col_name}"')
+        con.execute(
+            f"CREATE OR REPLACE VIEW _post_stage3 AS\n"
+            f"  SELECT {', '.join(proj_parts)}\n"
+            f"  FROM read_parquet('{parquet_path}')"
+        )
+        self._post_stage3_table = "_post_stage3"
+
+        feature_col_set: set = set()
+        if feature_pipeline is not None:
+            feature_col_set = set(
+                getattr(feature_pipeline, "_output_columns", None)
+                or feature_schema.get("output_columns", [])
+            )
+        else:
+            feature_col_set = set(feature_schema.get("output_columns", []))
+
+        all_post3_cols = [
+            r[0] for r in con.execute(
+                "DESCRIBE _post_stage3"
+            ).fetchall()
+        ]
+        df_lite_cols = [c for c in all_post3_cols if c not in feature_col_set]
+        if df_lite_cols:
+            proj_lite = ", ".join(f'"{c}"' for c in df_lite_cols)
+            df = con.execute(
+                f"SELECT {proj_lite} FROM _post_stage3"
+            ).df()
+        else:
+            df = con.execute(
+                "SELECT * FROM _post_stage3 LIMIT 0"
+            ).df()
+        logger.info(
+            "[Stage 4-9 prep] post_stage3 mounted as VIEW (%s); "
+            "df_lite=%d cols (%d feature cols stay in DuckDB)",
+            parquet_path, len(df_lite_cols), len(feature_col_set),
+        )
+        return df
 
     def _prepare_temporal(self, df: "pd.DataFrame") -> "pd.DataFrame":
         """Truncate sequences and recompute product columns to prevent leakage.
