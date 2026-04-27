@@ -15,7 +15,12 @@ phases:
   pre_build:
     commands:
       - echo "[mamba-codebuild] region=${AWS_DEFAULT_REGION} account=${ACCOUNT_ID}"
-      - export IMAGE_TAG="${IMAGE_TAG:-${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}}"
+      # ${var:0:7} is bash-only and the CodeBuild shell rejects it.
+      # Use ``cut`` and a default of ``latest`` so the tag works
+      # whether IMAGE_TAG is preset or not.
+      - export IMAGE_TAG="${IMAGE_TAG:-$(echo "${CODEBUILD_BUILD_ID:-latest}" | cut -d':' -f2 | cut -c1-8)}"
+      - if [ -z "${IMAGE_TAG}" ]; then export IMAGE_TAG=latest; fi
+      - echo "[mamba-codebuild] image tag = ${IMAGE_TAG}"
       - export ECR_HOST="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
       - export DLC_HOST="${DLC_ACCOUNT}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
       - export IMAGE_URI="${ECR_HOST}/${IMAGE_REPO}:${IMAGE_TAG}"
