@@ -81,9 +81,14 @@ ENV CAUSAL_CONV1D_FORCE_BUILD=TRUE \
 #   * mamba-ssm 2.x line uses causal-conv1d's new dispatcher
 #     callable; mamba-ssm 1.x line uses the legacy pytest-style
 #     import. Pin both to <1.4 / <2.0.
+# Pin to 1.2.x specifically (last release before the cpp_functions
+# refactor in 1.3.x → 1.4.x). Build#10 with <1.4 picked 1.3.0.post1
+# whose sdist is missing csrc/causal_conv1d.cpp:
+#   ninja: error: 'csrc/causal_conv1d.cpp' needed by ... missing
+# 1.2.2.post1 has a complete sdist.
 RUN /opt/conda/bin/pip install --no-cache-dir --no-build-isolation \
-        "causal-conv1d>=1.1,<1.4" \
-        "mamba-ssm>=1.1,<2.0"
+        "causal-conv1d>=1.2,<1.3" \
+        "mamba-ssm>=1.2,<1.3"
 
 # Sanity-check the install at build time so a regression here
 # fails the image build instead of a downstream training job.
