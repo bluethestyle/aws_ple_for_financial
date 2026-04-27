@@ -116,29 +116,23 @@ def _select_input_columns(
 
 
 def _install_gpu_wheels() -> None:
-    """Install mamba_ssm + causal-conv1d on first start.
+    """Skip mamba_ssm install — use pure-torch SSM fallback.
 
-    Top-level ``requirements.txt`` deliberately omits these because
-    the CPU Phase 0 instance can't build their CUDA wheels. Here we
-    are on a GPU host (g4dn / g5), nvcc is in the DLC, so the build
-    succeeds.
+    mamba_ssm + causal-conv1d need a from-source CUDA build that
+    requires ``ninja`` plus a fairly recent nvcc. On the SageMaker
+    PyTorch 2.1 GPU DLC neither is preinstalled and the wheel build
+    blows up after ~7 minutes (verified 2026-04-27 g4dn.xlarge run).
+    The pure-torch SSM scan in MambaFeatureGenerator runs fine on
+    CUDA tensors (torch is already in the DLC) and produces the
+    same numeric output, just at a higher per-step cost.
+
+    If a future DLC ships ninja + nvcc out of the box we can flip
+    this back on.
     """
-    import subprocess
-    pkgs = ["causal-conv1d>=1.1,<2.0", "mamba-ssm>=1.2,<3.0"]
-    logger.info("Installing GPU-only wheels: %s", pkgs)
-    try:
-        subprocess.run(
-            ["/opt/conda/bin/pip", "install", "--no-cache-dir", *pkgs],
-            check=True,
-        )
-        logger.info("GPU wheels installed")
-    except subprocess.CalledProcessError as exc:
-        logger.warning(
-            "mamba_ssm install failed (%s) — Mamba will fall back to "
-            "pure-torch SSM scan. This is expected on CPU instances; "
-            "on GPU it usually means nvcc is missing.",
-            exc,
-        )
+    logger.info(
+        "[mamba] skipping mamba_ssm install — using pure-torch CUDA "
+        "fallback (mamba.py auto-detects torch.cuda)"
+    )
 
 
 def main() -> None:
