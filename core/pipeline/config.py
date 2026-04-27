@@ -204,9 +204,15 @@ class AWSSpec:
     s3_bucket: str = ""
     instance_type: str = "ml.g4dn.xlarge"
     cpu_instance_type: str = "ml.m5.2xlarge"
+    gpu_instance_type: Optional[str] = None
     use_spot: bool = True
     max_run_seconds: int = 7200
     role_arn: str = ""
+    # Pre-baked ECR image for the Mamba GPU pre-compute job
+    # (mamba_ssm + causal-conv1d + ninja). Built once via
+    # scripts/build_mamba_image.sh; absent value falls back to
+    # the stock PyTorch GPU DLC and runtime wheel build.
+    mamba_image_uri: Optional[str] = None
 
 
 @dataclass

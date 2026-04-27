@@ -411,19 +411,32 @@ class SageMakerTrainer:
         if dataset_yaml:
             hyperparams["dataset_config"] = dataset_yaml
 
+        # Custom image with mamba_ssm + causal-conv1d pre-installed.
+        # When ``aws.mamba_image_uri`` is set in pipeline.yaml we
+        # pass it as image_uri to the estimator and the stock DLC
+        # framework/py_version args are dropped (sagemaker SDK
+        # rejects both being set together).
+        mamba_image_uri = getattr(aws, "mamba_image_uri", None) or ""
+
         logger.info("Launching SageMaker Mamba pre-compute Job: %s", job_name)
         logger.info("  Instance: %s (Spot=%s)", instance_type, aws.use_spot)
         logger.info("  Raw input: %s", raw_s3_uri)
         logger.info("  Output: %s", output_uri)
+        if mamba_image_uri:
+            logger.info("  Image (custom): %s", mamba_image_uri)
+        else:
+            logger.info(
+                "  Image: stock PyTorch 2.1 GPU DLC (mamba_ssm wheels "
+                "build at job start — slow). Set aws.mamba_image_uri "
+                "to a pre-baked ECR image to skip the build."
+            )
 
-        estimator = PyTorch(
+        estimator_kwargs: dict[str, Any] = dict(
             entry_point="containers/mamba/entrypoint.py",
             source_dir=staging_dir,
             role=aws.role_arn,
             instance_type=instance_type,
             instance_count=1,
-            framework_version="2.1",
-            py_version="py310",
             hyperparameters=hyperparams,
             use_spot_instances=aws.use_spot,
             max_run=max_run_s,
@@ -442,6 +455,12 @@ class SageMakerTrainer:
                 {"Key": "Phase", "Value": "mamba-precompute"},
             ],
         )
+        if mamba_image_uri:
+            estimator_kwargs["image_uri"] = mamba_image_uri
+        else:
+            estimator_kwargs["framework_version"] = "2.1"
+            estimator_kwargs["py_version"] = "py310"
+        estimator = PyTorch(**estimator_kwargs)
 
         estimator.fit(
             inputs={

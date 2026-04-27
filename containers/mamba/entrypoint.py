@@ -115,53 +115,32 @@ def _select_input_columns(
     return [entity_col] + feat
 
 
-def _install_gpu_wheels() -> None:
-    """Install mamba_ssm + causal-conv1d for the CUDA selective-scan path.
+def _check_mamba_environment() -> None:
+    """Verify the custom image has mamba_ssm + causal-conv1d baked in.
 
-    SageMaker's PyTorch 2.1 GPU DLC ships nvcc and torch's CUDA
-    headers but not ``ninja`` — so a naive ``pip install mamba-ssm``
-    falls through to the slow distutils backend, which on top of
-    being slow has had a urllib download failure mode in the
-    causal-conv1d build path. Two-step install:
-
-    1. ``pip install ninja`` first.
-    2. ``pip install causal-conv1d mamba-ssm`` (now uses ninja).
-
-    If the install fails the entry continues with mamba.py's pure-
-    torch SSM fallback, but the fallback is ~100× slower than the
-    CUDA scan so we *want* the install to succeed.
+    The dedicated ECR image (built by ``scripts/build_mamba_image.sh``)
+    pre-installs both wheels so we don't need a runtime build. Print
+    the version so the CloudWatch log makes the path obvious. If
+    mamba_ssm is missing the entry continues — mamba.py auto-falls
+    back to pure-torch SSM, but logs a loud warning since that path
+    is ~100× slower.
     """
-    import subprocess
-    pip = "/opt/conda/bin/pip"
-
-    # Step 1 — ninja
-    logger.info("[mamba] installing ninja for the CUDA wheel build …")
     try:
-        subprocess.run(
-            [pip, "install", "--no-cache-dir", "ninja"],
-            check=True,
+        import mamba_ssm  # type: ignore[import-not-found]
+        import causal_conv1d  # type: ignore[import-not-found]
+        logger.info(
+            "[mamba] custom image OK — mamba_ssm=%s causal_conv1d=%s "
+            "(CUDA selective-scan ready)",
+            getattr(mamba_ssm, "__version__", "?"),
+            getattr(causal_conv1d, "__version__", "?"),
         )
-    except subprocess.CalledProcessError as exc:
+    except ImportError as exc:
         logger.warning(
-            "[mamba] ninja install failed (%s) — continuing without "
-            "ninja; CUDA wheel build will use distutils fallback",
-            exc,
-        )
-
-    # Step 2 — causal-conv1d + mamba-ssm
-    pkgs = ["causal-conv1d>=1.1,<2.0", "mamba-ssm>=1.2,<3.0"]
-    logger.info("[mamba] installing CUDA wheels: %s", pkgs)
-    try:
-        subprocess.run(
-            [pip, "install", "--no-cache-dir", *pkgs],
-            check=True,
-        )
-        logger.info("[mamba] CUDA wheels installed — selective scan ready")
-    except subprocess.CalledProcessError as exc:
-        logger.warning(
-            "[mamba] mamba_ssm install failed (%s) — Mamba will fall "
-            "back to pure-torch SSM scan (slow). Inspect the build "
-            "log above for the root cause (ninja, nvcc, urllib …).",
+            "[mamba] mamba_ssm import failed (%s). The job is running "
+            "on the stock PyTorch DLC instead of the custom Mamba "
+            "image; performance will fall back to the pure-torch SSM "
+            "scan (~100× slower). Set aws.mamba_image_uri to the "
+            "custom ECR image to fix this.",
             exc,
         )
 
@@ -170,7 +149,7 @@ def main() -> None:
     start = time.time()
     hp = _hyperparameters()
     logger.info("Mamba precompute hyperparameters: %s", hp)
-    _install_gpu_wheels()
+    _check_mamba_environment()
 
     raw_dir = _resolve_raw_input(hp.get("raw_dir", ""))
     raw_parquet = _pick_parquet(raw_dir)
