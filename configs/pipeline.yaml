@@ -684,9 +684,16 @@ aws:
   s3_bucket: aiops-ple-financial
   instance_type: ml.g4dn.xlarge
   cpu_instance_type: ml.m5.2xlarge    # Phase 0 processing jobs (CPU only)
+  gpu_instance_type: ml.g4dn.xlarge   # Mamba precompute (T4)
   use_spot: true
   max_run_seconds: 43200              # 12 hours
   role_arn: arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole
+  # Custom training image with mamba_ssm + causal-conv1d (cu122 prebuilt
+  # wheels) baked into the SageMaker PyTorch 2.1 GPU DLC. Built via
+  # scripts/build_mamba_image_codebuild.sh; rebuild whenever the
+  # Dockerfile changes. Empty string falls back to stock DLC + the
+  # entry script's pure-torch SSM scan (~100× slower).
+  mamba_image_uri: 795833413857.dkr.ecr.ap-northeast-2.amazonaws.com/ple-mamba-precompute:1908a1e3
 
 # ---------------------------------------------------------------------------
 # Compliance / Regulatory Foundation (Sprint 0)
