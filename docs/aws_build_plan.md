@@ -1,14 +1,15 @@
 # AWS 쪽 구축 계획서 (Build Plan)
 
 **대상**: `docs/aws_work_plan.md` 의 Must (M1~M12) 중심 상세 실행 계획.
-**기준 시점**: 2026-04-22
+**기준 시점**: 2026-04-28
 **전제**: AWS 는 온프렘의 클라우드 확장 버전. 온프렘 → AWS 이식 시 AWS 의 **config-중심 / 데코레이터 Registry 패턴** 으로 재구성.
 
-> **진행 상태 배너 (2026-04-22)** — 본 문서는 Sprint 계획 단계에서 작성된 실행 명세로, 아래 항목은 **이미 완료**되어 merge 된 상태입니다:
+> **진행 상태 배너 (2026-04-28)** — 본 문서는 Sprint 계획 단계에서 작성된 실행 명세로, 아래 항목은 **이미 완료**되어 merge 된 상태입니다:
 > - **Phase 1 Must M1~M12** — 전량 완료
 > - **Phase 2 Should S1~S15** — 전량 완료 (S5 는 SageMaker Experiments 네이티브, S6 는 DuckDB httpfs 로 재설계 — CLAUDE.md §1.14/§1.15)
 > - **Phase 3 Could** — C1/C3/C4/C5 완료, C2 는 Won't (SageMaker managed orchestration 네이티브)
 > - **PR #1~#3 PromotionGate Live Wiring (2026-04-21)** — `core/compliance/metadata_aggregator.py` + 6 evidence source + audit trail + SageMakerComplianceTracker artifact 연결. `compliance.promotion_gate.enabled: true` 가 pipeline.yaml 기본값으로 전환됨 (commit `51149f3`/`9426162`/`ec8587b`).
+> - **Phase 0 schema audit + Mamba precompute (2026-04-26~28, local main, 미푸시)** — Phase 0 invariant 위반 6종 차단 + Mamba GPU precompute 분리. 상세는 §11.
 > - **현재 테스트**: 620/620 PASS
 >
 > 실시간 진행 현황과 최근 3~7일 변경사항은 `docs/aws_work_plan.md` 상단 "진행 현황" 블록 및 `docs/pipeline_comparison_matrix.md §5.10` 을 참조하십시오. 본 문서는 **역사적 Build Plan** 으로 유지되며 Sprint 설계 원칙을 추적하고자 할 때 사용하십시오.
@@ -778,3 +779,45 @@ Sprint 0 착수 전 **지금 이 세션에서 할 수 있는 것**:
 - [ ] `tests/test_compliance_foundation.py` 최소 3개 테스트 (put/get/list)
 
 이 정도만 해도 Sprint 0 의 50% 이상 선행. 지금 착수할지 여부는 사용자 지시 대기.
+
+---
+
+## 11. Phase 0 Schema Audit + Mamba Precompute (2026-04-26~28)
+
+본 섹션은 본 문서가 다루는 Sprint 범위 (compliance M1~M12) 와는 별개의 **데이터/피처 파이프라인 인프라 보강**으로, 같은 시기에 main 브랜치에 누적된 변경사항을 추적용으로 정리합니다 (로컬 commit, 아직 origin push 안 됨).
+
+### 11.1 Phase 0 Schema Audit — invariant 위반 6종 차단
+
+Phase 0 출력 (`features.parquet`, `feature_schema.json`) 을 정밀 audit 한 결과, FeatureRouter / config_builder 가 silently 잘못된 슬라이스를 잡아낼 수 있는 invariant 위반 6종 발견 + 차단:
+
+| # | 위반 | 수정 |
+|---|---|---|
+| 1 | `feature_groups.yaml` 의 `output_columns` 가 placeholder 로 남아 generator 실제 출력과 불일치 | `core/feature/group_pipeline.py` — fit 후 `output_columns` 강제 overwrite (CLAUDE.md §1.7 group range contiguity 의 사전 조건) |
+| 2 | Stage 6 정규화가 binary 컬럼을 reorder 하면서 group range 가 비연속 블록으로 깨짐 | `core/preprocessing/normalizer.py::transform_sql` — 입력 컬럼 순서 보존 |
+| 3 | Stage 6 출력 후 `feature_cols` 가 group registry 순서와 일치하지 않음 | Stage 6 종료 시 feature group registry 순서로 재정렬 |
+| 4 | FeatureRouter / config_builder 가 OOB 슬라이스에서 silently 빈 텐서 반환 | 양쪽 모두 defensive OOB guard 추가 |
+| 5 | `feature_groups.yaml::output_dim` 이 generator 실제 출력 차원과 불일치 | 6개 그룹 정렬: demographics 38→11, tda_global 36→16, tda_local 24→16, hmm_states 48→25, product_hierarchy 32→34, graph_collaborative 64→66 |
+| 6 | `FeatureSpec.meta_cols` / `TaskSpec.derive` 가 dataclass 에 없어 dead config 였음. `snapshot_date`, `has_nba` 가 `features.parquet` 으로 leak | dataclass 에 필드 추가 + Phase 0 에서 meta_cols 분리 보장 |
+
+**검증**: Phase 0 v3 (commit `88f7a7b`) 이 1211 features / 17 groups / 모두 sequential back-to-back / 마지막 range 가 1205 에서 종료 / trailing 6 passthrough cols (auto-encoded categoricals) 로 통과 확인.
+
+### 11.2 Mamba precompute — 별도 SageMaker Job 으로 분리
+
+Mamba SSM 의 GPU 의존성 (`causal_conv1d` + `mamba_ssm`) 이 stock SageMaker PyTorch 컨테이너에 빌드되지 않아 Phase 0 본 잡과 분리된 precompute 잡으로 운영합니다.
+
+- **이미지 빌드**: `bash scripts/build_mamba_image_codebuild.sh` — AWS CodeBuild 에서 cu122-torch2.1 wheel (causal_conv1d 1.2.0.post2 + mamba_ssm 1.2.0.post1) 사전 빌드 후 ECR 푸시.
+- **이미지**: `795833413857.dkr.ecr.ap-northeast-2.amazonaws.com/ple-mamba-precompute:1908a1e3`
+- **트리거**: `python scripts/submit_pipeline.py --mamba-precompute`
+- **출력**: `s3://aiops-ple-financial/santander_ple/mamba/embedding.parquet` (192 MB, 941K customers × 50D)
+- **실측 비용/시간**: g4dn.xlarge spot, **8.6 분 / $0.026/run** (Phase 0 본 잡과 별도 과금)
+
+### 11.3 비용 실측 업데이트
+
+§1.5 (비용 관리) 의 추정치를 본 시기 실측으로 보정:
+
+| 잡 | 추정 → 실측 |
+|---|---|
+| Phase 0 single-job (CPU instance) | ~7 분 / **$0.04/run (spot)** |
+| Mamba precompute (g4dn.xlarge spot) | 8.6 분 / **$0.026/run** |
+
+**4월 누적 비용**: ~$22.55 (CodeBuild $2.49 / 16회 attempts, SageMaker $12+ Phase 0 + Mamba precompute, S3 $1.22, etc.). 비용 비대 항목은 CodeBuild 이미지 빌드 시도 (mamba wheel 빌드 실패 → wheel 사전 빌드 전략 전환) 였고, 1908a1e3 태그 안정화 이후 1회 빌드 / 다회 재사용 구조로 전환.

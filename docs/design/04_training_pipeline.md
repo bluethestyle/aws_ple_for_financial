@@ -498,6 +498,31 @@ def build_ple_config(pipeline_cfg: dict, feature_schema: dict, label_schema: dic
     """
 ```
 
+### Schema-Invariant Guards on the Training Side (2026-04-28)
+
+> 관련 commit: `2c93b1f`, `4b1a40c`, `dfd116c`, `ecfdeb9`, `c6dbe3e`, `9308916`, `88f7a7b` (모두 `main`, 미push). 상세 audit 은 `docs/design/02_feature_engineering.md` 의 *Schema-Invariant Audit* 섹션 참조.
+
+Phase 0 산출물의 invariant —
+
+```
+feature_groups.yaml registry order
+  == Stage 3 concat order
+  == features.parquet column order
+  == sequential feature_group_ranges
+```
+
+— 가 깨지면 학습 단계에서는 GPU `device-side assert triggered` 로만 표면화된다 (`FeatureRouter` 가 OOB 인덱스로 슬라이스). `train.py` 와 `config_builder` 는 이를 fail-fast 로 전환하기 위한 가드를 둔다:
+
+- **`config_builder.build_ple_config()`**: `feature_schema["group_ranges"]` 의 각 `(group, start, end)` 에 대해 `end <= n_feat_cols` 만 통과시키고 위반 시 WARN + drop (commit `4b1a40c`). 이전에는 stale range 가 그대로 PLEConfig 에 실려 첫 forward 에서 CUDA assert 로만 인지되었다.
+- **`core/model/feature_router.py::FeatureRouter.route()`**: 라우팅 인덱스 텐서에 대해 `idx.max() < features.shape[-1]` 를 명시 assert. CUDA 비동기 에러 대신 명확한 Python stack 으로 실패한다.
+- **`config_builder` 의 `meta_cols` 처리**: `FeatureSpec.meta_cols` 와 `TaskSpec.derive` 는 commit `ecfdeb9` 에서 dataclass 에 추가되었다. 추가 전에는 YAML 에 선언되어 있어도 load 시 silent drop 되어 `snapshot_date` 와 `has_nba` (= `nba_primary.derive.filter_col`) 가 features tensor 에 leak 되고 있었다. 학습 측에서는 leakage validator 를 통과해도 차원이 6 자리 어긋나 router 가 깨졌다.
+
+### 검증 결과 (Phase 0 v3 → Training)
+
+Job `santander-ple-phase0-0428-1628` 의 출력은 1211 feature columns, 17 sequential group, 6 trailing passthrough (gender / segment / country / channel / age_group / income_group), `snapshot_date` 및 `has_nba` 제외 상태로, `_rebuild_group_ranges_post_normalization` 이 no-op 으로 수렴한다. 이 invariant 가 성립하면 `train.py` 의 `build_ple_config()` 호출 → `FeatureRouter` 초기화 → 첫 forward 가 모두 동일한 인덱스 공간 위에서 실행된다.
+
+---
+
 ### core/inference/predictor.py
 
 체크포인트를 로드하고 PLEConfig를 재구성하여 AMP 추론을 수행하는 서빙 컴포넌트.

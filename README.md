@@ -85,6 +85,14 @@ pip install -e ".[dev]"
 # Generate benchmark data (1M synthetic customers)
 PYTHONPATH=. python scripts/generate_benchmark_data.py --n-customers 1000000
 
+# (Optional) Precompute Mamba temporal embeddings on a GPU SageMaker job.
+# The mamba_ssm CUDA wheel does not build on the CPU m5.* instance used for
+# Phase 0, so the SSM expert is run as a separate GPU job using a custom
+# ECR image (containers/mamba/Dockerfile, cu122-torch2.1, prebuilt wheels).
+# Output: s3://{bucket}/{task}/mamba/embedding.parquet — joined back into
+# Phase 0 via feature_groups.yaml::mamba_temporal.cached_embedding_uri.
+PYTHONPATH=. python scripts/submit_pipeline.py --mamba-precompute
+
 # Run the full training pipeline (Phase 0 preprocessing + training).
 # The adapter only converts raw data to a standardized DataFrame;
 # PipelineRunner drives preprocessing, feature generation, 3-stage

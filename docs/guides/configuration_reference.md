@@ -216,9 +216,37 @@ feature_groups:
       short_window_days: 90
       long_window_days: 365
 
-    # Output dimension
+      # Pre-computed embedding short-circuit (Mamba in particular).
+      # When set, the generator downloads the parquet via boto3 to a temp
+      # file and JOINs it on `entity_column` via DuckDB, skipping the
+      # SSM/encoder fit entirely. The parquet must contain one row per
+      # entity (e.g. one row per customer_id) with the embedding columns
+      # the generator would otherwise produce.
+      cached_embedding_uri: s3://aiops-ple-financial/santander_ple/mamba/embedding.parquet
+
+    # Output dimension — must match the generator's actual output.
+    # Recent corrections after generators were exercised end-to-end:
+    #   demographics 38 → 11
+    #   tda_global   36 → 16
+    #   tda_local    24 → 16
+    #   hmm_states   48 → 25
+    #   product_hierarchy 32 → 34
+    #   graph_collaborative 64 → 66
+    # Mismatch causes feature_group_ranges to silently shift and the
+    # router to read the wrong slice. Validate after any generator code
+    # change.
     output_dim: 70                    # Recommended (auto-detected from generator if 0)
 ```
+
+#### Dead generator-level config
+
+These keys are still tolerated for backward-compatibility but no longer
+drive behaviour. Documented here so future ops do not waste time
+populating them.
+
+| Key | Status | Replacement |
+|---|---|---|
+| `feature_groups[*].categorical_columns` | DEAD — Stage 2 auto-detects categoricals from VARCHAR types and encodes them via DuckDB `DENSE_RANK`. | Drop the key; rely on auto-detection. |
 
 ### Common fields (both types)
 
@@ -395,6 +423,32 @@ tasks:
     primary_metric: auc               # Optional. Metric for model selection
     secondary_metrics: [accuracy]     # Optional
 
+    # Label derivation rule. Wired into TaskSpec at runtime so Stage 6
+    # of the runner can both materialize the label and exclude any
+    # filter column from the feature matrix.
+    #
+    # Keys:
+    #   method      — derivation method name (e.g. "indicator",
+    #                 "classification", "lookup_index").
+    #   source_col  — column the label is derived from. NOT auto-excluded
+    #                 from features because some sources are legitimate
+    #                 features in their own right (e.g.
+    #                 `segment_prediction.derive.source_col == "segment"`).
+    #   filter_col  — boolean/0-1 mask column. Excluded from the feature
+    #                 matrix automatically because it leaks the label
+    #                 (e.g. `nba_primary.derive.filter_col == "has_nba"`).
+    #   default     — value used when the rule does not match a row.
+    #   indices     — optional list mapping enum values to class indices.
+    #
+    # Was DEAD config until 2026-04 — TaskSpec dataclass had no `derive`
+    # field, so the rule was silently dropped. Now wired through
+    # `runner.py` Stage 6 feature filter and the label-derivation step.
+    derive:
+      method: indicator
+      source_col: nba_action
+      filter_col: has_nba
+      default: 0
+
 # Data source
 data:
   source: s3://bucket/data/train/     # REQUIRED. File path or S3 URI
@@ -416,6 +470,16 @@ features:
       cols: [user_age, item_price]
     - name: label_encoder
       cols: [user_segment, item_category]
+
+  # Pure-metadata columns (snapshot_date, partitioning keys, etc.).
+  # Excluded from the feature matrix in Stage 6 of the runner.
+  #
+  # Was DEAD config until 2026-04 — declared in YAML but dropped by
+  # the dataclass loader, leaving snapshot_date sitting at column 0 of
+  # `features.parquet` and silently propagating into the feature
+  # tensor. Now wired through to the runner.
+  meta_cols:
+    - snapshot_date
 
 # Model architecture
 model:
@@ -443,6 +507,26 @@ aws:
   use_spot: true
   max_run_seconds: 7200
   role_arn: arn:aws:iam::123456789:role/SageMakerRole
+
+  # GPU instance type used for the Mamba precompute Training Job
+  # (T4 16GB is the cost-efficient default).
+  gpu_instance_type: ml.g4dn.xlarge
+
+  # Custom ECR image URI for Mamba GPU precompute. Optional.
+  #
+  #  - When SET, `launch_mamba_precompute()` passes it as `image_uri` to
+  #    the PyTorch estimator and DROPS `framework_version` /
+  #    `py_version` (which would conflict with a custom image). The
+  #    custom image is expected to ship a CUDA-compiled `selective_scan`
+  #    kernel for the Mamba SSM.
+  #  - When UNSET (or empty string), the estimator falls back to the
+  #    stock PyTorch DLC and the entry script's pure-torch SSM scan,
+  #    which is roughly 100x slower on the same data.
+  #  - Built via `scripts/build_mamba_image_codebuild.sh`.
+  #
+  # Defined in both `configs/santander/pipeline.yaml` and
+  # `configs/pipeline.yaml`.
+  mamba_image_uri: 795833413857.dkr.ecr.ap-northeast-2.amazonaws.com/ple-mamba-precompute:1908a1e3
 ```
 
 ---

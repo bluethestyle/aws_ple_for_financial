@@ -98,3 +98,11 @@ paper/typst/print/
 # Node (if ever added)
 node_modules/
 .codebuild_tmp/
+
+# Local artifact / debug dirs (Phase 0 / Mamba / CodeBuild)
+.phase0_artifacts/
+.phase0_audit_v2/
+.phase0_audit_v3/
+.mamba_artifacts/
+.codebuild_tmp/
+phase0_*.txt

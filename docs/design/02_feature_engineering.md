@@ -330,6 +330,102 @@ class PowerLawAwareScaler:
 
 ---
 
+## Schema-Invariant Audit (Phase 0 v3, 2026-04-28)
+
+> 관련 commit: `2c93b1f`, `4b1a40c`, `dfd116c`, `ecfdeb9`, `c6dbe3e`, `9308916`, `88f7a7b` (모두 `main`, 미push). 검증 Job: `santander-ple-phase0-0428-1628`.
+
+### Schema Invariant (스키마 불변식)
+
+Phase 0 산출물의 모든 다운스트림 컴포넌트 (`FeatureRouter`, expert dispatch, group-level routing, IG attribution) 가 의존하는 단일 invariant 는 다음과 같다:
+
+```
+feature_groups.yaml registry order
+  == Stage 3 (FeatureGroupPipeline) concat order
+  == features.parquet column order
+  == sequential feature_group_ranges (no gaps, no overlaps)
+```
+
+이 등식이 성립하면 `PipelineRunner._rebuild_group_ranges_post_normalization` 은 **no-op 으로 수렴**한다 (입력 range == 출력 range). 위반 시 FeatureRouter 가 out-of-bounds index 로 `features` tensor 를 슬라이스하고, GPU 경로에서 `device-side assert triggered` 만 떠서 `CUDA_LAUNCH_BLOCKING=1` 없이는 디버깅이 불가능하다.
+
+### 발견된 3 종 위반 경로 + 픽스
+
+#### 1) Placeholder `output_columns` 가 실제 generator output 을 가린 경우 (commit `2c93b1f`)
+
+`FeatureGroupConfig.__post_init__` 는 dataclass 생성 시 `output_columns` 가 비어 있으면 placeholder 를 자동으로 채운다:
+
+```python
+# core/feature/group_pipeline.py (수정 전)
+self.output_columns = [f"{name}_{i}" for i in range(output_dim)]
+# → ["mamba_temporal_0", "mamba_temporal_1", ..., "mamba_temporal_49"]
+```
+
+`FeatureGroupPipeline.fit()` 안의 3 군데 post-fit assignment 가 `if not group.output_columns:` guard 로 보호되고 있었는데, placeholder 가 이미 채워져 있으니 guard 가 **항상 False** 였다. 그래서 generator 의 실제 output 컬럼명 (`mamba_d0..mamba_d49`, `tda_global_h0_*` 등) 은 끝까지 group 에 등록되지 않았다.
+
+Stage 6 의 `_rebuild_group_ranges_post_normalization` 은 이 placeholder 들을 post-normalization `feature_cols` 에서 lookup 하는데 — 당연히 매치되지 않으니 — **모든 group 을 silently 드롭**하고 stale Stage 3 range 를 그대로 유지했다. 픽스는 guard 를 모두 제거하고 항상 `gen.output_columns` 로 덮어쓰는 것이다.
+
+#### 2) Stage 6 normalizer 의 컬럼 reorder (commit `c6dbe3e`)
+
+`PowerLawAwareScaler.transform_sql` / `transform` 은 projection 을 **고정 bucket 순서**로 emit 했다:
+
+```
+[continuous block] → [binary block] → [categorical_int block]
+                  → [probability block] → [_log copies]
+```
+
+`demographics` 처럼 group 안에 dtype 이 섞여 있으면 (continuous 9 + binary 2 — `gender`, `is_active`) bucket 순서로 재배열되어 binary 컬럼이 원래 위치에서 **약 500 자리 떨어진 곳**으로 흩어진다. Stage 3 는 그룹별 contiguous 였는데 Stage 6 가 깨버린 것.
+
+픽스는 `feature_cols` 를 입력 순서로 순회하면서 각 컬럼의 projection 을 in-place 로 emit 하도록 변경. `_log` 복사본만 진짜 추가분이므로 tail 에 append 하는 동작은 유지.
+
+#### 3) Stage 6 입력 `feature_cols` 가 adapter dictate 순서를 상속 (commit `88f7a7b`)
+
+Normalizer 가 order-preserving 으로 고쳐져도, **입력으로 받는 `feature_cols`** 자체가 DuckDB DESCRIBE 순서 (= adapter 가 컬럼을 만든 순서) 였다. Adapter 는 group registry 와 무관하게 dtype/생성 시점 기준으로 컬럼을 emit 하므로 demographics 의 5 declared cols 가 흩어졌다.
+
+`PipelineRunner._reorder_feature_cols_by_group` helper 를 추가하여, 각 enabled group 의 `output_columns` 를 registry 순서로 먼저 배치하고, 어떤 group 에도 routed 되지 않은 passthrough 컬럼은 tail 에 모은다. 이 시점에 invariant 가 처음으로 성립한다.
+
+### 보조 픽스
+
+- **`_compute_dim_ranges` 는 YAML 의 `output_dim` 대신 `len(group.output_columns)` 사용** (commit `4b1a40c`). YAML 값과 generator 실제 출력이 어긋날 때 range 가 허위 길이로 계산되는 것을 방지.
+- **`feature_groups.yaml::output_dim` 을 generator 실측에 맞춰 재정렬** (commit `dfd116c`):
+  - demographics 38 → 11
+  - tda_global 36 → 16
+  - tda_local 24 → 16
+  - hmm_states 48 → 25
+  - product_hierarchy 32 → 34
+  - graph_collaborative 64 → 66
+- **`FeatureSpec.meta_cols` / `TaskSpec.derive` 를 dataclass 에 추가** (commit `ecfdeb9`). 둘 다 YAML 에는 선언되어 있었지만 dataclass 가 받지 못해 load 시 silent drop. 결과적으로 `snapshot_date` 와 `has_nba` (= `nba_primary.derive.filter_col`) 가 features.parquet 에 새어들어가고 있었다.
+
+### 방어 가드 (Defensive Guards)
+
+침묵 실패를 fail-fast 로 전환하기 위해 두 군데에 가드를 추가:
+
+```python
+# core/model/config_builder.py
+# end > n_feat_cols 인 group_range 는 build 시 drop + WARN
+ranges = [(g, s, e) for (g, s, e) in ranges if e <= n_feat_cols]
+
+# core/model/feature_router.py (FeatureRouter.route)
+# slice index 가 features.shape[-1] 를 넘으면 raise (CUDA assert 대신)
+assert idx.max() < features.shape[-1], "router index OOB ..."
+```
+
+### 검증 결과 (Phase 0 v3, Job `santander-ple-phase0-0428-1628`)
+
+- `feature_columns` 총 **1211 개**.
+- 17 개 group 모두 **연속 (sequential), 갭 없음**:
+  ```
+  demographics             [   0,    5)
+  product_holdings         [   5,   29)
+  ...
+  mcc_top30_multihot       [1174, 1205)
+  ```
+- 6 개 trailing passthrough cols: `gender`, `segment`, `country`, `channel`, `age_group`, `income_group` (Stage 2 가 auto-encode 한 categorical 들로, 어떤 group 의 `columns:` 에도 declared 되지 않음).
+- `snapshot_date` / `has_nba` 는 **features.parquet 에서 제외**.
+- `demographics` 의 declared 5 cols 가 모두 contiguous block 에 포함.
+
+이 시점부터 `_rebuild_group_ranges_post_normalization` 은 input range 와 동일한 output 을 emit 하며 (no-op), expert routing / IG attribution / group-level FRIA 분석 이 모두 동일한 인덱스 공간을 공유한다.
+
+---
+
 ## Santander 데이터 피처 상세 (configs/santander/)
 
 ### Categorical Embeddings

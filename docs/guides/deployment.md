@@ -9,13 +9,15 @@ through SageMaker training to production serving.
 
 1. [Architecture Overview](#architecture-overview)
 2. [S3 Bucket Setup](#s3-bucket-setup)
-3. [SageMaker Training](#sagemaker-training)
-4. [Serving Modes: Lambda vs ECS](#serving-modes)
-5. [Feature Store](#feature-store)
-6. [A/B Testing](#ab-testing)
-7. [Kill Switch](#kill-switch)
-8. [Monitoring and Alerts](#monitoring-and-alerts)
-9. [Ops / Audit Agent Deployment](#ops--audit-agent-deployment)
+3. [End-to-End Submission Flow](#end-to-end-submission-flow)
+4. [Mamba GPU Precompute](#mamba-gpu-precompute)
+5. [SageMaker Training](#sagemaker-training)
+6. [Serving Modes: Lambda vs ECS](#serving-modes)
+7. [Feature Store](#feature-store)
+8. [A/B Testing](#ab-testing)
+9. [Kill Switch](#kill-switch)
+10. [Monitoring and Alerts](#monitoring-and-alerts)
+11. [Ops / Audit Agent Deployment](#ops--audit-agent-deployment)
 
 ---
 
@@ -97,6 +99,158 @@ s3://my-ple-bucket/
   ]
 }
 ```
+
+---
+
+## End-to-End Submission Flow
+
+A full AWS run consists of (a) one-time Mamba ECR image build, (b) a GPU
+Mamba precompute job whose output is cached in S3 as `embedding.parquet`,
+(c) a CPU Phase 0 job that joins the cached embedding into the feature
+matrix, and (d) the training job. Steps (a) and (b) are reused across
+many Phase 0 / training runs.
+
+```
+1. (one-time) Build Mamba ECR image
+   bash scripts/build_mamba_image_codebuild.sh
+   #   AWS CodeBuild with cu122-torch2.1 prebuilt wheels
+   #   Pushes 795833413857.dkr.ecr.ap-northeast-2.amazonaws.com/ple-mamba-precompute:<tag>
+   #   ~$0.10 per build, ~5 min on BUILD_GENERAL1_LARGE.
+
+2. Set aws.mamba_image_uri in BOTH
+     configs/santander/pipeline.yaml
+     configs/pipeline.yaml
+
+3. Run Mamba precompute (GPU SageMaker job)
+   python scripts/submit_pipeline.py \
+     --config configs/santander/pipeline.yaml \
+     --mamba-precompute
+   #   ~$0.026 per run (g4dn.xlarge spot, ~8.6 min).
+   #   Output: s3://aiops-ple-financial/santander_ple/mamba/<job>/<job>/output/model.tar.gz
+   #   Extract embedding.parquet from model.tar.gz and upload to
+   #     s3://aiops-ple-financial/santander_ple/mamba/embedding.parquet
+
+4. Wire the cached embedding into feature_groups.yaml::mamba_temporal:
+     enabled: true
+     generator_params:
+       cached_embedding_uri: s3://aiops-ple-financial/santander_ple/mamba/embedding.parquet
+
+5. Run Phase 0 (CPU SageMaker job)
+   python scripts/submit_pipeline.py \
+     --config configs/santander/pipeline.yaml \
+     --phase0-only
+   #   ~7 min on m5.4xlarge spot, ~$0.04.
+   #   MambaFeatureGenerator detects cached_embedding_uri and JOINs via
+   #   DuckDB+boto3 (httpfs lacks SageMaker IAM credentials, so we
+   #   boto3-download the parquet first, then JOIN locally).
+
+6. (Optional) Training mode against the Phase 0 output prefix.
+   #   First extract Phase 0 model.tar.gz contents and upload to
+   #     s3://aiops-ple-financial/santander_ple/phase0/<job>/extracted/
+   python scripts/submit_pipeline.py \
+     --mode training \
+     --features-uri s3://aiops-ple-financial/santander_ple/phase0/<job>/extracted/
+```
+
+Notes:
+
+- `--phase0-split` is also supported for the contiguous-9-stage OOM case
+  (splits Phase 0 into multiple jobs that share staged intermediates).
+- `--dry-run` prints the launch config without submitting and is wired
+  through `--mamba-precompute` as well — use it to preview the GPU job
+  before paying for it.
+- Spot pricing for the two relevant instance types: `m5.4xlarge` ≈ $0.32/hr
+  spot, `g4dn.xlarge` ≈ $0.18/hr spot. Always set `max_wait_seconds`
+  alongside `max_run_seconds` (see [SageMaker Training](#sagemaker-training)).
+
+---
+
+## Mamba GPU Precompute
+
+The Mamba (S4-style) temporal expert is the most expensive feature
+generator in Phase 0. Running it inside a CPU Phase 0 job blows out
+the m5.4xlarge wall-clock and either OOMs or stalls. We therefore split
+it into a one-shot **GPU precompute** job whose output (a parquet file
+of per-`(customer_id, snapshot_date)` embedding rows) is cached in S3
+and joined into Phase 0 by `MambaFeatureGenerator`.
+
+### Build the Mamba ECR image (one-time)
+
+```bash
+bash scripts/build_mamba_image_codebuild.sh
+```
+
+This delegates to AWS CodeBuild on `BUILD_GENERAL1_LARGE` and pushes to:
+
+```
+795833413857.dkr.ecr.ap-northeast-2.amazonaws.com/ple-mamba-precompute:<tag>
+```
+
+CodeBuild was chosen over local Docker because the cu122-torch2.1
+prebuilt wheels are large and the local Windows path is slow / brittle.
+Cost: ~$0.10 per build, ~5 min wall-clock.
+
+After the build, set the image URI in **both** config files:
+
+```yaml
+# configs/pipeline.yaml AND configs/santander/pipeline.yaml
+aws:
+  mamba_image_uri: 795833413857.dkr.ecr.ap-northeast-2.amazonaws.com/ple-mamba-precompute:<tag>
+```
+
+If `aws.mamba_image_uri` is empty, `submit_pipeline.py --mamba-precompute`
+emits a warning and falls back to the default training image, which will
+not have the Mamba CUDA kernels and will run very slowly.
+
+### Submit the precompute job
+
+```bash
+python scripts/submit_pipeline.py \
+  --config configs/santander/pipeline.yaml \
+  --mamba-precompute
+```
+
+The job runs on `ml.g4dn.xlarge` (T4, spot) and takes ~8.6 min for the
+Santander ~941 K-row dataset. Cost: ~$0.026 per run.
+
+Output:
+
+```
+s3://aiops-ple-financial/santander_ple/mamba/<job>/<job>/output/model.tar.gz
+```
+
+Extract `embedding.parquet` from the tarball and upload it to a stable,
+versionless cache path:
+
+```
+s3://aiops-ple-financial/santander_ple/mamba/embedding.parquet
+```
+
+### Wire the cached embedding into Phase 0
+
+In `configs/santander/feature_groups.yaml`:
+
+```yaml
+mamba_temporal:
+  enabled: true
+  generator_params:
+    cached_embedding_uri: s3://aiops-ple-financial/santander_ple/mamba/embedding.parquet
+```
+
+Phase 0 (`MambaFeatureGenerator`) now detects `cached_embedding_uri`,
+boto3-downloads the parquet (httpfs lacks SageMaker IAM credentials in
+the training role), and JOINs it via DuckDB on `(customer_id,
+snapshot_date)` instead of running the GPU model.
+
+### When to re-run the precompute
+
+- Source data refresh (new snapshots).
+- Mamba hyperparameters changed in `feature_groups.yaml`
+  (state size, n_layers, expand factor).
+- Image rebuild that changes embedding dimensionality.
+
+Otherwise the cached `embedding.parquet` is reused across every Phase 0
+and training submission.
 
 ---
 
@@ -199,6 +353,8 @@ docker push 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/ple-training:latest
 | Script | Role |
 |---------|------|
 | `scripts/package_source.py` | Stage source directory → build tarball → upload to S3 (reused by all Jobs) |
+| `scripts/build_mamba_image_codebuild.sh` | One-time AWS CodeBuild of the Mamba GPU precompute image (cu122-torch2.1 wheels) → ECR |
+| `scripts/submit_pipeline.py` | Unified submission entry point. Modes: `--mamba-precompute` (GPU embedding cache), `--phase0-only` / `--phase0-split` (CPU feature engineering), `--mode training --features-uri ...` (training against an existing Phase 0 output). Supports `--dry-run` for every mode. |
 | `scripts/run_sagemaker_teacher.py` | Submit teacher Spot training Jobs in parallel. The default benchmark runs the 23-scenario ablation grid (14 joint feature+expert + 9 structure cross, tasks_13 row). Earlier drafts cited a 3-scenario baseline/gradsurgery/adaTT comparison; GradSurgery was experimentally evaluated in 2026-04-15 and **not adopted** (no task-metric gain, VRAM overhead from `retain_graph` — see CLAUDE.md `feedback_gradsurgery`). loss-level adaTT is disabled by default at the 13-task scale (ΔAUC ≈ -0.001, within single-seed noise) and retained only for ablation comparison. |
 | `scripts/run_sagemaker_eval.py` | Submit evaluation Job (uses `containers/evaluation/eval_entry.py` as entry point) |
 

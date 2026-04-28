@@ -172,6 +172,53 @@ completed scenarios based on `pipeline_state.json`.
 
 ---
 
+## 7. Run on AWS (optional)
+
+A full AWS submission consists of (a) one-time Mamba image build, (b)
+GPU Mamba precompute → cached `embedding.parquet`, (c) CPU Phase 0,
+(d) training. (a) and (b) are reused across many Phase 0 / training
+runs. End-to-end commands:
+
+```bash
+# (a) One-time: build the Mamba GPU precompute image (CodeBuild, ~5 min, ~$0.10)
+bash scripts/build_mamba_image_codebuild.sh
+#     Then set aws.mamba_image_uri in BOTH
+#       configs/pipeline.yaml
+#       configs/santander/pipeline.yaml
+
+# (b) Mamba precompute on g4dn.xlarge spot (~8.6 min, ~$0.026)
+python scripts/submit_pipeline.py \
+  --config configs/santander/pipeline.yaml \
+  --mamba-precompute
+#     Extract embedding.parquet from the resulting model.tar.gz and
+#     upload to s3://aiops-ple-financial/santander_ple/mamba/embedding.parquet
+#     Then set in configs/santander/feature_groups.yaml::mamba_temporal:
+#       enabled: true
+#       generator_params:
+#         cached_embedding_uri: s3://.../mamba/embedding.parquet
+
+# (c) Phase 0 on m5.4xlarge spot (~7 min, ~$0.04)
+python scripts/submit_pipeline.py \
+  --config configs/santander/pipeline.yaml \
+  --phase0-only
+#     MambaFeatureGenerator detects cached_embedding_uri and JOINs the
+#     cached parquet via DuckDB+boto3 instead of running the GPU model.
+#     Extract Phase 0 model.tar.gz contents and upload to
+#       s3://aiops-ple-financial/santander_ple/phase0/<job>/extracted/
+
+# (d) Training mode against the Phase 0 output prefix
+python scripts/submit_pipeline.py \
+  --mode training \
+  --features-uri s3://aiops-ple-financial/santander_ple/phase0/<job>/extracted/
+```
+
+Use `--dry-run` with any of the above to print the launch config without
+submitting (works for `--mamba-precompute` too). For the contiguous
+9-stage OOM case, replace `--phase0-only` with `--phase0-split`. See
+[deployment.md](./deployment.md) for instance-type / cost / IAM details.
+
+---
+
 ## Configuration
 
 Everything is config-driven (CLAUDE.md §1.1). Three YAML files form a
