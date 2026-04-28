@@ -371,11 +371,23 @@ class FeatureGroupPipeline:
                             _con.close()
                 else:
                     gen.fit(pdf)
-                # Update output_dim and output_columns from generator
+                # Update output_dim and output_columns from generator.
+                # Always overwrite output_columns post-fit —
+                # FeatureGroupConfig.__post_init__ pre-fills placeholders
+                # like ``[<name>_0, <name>_1, ...]`` that don't match the
+                # real names the generator produces (e.g. ``mamba_d0``,
+                # ``tda_global_h0_*``). Stage 6's group-range rebuild
+                # looks those names up in the post-normalization column
+                # index; leaving the placeholders silently drops every
+                # group from the rebuilt ranges, which then propagates
+                # into feature_schema.json with stale ranges that
+                # FeatureRouter trips over at training time
+                # (CUDA index-out-of-bounds).
                 if group.output_dim == 0:
                     group.output_dim = gen.output_dim
-                if not group.output_columns:
-                    group.output_columns = list(gen.output_columns)
+                gen_cols = list(getattr(gen, "output_columns", []) or [])
+                if gen_cols:
+                    group.output_columns = gen_cols
                 logger.debug(
                     "  Fitted generator '%s' -> %d features in %.2fs",
                     group.name, gen.output_dim, time.time() - g_start,
@@ -386,9 +398,20 @@ class FeatureGroupPipeline:
                 current = df_backend.to_pandas(df)
                 for t in chain:
                     current = t.fit(current).transform(current)
-                # Determine output columns from the group's column list
-                if not group.output_columns:
-                    group.output_columns = list(group.columns)
+                # Always derive output_columns from the post-transform
+                # DataFrame, overriding the placeholder fill from
+                # FeatureGroupConfig.__post_init__. ``current.columns``
+                # captures any expansion the chain performed (e.g.
+                # one-hot widening of categoricals declared via
+                # ``categorical_columns``); ``group.columns`` only lists
+                # the YAML-declared numeric inputs and will silently
+                # under-count.
+                tr_cols = (
+                    list(current.columns)
+                    if hasattr(current, "columns") and len(current.columns)
+                    else list(group.columns)
+                )
+                group.output_columns = tr_cols
                 if group.output_dim == 0:
                     group.output_dim = len(group.output_columns)
                 logger.debug(
@@ -870,11 +893,14 @@ class FeatureGroupPipeline:
                 processing_job_name, len(result), len(result.columns),
             )
 
-            # Update group metadata from container output
+            # Update group metadata from container output. Always
+            # overwrite output_columns — see the note in fit() above
+            # about the placeholder fill in
+            # FeatureGroupConfig.__post_init__ that otherwise sticks
+            # around and silently breaks Stage 6's range rebuild.
             if group.output_dim == 0:
                 group.output_dim = len(result.columns)
-            if not group.output_columns:
-                group.output_columns = list(result.columns)
+            group.output_columns = list(result.columns)
 
             return result
 
