@@ -47,6 +47,14 @@ class TaskSpec:
     tower_type: str = ""        # "" = use default ("standard")
     tower_dims: List[int] = field(default_factory=list)  # [] = use global default
     description: str = ""
+    # Label-derivation rule when the YAML uses
+    # ``derive: {method, source_col, filter_col, ...}``. The runner reads
+    # this dict to (a) build labels in Stage 4 and (b) exclude the
+    # referenced helper columns (e.g. ``has_nba`` for the
+    # ``nba_primary.derive.filter_col`` link) from the post-Stage-6
+    # feature matrix. Previously absent from the dataclass, so the YAML
+    # block was silently dropped at load time.
+    derive: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -85,6 +93,12 @@ class FeatureSpec:
     sequence: List[str] = field(default_factory=list)
     embedding_dim: int = 16
     id_cols: List[str] = field(default_factory=list)
+    # Pure-metadata columns (snapshot_date, partitioning keys, etc.).
+    # The runner's Stage 6 feature filter excludes these from the feature
+    # matrix; without this field, ``meta_cols: [snapshot_date]`` declared
+    # in the dataset YAML was silently dropped by the dataclass loader,
+    # leaving snapshot_date in features.parquet at column 0.
+    meta_cols: List[str] = field(default_factory=list)
     transformers: List[dict] = field(default_factory=list)
     input_dim: int = 0
 

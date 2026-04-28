@@ -1066,6 +1066,34 @@ class PipelineRunner:
         # the column list authoritative across single-job and resumed
         # paths.
         label_col_set = set(labels_df.columns)
+
+        # Pure-metadata columns (e.g. snapshot_date) — declared in the
+        # dataset YAML as ``features.meta_cols`` but were silently
+        # dropped before FeatureSpec.meta_cols existed, leaving
+        # snapshot_date in features.parquet at column 0.
+        meta_col_set = set(getattr(self.config.features, "meta_cols", None) or [])
+
+        # Label-derivation FILTER columns (e.g. ``has_nba`` referenced
+        # by ``nba_primary.derive.filter_col``). These are binary
+        # indicators that only gate label derivation and are not
+        # legitimate model inputs — they leak the label structure.
+        #
+        # We deliberately do NOT pull in ``source_col`` / ``input_col``
+        # here. Some derive sources are real features (e.g.
+        # ``segment_prediction.derive.source_col == "segment"``, where
+        # ``segment`` is also a demographics categorical input that the
+        # model is supposed to see). Only ``filter_col`` is unambiguously
+        # a label-helper. List-typed sources (``nba_label``,
+        # ``txn_mcc_seq``) are already filtered out by the LIST-type
+        # check below + the seq_ prefix rule.
+        deriv_col_set: set = set()
+        for _t in (self.config.tasks or []):
+            _derive = getattr(_t, "derive", None) or {}
+            if isinstance(_derive, dict):
+                _v = _derive.get("filter_col")
+                if isinstance(_v, str) and _v:
+                    deriv_col_set.add(_v)
+
         seq_col_set: set
         non_feature_cols: set
         if (
@@ -1082,7 +1110,10 @@ class PipelineRunner:
                 c for c in post3_cols
                 if c.startswith("seq_") or c in self.config.features.sequence
             }
-            non_feature_cols = label_col_set | id_cols | date_cols | seq_col_set
+            non_feature_cols = (
+                label_col_set | id_cols | date_cols
+                | meta_col_set | deriv_col_set | seq_col_set
+            )
             numeric_keywords = (
                 "INT", "BIGINT", "SMALLINT", "TINYINT", "HUGEINT",
                 "DECIMAL", "DOUBLE", "FLOAT", "REAL",
@@ -1101,7 +1132,10 @@ class PipelineRunner:
                 c for c in df.columns
                 if c.startswith("seq_") or c in self.config.features.sequence
             }
-            non_feature_cols = label_col_set | id_cols | date_cols | seq_col_set
+            non_feature_cols = (
+                label_col_set | id_cols | date_cols
+                | meta_col_set | deriv_col_set | seq_col_set
+            )
             feature_cols = [
                 c for c in df.select_dtypes(include=[np.number]).columns
                 if c not in non_feature_cols
