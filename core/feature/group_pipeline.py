@@ -398,20 +398,21 @@ class FeatureGroupPipeline:
                 current = df_backend.to_pandas(df)
                 for t in chain:
                     current = t.fit(current).transform(current)
-                # Always derive output_columns from the post-transform
-                # DataFrame, overriding the placeholder fill from
-                # FeatureGroupConfig.__post_init__. ``current.columns``
-                # captures any expansion the chain performed (e.g.
-                # one-hot widening of categoricals declared via
-                # ``categorical_columns``); ``group.columns`` only lists
-                # the YAML-declared numeric inputs and will silently
-                # under-count.
-                tr_cols = (
-                    list(current.columns)
-                    if hasattr(current, "columns") and len(current.columns)
-                    else list(group.columns)
-                )
-                group.output_columns = tr_cols
+                # For transform groups, the transformer chain typically
+                # returns the FULL input frame with the targeted columns
+                # rewritten in place — using ``current.columns`` would
+                # treat every upstream column as part of this group,
+                # blowing total_dim up by the entire DataFrame width.
+                # The conservative answer is the YAML-declared
+                # ``group.columns`` list, which correctly identifies the
+                # transformer's targets even though it misses the
+                # ``categorical_columns`` cousins (Stage 2's
+                # auto-encoded categoricals end up in the parquet
+                # passthrough; they're not routed to demographics'
+                # target experts but at least don't corrupt the schema).
+                # Always overwrite to drop the
+                # ``[<name>_0, <name>_1, ...]`` placeholder fill.
+                group.output_columns = list(group.columns)
                 if group.output_dim == 0:
                     group.output_dim = len(group.output_columns)
                 logger.debug(
