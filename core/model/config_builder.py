@@ -387,9 +387,25 @@ def build_ple_config(
                 for exp, grps in _expert_to_groups.items()
             ]
     if expert_routing:
+        # feature_schema.json stores expert_routing as a dict
+        # ``{expert_name: [group, group, ...]}`` (the runner writes it
+        # this way). Older callers pass a list of dicts
+        # ``[{"expert_name": ..., "input_groups": [...]}, ...]``.
+        # Iterating the dict directly gives just the keys (strings),
+        # which the FeatureRouter then rejects with
+        #   AttributeError: 'str' object has no attribute 'expert_name'.
+        # Normalize both shapes here before constructing the
+        # ExpertInputConfig list.
+        if isinstance(expert_routing, dict):
+            routing_iter = [
+                {"expert_name": exp, "input_groups": list(grps or [])}
+                for exp, grps in expert_routing.items()
+            ]
+        else:
+            routing_iter = expert_routing
         ple_config.expert_input_routing = [
             ExpertInputConfig(**r) if isinstance(r, dict) else r
-            for r in expert_routing
+            for r in routing_iter
         ]
 
     # Task group map
