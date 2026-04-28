@@ -498,20 +498,38 @@ class MambaFeatureGenerator(AbstractFeatureGenerator):
     def _load_cached_embeddings(self, uri: str) -> None:
         """Load per-entity Mamba embeddings produced by the GPU pre-compute job.
 
-        ``uri`` may be a local path or an ``s3://`` URI; DuckDB's
-        ``read_parquet`` handles both (with httpfs for S3). The
-        parquet must contain ``self.entity_column`` plus the columns
-        named in ``self.output_columns`` (one row per entity).
+        ``uri`` may be a local path or an ``s3://`` URI. For S3 we
+        download to a temp file via boto3 first because DuckDB's
+        httpfs extension does not pick up the SageMaker instance's
+        IAM role from the AWS credential chain by default — the read
+        fails with HTTP 403 against the private bucket. boto3 uses
+        the standard credential chain (env / instance profile / role)
+        so the download just works inside the training container.
+
+        The parquet must contain ``self.entity_column`` plus the
+        columns named in ``self.output_columns`` (one row per entity).
         """
         import duckdb as _ddb_mamba
         emb_cols = self.output_columns
         proj = ", ".join(f'"{c}"' for c in [self.entity_column] + emb_cols)
+
+        local_path = uri
+        if uri.startswith("s3://"):
+            import os
+            import tempfile
+
+            import boto3
+
+            no_proto = uri[len("s3://"):]
+            bucket, _, key = no_proto.partition("/")
+            tmp_dir = tempfile.mkdtemp(prefix="mamba_emb_")
+            local_path = os.path.join(tmp_dir, "embedding.parquet")
+            boto3.client("s3").download_file(bucket, key, local_path)
+
         _con = _ddb_mamba.connect()
         try:
-            if uri.startswith("s3://"):
-                _con.execute("INSTALL httpfs; LOAD httpfs;")
             arr = _con.execute(
-                f"SELECT {proj} FROM read_parquet('{uri}')"
+                f"SELECT {proj} FROM read_parquet('{local_path}')"
             ).fetch_arrow_table()
         finally:
             _con.close()
