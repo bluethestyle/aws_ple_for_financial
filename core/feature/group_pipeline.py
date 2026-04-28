@@ -596,13 +596,30 @@ class FeatureGroupPipeline:
     # -- Dimension tracking --------------------------------------------
 
     def _compute_dim_ranges(self) -> None:
-        """Compute per-group dimension ranges after fitting."""
+        """Compute per-group dimension ranges after fitting.
+
+        Uses ``len(group.output_columns)`` rather than ``group.output_dim``
+        because the YAML-declared ``output_dim`` can drift from what the
+        generator actually produced once
+        ``FeatureGroupConfig.__post_init__``'s placeholder fill is
+        replaced by the real generator output (see fit()'s overwrite of
+        ``group.output_columns``). Falling back to ``output_dim`` only
+        when output_columns is empty keeps unfitted / mock-only groups
+        from regressing.
+
+        These ranges describe the registry's sequential concatenation
+        order — the actual post-normalization parquet may reorder
+        columns, in which case Stage 6's
+        ``_rebuild_group_ranges_post_normalization`` re-maps from the
+        ``output_columns`` names against the real column index.
+        """
         self._group_ranges = {}
         self._output_columns = []
         offset = 0
 
         for group in self._registry.enabled_groups:
-            end = offset + group.output_dim
+            n_cols = len(group.output_columns) if group.output_columns else group.output_dim
+            end = offset + n_cols
             self._group_ranges[group.name] = (offset, end)
             self._output_columns.extend(group.output_columns)
             offset = end

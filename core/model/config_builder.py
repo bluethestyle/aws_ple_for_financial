@@ -352,9 +352,34 @@ def build_ple_config(
     # Feature group ranges
     group_ranges = feature_schema.get("feature_group_ranges",
                                       feature_schema.get("group_ranges", {}))
+
+    # Defensive guard: reject ranges whose ``end`` index exceeds the
+    # actual feature column count. Phase 0 had a bug where placeholder
+    # output_columns silently broke Stage 6's range rebuild and the
+    # schema ended up with stale ranges that pointed past the real
+    # feature width (1285 vs 1213). FeatureRouter would then trip a
+    # CUDA index-out-of-bounds at training time. Drop the offending
+    # entries here and log loudly so the operator can re-run Phase 0
+    # rather than spending 30 min on a doomed training job.
+    n_feat_cols = len(feature_schema.get("feature_columns") or feature_schema.get("columns") or [])
+    if group_ranges and n_feat_cols > 0:
+        invalid = {
+            k: tuple(v) for k, v in group_ranges.items()
+            if len(v) >= 2 and (v[1] > n_feat_cols or v[0] < 0 or v[0] >= v[1])
+        }
+        if invalid:
+            logger.warning(
+                "Dropping %d feature_group_ranges entries that exceed the "
+                "%d-column feature matrix (likely a stale Phase 0 artifact "
+                "predating the output_columns overwrite fix). Dropped: %s",
+                len(invalid), n_feat_cols, invalid,
+            )
+            group_ranges = {
+                k: v for k, v in group_ranges.items() if k not in invalid
+            }
     if group_ranges:
         ple_config.feature_group_ranges = {k: tuple(v) for k, v in group_ranges.items()}
-    col_ranges = feature_schema.get("group_ranges", {})
+    col_ranges = group_ranges
 
     # Inject feature_group_ranges into DeepFM expert config
     if col_ranges and ple_config.expert_basket is not None:

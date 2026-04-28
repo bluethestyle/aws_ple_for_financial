@@ -171,6 +171,24 @@ class FeatureRouter(nn.Module):
 
         # Use pre-registered index buffer for efficient GPU slicing
         idx = getattr(self, f"_idx_{expert_name}")
+        # Defensive check before the GPU op: indices > features.shape[-1]
+        # surface as ``CUDA error: device-side assert triggered`` which
+        # is async, opaque, and only debuggable with
+        # ``CUDA_LAUNCH_BLOCKING=1``. Catch the bad config here instead.
+        # Cause is typically a stale schema produced by Phase 0 with
+        # placeholder output_columns (fixed in commit 2c93b1f) that
+        # leaves feature_group_ranges with an ``end`` past the real
+        # feature width.
+        n_feat = features.shape[-1]
+        max_idx = int(idx.max().item()) if idx.numel() > 0 else -1
+        if max_idx >= n_feat:
+            raise ValueError(
+                f"FeatureRouter: expert '{expert_name}' references column "
+                f"index {max_idx} but the input tensor has only {n_feat} "
+                f"columns. The feature_schema's group_ranges are stale — "
+                f"re-run Phase 0 against the current source tree, or "
+                f"override expert_input_routing to drop the offending group."
+            )
         return features[:, idx]
 
     def get_expert_input_dim(self, expert_name: str) -> int:
