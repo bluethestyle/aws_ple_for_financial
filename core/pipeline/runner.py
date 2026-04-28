@@ -77,6 +77,54 @@ def _longest_contiguous_run(
     return best_start, best_end
 
 
+def _reorder_feature_cols_by_group(
+    feature_cols: List[str],
+    feature_pipeline: Any,
+) -> List[str]:
+    """Reorder ``feature_cols`` so each enabled group's columns are contiguous.
+
+    Without this, transform groups inherit the adapter's raw column
+    ordering — for the santander dataset that scatters demographics'
+    declared inputs (age, income, tenure_months, num_products, is_active)
+    across positions 1, 2, 7, ... mixed with categoricals encoded by
+    Stage 2. Stage 6's ``_rebuild_group_ranges_post_normalization`` then
+    collapses the demographics range to its longest contiguous run
+    ([1, 3) = 2 cols), orphaning the rest from expert routing.
+
+    Strategy:
+      1. For each enabled group (in registry order), gather its
+         declared / generator-emitted output_columns that are present in
+         ``feature_cols``.
+      2. Place those first, in registry order then within-group order.
+      3. Append any remaining feature_cols (passthrough cols not bound
+         to a group) at the tail.
+
+    Returns the reordered list. When ``feature_pipeline`` has no
+    ``_registry`` (e.g. mock unit tests), returns ``feature_cols``
+    unchanged.
+    """
+    registry = getattr(feature_pipeline, "_registry", None)
+    if registry is None or not getattr(registry, "enabled_groups", None):
+        return list(feature_cols)
+
+    available = set(feature_cols)
+    placed: Dict[str, None] = {}  # ordered set
+    for group in registry.enabled_groups:
+        group_cols = list(getattr(group, "output_columns", []) or [])
+        for c in group_cols:
+            if c in available and c not in placed:
+                placed[c] = None
+
+    # Append columns not claimed by any group (passthrough metadata,
+    # auto-encoded categoricals, etc.) in their original relative order
+    # so they remain reproducible.
+    for c in feature_cols:
+        if c not in placed:
+            placed[c] = None
+
+    return list(placed.keys())
+
+
 def _rebuild_group_ranges_post_normalization(
     feature_pipeline: Any,
     feature_cols: List[str],
@@ -1126,6 +1174,19 @@ class PipelineRunner:
                 # match the seq_ prefix (e.g., txn_amount_seq)
                 and "[" not in post3_types.get(c, "")
             ]
+            # Reorder feature_cols so each enabled group's declared
+            # columns sit contiguously in registry order. Without this,
+            # transform groups (e.g. demographics) inherit the adapter's
+            # raw column ordering, which scatters their member cols
+            # across the parquet (gender at idx 0, age at idx 1, but
+            # tenure_months / num_products / is_active at idx 7+) and
+            # collapses Stage 6's range rebuild to a 2-col block.
+            # Stage-6 normalizer's order-preserving fix then carries the
+            # reordered list into the parquet, yielding sequential
+            # group_ranges across all 17 groups.
+            feature_cols = _reorder_feature_cols_by_group(
+                feature_cols, feature_pipeline,
+            )
             train_df = None  # not used on SQL-native path
         else:
             seq_col_set = {
@@ -1140,6 +1201,19 @@ class PipelineRunner:
                 c for c in df.select_dtypes(include=[np.number]).columns
                 if c not in non_feature_cols
             ]
+            # Reorder feature_cols so each enabled group's declared
+            # columns sit contiguously in registry order. Without this,
+            # transform groups (e.g. demographics) inherit the adapter's
+            # raw column ordering, which scatters their member cols
+            # across the parquet (gender at idx 0, age at idx 1, but
+            # tenure_months / num_products / is_active at idx 7+) and
+            # collapses Stage 6's range rebuild to a 2-col block.
+            # Stage-6 normalizer's order-preserving fix then carries the
+            # reordered list into the parquet, yielding sequential
+            # group_ranges across all 17 groups.
+            feature_cols = _reorder_feature_cols_by_group(
+                feature_cols, feature_pipeline,
+            )
             train_df = df.iloc[train_idx]
 
         # Fit normalizer on TRAIN split only, transform ALL data.
