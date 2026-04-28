@@ -55,7 +55,13 @@ feature_groups:
         strategy: clip_and_flag
         clip_min: 0
         clip_max: 256
-    output_dim: 38
+    # 5 numeric (age, income, tenure_months, num_products, is_active)
+    # + 6 categorical (gender, segment, country, channel, age_group,
+    # income_group) — runner Stage 2 collapses each categorical to a
+    # single integer code via DENSE_RANK (LabelEncoder-equivalent), so
+    # the actual output is 11 cols, not the previous 38 that assumed
+    # one-hot expansion.
+    output_dim: 11
     target_experts: [deepfm, mlp, causal, optimal_transport]
     interpretation:
       category: demographics
@@ -183,7 +189,12 @@ feature_groups:
         exclude_columns: [customer_id, has_nba, churn_signal, product_stability]
         exclude_prefix: ["label_"]  # prevent label columns leaking into TDA input
       max_homology_dim: 1
-    output_dim: 36
+    # max_homology_dim=1 means h0 + h1 only (h2 is hard to interpret
+    # in this domain so it's deliberately excluded). Each homology
+    # dim emits 8 stats → 2 × 8 = 16 cols. The previous 36 assumed
+    # max_homology_dim=3 + an extra stats dim that the generator
+    # never produced.
+    output_dim: 16
     target_experts: [perslay]
     interpretation:
       category: domain_topology
@@ -194,7 +205,7 @@ feature_groups:
     distill_weight: 0.5
 
   # -------------------------------------------------------------------------
-  # 6. TDA Local topology (generate) -- 24D
+  # 6. TDA Local topology (generate) -- 16D (h0 + h1 stats)
   #    Individual-level persistent homology from txn sequences.
   #    Short-window (90d) sliding window analysis.
   # -------------------------------------------------------------------------
@@ -209,7 +220,8 @@ feature_groups:
         exclude_columns: [customer_id]
       max_homology_dim: 1
       n_jobs: 1
-    output_dim: 24
+    # h0 + h1 stats (8 each) = 16 cols. h2 deliberately excluded.
+    output_dim: 16
     target_experts: [perslay]
     interpretation:
       category: domain_topology
@@ -220,7 +232,7 @@ feature_groups:
     distill_weight: 0.5
 
   # -------------------------------------------------------------------------
-  # 7. HMM states (generate) -- 48D
+  # 7. HMM states (generate) -- 25D
   #    Product holding state transitions from seq_* columns.
   #    Triple-mode: journey, lifecycle, behavior.
   # -------------------------------------------------------------------------
@@ -231,7 +243,10 @@ feature_groups:
       input_filter:
         include_prefix: ["synth_"]
       modes: [journey, lifecycle, behavior]
-    output_dim: 48
+    # 3 modes × ~8 stats each + 3 state-id cols = 25 cols actual.
+    # Previous 48 was the "ideal" max but the generator emits fewer
+    # per-mode stats than originally planned.
+    output_dim: 25
     target_experts: [temporal_ensemble]
     interpretation:
       category: behavioral_state
@@ -300,7 +315,9 @@ feature_groups:
       embedding_dim: 32
       prefix: product_hierarchy
       entity_column: customer_id
-    output_dim: 32
+    # 32 Poincaré embedding dims + 2 derived stats (depth + one
+    # other geometric summary the graph generator emits) = 34.
+    output_dim: 34
     target_experts: [lightgcn, causal]  # LightGCN for collaborative filtering, not HGCN
     interpretation:
       category: product_structure
@@ -358,7 +375,9 @@ feature_groups:
       use_poincare: false
       prefix: graph_collab
       entity_column: customer_id
-    output_dim: 64
+    # 64 LightGCN embedding dims + 2 stats (degree + one other graph
+    # summary the generator emits alongside the embedding) = 66.
+    output_dim: 66
     target_experts: [lightgcn]
     interpretation:
       category: collaborative
