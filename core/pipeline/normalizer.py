@@ -218,58 +218,73 @@ class FeatureNormalizer:
         Call this on train, val, and test splits separately.  The scaler
         parameters come from the training fit — val/test are *not* re-fit.
 
-        Returns a new DataFrame with column order:
-        ``[scaled_continuous | binary | power_law_log_copies]``
+        Returns a new DataFrame whose column order matches the input
+        ``feature_cols`` order, followed by power-law ``_log`` copies.
+        Preserves the invariant
+            "feature_groups.yaml order = concat order = parquet order
+             = sequential group_ranges"
+        so downstream FeatureRouter slicing stays contiguous per group
+        (see transform_sql() for the full rationale).
         """
         if not self._fitted:
             raise RuntimeError("FeatureNormalizer.transform() called before fit()")
 
-        parts: List[pd.DataFrame] = []
-
-        # --- Scaled continuous columns ---
-        if self.continuous_cols and self._mean is not None:
+        # Pre-compute the scaled continuous block once (vectorised
+        # across all continuous cols), then pull individual columns
+        # out of it as needed below.
+        scaled_lookup: Dict[str, "pd.Series"] = {}
+        if self.continuous_cols and self._mean is not None and self._std is not None:
             xp = _xp()
             raw = df[self.continuous_cols].fillna(0).values.astype(np.float64)
             arr = xp.asarray(raw)
             mean = xp.asarray(self._mean)
             std = xp.asarray(self._std)
             scaled = _to_numpy((arr - mean) / std)
-            cont = pd.DataFrame(
+            scaled_df = pd.DataFrame(
                 scaled,
                 columns=self.continuous_cols,
                 index=df.index,
             )
-            parts.append(cont)
+            scaled_lookup = {c: scaled_df[c] for c in self.continuous_cols}
 
-        # --- Binary columns (pass-through) ---
-        if self.binary_cols:
-            parts.append(df[self.binary_cols].copy())
+        binary_set = set(self.binary_cols)
+        cat_int_set = set(self.categorical_int_cols)
+        prob_set = set(self.probability_cols)
 
-        # --- Categorical integer columns (pass-through, no scaling) ---
-        if self.categorical_int_cols:
-            cat_present = [c for c in self.categorical_int_cols if c in df.columns]
-            if cat_present:
-                parts.append(df[cat_present].copy())
+        # Build the result in input order — emit each col's transformed
+        # value in place rather than concat'ing per-bucket blocks.
+        cols_in_order: List["pd.Series"] = []
+        col_names: List[str] = []
+        for c in feature_cols:
+            if c in scaled_lookup:
+                cols_in_order.append(scaled_lookup[c])
+                col_names.append(c)
+            elif c in binary_set or c in cat_int_set or c in prob_set:
+                if c in df.columns:
+                    cols_in_order.append(df[c])
+                    col_names.append(c)
+            else:
+                # Unknown bucket — pass through (see transform_sql).
+                if c in df.columns:
+                    cols_in_order.append(df[c])
+                    col_names.append(c)
 
-        # --- Probability columns (pass-through, already 0~1) ---
-        if self.probability_cols:
-            prob_present = [c for c in self.probability_cols if c in df.columns]
-            if prob_present:
-                parts.append(df[prob_present].copy())
+        if cols_in_order:
+            result = pd.concat(cols_in_order, axis=1)
+            result.columns = col_names
+        else:
+            result = pd.DataFrame(index=df.index)
 
-        # --- Power-law log copies (log1p, NOT scaled) ---
+        # Power-law log copies are NEW columns appended at the tail —
+        # additions outside the original feature_cols, so they don't
+        # disturb the order invariant.
         if self.power_law_cols:
             log_df = pd.DataFrame(index=df.index)
             for col in self.power_law_cols:
                 log_df[f"{col}_log"] = np.log1p(
                     df[col].fillna(0).clip(lower=0)
                 )
-            parts.append(log_df)
-
-        if parts:
-            result = pd.concat(parts, axis=1)
-        else:
-            result = pd.DataFrame(index=df.index)
+            result = pd.concat([result, log_df], axis=1)
 
         return result
 
@@ -496,33 +511,64 @@ class FeatureNormalizer:
         feature_cols = [c for c in feature_cols if c]
         proj: List[str] = []
 
-        # Scaled continuous: (col - mean) / std
-        # CAST source to DOUBLE so DECIMAL(P,S) source columns don't
-        # constrain the output domain. Without this, a DECIMAL(18,17)
-        # source can't hold any standardised value outside ±9.99…
-        # (one integer digit only) and DuckDB raises ConversionException
-        # for any normalised magnitude that escapes that range.
-        if self.continuous_cols and self._mean is not None and self._std is not None:
-            for i, c in enumerate(self.continuous_cols):
+        # Look up which bucket each column belongs to — these four sets
+        # are mutually exclusive and together cover every column in
+        # ``feature_cols`` (see fit_sql: continuous_cols is computed as
+        # feature_cols MINUS the union of the other three).
+        cont_idx = {c: i for i, c in enumerate(self.continuous_cols)}
+        binary_set = set(self.binary_cols)
+        cat_int_set = set(self.categorical_int_cols)
+        prob_set = set(self.probability_cols)
+
+        have_cont_stats = (
+            self._mean is not None and self._std is not None
+        )
+
+        # Iterate ``feature_cols`` in input order so the OUTPUT table's
+        # column order matches the Stage-3 concatenation order. The
+        # earlier implementation emitted continuous → binary →
+        # categorical_int → probability blocks regardless of input
+        # order, which broke the invariant
+        #   "feature_groups.yaml order = concat order = parquet order
+        #    = sequential group_ranges"
+        # and forced Stage 6 to call _rebuild_group_ranges_post_normalization,
+        # which then degraded to ``longest contiguous block`` for any
+        # group that mixed binary + continuous cols (e.g. demographics:
+        # gender / is_active ended up at idx 503-504 while the rest sat
+        # at idx 1-9). Preserving order eliminates the orphan-cols
+        # problem at the source.
+        #
+        # CAST sources to DOUBLE either way so DECIMAL(P,S) inputs
+        # don't constrain the output domain (a DECIMAL(18,17) source
+        # can't hold any standardised value outside ±9.99…) and
+        # Stage 9 features.parquet stays an even-typed numeric matrix.
+        for c in feature_cols:
+            if c in cont_idx and have_cont_stats:
+                i = cont_idx[c]
                 m = float(self._mean[i])
                 s = float(self._std[i])
                 proj.append(
                     f'(CAST(COALESCE("{c}", 0) AS DOUBLE) - {repr(m)}) '
                     f'/ {repr(s)} AS "{c}"'
                 )
+            elif c in binary_set or c in cat_int_set or c in prob_set:
+                proj.append(f'CAST("{c}" AS DOUBLE) AS "{c}"')
+            else:
+                # Should not reach here because the fit-time bucketing
+                # is exhaustive, but pass through unchanged so a
+                # mismatch surfaces as data, not a missing column.
+                logger.warning(
+                    "FeatureNormalizer.transform_sql: column %r is in "
+                    "feature_cols but not in any normalizer bucket — "
+                    "passing through untransformed", c,
+                )
+                proj.append(f'CAST("{c}" AS DOUBLE) AS "{c}"')
 
-        # Pass-through: binary / categorical_int / probability
-        # CAST these to DOUBLE too — Stage 9 features.parquet is meant
-        # to be an even-typed numeric matrix the trainer can torch-tensor
-        # without per-column dtype handling.
-        for c in self.binary_cols:
-            proj.append(f'CAST("{c}" AS DOUBLE) AS "{c}"')
-        for c in self.categorical_int_cols:
-            proj.append(f'CAST("{c}" AS DOUBLE) AS "{c}"')
-        for c in self.probability_cols:
-            proj.append(f'CAST("{c}" AS DOUBLE) AS "{c}"')
-
-        # Power-law log copies (LN(x+1) on clipped values; left unscaled)
+        # Power-law log copies are NEW columns (not present in input),
+        # so appending them at the tail does not break the order
+        # invariant — they're additions, not relocations. Stage 6's
+        # rebuild already attaches each ``{col}_log`` to its parent
+        # group via the ``log_cols_created`` parameter.
         for c in self.power_law_cols:
             proj.append(
                 f'LN(GREATEST(CAST(COALESCE("{c}", 0) AS DOUBLE), 0) + 1) '
@@ -530,6 +576,8 @@ class FeatureNormalizer:
             )
 
         # Caller-requested pass-through (ids, label cols, LIST cols)
+        # — also additions outside the feature matrix proper, so the
+        # tail position is fine.
         if extra_pass_through:
             seen = {p.split(' AS ')[-1].strip(' "') for p in proj}
             for c in extra_pass_through:
