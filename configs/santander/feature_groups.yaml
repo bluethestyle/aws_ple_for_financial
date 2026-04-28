@@ -249,14 +249,16 @@ feature_groups:
   #    Selective state-space model on transaction sequences.
   # -------------------------------------------------------------------------
   - name: mamba_temporal
-    # Disabled in the CPU Phase 0 — the pure-torch SSM scan fallback
-    # took 60 min on ml.m5.2xlarge (2026-04-26 benchmark) which is
-    # 80 % of the entire Phase 0 wall time. Mamba is now produced by a
-    # separate GPU SageMaker job (see scripts/precompute_mamba.py)
-    # that writes its 50D embedding to S3; the CPU Phase 0 picks the
-    # cached parquet up via ``cached_embedding_uri`` (when set) instead
-    # of fitting from scratch. Re-enable when a GPU host runs Phase 0.
-    enabled: false
+    # Mamba is produced by a separate GPU SageMaker job (see
+    # ``submit_pipeline.py --mamba-precompute``) and the embedding
+    # parquet is baked into S3 at ``cached_embedding_uri``. The CPU
+    # Phase 0 picks it up via DuckDB JOIN on ``entity_column``,
+    # skipping the pure-torch SSM fallback that previously took
+    # 60 min on ml.m5.2xlarge.
+    # Re-run the GPU job when input features change or the model
+    # weights drift; the cached parquet at the URI below was produced
+    # by job santander-ple-mamba-0428-0859 (2026-04-28).
+    enabled: true
     group_type: generate
     generator: mamba
     generator_params:
@@ -268,7 +270,7 @@ feature_groups:
       prefer_gpu: true
       entity_column: customer_id
       base_batch_size: 256
-      # cached_embedding_uri: s3://aiops-ple-financial/santander_ple/mamba/<ts>/embedding.parquet
+      cached_embedding_uri: s3://aiops-ple-financial/santander_ple/mamba/embedding.parquet
     output_dim: 50
     target_experts: [temporal_ensemble]
     interpretation:
