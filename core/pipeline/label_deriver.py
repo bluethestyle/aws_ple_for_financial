@@ -12,6 +12,8 @@ Supported derivation types
 * **bucket**               — bin a numeric column using explicit boundaries
 * **string_map**           — map string values to integers via a dict
 * **list_first**           — first element of a list column
+* **list_first_group**     — first element of a list column mapped to a group
+  class via a config-driven ``group_map`` (e.g. nba_primary product groups)
 * **list_length**          — length of a list column
 * **list_intersect**       — 1 if any of ``indices`` appear in a list column
   (alias: ``nba_group_check``)
@@ -146,6 +148,60 @@ def _derive_list_first(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
     def _extract(x):
         if isinstance(x, (list, np.ndarray)) and len(x) > 0:
             return int(x[0])
+        return default
+
+    return df[col].apply(_extract)
+
+
+def _build_index_to_class_map(group_map: Dict[Any, Sequence[int]]) -> Dict[int, int]:
+    """Invert a ``{class -> [indices]}`` dict into ``{index -> class}``.
+
+    Class keys may arrive as strings (YAML ``"1": [0, 1]``) or as ints
+    (``1: [0, 1]``); both are normalised to ``int``. Index values are
+    coerced to ``int`` and de-duplicated; later entries silently win on
+    conflict so the operator can override individual indices via a
+    secondary mapping if needed.
+    """
+    out: Dict[int, int] = {}
+    for cls_raw, indices in (group_map or {}).items():
+        try:
+            cls = int(cls_raw)
+        except (TypeError, ValueError):
+            continue
+        for idx in indices or ():
+            try:
+                out[int(idx)] = cls
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _derive_list_first_group(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.Series:
+    """First element of a list column, mapped to a group class.
+
+    Used for tasks like ``nba_primary`` where the model predicts which
+    product GROUP (e.g. deposits, investments) the first recommended
+    product belongs to.
+
+    Config keys:
+        source (str): column containing lists of integer indices
+        default (int): fallback class when list is empty/missing or the
+            first index is not present in ``group_map``
+        group_map (dict[int, list[int]]): ``{class_id: [member_indices]}``
+    """
+    col = cfg["source"]
+    default = int(cfg.get("default", 0))
+    idx_to_class = _build_index_to_class_map(cfg.get("group_map") or {})
+    if col not in df.columns:
+        return pd.Series(default, index=df.index)
+
+    def _extract(x):
+        if isinstance(x, (list, np.ndarray)) and len(x) > 0:
+            try:
+                first = int(x[0])
+            except (TypeError, ValueError):
+                return default
+            return idx_to_class.get(first, default)
         return default
 
     return df[col].apply(_extract)
@@ -429,6 +485,47 @@ def _derive_list_first_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series
     return con.execute(sql).df()["result"]
 
 
+def _derive_list_first_group_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series:
+    """First-element-to-group mapping via DuckDB CASE WHEN.
+
+    Mirrors the pandas implementation but compiles the ``group_map`` into
+    a single ``CASE WHEN col[1] IN (...) THEN cls`` pyramid so the entire
+    column is materialised in one SQL pass instead of a row-wise apply.
+    """
+    col = cfg["source"]
+    default = int(cfg.get("default", 0))
+    idx_to_class = _build_index_to_class_map(cfg.get("group_map") or {})
+
+    if not idx_to_class:
+        # Degenerate config: behave like list_first capped at ``default``.
+        sql = f"""
+            SELECT CASE WHEN "{col}" IS NOT NULL AND len("{col}") > 0
+                        THEN {default}
+                        ELSE {default} END::INTEGER AS result
+            FROM {table}
+        """
+        return con.execute(sql).df()["result"]
+
+    # Group indices by class so the SQL emits one IN-list per class.
+    cls_to_indices: Dict[int, List[int]] = {}
+    for idx, cls in idx_to_class.items():
+        cls_to_indices.setdefault(cls, []).append(idx)
+
+    when_clauses = " ".join(
+        f"WHEN \"{col}\"[1]::INTEGER IN ({', '.join(str(i) for i in sorted(idxs))}) THEN {cls}"
+        for cls, idxs in sorted(cls_to_indices.items())
+    )
+    sql = f"""
+        SELECT CASE
+            WHEN "{col}" IS NULL OR len("{col}") = 0 THEN {default}
+            {when_clauses}
+            ELSE {default}
+        END::INTEGER AS result
+        FROM {table}
+    """
+    return con.execute(sql).df()["result"]
+
+
 def _derive_list_length_duckdb(con, table: str, cfg: Dict[str, Any]) -> pd.Series:
     """Length of a list column via DuckDB len()."""
     col = cfg["source"]
@@ -599,6 +696,7 @@ _DUCKDB_DERIVE_METHODS = {
     "bucket": _derive_bucket_duckdb,
     "string_map": _derive_string_map_duckdb,
     "list_first": _derive_list_first_duckdb,
+    "list_first_group": _derive_list_first_group_duckdb,
     "list_length": _derive_list_length_duckdb,
     "list_intersect": _derive_list_intersect_duckdb,
     "weighted_sum": _derive_weighted_sum_duckdb,
@@ -623,6 +721,7 @@ _DERIVE_METHODS = {
     "bucket": _derive_bucket,
     "string_map": _derive_string_map,
     "list_first": _derive_list_first,
+    "list_first_group": _derive_list_first_group,
     "list_length": _derive_list_length,
     "list_intersect": _derive_list_intersect,
     "weighted_sum": _derive_weighted_sum,

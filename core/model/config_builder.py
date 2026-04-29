@@ -322,9 +322,23 @@ def build_ple_config(
 
     # Task overrides (type + output_dim + loss)
     for t in tasks:
+        task_type = t.get("type", "binary")
+        # Architectural convention: tower output_dim is determined by task
+        # type, NOT by the raw num_classes the schema reports. Binary uses
+        # a single sigmoid logit (output_dim=1); regression uses a single
+        # scalar (output_dim=1); multiclass uses N logits (output_dim=N).
+        # This keeps the model robust to upstream label_schema bugs that
+        # leak label cardinality (e.g. nunique==2 for binary {0,1}) into
+        # num_classes.
+        if task_type == "multiclass":
+            output_dim = int(t.get("num_classes", 1))
+            if output_dim < 2:
+                output_dim = 2
+        else:
+            output_dim = 1
         task_override = {
-            "task_type": t.get("type", "binary"),
-            "output_dim": t.get("num_classes", 1),
+            "task_type": task_type,
+            "output_dim": output_dim,
         }
         if "loss" in t:
             task_override["loss"] = t["loss"]

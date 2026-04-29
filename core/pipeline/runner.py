@@ -1048,8 +1048,23 @@ class PipelineRunner:
             }
             if task.label_col in labels_df.columns:
                 col_data = labels_df[task.label_col]
-                if task.type in ("binary", "multiclass"):
-                    task_info["num_classes"] = int(col_data.nunique())
+                if task.type == "multiclass":
+                    # Use config-declared num_classes when available (covers
+                    # missing classes in train split); fall back to nunique().
+                    declared = int(getattr(task, "num_classes", 0) or 0)
+                    observed = int(col_data.nunique())
+                    task_info["num_classes"] = max(declared, observed)
+                    task_info["class_distribution"] = {
+                        str(k): int(v)
+                        for k, v in col_data.value_counts().to_dict().items()
+                    }
+                elif task.type == "binary":
+                    # Binary tasks use a single sigmoid logit: output_dim=1.
+                    # The label inspection (nunique == 2 for {0,1}) MUST NOT
+                    # leak into num_classes because config_builder maps it to
+                    # tower output_dim, producing a [N, 2] head that breaks
+                    # BCEWithLogitsLoss against [N] targets.
+                    task_info["num_classes"] = 1
                     task_info["class_distribution"] = {
                         str(k): int(v)
                         for k, v in col_data.value_counts().to_dict().items()

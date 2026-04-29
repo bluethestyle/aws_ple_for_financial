@@ -304,10 +304,20 @@ labels:
     source: product_stability
     type: direct
   # Tier 1 derived: nba_primary (7-class product groups, 0=no_nba)
+  # group_map mirrors generate_benchmark_data._NBA_GROUP_MAP — the same
+  # 24 product index → 6 group assignment used at data-generation time, so
+  # the derived label is consistent with the synthesised nba_label lists.
   label_nba_primary:
     source: nba_label
     type: list_first_group
     default: 0
+    group_map:
+      1: [0, 1]                                 # savings_guarantee
+      2: [2, 3, 4, 5, 6, 7, 19, 20]             # checking_accounts
+      3: [8, 9, 10, 11]                         # deposits
+      4: [12, 13, 14]                           # investments
+      5: [15, 16, 17, 18]                       # credit_loans
+      6: [21, 22, 23]                           # debits
 
   # Tier 2: derived from profile/synth columns
   # REMOVED: deterministic leakage — tenure_months is a model input; bucket is reconstructable.
