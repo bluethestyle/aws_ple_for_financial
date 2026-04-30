@@ -624,7 +624,7 @@
         "validate_after_split": true
       }
     },
-    "source": "data/benchmark/benchmark_v2.parquet",
+    "source": "data/benchmark/benchmark_v12.parquet",
     "s3_path": "s3://YOUR_S3_BUCKET/data/santander/",
     "id_col": "customer_id",
     "total_rows": 941132,
