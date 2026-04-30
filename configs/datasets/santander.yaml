@@ -26,10 +26,11 @@ dataset:
   name: santander
   description: >
     Santander Customer Transactions benchmark.
-    941,132 users, 89 raw columns, 13 tasks, 7 shared experts.
+    1,000,000 users (17 monthly snapshots, ~58.8K rows each, uniform
+    distribution), 403 raw columns, 13 tasks, 7 shared experts.
     Pre-aggregated user-level synthetic dataset with product holdings,
     transaction sequences, and demographic attributes.
-  total_rows: 941132
+  total_rows: 1000000
   feature_groups_file: configs/santander/feature_groups.yaml
 
 task_name: santander_ple
@@ -467,7 +468,7 @@ data:
   source: data/benchmark/benchmark_v12.parquet
   s3_path: s3://YOUR_S3_BUCKET/data/santander/
   id_col: customer_id
-  total_rows: 941132
+  total_rows: 1000000
   train_split: 0.7
   val_split: 0.15
 

@@ -629,12 +629,18 @@ cold_start:
 # Data
 # ---------------------------------------------------------------------------
 data:
-  source: s3://aiops-ple-financial/data/santander/santander_final_v2.parquet  # v2 adds synthetic txn_day_offset_seq (2026-04-26)
-  s3_path: s3://aiops-ple-financial/data/santander/
+  # 17 monthly snapshots (2015-01-28 .. 2016-05-28) at ~58.8K rows each = 1M rows.
+  # The earlier ``santander/santander_final_v2.parquet`` had 98% of rows on
+  # the 2016-05-28 snapshot, which collapsed temporal_split's QUANTILE_CONT
+  # cuts into a single bucket (train=18K / val=0 / test=923K). This file is
+  # the synthetic 1M-customer dataset already used for Phase 0 v12 + paper3
+  # ablations and carries every seq_/txn_/nba_label column the runner needs.
+  source: s3://aiops-ple-financial/data/phase0_v12/santander_final.parquet
+  s3_path: s3://aiops-ple-financial/data/phase0_v12/
   id_col: customer_id
   backend: [cudf, duckdb, pandas]
   format: parquet
-  total_rows: 941132
+  total_rows: 1000000
   train_split: 0.7
   val_split: 0.15
 
