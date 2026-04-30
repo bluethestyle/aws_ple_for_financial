@@ -242,7 +242,7 @@
 
 #warn[설계 vs 구현 참고][
   본 문서는 풀뱅크 설계(734D)를 기준으로 작성되었습니다.
-  현재 Santander 벤치마크 구현은 ~349D 입력 / Phase 0 후 403D (13 feature groups)입니다.
+  현재 Santander 벤치마크 구현은 1205D 입력 (17 feature groups, 2026-04-28)입니다. Expert별 라우팅 차원은 feature_schema.json에서 확인하세요. 본문의 734D 수치는 풀뱅크 설계 기준입니다.
 ]
 
 
@@ -359,7 +359,7 @@ PLE가 해결하는 문제:
   ]
 ]
 
-본 PLE-Cluster-adaTT 구현에서는 8개 이종 Shared Expert에 대해 *CGCAttention* (블록 스케일링)을 사용한다. Transformer Attention과 유사하게 *Query*(gate weight), *Key*(shared representation), *Value*(Expert output)의 관계로 "관련성에 비례하여 정보를 선택적으로 결합"한다.
+본 PLE-Cluster-adaTT 구현에서는 7개 이종 Shared Expert에 대해 *CGCAttention* (블록 스케일링)을 사용한다. Transformer Attention과 유사하게 *Query*(gate weight), *Key*(shared representation), *Value*(Expert output)의 관계로 "관련성에 비례하여 정보를 선택적으로 결합"한다.
 
 === 초기 Bias 설정 (domain_experts)
 
@@ -392,25 +392,24 @@ $ "scale"_i = sqrt("mean\_dim" / "dim"_i), quad "mean\_dim" = (128 + 64 times 7)
 == 2.1 Pool/Basket 패턴
 
 본 시스템은 PLE의 동일 구조 Expert 대신
-*8개 이종 도메인 Expert*를 Shared Expert Pool로 결합한다.
+*7개 이종 도메인 Expert*를 Shared Expert Pool로 결합한다.
 각 Expert는 입력 데이터를 전혀 다른 수학적 관점으로 해석하며,
 CGC Gate가 태스크별 최적 조합을 학습한다.
 
 *FeatureRouter 활성화 (현재 구현):* `feature_groups.yaml`의 `target_experts` 선언에 따라
-`FeatureRouter`가 각 Expert에게 전체 ~349D 중 해당 Expert에 지정된 피처 서브셋만을 슬라이싱하여 전달한다.
+`FeatureRouter`가 각 Expert에게 전체 1205D (17 feature groups) 중 해당 Expert에 지정된 피처 서브셋만을 슬라이싱하여 전달한다.
 이로 인해 각 Expert의 입력 차원은 서로 다르며(이종 입력), 출력은 64D로 균일하게 정렬된다.
-모델 파라미터는 4.77M → ~2.8M으로 감소하였다.
 
 #styled-table(
   (1.3fr, 1.0fr, 0.6fr, 2.3fr),
-  [*Expert*], [*라우팅 입력 (~349D 서브셋)*], [*출력*], [*역할 및 대체 불가능성*],
-  [DeepFM], [109D], [64D], [FM의 $O(n k)$ 2차 교차를 명시적으로 포착],
-  [LightGCN], [66D], [64D], [이분 그래프 기반 "비슷한 고객" 협업 신호],
-  [Unified HGCN], [27D (merchant\_hierarchy, MCC 계층)], [128D], [Poincaré 임베딩으로 쌍곡 공간에서 MCC 계층 구조 인코딩],
-  [Temporal], [129D (시퀀스)], [64D], [Mamba+LNN+Transformer 시간 패턴 앙상블],
-  [PersLay], [32D], [64D], [소비 패턴의 위상적 구조(루프, 클러스터)],
-  [Causal], [161D], [64D], [SCM/NOTEARS 기반 방향성 인과 관계 추출],
-  [Optimal Transport], [127D], [64D], [Sinkhorn Wasserstein 분포 기하학],
+  [*Expert*], [*라우팅 입력 (1205D 서브셋)*], [*출력*], [*역할 및 대체 불가능성*],
+  [DeepFM], [977D (State + lag\_tensor 800D + rolling\_stats 20D + multihot 55D)], [64D], [FM의 $O(n k)$ 2차 교차를 명시적으로 포착],
+  [LightGCN], [955D (product\_hier 34D + graph\_collab 66D + lag\_tensor 800D + multihot 55D)], [64D], [이분 그래프 기반 "비슷한 고객" 협업 신호],
+  [Unified HGCN], [58D (merchant\_hier 27D + mcc\_top30\_mh 31D)], [128D], [Poincaré 임베딩으로 쌍곡 공간에서 MCC 계층 구조 인코딩],
+  [Temporal], [116D (txn\_behavior 14D + hmm\_states 25D + mamba 50D + model\_derived 27D)], [64D], [Mamba+LNN+Transformer 시간 패턴 앙상블],
+  [PersLay], [32D (tda\_global 16D + tda\_local 16D)], [64D], [소비 패턴의 위상적 구조(루프, 클러스터)],
+  [Causal], [129D (demographics 11D + holdings 24D + txn 14D + derived 4D + prod\_hier 34D + gmm 22D + rolling 20D)], [64D], [SCM/NOTEARS 기반 방향성 인과 관계 추출],
+  [Optimal Transport], [95D (demographics 11D + holdings 24D + txn 14D + derived 4D + gmm 22D + rolling 20D)], [64D], [Sinkhorn Wasserstein 분포 기하학],
   [RawScale], [원시 멱법칙 서브셋], [64D], [정규화 전 멱법칙 분포 정보 보존],
 )
 
@@ -428,20 +427,20 @@ $ bold(h)_"shared" = ["unified\_hgcn"_(128"D") || "perslay"_(64"D") || "deepfm"_
 
 8개 Expert는 동일 고객 데이터의 *근본적으로 다른 수학 구조*를 추출한다:
 
-- *DeepFM (109D)*: 피처 상호작용 중심 서브셋 — 대칭 교차(FM) 구조 포착
-- *Causal (161D)*: 인과 구조 관련 서브셋 — 비대칭 인과(DAG) 방향성 추출
-- *Optimal Transport (127D)*: 분포 비교 서브셋 — Wasserstein 분포 거리 포착
-- *Temporal (129D)*: 시계열 서브셋 — 시간적 동역학 ($[B, 180, 16]$, $[B, 90, 8]$)
+- *DeepFM (977D)*: 피처 상호작용 중심 서브셋 — 대칭 교차(FM) 구조 포착 (lag\_tensor 포함)
+- *Causal (129D)*: 인과 구조 관련 서브셋 — 비대칭 인과(DAG) 방향성 추출
+- *Optimal Transport (95D)*: 분포 비교 서브셋 — Wasserstein 분포 거리 포착
+- *Temporal (116D)*: 시계열 서브셋 — 시간적 동역학 (Mamba 50D 포함)
 - *PersLay (32D)*: TDA 서브셋 — 위상적 불변량 (Betti number, persistence)
-- *Unified HGCN (27D, merchant\_hierarchy)*: 계층/그래프 서브셋 — 쌍곡 기하학에서의 MCC 계층 관계 (product\_hierarchy 아님)
-- *LightGCN (66D)*: 그래프 서브셋 — 고객-가맹점 그래프의 협업 필터링 신호; 제품 co-holding 협업 필터링도 이분 그래프로 처리
+- *Unified HGCN (58D, merchant\_hierarchy + mcc\_top30\_multihot)*: 계층/그래프 서브셋 — 쌍곡 기하학에서의 MCC 계층 관계
+- *LightGCN (955D)*: 그래프 서브셋 — 고객-가맹점 그래프의 협업 필터링 신호; lag\_tensor 포함
 - *RawScale*: 정규화 시 손실되는 원시 스케일/멱법칙 분포 패턴
 
 == 2.3 Expert 라우팅 (FeatureRouter)
 
 각 Expert는 config의 `shared_experts` 섹션에서 활성화되며,
 `feature_groups.yaml`의 `target_experts` 선언으로부터 `FeatureRouter`가 빌드된다.
-`FeatureRouter`는 전체 ~349D 입력 텐서에서 Expert별 지정 인덱스를 슬라이싱하여 전달하며,
+`FeatureRouter`는 전체 1205D 입력 텐서에서 Expert별 지정 인덱스를 슬라이싱하여 전달하며,
 입력 데이터가 `None`인 경우 *zero tensor fallback*을 수행하고
 CGC 게이팅이 해당 Expert의 가중치를 자동으로 낮춘다.
 

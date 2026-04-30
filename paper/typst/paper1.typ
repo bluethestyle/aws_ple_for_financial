@@ -141,7 +141,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Heterogeneous Shared Expert Basket with Structural Collapse Guarantee*: We replace PLE's homogeneous MLP experts with seven architecturally distinct experts (DeepFM, Temporal Ensemble, HGCN, PersLay, Causal, LightGCN, Optimal Transport). Unlike prior "heterogeneous" MoE work that varies expert _size_ @mowst2024 or _modality_ @jamba2024, we vary the fundamental _inductive bias_, providing a structural guarantee against expert collapse --- a persistent failure mode in homogeneous MoE/PLE deployments @home2024.
 
-+ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via expert routing declarations at the feature group level), not the full 349D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 27D--168D), reducing model parameters from 4.77M to ~2.8M while strengthening each expert's specialization.
++ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via expert routing declarations at the feature group level), not the full 1211D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 32D--977D), reducing model parameters substantially (V1 baseline at 349D schema: 2.70M measured; V2 1211D parameter count to be reported at V2 re-measurement following the lag-tensor / multihot generator additions) while strengthening each expert's specialization.
 
 + *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), Customized Gate Control (CGC) gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
 
@@ -341,7 +341,7 @@ each requiring a different mathematical tool to extract meaningful signals:
 *The cross-product* of these two axes defines the architecture:
 each (DNA $times$ Modality) cell determines which expert processes which features
 for which task group.
-The 7 heterogeneous experts, 12 feature groups, and 4 task groups
+The 7 heterogeneous experts, 17 feature groups, and 4 task groups
 are not arbitrary design choices but necessary consequences of this two-axis decomposition.
 A homogeneous MLP expert basket ignores Axis 2 entirely ---
 it treats hierarchical, temporal, and topological data identically ---
@@ -473,10 +473,10 @@ The complete data-axis-to-expert-to-feature-generator mapping is shown in @tab:m
       node-corner-radius: 3pt,
 
       // === Row 0: Input ===
-      node((3, 0), [*Input* \ 349D total], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
+      node((3, 0), [*Input* \ 1211D total], shape: fletcher.shapes.pill, width: 28mm, fill: gray-fill, name: <input>),
 
       // === Row 1: Feature Groups ===
-      node((3, 1), [*12 Feature Groups*], width: 32mm, fill: gray-fill, name: <fg>),
+      node((3, 1), [*17 Feature Groups*], width: 32mm, fill: gray-fill, name: <fg>),
 
       // === Row 2: Feature Router ===
       node((3, 2.5), [*Feature Router*], shape: fletcher.shapes.diamond, width: 26mm, height: 10mm, fill: accent-light, name: <router>),
@@ -666,8 +666,7 @@ For example, HGCN embeds the MCC merchant category hierarchy in 27 hyperbolic di
 achieving in $O(d)$ parameters what Euclidean embeddings require $O(2^d)$ dimensions to represent
 without distortion @chami2019.
 
-The total parameter count across all seven experts is *~2.8M*,
-reduced from the 4.77M baseline
+The total parameter count across all seven shared experts is *2.70M* at the V1 349-feature schema (measured); V2 with the 1211-feature schema (lag tensor 800D + rolling stats 20D + multihot 24D+31D) will be reported at re-measurement,
 by replacing broad shared inputs with expert-specific subsets via FeatureRouter.
 The diversity of learned representations is fundamentally richer
 despite the smaller parameter budget.
@@ -694,18 +693,18 @@ The resulting per-expert input dimensions are summarized in @tab:feature-router:
     align: left,
     stroke: 0.5pt,
     [*Expert*], [*Input Dim*], [*Feature Groups Routed*],
-    [DeepFM], [168D], [#list(tight: true, [demographics], [products], [txn_behavior], [derived_temporal], [gmm], [model_derived])],
-    [Temporal Ensemble], [139D], [#list(tight: true, [txn_behavior], [hmm], [mamba], [model_derived])],
-    [HGCN], [27D], [merchant_hierarchy (MCC Poincaré embeddings)],
+    [DeepFM], [977D], [#list(tight: true, [demographics], [products], [txn_behavior], [derived_temporal], [gmm], [model_derived], [txn_lag_tensor], [txn_rolling_stats], [nba_label_multihot], [mcc_top30_multihot])],
+    [Temporal Ensemble], [116D], [#list(tight: true, [txn_behavior], [hmm], [mamba], [model_derived])],
+    [HGCN], [58D], [merchant_hierarchy, mcc_top30_multihot],
     [PersLay], [32D], [tda_global, tda_local],
-    [Causal], [161D], [#list(tight: true, [demographics], [products], [txn], [derived_temporal], [product_hierarchy], [gmm])],
-    [LightGCN], [100D], [product_hierarchy, graph_collaborative],
-    [Optimal Transport], [127D], [#list(tight: true, [demographics], [products], [txn], [derived_temporal], [gmm])],
+    [Causal], [129D], [#list(tight: true, [demographics], [products], [txn_behavior], [derived_temporal], [product_hierarchy], [gmm], [txn_rolling_stats])],
+    [LightGCN], [955D], [#list(tight: true, [product_hierarchy], [graph_collaborative], [txn_lag_tensor], [nba_label_multihot], [mcc_top30_multihot])],
+    [Optimal Transport], [95D], [#list(tight: true, [demographics], [products], [txn_behavior], [derived_temporal], [gmm], [txn_rolling_stats])],
   ),
-  caption: [Per-expert input dimensions after FeatureRouter. Total feature space: 349D (Phase 0 v3/v4).],
+  caption: [Per-expert input dimensions after FeatureRouter for the seven shared experts. Total feature space: 1211D (Phase 0 v3/v4, 17 groups). The per-task MLP tower (57D over demographics + products + gmm) is excluded from this shared-expert table.],
 ) <tab:feature-router>
 
-The sum of per-expert dimensions (754D) exceeds 349D because several feature groups
+The sum of per-expert dimensions (2419D) exceeds 1211D because several feature groups
 are shared across multiple experts where complementary inductive biases
 benefit from the same signal (e.g., state features are useful to both DeepFM
 for interaction modeling and Causal for DAG structure inference).
@@ -810,9 +809,9 @@ that each extract a structurally different signal from the same underlying data 
   caption: [Multi-disciplinary feature engineering across 11 academic disciplines.],
 ) <tab:multidisciplinary>
 
-#text(size: 8.5pt, fill: gray)[_Note_: Phase 0 v3/v4 produces 349 total features (up from 316 in earlier versions).
-    FeatureRouter routes feature subsets to each expert (per-expert dims from Phase 0 v3: DeepFM 168D, Temporal 139D,
-    HGCN 27D, PersLay 32D, Causal 161D, LightGCN 100D, OT 127D); model parameters: ~2.8M.
+#text(size: 8.5pt, fill: gray)[_Note_: Phase 0 v3/v4 produces 1211 total features across 17 groups (up from 349 in earlier versions).
+    FeatureRouter routes feature subsets to each shared expert (per-expert dims: DeepFM 977D, Temporal 116D,
+    HGCN 58D, PersLay 32D, Causal 129D, LightGCN 955D, OT 95D); model parameters: 2.70M (V1, 349D schema, measured); V2 1211D figure pending re-measurement.
     Expert routing is built from `feature_groups.yaml` `target_experts` declarations (group-level),
     ensuring each expert receives only its designated feature groups.]
 
@@ -1079,7 +1078,7 @@ The ablation validates whether each expert provides a distinct "why" for differe
 confirming that heterogeneous experts are not merely a performance trick
 but a structural requirement for multi-faceted persuasion.
 
-- *Data*: 1M customers, 349 features (Phase 0 from benchmark\_v12), 13 tasks.
+- *Data*: 1M customers, 1211 features (Phase 0 from benchmark\_v12, 17 groups), 13 tasks.
 - *Hardware*: NVIDIA RTX 4070 (12GB VRAM, 64GB RAM) local.
 - *Training*: 10 epochs, batch 5632, lr 0.0005, AMP (FP16), warmup 3 epochs (cosine annealing), no early stopping. adaTT scenarios use warmup=3 epochs, grad\_interval=10. GradSurgery scenarios use warmup=2 epochs, conflict\_threshold=0.0.
 - *Loss weighting*: Uncertainty weighting (Kendall et al.) with per-task loss weights applied on top of learned precision --- matching the on-premise reference formula.

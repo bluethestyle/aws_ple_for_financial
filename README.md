@@ -27,7 +27,7 @@
 | **Why it matters** | Expert gate weights *are* the explanation -- "35% spending trend + 28% product fit" |
 | **Regulation** | Korean FSS AI RMF, EU AI Act, Korean AI Basic Act compliance built-in |
 | **Serving** | Distilled to LGBM, runs on Lambda -- no GPU server needed |
-| **Scale** | 1M customers, 349 features, 5-agent architecture (3 serving + 2 ops/audit) |
+| **Scale** | 1M customers, 1211 features (17 groups), 5-agent architecture (3 serving + 2 ops/audit) |
 | **Team** | Built by 3 people with AI-augmented development (Claude Code) |
 
 ## Quick Overview
@@ -36,8 +36,8 @@
 Customer Data (bank/card transactions)
     |
     v
-[Phase 0] 10 Feature Generators (11 scientific disciplines, 349D)
-    |       TDA, Hyperbolic GCN, Mamba, HMM, Chemical Kinetics, SIR, ...
+[Phase 0] 11 generator types referenced in santander config (14 generator implementations available in core/feature/generators/) → 17 feature groups, 1211D
+    |       TDA, Hyperbolic GCN, Mamba, HMM, LagExtractor, RollingStats, TopN MultiHot, ...
     v
 [Phase 1-3] PLE + 7 Heterogeneous Experts + 13 Tasks
     |         DeepFM | Temporal | HGCN | PersLay | LightGCN | Causal | OT
@@ -71,7 +71,7 @@ Customer Data (bank/card transactions)
 |-------|-----------|
 | Data Processing | DuckDB (sole backend, 240+ files on-prem), cuDF, PyArrow — [pandas-free pipeline](docs/duckdb-case-study.md) |
 | Training | PyTorch, SageMaker Spot |
-| Feature Engineering | 10 GPU-accelerated generators |
+| Feature Engineering | 11 feature generators (GPU-accelerated where applicable) |
 | Serving | AWS Lambda (serverless, no GPU) |
 | Distillation | LightGBM per-task students |
 | Reason Generation | LLM agents with Safety Gate |
@@ -111,7 +111,7 @@ PYTHONPATH=. python scripts/run_local_ablation.py
 ```
 core/model/ple/          PLE architecture, CGC gate, adaTT
 core/model/experts/      7 expert implementations
-core/feature/generators/ 10 feature generators
+core/feature/generators/ 11 feature generators (17 groups → 1211D)
 core/pipeline/           Phase 0: preprocessing, label derivation, normalization
 core/training/           Trainer, evaluator, callbacks, config
 core/recommendation/     Scoring, reason generation, compliance

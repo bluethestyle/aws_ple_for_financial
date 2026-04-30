@@ -243,7 +243,7 @@
 
 #v(12pt)
 #warn[Design vs. Implementation Dimensions][
-  This document is written based on the *full-bank design (734D)*. The current Santander benchmark implementation uses *~349D raw input (13 feature groups), expanding to 403D after Phase 0 log1p expansion*. For the actual implementation dimension specifications, refer to `outputs/phase0/feature_schema.json`. The Appendix "Design vs. Implementation Dimension Mapping" details the per-group differences.
+  This document is written based on the *full-bank design (734D)*. The current Santander benchmark implementation uses *1211D input (17 feature groups)*. For the actual implementation dimension specifications, refer to `outputs/phase0/feature_schema.json`. The Appendix "Design vs. Implementation Dimension Mapping" details the per-group differences.
 ]
 
 // =====================================================================
@@ -1068,19 +1068,23 @@ The `_log` copies of power-law columns (generated in Stage 1) are preserved *wit
 // =====================================================================
 = Appendix: Design vs. Implementation Dimension Mapping
 
-#warn[Note][This Appendix summarizes the dimensional differences between the full-bank design (734D) and the current Santander benchmark implementation (~349D raw input / 403D post-Phase-0, Phase 0 v3/v4). Implementation dimensions can be verified in `outputs/phase0/feature_schema.json`.]
+#warn[Note][This Appendix summarizes the dimensional differences between the full-bank design (734D) and the current Santander benchmark implementation (1211D input total, 17 feature groups). Implementation dimensions can be verified in `outputs/phase0/feature_schema.json`.]
 
 #styled-table(
   (1.2fr, 1fr, 1fr, 2fr),
-  table.header([*Feature Groups*], [*Design (734D)*], [*Implementation (~349D)*], [*Notes*]),
+  table.header([*Feature Groups*], [*Design (734D)*], [*Implementation (1205D)*], [*Notes*]),
   [TDA], [70D], [32D], [tda\_global 16D + tda\_local 16D],
   [HMM], [48D + 5D (separate)], [25D], [main tensor only],
-  [Base (Profile, etc.)], [238D], [47D], [Demographics, RFM, Financial Summary reduced],
-  [Graph], [unspecified], [66D], [added as independent group in implementation],
-  [Merchant / Hierarchy], [27D], [34D], [MCC Poincaré embeddings + brand embeddings (Phase 0 v3/v4)],
-  [GMM], [22D], [53D], [number of clusters and derived features expanded],
-  [Others (Economics, SIR, etc.)], [335D], [93D], [Mamba, Wave, Crime, etc.; expanded vs. prior],
-  [*Total*], [*734D*], [*~349D (raw) / 403D (post-Phase-0)*], [13 feature groups; +54D from log1p copies],
+  [Base (Profile, etc.)], [238D], [53D], [demographics 11D + product\_holdings 24D + derived\_temporal 4D + txn\_behavior 14D],
+  [Graph], [unspecified], [100D], [graph\_collaborative 66D + product\_hierarchy 34D],
+  [Merchant / Hierarchy], [27D], [27D], [MCC Poincaré embeddings (merchant\_hierarchy)],
+  [GMM + Model], [22D], [49D], [gmm\_clustering 22D + model\_derived 27D],
+  [Lag Tensor (NEW)], [—], [800D], [txn\_lag\_tensor: K=200 × 4 features (lag\_extractor)],
+  [Rolling Stats (NEW)], [—], [20D], [txn\_rolling\_stats: 4 windows × 5 metrics (rolling\_stats\_extractor)],
+  [Multi-hot (NEW)], [—], [55D], [nba\_label\_multihot 24D + mcc\_top30\_multihot 31D (topn\_multihot\_extractor)],
+  [Mamba], [—], [50D], [mamba\_temporal (GPU-precomputed, cached parquet)],
+  [Others (Economics, SIR, etc.)], [335D], [—], [not implemented in Santander benchmark],
+  [*Total*], [*734D*], [*1211D (17 groups)*], [17 feature groups],
 )
 
 

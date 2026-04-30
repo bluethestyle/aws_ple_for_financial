@@ -471,6 +471,11 @@ python scripts/run_santander_ablation.py \
 
 The following HPs can be overridden per scenario:
 
+Available feature groups for ablation (17 total; 2026-04-28 Santander v2):
+- *Legacy groups (ablation baselines)*: `tda_global`, `tda_local`, `gmm_clustering`, `hmm_states`, `mamba_temporal`
+- *New groups (2026-04-25 addition)*: `txn_lag_tensor`, `txn_rolling_stats`, `nba_label_multihot`, `mcc_top30_multihot`
+- *Core groups (not recommended to remove)*: `demographics`, `product_holdings`, `txn_behavior`
+
 ```bash
 # Remove feature groups
 --removed-feature-groups "tda_global,gmm_clustering"
@@ -804,7 +809,7 @@ Key fields per group:
 - name: demographics       # Group name
   group_type: transform    # transform | generator
   columns: [age, income]   # Input columns
-  output_dim: 38           # Output dimension
+  output_dim: 11           # Output dimension (5 numeric + 6 categorical LabelEncoded)
   target_experts: [deepfm, mlp]  # Experts to route to
   distill: true            # Whether to include in distillation
 ```

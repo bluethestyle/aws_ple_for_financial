@@ -248,6 +248,43 @@ populating them.
 |---|---|---|
 | `feature_groups[*].categorical_columns` | DEAD — Stage 2 auto-detects categoricals from VARCHAR types and encodes them via DuckDB `DENSE_RANK`. | Drop the key; rely on auto-detection. |
 
+#### `expert_routing` serialization format (feature_schema.json)
+
+After Phase 0 completes, the runner writes `feature_schema.json` alongside
+`features.parquet`. The expert routing information is serialized in **two**
+sibling keys (commit `0c55d78` config-builder fix):
+
+```json
+{
+  "expert_routing": {
+    "deepfm":           ["demographics", "product_holdings", "txn_behavior", "..."],
+    "temporal_ensemble": ["txn_behavior", "hmm_states", "mamba_temporal", "model_derived"],
+    "perslay":          ["tda_global", "tda_local"],
+    "hgcn":             ["merchant_hierarchy", "mcc_top30_multihot"],
+    "lightgcn":         ["product_hierarchy", "graph_collaborative", "txn_lag_tensor",
+                         "nba_label_multihot", "mcc_top30_multihot"],
+    "causal":           ["demographics", "product_holdings", "..."],
+    "optimal_transport": ["demographics", "product_holdings", "..."],
+    "mlp":              ["demographics", "product_holdings", "gmm_clustering"]
+  },
+  "expert_routing_indices": {
+    "deepfm": [0, 1, 2, 3, ...],
+    "temporal_ensemble": [29, 30, ...],
+    "..."
+  }
+}
+```
+
+- `expert_routing` maps each expert name to a list of **feature group names**
+  (as declared in `feature_groups.yaml`). This is the human-readable form.
+- `expert_routing_indices` maps each expert to a flat list of **integer column
+  indices** in the post-normalization feature matrix. These are the actual
+  slice indices fed to `FeatureRouter`.
+- `config_builder.py` reads `expert_routing` (dict-of-lists format) from
+  `feature_schema.json` and rebuilds `expert_routing_indices` from
+  `feature_group_ranges`. It does **not** accept the pre-0c55d78 format
+  where `expert_routing` was a list of `{expert, groups}` dicts.
+
 ### Common fields (both types)
 
 ```yaml
@@ -311,18 +348,20 @@ populating them.
 
 ### Available generators
 
-| Name | Description |
-|---|---|
-| `tda_extractor` | Topological Data Analysis (persistent homology) |
-| `hmm_triple_mode` | Hidden Markov Model state estimation |
-| `hyperbolic_embedding` | Hyperbolic graph embeddings |
-| `multidisciplinary` | Cross-domain computational models |
-| `temporal_pattern` | Rolling-window aggregation features |
-| `mamba` | Mamba SSM-based temporal sequence features |
-| `gmm` | Gaussian Mixture Model cluster assignments |
-| `model_features` | Model-derived features (distillation outputs) |
-| `merchant_hierarchy` | MCC hierarchy + brand SVD features |
-| `graph` | Graph collaborative filtering features |
+| Name | Description | Output dim (Santander) |
+|---|---|---|
+| `tda_extractor` | Topological Data Analysis (persistent homology) | 16D (h0+h1 stats) |
+| `hmm_triple_mode` | Hidden Markov Model state estimation (3 modes) | 25D |
+| `hyperbolic_embedding` / `graph` | Hyperbolic graph embeddings (Poincare) | 34D (product), 66D (collab) |
+| `multidisciplinary` | Cross-domain computational models (physics, epi) | 24D |
+| `temporal_pattern` | Rolling-window aggregation features (legacy) | variable |
+| `mamba` | Mamba SSM temporal sequence features (precompute GPU) | 50D |
+| `gmm` | Gaussian Mixture Model cluster assignments | 22D |
+| `model_features` | KMeans + Bandit + LNN model-derived features | 27D |
+| `merchant_hierarchy` | MCC hierarchy Poincare embeddings for HGCN | 27D |
+| `lag_extractor` | K-step right-aligned lag flattening of LIST sequences (DuckDB SQL-native, axis-1) | 800D (K=200×4) |
+| `rolling_stats_extractor` | Rolling-window stats over `(amount, day_offset)` LIST pairs (DuckDB SQL-native, axis-2) | 20D (4w×5m) |
+| `topn_multihot_extractor` | Fixed-vocab or Top-N multi-hot encoding of LIST<int> columns (DuckDB SQL-native, axis-3) | 24D (fixed) / 31D (top_n) |
 
 ---
 

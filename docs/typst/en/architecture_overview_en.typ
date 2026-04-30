@@ -424,9 +424,9 @@ All features are classified along 5 axes, and each axis is mapped to a correspon
   [Item], [None (relational)], [Medium], [Customer-product interactions], [Graph collaborative filtering],
 )
 
-== 12 Feature Groups (~349D Input / 403D after Phase 0)
+== 17 Feature Groups (1205D Input + 6 Passthrough = 1211D)
 
-The raw input tensor is ~349D (12 feature groups). After Phase 0 (3-stage normalization, log1p copies appended), the expanded tensor is 403D. With FeatureRouter active, each expert receives a designated subset of this tensor rather than the full 403D. Per-expert input dims: deepfm=168D, temporal\_ensemble=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, optimal\_transport=127D. Feature group-to-expert routing is group-level, auto-built at `build_model()` time from `target_experts` declarations in `feature_groups.yaml` --- no hard-coded column routing.
+The raw input tensor is 1205D (17 feature groups) plus 6 passthrough columns. With FeatureRouter active, each expert receives a designated subset of this tensor. Per-expert input dims: deepfm=977D, temporal\_ensemble=116D, hgcn=58D, perslay=32D, causal=129D, lightgcn=955D, optimal\_transport=95D (mlp=57D is the per-task tower in PLE CGC, not a shared expert). Feature group-to-expert routing is group-level, auto-built at `build_model()` time from `target_experts` declarations in `feature_groups.yaml` --- no hard-coded column routing. Model parameter count: V1 baseline (349-feature schema) measured at 2.70M; V2 (1211-feature schema with lag tensor 800D, rolling stats 20D, multihot 24+31D) parameter count pending re-measurement (the lag tensor 800D routes to deepfm and lightgcn, expected to add ~400-450K to first-layer projections).
 
 === 4 Base Groups (transform type)
 
@@ -444,14 +444,19 @@ Dedicated Feature Generators produce features.
   columns: (auto, auto, auto, 1fr),
   align: (left, left, center, left),
   table.header[*Group*][*Generator*][*Output D*][*Description*],
-  [tda\_topology], [tda\_extractor], [70D], [Topological analysis based on Persistence Diagrams],
-  [hmm\_states], [hmm\_triple\_mode], [48D], [Journey/lifecycle/behavior state estimation],
-  [hyperbolic\_embedding], [hyperbolic\_embedding], [20D], [Hyperbolic space hierarchical structure embedding],
-  [temporal\_pattern], [temporal\_pattern], [variable], [Time-series aggregation + periodic encoding],
-  [multidisciplinary], [multidisciplinary], [24D], [Chemical kinetics, epidemic diffusion, interference, crime patterns],
-  [gmm\_clustering], [gmm], [variable], [Soft posterior probabilities],
-  [economics], [economics\_extractor], [17D], [MPC, income elasticity, permanent income],
-  [model\_derived], [model\_feature\_extractor], [27D], [Leveraging prior model outputs],
+  [tda\_global], [tda\_global], [16D], [Population-level persistent homology (H0+H1, 365d window)],
+  [tda\_local], [tda\_local], [16D], [Individual-level persistent homology (H0+H1, 90d window)],
+  [hmm\_states], [hmm], [25D], [Journey/lifecycle/behavior state estimation (triple-mode)],
+  [mamba\_temporal], [mamba], [50D], [Selective SSM on transaction sequences (GPU-precomputed)],
+  [product\_hierarchy], [graph], [34D], [Poincaré embedding of 24 products in 6 L1 groups],
+  [merchant\_hierarchy], [merchant\_hierarchy], [27D], [MCC L1→L2 tree Poincaré embeddings (HGCN input)],
+  [graph\_collaborative], [graph], [66D], [Customer-product bipartite LightGCN embedding],
+  [gmm\_clustering], [gmm], [22D], [Soft posterior probabilities (20 clusters)],
+  [model\_derived], [model\_features], [27D], [KMeans(5) + Bandit/MAB(4) + LNN(18)],
+  [txn\_lag\_tensor], [lag\_extractor], [800D], [Right-aligned lag flattening: K=200 × 4 seq features],
+  [txn\_rolling\_stats], [rolling\_stats\_extractor], [20D], [4 windows (7/30/90/180d) × 5 metrics],
+  [nba\_label\_multihot], [topn\_multihot\_extractor], [24D], [Fixed-vocab 24-product multi-hot (NBA recommendation set)],
+  [mcc\_top30\_multihot], [topn\_multihot\_extractor], [31D], [Top-30 MCC multi-hot + others column],
 )
 
 == 11 Academic Disciplines (Multidisciplinary Feature Design)
@@ -786,7 +791,7 @@ EncryptionPipeline.process_source()
       node((0, 9), [*Stage 6: SequenceBuilder* #text(size: 6pt)[(flat → 3D tensors)]], width: 55mm, fill: proc-fill, name: <s6>),
 
       // Output nodes on the right
-      node((1.6, 6), [features.parquet \ #text(size: 6pt)[~349D → 403D]], width: 24mm, fill: out-fill, name: <feat>),
+      node((1.6, 6), [features.parquet \ #text(size: 6pt)[1211D, 17 groups]], width: 24mm, fill: out-fill, name: <feat>),
       node((1.6, 7), [labels.parquet], width: 24mm, fill: out-fill, name: <lab>),
       node((1.6, 9), [sequences.npy], width: 24mm, fill: out-fill, name: <seq>),
 
@@ -863,7 +868,7 @@ EncryptionPipeline.process_source()
 
 == Internal Model Data Flow
 
-FeatureRouter is *active*: each expert receives only its designated feature group subset, not the full 403D tensor (~349D input; 403D after Phase 0 log1p expansion). Per-expert input dims: deepfm=168D, temporal_ensemble=139D, hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, optimal_transport=127D. Routing is group-level, auto-built from `target_experts` in `feature_groups.yaml`. This reduced model parameters from 4.77M to ~2.8M.
+FeatureRouter is *active*: each expert receives only its designated feature group subset, not the full 1205D tensor (1211D total (17 groups)). Per-expert input dims: deepfm=977D, temporal\_ensemble=116D, hgcn=58D, perslay=32D, causal=129D, lightgcn=955D, optimal\_transport=95D (mlp=57D is the per-task tower in PLE CGC, not a shared expert). Routing is group-level, auto-built from `target_experts` in `feature_groups.yaml`. Model parameters ~2.8M post-FeatureRouter pruning (varies with group toggle; lag tensor 800D routes to deepfm and lightgcn).
 
 #figure(
   placement: auto,
@@ -879,9 +884,9 @@ FeatureRouter is *active*: each expert receives only its designated feature grou
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((0, 0), [*5-Axis Features (~349D → 403D)* \ #text(size: 6pt)[State / Snapshot / Timeseries / Hierarchy / Item]], width: 68mm, fill: input-fill, name: <feat>),
+      node((0, 0), [*5-Axis Features (1211D, 17 groups)* \ #text(size: 6pt)[State / Snapshot / Timeseries / Hierarchy / Item]], width: 68mm, fill: input-fill, name: <feat>),
       edge(<feat>, <router>, "->", label: [FeatureRouter], label-side: right),
-      node((0, 1), [*Expert Basket (7 shared)* \ #text(size: 6pt)[DeepFM ← 168D (State)] \ #text(size: 6pt)[Temporal ← 139D (Timeseries)] \ #text(size: 6pt)[HGCN ← 27D (Hierarchy)] \ #text(size: 6pt)[PersLay ← 32D (Snapshot)] \ #text(size: 6pt)[Causal ← 161D (Snapshot)] \ #text(size: 6pt)[LightGCN ← 100D (Item)] \ #text(size: 6pt)[OT ← 127D (Snapshot)]], width: 68mm, fill: expert-fill, name: <router>),
+      node((0, 1), [*Expert Basket (7 shared)* \ #text(size: 6pt)[DeepFM ← 977D (State+Lag)] \ #text(size: 6pt)[Temporal ← 116D (Timeseries)] \ #text(size: 6pt)[HGCN ← 58D (Hierarchy+MCC)] \ #text(size: 6pt)[PersLay ← 32D (Snapshot)] \ #text(size: 6pt)[Causal ← 129D (Snapshot)] \ #text(size: 6pt)[LightGCN ← 955D (Item+Lag)] \ #text(size: 6pt)[OT ← 95D (Snapshot)]], width: 68mm, fill: expert-fill, name: <router>),
       edge(<router>, <cgc>, "->"),
       node((0, 2), [*CGC Layer × 3* \ #text(size: 6pt)[dim\_normalize · entropy regularization]], width: 68mm, fill: proc-fill, name: <cgc>),
       edge(<cgc>, <hmm>, "->"),
@@ -896,7 +901,7 @@ FeatureRouter is *active*: each expert receives only its designated feature grou
       node((0, 7), [*Task Towers × 13 (TowerRegistry)* \ #text(size: 6pt)[Evidential Layer (regression) · SAE sidecar] \ #text(size: 6pt)[Per-task Loss + Uncertainty Weighting]], width: 68mm, fill: out-fill, name: <towers>),
     )
   },
-  caption: [Internal model data flow: FeatureRouter slices per-expert subsets from the 403D feature tensor (~349D input, 403D after Phase 0 log1p expansion). Routing is group-level, auto-built from \`target_experts\` in feature_groups.yaml.],
+  caption: [Internal model data flow: FeatureRouter slices per-expert subsets from the 1205D feature tensor (1211D, 17 groups). Routing is group-level, auto-built from \`target_experts\` in feature_groups.yaml. deepfm=977D, temporal=116D, hgcn=58D, perslay=32D, causal=129D, lightgcn=955D, ot=95D.],
 )
 
 == GPU/CPU Acceleration Mapping
@@ -973,7 +978,7 @@ All system parameters are managed through a split-config scheme. `config_builder
 
 *`datasets/santander.yaml`*: Dataset-specific overrides (column names, split parameters, adapter settings). Adding a new dataset requires only this file — no changes to `pipeline.yaml` or any Python code.
 
-*`feature_groups.yaml`*: 12 feature group definitions
+*`feature_groups.yaml`*: 17 feature group definitions
 - `group_type`: transform (existing column transformation) | generate (Generator invocation)
 - `generator`: Reference to Pool's Generator name
 - `generator_params`: input\_filter (dtype, exclude\_binary, min\_nunique, etc.)

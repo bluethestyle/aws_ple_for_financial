@@ -275,22 +275,22 @@ experts, each encoding a different inductive bias:
     align: (left, left, right),
     stroke: 0.5pt,
     table.header([*Expert*], [*Architecture*], [*Input Dim*]),
-    [DeepFM], [Factorization Machine + DNN], [168D],
-    [Temporal], [Mamba + LNN + Transformer], [139D],
-    [HGCN], [Hyperbolic GCN (Poincaré)], [27D],
+    [DeepFM], [Factorization Machine + DNN], [977D],
+    [Temporal], [Mamba + LNN + Transformer], [116D],
+    [HGCN], [Hyperbolic GCN (Poincaré)], [58D],
     [PersLay], [Topological (TDA)], [32D],
-    [Causal], [NOTEARS DAG], [161D],
-    [LightGCN], [Graph Convolution], [100D],
-    [Optimal Transport], [Sinkhorn matching], [127D],
+    [Causal], [NOTEARS DAG], [129D],
+    [LightGCN], [Graph Convolution], [955D],
+    [Optimal Transport], [Sinkhorn matching], [95D],
   ),
   caption: [Expert basket. Each expert receives a different feature subset
-  via FeatureRouter. Total input space: ~350D (Phase 0 v3/v4).],
+  via FeatureRouter. Total input space: 1211D (Phase 0 v3/v4, 17 groups).],
 ) <tab:experts>
 
 A *FeatureRouter* assigns each expert its designated feature groups,
 declared in YAML configuration rather than hardcoded.
-The sum of per-expert input dimensions (703D) exceeds the total feature
-space (350D) because several feature groups are shared across experts
+The sum of per-expert input dimensions (2419D) exceeds the total feature
+space (1211D) because several feature groups are shared across experts
 with complementary inductive biases.
 
 == CGC Gating
@@ -347,7 +347,7 @@ Note that the Consumption group mixes 5 binary tasks with
 
 = Results and Analysis
 
-All experiments use 1M synthetic customers, 349 features (Phase 0, benchmark_v12),
+All experiments use 1M synthetic customers, 1211 features (Phase 0, benchmark_v12, 17 groups),
 10 epochs, batch size 5632, learning rate 0.0005, AMP (FP16), cosine annealing
 with warm restarts ($T_0 = 10$). Uncertainty weighting is applied in all runs
 unless noted otherwise. Each configuration is run with 3 seeds; we report

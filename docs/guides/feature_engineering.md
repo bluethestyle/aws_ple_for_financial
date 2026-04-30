@@ -16,7 +16,7 @@ group requires editing only the YAML configuration; all downstream systems
 
 1. [Architecture Overview](#architecture-overview)
 2. [Built-in Transformers (7 types)](#built-in-transformers)
-3. [Built-in Generators (10 types)](#built-in-generators)
+3. [Built-in Generators (13 types)](#built-in-generators)
 4. [Creating a Custom Generator](#creating-a-custom-generator)
 5. [Creating a Custom Transformer](#creating-a-custom-transformer)
 6. [FeatureGroup Config Reference](#featuregroup-config-reference)
@@ -289,7 +289,7 @@ feature_groups:
 
 ## Built-in Generators
 
-Ten generator families ship with the platform, spanning 11 academic disciplines.
+Thirteen generator families ship with the platform, spanning 11 academic disciplines.
 All are registered in `core/feature/generators/` via `@FeatureGeneratorRegistry.register()`.
 
 Generators **create entirely new feature columns** from raw data. They produce
@@ -425,6 +425,28 @@ dynamic.
 Selective state-space model (Mamba SSM) on transaction sequences. Learns
 compressed temporal state representations in a self-supervised manner.
 
+#### Precompute workflow (2026-04-28)
+
+Running Mamba inline during CPU Phase 0 takes ~60 min on `ml.m5.2xlarge`.
+The production workflow separates it into a dedicated GPU job:
+
+```
+1. Submit GPU precompute job:
+   python scripts/submit_pipeline.py --mamba-precompute
+
+2. GPU job (ml.g4dn.xlarge) trains the SSM on `synth_*` columns
+   and writes a customer-level embedding Parquet to S3 at
+   `generator_params.cached_embedding_uri`.
+
+3. CPU Phase 0 pipeline reads `cached_embedding_uri`, downloads
+   the Parquet via boto3, and JOINs it against the main feature
+   DataFrame on `entity_column` (customer_id) using DuckDB — no
+   torch dependency on the CPU path.
+
+4. Re-run the GPU job whenever input features change materially
+   (column additions, distribution drift) or model weights expire.
+```
+
 ```yaml
 - name: mamba_temporal
   type: generate
@@ -435,10 +457,24 @@ compressed temporal state representations in a self-supervised manner.
     output_dim: 50
     d_model: 128
     num_epochs: 3
-    prefer_gpu: true
+    prefer_gpu: true                  # Ignored when cached_embedding_uri is set
+    entity_column: customer_id        # JOIN key for cached embedding lookup
+    cached_embedding_uri: s3://aiops-ple-financial/santander_ple/mamba/embedding.parquet
   output_dim: 50
   target_experts: [temporal_ensemble]
 ```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `input_filter` | `dict` | `{}` | Column selector for SSM input |
+| `output_dim` | `int` | `50` | Embedding dimension |
+| `d_model` | `int` | `128` | SSM internal state size |
+| `num_epochs` | `int` | `3` | Self-supervised pretraining epochs |
+| `prefer_gpu` | `bool` | `True` | Use GPU if available (ignored when cache hit) |
+| `entity_column` | `str` | `"customer_id"` | JOIN key for cached embedding Parquet |
+| `cached_embedding_uri` | `str` | `""` | S3 URI of pre-computed embedding Parquet; skips SSM fit entirely when set |
 
 **Output:** 50 features representing learned sequential state.
 
@@ -565,6 +601,164 @@ Produces trend, volatility, and acceleration metrics.
 
 **Output:** `len(windows) * len(features) * n_stats` features, where `n_stats`
 includes mean, std, trend slope, min, max per window-feature combination.
+
+### 11. Lag Tensor (`lag_extractor`)
+
+**File:** `core/feature/generators/lag_extractor.py`
+
+Right-aligned flattening of LIST-typed sequence columns into K explicit lag
+columns per feature. Implements the on-prem 2026-04-25 "Sequence Lag" axis-1
+redesign. This generator is **DuckDB SQL-native** (`supports_sql_native=True`):
+it runs entirely as DuckDB `list_slice` / `list_reverse` / `list_resize`
+queries — no per-row Python loop, no full pandas materialisation.
+
+**Alignment rule:**
+- `len(seq) < K` — trailing zero-pad; lag positions 1..n filled, n+1..K = 0.
+- `len(seq) >= K` — oldest events dropped; K most-recent kept.
+- `truncate_seq_last=1` drops the final element before flattening, preventing
+  leakage when the last MCC code or amount equals the next-MCC/top-MCC-shift
+  label (mirrors the `merchant_hierarchy` group's guard).
+
+```yaml
+- name: txn_lag_tensor
+  group_type: generate
+  generator: lag_extractor
+  generator_params:
+    sequence_columns:
+      amount: txn_amount_seq        # continuous LIST<float>
+      mcc:    txn_mcc_seq           # integer LIST<int>  (zero-padded with 0)
+      day:    txn_day_offset_seq    # continuous LIST<int>
+      hour:   txn_hour_seq          # integer LIST<int>
+    k: 200
+    truncate_seq_last: 1            # label-leakage guard
+    pad_value: 0.0
+    prefix: txn_lag
+  output_dim: 800                   # K=200 × 4 features
+  target_experts: [deepfm, lightgcn]
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `sequence_columns` | `dict[str, str]` | (required) | `short_name -> source LIST column`. Integer features (`mcc`, `hour`) pad with int 0; others use `pad_value`. |
+| `k` | `int` | `200` | Number of lag positions to emit |
+| `truncate_seq_last` | `int` | `0` | Drop last N elements before flattening (label-leak guard) |
+| `pad_value` | `float` | `0.0` | Fill value for short sequences (continuous features) |
+| `prefix` | `str` | `"txn_lag"` | Column-name prefix |
+
+**Output schema** (K=200, 4 features): `txn_lag_amount_001..200`,
+`txn_lag_mcc_001..200`, `txn_lag_day_001..200`, `txn_lag_hour_001..200`
+= **800D total**.
+
+### 12. Rolling Stats (`rolling_stats_extractor`)
+
+**File:** `core/feature/generators/rolling_stats_extractor.py`
+
+Per-customer rolling statistics over paired `(amount, day_offset)` LIST
+columns. Complements the lag tensor (axis-1) by preserving total-volume
+signal that gets truncated when `len(seq) > K`. Implements the on-prem
+2026-04-25 "Rolling Window Stats" axis-2 redesign. Also **DuckDB SQL-native**:
+uses `list_zip` + `list_filter` + `list_aggregate` for per-row windowed
+aggregates.
+
+Window anchor: `elapsed[i] = max(day_offset) - day_offset[i]`. A window
+of W days includes all events where `elapsed <= W`.
+
+```yaml
+- name: txn_rolling_stats
+  group_type: generate
+  generator: rolling_stats_extractor
+  generator_params:
+    amount_column:    txn_amount_seq
+    day_offset_column: txn_day_offset_seq
+    windows_days: [7, 30, 90, 180]
+    metrics: [sum, mean, std, count, days_active]
+    truncate_seq_last: 1            # label-leakage guard
+    prefix: txn_roll
+  output_dim: 20                    # 4 windows × 5 metrics
+  target_experts: [deepfm, causal, optimal_transport]
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `amount_column` | `str` | `"txn_amount_seq"` | LIST<float> amount sequence |
+| `day_offset_column` | `str` | `"txn_day_offset_seq"` | LIST<int> day offset from reference date |
+| `windows_days` | `list[int]` | `[7, 30, 90, 180]` | Lookback window sizes in days |
+| `metrics` | `list[str]` | all 5 | Subset of `{sum, mean, std, count, days_active}` |
+| `truncate_seq_last` | `int` | `0` | Drop last N elements (label-leak guard) |
+| `prefix` | `str` | `"txn_roll"` | Column-name prefix |
+
+**Output:** `len(windows_days) × len(metrics)` columns. With default
+windows=[7,30,90,180] and all 5 metrics: **20D**. Column naming:
+`txn_roll_7d_sum`, `txn_roll_7d_mean`, …, `txn_roll_180d_days_active`.
+
+### 13. Top-N Multi-Hot (`topn_multihot_extractor`)
+
+**File:** `core/feature/generators/topn_multihot_extractor.py`
+
+Multi-hot encoding of LIST<int> columns. Two modes:
+
+- **`fixed_vocab`** — emit one binary column per item in a known vocabulary.
+  No fit-time learning. Used for NBA product labels (24 products, vocabulary
+  = product slot indices 0–23).
+- **`top_n`** — learn the Top-N most frequent values during `fit()` via a
+  DuckDB UNNEST + GROUP BY query, then emit N binary columns plus an optional
+  `_others` count column. Used for MCC codes (top-30, covers ~73% of unique
+  MCCs in the Santander dataset).
+
+Also **DuckDB SQL-native**. `truncate_seq_last=1` drops the last sequence
+element before encoding to prevent `next_mcc` / `top_mcc_shift` label leakage.
+
+```yaml
+# Mode A — fixed vocabulary (NBA labels, 24D)
+- name: nba_label_multihot
+  group_type: generate
+  generator: topn_multihot_extractor
+  generator_params:
+    source_column: nba_label
+    mode: fixed_vocab
+    vocab: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+            14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    truncate_seq_last: 0            # nba_label is recommendation set, not label leak
+    binary: true
+    prefix: nba_mh
+  output_dim: 24
+  target_experts: [lightgcn, deepfm]
+
+# Mode B — top-N learned vocabulary (MCC top-30, 31D)
+- name: mcc_top30_multihot
+  group_type: generate
+  generator: topn_multihot_extractor
+  generator_params:
+    source_column: txn_mcc_seq
+    mode: top_n
+    top_n: 30
+    include_others: true            # 31st column = count of out-of-vocab MCCs
+    truncate_seq_last: 1            # last MCC == next_mcc label
+    binary: true
+    prefix: mcc_mh
+  output_dim: 31                    # top_n + 1 others column
+  target_experts: [lightgcn, deepfm, hgcn]
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `source_column` | `str` | (required) | LIST<int> column to encode |
+| `mode` | `str` | `"top_n"` | `"fixed_vocab"` or `"top_n"` |
+| `vocab` | `list[int]` | `[]` | Item indices for `fixed_vocab` mode |
+| `top_n` | `int` | `30` | Vocabulary size for `top_n` mode (learned at `fit()`) |
+| `include_others` | `bool` | `True` | Add trailing `_others` count column (`top_n` mode only) |
+| `truncate_seq_last` | `int` | `0` | Drop last N elements (label-leak guard) |
+| `binary` | `bool` | `True` | `True` = presence flag (0/1); `False` = occurrence count |
+| `prefix` | `str` | `"multihot"` | Column-name prefix |
+
+**Output:** `fixed_vocab` → `len(vocab)` columns; `top_n` →
+`top_n + (1 if include_others else 0)` columns.
 
 ---
 
@@ -872,6 +1066,20 @@ Every field of `FeatureGroupConfig` (defined in `core/feature/group.py`):
 | `output_dim` | `int` | `0` | Dimension of this group's output vector (auto-detected if 0) |
 | `output_columns` | `list[str]` | `[]` | Explicit output column names (auto-populated from generator if empty) |
 
+> **Binary task `output_dim=1` (commit `d156045`)** — Task towers for binary
+> classification emit a single logit (`output_dim=1`), not 2. This matches the
+> `FocalLoss` / BCE expectation of pre-activation logits and avoids the
+> double-sigmoid problem. When adding a new binary task, declare
+> `output_dim: 1` in the task config; `config_builder.py` enforces this.
+>
+> **`list_first_group` derive method** — For multiclass tasks where the label
+> is derived from a LIST column by taking the first element and mapping it
+> through a product-group lookup (e.g. `nba_primary`), use
+> `derive.method: list_first_group` with `source_col: nba_label`,
+> `filter_col: has_nba`, and `default: 0`. The `filter_col` column is
+> automatically excluded from the feature matrix (Stage 6 runner) to prevent
+> label leakage.
+
 ### Expert Routing
 
 | Field | Type | Default | Description |
@@ -947,41 +1155,58 @@ architecture.
 ### How it works
 
 ```
-Feature Groups:                Expert Networks (7):
-+-----------------+
-| demographics    |--+-------> [deepfm]
-| (dim=38)        |  +-------> [causal]
-+-----------------+  +-------> [optimal_transport]
-| product_holdings|----------> [deepfm, causal, OT]
-| (dim=24)        |
-+-----------------+
-| tda_global      |----------> [perslay]
-| (dim=36)        |
-+-----------------+
-| tda_local       |----------> [perslay]
-| (dim=24)        |
-+-----------------+
-| hmm_states      |----------> [temporal_ensemble]
-| (dim=48)        |
-+-----------------+
-| mamba_temporal  |----------> [temporal_ensemble]
-| (dim=50)        |
-+-----------------+
-| merchant_hier.  |----------> [hgcn]
-| (dim=27)        |
-+-----------------+
-| product_hier.   |----------> [lightgcn, causal]
-| (dim=32)        |
-+-----------------+
-| graph_collab.   |----------> [lightgcn]
-| (dim=64)        |
-+-----------------+
-| gmm_clustering  |--+-------> [deepfm]
-| (dim=22)        |  +-------> [causal, OT]
-+-----------------+
-| (empty list)    |----------> [broadcast to ALL 7]
-+-----------------+
+Feature Groups (17):               Expert Networks (8):
++-----------------------+
+| demographics  (11D)   |--+------> [deepfm]
+|                       |  +------> [mlp]
+|                       |  +------> [causal]
+|                       |  +------> [optimal_transport]
++-----------------------+
+| product_holdings (24D)|----------> [deepfm, mlp, causal, OT]
++-----------------------+
+| txn_behavior  (14D)   |----------> [deepfm, temporal_ensemble, causal, OT]
++-----------------------+
+| derived_temporal (4D) |----------> [deepfm, causal, OT]
++-----------------------+
+| tda_global    (16D)   |----------> [perslay]
++-----------------------+
+| tda_local     (16D)   |----------> [perslay]
++-----------------------+
+| hmm_states    (25D)   |----------> [temporal_ensemble]
++-----------------------+
+| mamba_temporal (50D)  |----------> [temporal_ensemble]
++-----------------------+
+| product_hier. (34D)   |----------> [lightgcn, causal]
++-----------------------+
+| merchant_hier.(27D)   |----------> [hgcn]
++-----------------------+
+| graph_collab. (66D)   |----------> [lightgcn]
++-----------------------+
+| gmm_clustering (22D)  |----------> [deepfm, mlp, causal, OT]
++-----------------------+
+| model_derived (27D)   |----------> [temporal_ensemble, deepfm]
++-----------------------+
+| txn_lag_tensor(800D)  |----------> [deepfm, lightgcn]
++-----------------------+
+| txn_rolling   (20D)   |----------> [deepfm, causal, OT]
++-----------------------+
+| nba_mh        (24D)   |----------> [lightgcn, deepfm]
++-----------------------+
+| mcc_top30_mh  (31D)   |----------> [lightgcn, deepfm, hgcn]
++-----------------------+
+| (empty list)          |----------> [broadcast to ALL 8]
++-----------------------+
 ```
+
+**Expert split-off notes:**
+- `perslay` handles TDA (hypersphere topology); separate from `temporal_ensemble`
+  which handles HMM + Mamba (state/sequence).
+- `hgcn` receives merchant hyperbolic hierarchy (`merchant_hierarchy`) plus
+  MCC multi-hot (`mcc_top30_multihot`). It does **not** share groups with
+  `perslay`.
+- `lightgcn` handles collaborative-filtering signals: product bipartite graph,
+  product hierarchy, lag tensor (time signal to non-temporal expert), and both
+  multi-hot groups.
 
 1. Each feature group specifies `target_experts: [expert1, expert2]`.
 2. `FeatureGroupPipeline.expert_routing` computes a mapping of expert name
@@ -990,18 +1215,22 @@ Feature Groups:                Expert Networks (7):
    no manual wiring required. Each expert's `input_dim` is set to the length
    of its assigned index list, yielding heterogeneous input dims:
 
-   | Expert | Routed input dim |
-   |---|---|
-   | `deepfm` | 168D |
-   | `temporal_ensemble` | 139D |
-   | `hgcn` | 27D |
-   | `perslay` | 32D |
-   | `causal` | 161D |
-   | `lightgcn` | 100D |
-   | `optimal_transport` | 127D |
+   | Expert | Routed groups | Approx. input dim |
+   |---|---|---|
+   | `deepfm` | demographics, product_holdings, txn_behavior, derived_temporal, gmm, model_derived, txn_lag, txn_rolling, nba_mh, mcc_mh | ~1,037D |
+   | `mlp` | demographics, product_holdings, gmm_clustering | ~57D |
+   | `temporal_ensemble` | txn_behavior, hmm_states, mamba_temporal, model_derived | ~116D |
+   | `perslay` | tda_global, tda_local | ~32D |
+   | `causal` | demographics, product_holdings, txn_behavior, derived_temporal, product_hierarchy, gmm, txn_rolling | ~175D |
+   | `lightgcn` | product_hierarchy, graph_collaborative, txn_lag_tensor, nba_mh, mcc_top30_mh | ~979D |
+   | `optimal_transport` | demographics, product_holdings, txn_behavior, derived_temporal, gmm, txn_rolling | ~115D |
+   | `hgcn` | merchant_hierarchy, mcc_top30_multihot | ~58D |
 
-   Total model parameters: **~2.8M**. Total feature space: ~349D input, 403D after Phase 0
-   feature engineering (54 synthetic features added by generators).
+   Note: dims shown are pre-normalization (post-normalization `_log` copies
+   may increase them by the count of power-law columns in each routed group).
+   The routing map is persisted in `feature_schema.json::expert_routing`
+   (group-name list) and `expert_routing_indices` (integer slice indices)
+   after Phase 0.
 
 4. If `target_experts` is empty, the group is broadcast to all experts
    (equivalent to the pre-routing uniform ~349D behaviour).

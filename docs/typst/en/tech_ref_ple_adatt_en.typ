@@ -242,7 +242,7 @@
 
 #warn[Design vs. Implementation Note][
   This document is written based on the full-bank design (734D).
-  The current Santander benchmark implementation is ~349D raw input (13 feature groups), expanding to 403D after Phase 0 log1p expansion.
+  The current Santander benchmark implementation uses 1205D input (17 feature groups, 2026-04-28). Per-expert routing dimensions are computed from feature_schema.json. The full-bank 734D figures in the body are design references; refer to `outputs/phase0/feature_schema.json` for the actual implementation dimensions.
 ]
 
 #block(
@@ -375,7 +375,7 @@ Outputs of heterogeneous experts are *concatenated* and then each expert block i
   ]
 ]
 
-In this PLE-Cluster-adaTT implementation, *CGCAttention* (block scaling) is used for 8 heterogeneous Shared Experts. Analogous to Transformer Attention, the relationship between *Query* (gate weight), *Key* (shared representation), and *Value* (Expert output) enables "selectively combining information in proportion to relevance."
+In this PLE-Cluster-adaTT implementation, *CGCAttention* (block scaling) is used for 7 heterogeneous Shared Experts. Analogous to Transformer Attention, the relationship between *Query* (gate weight), *Key* (shared representation), and *Value* (Expert output) enables "selectively combining information in proportion to relevance."
 
 === Initial Bias Setting (domain_experts)
 
@@ -408,20 +408,20 @@ $ "scale"_i = sqrt("mean\_dim" / "dim"_i), quad "mean\_dim" = (128 + 64 times 7)
 == 2.1 Pool/Basket Pattern
 
 Instead of PLE's identically structured experts, this system combines
-*8 heterogeneous domain experts* into a Shared Expert Pool.
+*7 heterogeneous domain experts* into a Shared Expert Pool.
 Each expert interprets the input data from an entirely different mathematical perspective,
 and the CGC Gate learns the optimal per-task combination.
 
 #styled-table(
   (1.3fr, 0.9fr, 0.6fr, 2.5fr),
   [*Expert*], [*Input*], [*Output*], [*Role and Irreplaceability*],
-  [DeepFM], [normalized 644D], [64D], [Explicitly captures FM $O(n k)$ second-order feature interactions],
-  [LightGCN], [precomputed 64D], [64D], [Bipartite graph-based "similar customers" collaborative signal],
-  [Unified HGCN], [27D (merchant\_hierarchy, MCC hierarchy)], [128D], [Encodes MCC hierarchical structure in hyperbolic space via Poincaré embeddings],
-  [Temporal], [sequence input], [64D], [Mamba+LNN+Transformer temporal pattern ensemble],
-  [PersLay], [Persistence Diagram], [64D], [Topological structure of spending patterns (loops, clusters)],
-  [Causal], [161D (demographics, products, txn, derived\_temporal, product\_hierarchy, gmm)], [64D], [Directional causal relation extraction via SCM/NOTEARS],
-  [Optimal Transport], [127D (demographics, products, txn, derived\_temporal, gmm)], [64D], [Sinkhorn Wasserstein distributional geometry],
+  [DeepFM], [977D (State + lag\_tensor 800D + rolling\_stats 20D + multihot 55D)], [64D], [Explicitly captures FM $O(n k)$ second-order feature interactions],
+  [LightGCN], [955D (product\_hierarchy 34D + graph\_collab 66D + lag\_tensor 800D + multihot 55D)], [64D], [Bipartite graph-based "similar customers" collaborative signal],
+  [Unified HGCN], [58D (merchant\_hierarchy 27D + mcc\_top30\_multihot 31D)], [128D], [Encodes MCC hierarchical structure in hyperbolic space via Poincaré embeddings],
+  [Temporal], [116D (txn\_behavior 14D + hmm\_states 25D + mamba\_temporal 50D + model\_derived 27D)], [64D], [Mamba+LNN+Transformer temporal pattern ensemble],
+  [PersLay], [32D (tda\_global 16D + tda\_local 16D)], [64D], [Topological structure of spending patterns (loops, clusters)],
+  [Causal], [129D (demographics 11D + product\_holdings 24D + txn\_behavior 14D + derived\_temporal 4D + product\_hierarchy 34D + gmm 22D + rolling\_stats 20D)], [64D], [Directional causal relation extraction via SCM/NOTEARS],
+  [Optimal Transport], [95D (demographics 11D + product\_holdings 24D + txn\_behavior 14D + derived\_temporal 4D + gmm 22D + rolling\_stats 20D)], [64D], [Sinkhorn Wasserstein distributional geometry],
   [RawScale], [raw 90D], [64D], [Preserves power-law distribution information before normalization],
 )
 
@@ -431,9 +431,9 @@ $ bold(h)_"shared" = ["unified\_hgcn"_(128"D") || "perslay"_(64"D") || "deepfm"_
 
 == 2.2 Expert Selection Criteria
 
-The 8 experts extract *fundamentally different mathematical structures* from the same customer data:
+The 7 experts extract *fundamentally different mathematical structures* from the same customer data:
 
-- *DeepFM/Causal/OT*: receive overlapping but distinct feature subsets (Causal: 161D, OT: 127D) and capture different structures — symmetric interactions (FM), asymmetric causality (DAG), distributional distance (Wasserstein)
+- *DeepFM/Causal/OT*: receive overlapping but distinct feature subsets (Causal: 129D, OT: 95D; 17-group Santander) and capture different structures — symmetric interactions (FM), asymmetric causality (DAG), distributional distance (Wasserstein)
 - *Temporal*: temporal dynamics of sequential data ($[B, 180, 16]$, $[B, 90, 8]$)
 - *PersLay*: topological invariants (Betti numbers, persistence)
 - *Unified HGCN*: hierarchical relationships in hyperbolic geometry (merchant_hierarchy, MCC hierarchy; not product_hierarchy)

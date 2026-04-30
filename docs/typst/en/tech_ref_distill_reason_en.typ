@@ -155,7 +155,7 @@
 )[
   #text(weight: "bold")[Scope.]
   - Knowledge distillation: PLE Teacher → LGBM Student (Temperature Scaling, custom objective, calibration)
-  - Feature selection: LGBM gain importance, 403D → ~280D per task
+  - Feature selection: LGBM gain importance, 1205D → ~280D per task (17 feature groups, 2026-04-28)
   - FD-TVS scoring: dynamic (segment × behavior) task weights
   - Reason generation: L1 Template → L2a LLM rewrite → L2b 3-Agent review + SelfChecker
   - Layer split: 7 distilled LGBM + 3 direct LGBM + 3 Layer-3 rule-based
@@ -175,7 +175,7 @@
   fill: rgb("#fffbeb"),
 )[
   #text(weight: "bold", fill: rgb("#92400e"))[Design vs. Implementation Dimensionality Notice] \
-  This document is written based on the *full-bank design (734D)*. The current Santander benchmark implementation uses *~349D raw input (13 feature groups), expanding to 403D after Phase 0 log1p expansion*. Dimensional figures in the body (734D, 200D, 140D, etc.) reflect the full-bank design; intermediate dimensions may differ in the actual Santander implementation. For the dimension specifications of the actual implementation, refer to `outputs/phase0/feature_schema.json`.
+  This document is written based on the *full-bank design (734D)*. The current Santander benchmark implementation uses *1205D input (17 feature groups, 2026-04-28)*. Dimensional figures in the body (734D, 200D, 140D, etc.) reflect the full-bank design; intermediate dimensions may differ in the actual Santander implementation. For the dimension specifications of the actual implementation, refer to `outputs/phase0/feature_schema.json`.
 ]
 
 #v(0.5em)
@@ -213,7 +213,7 @@ The Student achieves approximately 5ms per 1K batch on an 8GB RAM CPU, deliverin
   [Parameters], [$tilde$2.6M (AWS Santander)], [$tilde$500 trees/task],
   [Memory], [$tilde$8GB VRAM (g4dn.xlarge GPU)], [$tilde$1GB RAM (Lambda CPU)],
   [Inference Speed], [$tilde$50ms / 1K batch], [$tilde$5ms / 1K batch],
-  [Feature Dimensionality], [734D (design) / ~349D raw / 403D post-Phase-0 (impl.)], [200D (after IG selection, design basis)],
+  [Feature Dimensionality], [734D (design) / 1205D (Santander 17-group impl.)], [200D (after IG selection, design basis)],
   [Training Data], [Raw features + labels], [Raw features + Hard Labels + Soft Labels],
 )
 
@@ -341,7 +341,7 @@ from Student importance due to the architectural gap between deep networks and g
 
 *Operational stability*: LGBM gain computation is a fast post-hoc step on the trained Student.
 Teacher IG requires backpropagation through the full PLE graph at production scale
-(941K customers, 403 features), causing out-of-memory failures.
+(941K customers, 1205D features), causing out-of-memory failures.
 
 *Interpretability alignment*: SHAP/gain explanations derived from the LGBM Student are directly
 grounded in the model that generated the recommendation, satisfying EU AI Act Art. 13
@@ -349,13 +349,13 @@ grounded in the model that generated the recommendation, satisfying EU AI Act Ar
 
 === 2-Stage Pipeline
 
-_The dimensionality figures below are based on the full-bank design (734D). Intermediate dimensions may differ in the Santander implementation (~349D raw / 403D post-Phase-0)._
+_The dimensionality figures below are based on the full-bank design (734D). The Santander 17-group implementation uses 1205D input._
 
-*Full-bank design basis:* 734D (design) / ~349D raw / 403D post-Phase-0 (impl.) $arrow$ ~140D (Stage 1) $arrow$ final LGBM input
+*Full-bank design basis:* 734D (design) / 1205D (Santander 17-group impl.) $arrow$ ~140D (Stage 1) $arrow$ final LGBM input
 
 *Stage 1 -- LGBM Gain Importance Filter:*
 Top-$k$ features capturing approximately 95% of cumulative gain importance are retained per task.
-The resulting feature set is typically 40--80 features per task (down from 403D).
+The resulting feature set is typically 40--80 features per task (down from the full input dimension).
 
 *Stage 2 -- Mandatory Feature Preservation:*
 Seven features always included regardless of LGBM importance:
@@ -402,7 +402,7 @@ The full distillation pipeline is executed as a 10-stage DAG in `distillation_en
   [*Stage*], [*Content*],
   [1], [Teacher inference (logit generation over the full dataset)],
   [2], [Soft label generation (Temperature Scaling applied)],
-  [3], [IG feature selection (734D $arrow$ 200D)],
+  [3], [LGBM gain importance feature selection (1205D $arrow$ ~140D per task)],
   [4], [Student training (per-task independent LGBM)],
   [5], [Validation (5 criteria: AUC, RMSE, Accuracy, etc.; metric aggregation is task-type-specific — binary tasks use AUC, regression tasks use RMSE, multi-class tasks use top-k Accuracy)],
   [6], [MLflow model registry registration],
@@ -671,7 +671,7 @@ $ "verdict" = cases(
 
 == Core Problem
 
-PLE-adaTT consumes a 734D feature vector and outputs probability scores, but cannot
+PLE-adaTT consumes a feature vector (734D full-bank design; 1205D in the current Santander 17-group implementation) and outputs probability scores, but cannot
 explain _why_ a given recommendation was made.
 Articles 31 and 34 of the AI Basic Act, and Article 19 of the Financial Consumer
 Protection Act, require meaningful explanations.
@@ -708,7 +708,7 @@ Total: 644D normalized + 90D raw power-law = 734D model input.
 $ "IG"_i (bold(x)) = (x_i - x'_i) times integral_0^1 frac(partial F(bold(x)' + alpha (bold(x) - bold(x)')), partial x_i) d alpha $
 
 *Why IG is more suitable than SHAP:*
-- SHAP: requires evaluating $2^(734)$ subsets (infeasible)
+- SHAP: requires evaluating $2^(734)$ subsets at full-bank scale (infeasible)
 - IG: computed in linear time via a 50-step trapezoidal approximation
 - *Completeness axiom:* $sum_i "IG"_i (bold(x)) = F(bold(x)) - F(bold(x)')$ (guaranteed by the gradient theorem in vector calculus)
 - *Baseline:* zero vector (corresponds to "average customer" in normalized feature space)

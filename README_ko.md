@@ -27,7 +27,7 @@
 | **왜 중요한가** | 전문가 게이트 가중치 자체가 설명이 된다 -- "소비 트렌드 35% + 상품 적합도 28%" |
 | **규제** | 한국 금감원 AI RMF, EU AI Act, AI 기본법 준수 설계 |
 | **서빙** | LGBM 증류 → Lambda 서빙 -- GPU 서버 불필요 |
-| **규모** | 고객 100만 명, 피처 349차원, 5-에이전트 아키텍처 (서빙 3 + 운영·감사 2) |
+| **규모** | 고객 100만 명, 피처 1211차원 (17 그룹), 5-에이전트 아키텍처 (서빙 3 + 운영·감사 2) |
 | **팀** | 3인 팀, Claude Code 기반 AI 증강 개발 |
 
 ## 개요
@@ -36,8 +36,8 @@
 고객 데이터 (은행/카드 거래)
     |
     v
-[Phase 0] 10개 피처 생성기 (11개 과학 분야, 349차원)
-    |       TDA, Hyperbolic GCN, Mamba, HMM, 화학 반응 속도론, SIR, ...
+[Phase 0] santander config 에 사용된 11개 generator 종류 (core/feature/generators/ 에 14개 구현) → 17개 피처 그룹, 1211차원
+    |       TDA, Hyperbolic GCN, Mamba, HMM, LagExtractor, RollingStats, TopN MultiHot, ...
     v
 [Phase 1-3] PLE + 7개 이종 전문가 + 13개 태스크
     |         DeepFM | Temporal | HGCN | PersLay | LightGCN | Causal | OT
@@ -71,7 +71,7 @@
 |-------|-----------|
 | 데이터 처리 | DuckDB (단일 백엔드, 온프렘 240+ 파일), cuDF, PyArrow — [pandas-free 파이프라인](docs/duckdb-case-study.md) |
 | 학습 | PyTorch, SageMaker Spot |
-| 피처 엔지니어링 | 10개 GPU 가속 생성기 |
+| 피처 엔지니어링 | santander config 에서 사용 11개 generator (전체 14개 구현, 해당 시 GPU 가속) |
 | 서빙 | AWS Lambda (서버리스, GPU 없음) |
 | 증류 | 태스크별 LightGBM 학생 |
 | 추천사유 생성 | LLM 에이전트 + 안전 게이트 |
@@ -103,7 +103,7 @@ PYTHONPATH=. python scripts/run_local_ablation.py
 ```
 core/model/ple/          PLE 아키텍처, CGC 게이트, adaTT
 core/model/experts/      7개 전문가 구현
-core/feature/generators/ 10개 피처 생성기
+core/feature/generators/ 14개 생성기 구현 (santander config 에서 11개 종류 사용 → 17 그룹 → 1211차원)
 core/pipeline/           Phase 0: 전처리, 레이블 파생, 정규화
 core/training/           Trainer, evaluator, callbacks, config
 core/recommendation/     점수화, 추천사유 생성, 규제 준수

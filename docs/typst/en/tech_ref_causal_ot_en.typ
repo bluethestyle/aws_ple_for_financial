@@ -169,7 +169,7 @@
 )[
   #text(weight: "bold", fill: anthropic-accent)[Design vs. Implementation Note.]
   This document is written against the full-bank design (734D).
-  The current Santander benchmark implementation uses ~349D raw input (13 feature groups), expanding to 403D after Phase 0 log1p expansion.
+  The current Santander benchmark implementation uses 1205D input (17 feature groups, 2026-04-28). Causal expert: 129D; OT expert: 95D. Refer to `outputs/phase0/feature_schema.json` for the current routing indices.
 ]
 
 #v(0.5em)
@@ -284,8 +284,10 @@ $ bold(z) = "Compressor"(bold(x)) : quad RR^(644) -> RR^(128) -> RR^(32) $ <comp
 
 Architecture: `Linear(644, 128)` $arrow$ `LayerNorm(128)` $arrow$ `SiLU` $arrow$ `Dropout(0.2)` $arrow$ `Linear(128, 32)`.
 
-Performing causal analysis directly on all 644 raw features would yield
-$644^2 approx 414{,}000$ pairwise relationships.
+_(Full-bank design: 644D. Santander 17-group implementation: Causal expert receives 129D via FeatureRouter; the compressor input dim is 129 in practice.)_
+
+Performing causal analysis directly on all raw features at full-bank scale would yield
+$644^2 approx 414{,}000$ pairwise relationships; at 129D it is $129^2 approx 16{,}600$.
 The Compressor summarizes these into 32 core causal variables, alleviating the computational
 burden of DAG learning.
 
@@ -524,7 +526,7 @@ Transforms customer features into a probability simplex.
 
 $ bold(mu) = "softmax"("DistProjector"(bold(x))) in Delta^(32) $ <dist-proj>
 
-Architecture: `Linear(644, 128)` $arrow$ `LayerNorm(128)` $arrow$ `SiLU` $arrow$ `Dropout(0.2)` $arrow$ `Linear(128, 32)` $arrow$ `softmax`.
+Architecture: `Linear(644, 128)` $arrow$ `LayerNorm(128)` $arrow$ `SiLU` $arrow$ `Dropout(0.2)` $arrow$ `Linear(128, 32)` $arrow$ `softmax`. _(Full-bank design: 644D input. Santander 17-group: OT expert receives 95D via FeatureRouter.)_
 
 Applying softmax ensures the 32 dimensions sum to 1, allowing each dimension to be interpreted
 as "the proportion of spending propensity allocated to a category."
@@ -702,7 +704,7 @@ NaN issues encountered during actual training and their resolutions:
   stroke: 0.5pt + luma(200),
   table.header[*Item*][*Causal Expert*][*OT Expert*],
   [Registry Name], [`"causal"`], [`"optimal_transport"`],
-  [Input Dimension], [161D (demographics, products, txn, derived\_temporal, product\_hierarchy, gmm)], [127D (demographics, products, txn, derived\_temporal, gmm)],
+  [Input Dimension], [129D (demographics 11D + product\_holdings 24D + txn\_behavior 14D + derived\_temporal 4D + product\_hierarchy 34D + gmm 22D + rolling\_stats 20D)], [95D (demographics 11D + product\_holdings 24D + txn\_behavior 14D + derived\_temporal 4D + gmm 22D + rolling\_stats 20D)],
   [Latent Space], [32D (causal variables)], [32D (probability simplex)],
   [Output Dimension], [64D], [64D],
   [Core Mechanism], [SCM: $hat(bold(z)) = bold(z) + bold(z)(bold(W) circle.tiny bold(W))$], [Sinkhorn: $W(bold(mu), bold(nu)_k) times 16$],
@@ -737,7 +739,7 @@ naturally trained via backpropagation through the task loss.
 
 == Mathematical Perspective Comparison of Three Experts
 
-Although DeepFM, Causal, and OT all receive overlapping but distinct feature subsets as input (Causal: 161D, OT: 127D, via FeatureRouter), the mathematical structures they extract are fundamentally different:
+Although DeepFM, Causal, and OT all receive overlapping but distinct feature subsets as input (Causal: 129D, OT: 95D in the 17-group Santander implementation, via FeatureRouter), the mathematical structures they extract are fundamentally different:
 
 #table(
   columns: (0.8fr, 1.3fr, 1fr, 1.3fr),

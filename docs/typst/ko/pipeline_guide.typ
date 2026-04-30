@@ -295,24 +295,24 @@ generator_params:
 
 == FeatureRouter — Expert별 피처 서브셋 라우팅 (활성화됨)
 
-*FeatureRouter*는 현재 *활성화* 상태이다. 각 expert는 전체 ~349D 입력(Phase 0 후 403D) 피처 중 자신에게 지정된 feature group만 입력으로 받는다. `feature_groups.yaml`의 `target_experts` 선언이 실제 런타임 라우팅을 결정한다. expert_routing은 그룹 단위로 동작하며, `build_model()` 시점에 `feature_groups.yaml`에서 자동 빌드된다.
+*FeatureRouter*는 현재 *활성화* 상태이다. 각 expert는 전체 1211D 입력(17 feature groups) 피처 중 자신에게 지정된 feature group만 입력으로 받는다. `feature_groups.yaml`의 `target_experts` 선언이 실제 런타임 라우팅을 결정한다. expert_routing은 그룹 단위로 동작하며, `build_model()` 시점에 `feature_groups.yaml`에서 자동 빌드된다.
 
-*Expert별 입력 차원 (Phase 0 v3/v4):*
+*Expert별 입력 차원 (Phase 0, 17 feature groups 기준):*
 
 #table(
   columns: (auto, auto, 1fr),
   stroke: 0.5pt,
   [*Expert*], [*입력 차원*], [*주요 소스 그룹*],
-  [deepfm], [168D], [State축 전반],
-  [temporal\_ensemble], [139D], [Timeseries축 전반],
-  [hgcn], [27D], [merchant\_hierarchy (MCC Poincaré L1/L2 27D)],
+  [deepfm], [977D], [State축 전반 + txn\_lag\_tensor 800D + txn\_rolling\_stats 20D + multihot 55D],
+  [temporal\_ensemble], [116D], [txn\_behavior 14D + hmm\_states 25D + mamba\_temporal 50D + model\_derived 27D],
+  [hgcn], [58D], [merchant\_hierarchy 27D + mcc\_top30\_multihot 31D],
   [perslay], [32D], [tda\_local 16D + tda\_global 16D],
-  [causal], [161D], [Snapshot축 전반],
-  [lightgcn], [100D], [product\_hierarchy 32D + graph\_collaborative 66D + 기타],
-  [optimal\_transport], [127D], [Snapshot/State 혼합],
+  [causal], [129D], [demographics 11D + product\_holdings 24D + txn\_behavior 14D + derived\_temporal 4D + product\_hierarchy 34D + gmm 22D + rolling\_stats 20D],
+  [lightgcn], [955D], [product\_hierarchy 34D + graph\_collaborative 66D + txn\_lag\_tensor 800D + nba\_mh 24D + mcc\_mh 31D],
+  [optimal\_transport], [95D], [demographics 11D + product\_holdings 24D + txn\_behavior 14D + derived\_temporal 4D + gmm 22D + rolling\_stats 20D],
 )
 
-전체 피처는 ~349D 입력(Phase 0 후 403D)이며, 각 expert는 전체의 부분집합을 입력으로 받는다. FeatureRouter 활성화로 모델 파라미터가 4.77M → ~2.8M으로 감소했다.
+전체 피처는 1211D(17 feature groups)이며, 각 expert는 전체의 부분집합을 입력으로 받는다. FeatureRouter 활성화로 expert별 불필요한 피처를 배제한다.
 
 *구현 방식*: `target_experts` config에서 읽어 `FeatureRouter`가 `feature_group_ranges`를 참조, expert별로 해당 컬럼 범위를 슬라이싱하여 전달한다. 하드코딩 라우팅은 금지한다.
 
@@ -493,6 +493,11 @@ python scripts/run_santander_ablation.py \
 === Ablation Hyperparameters
 
 시나리오별로 다음 HP를 오버라이드할 수 있다:
+
+ablation 대상 feature group (총 17개; Santander v2 2026-04-28 기준):
+- *레거시 그룹 (ablation 기준선)*: `tda_global`, `tda_local`, `gmm_clustering`, `hmm_states`, `mamba_temporal`
+- *신규 그룹 (2026-04-25 추가)*: `txn_lag_tensor`, `txn_rolling_stats`, `nba_label_multihot`, `mcc_top30_multihot`
+- *핵심 그룹 (제거 비권장)*: `demographics`, `product_holdings`, `txn_behavior`
 
 ```bash
 # 피처 그룹 제거
@@ -830,7 +835,7 @@ cold_start:
 - name: demographics       # 그룹 이름
   group_type: transform    # transform | generator
   columns: [age, income]   # 입력 컬럼
-  output_dim: 38           # 출력 차원
+  output_dim: 11           # 출력 차원 (5 numeric + 6 categorical LabelEncoded)
   target_experts: [deepfm, mlp]  # 라우팅할 expert
   distill: true            # 증류 대상 여부
 ```

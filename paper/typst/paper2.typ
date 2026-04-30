@@ -112,7 +112,7 @@ Existing explanation approaches are insufficient:
 
 We propose a full-chain solution from prediction to persuasion:
 
-+ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 349 features; see companion paper for architecture and ablation) is distilled into per-task LGBM students via adaptive threshold gating that routes each task to DISTILL (soft labels), DIRECT (hard labels), or SKIP (rule engine) based on teacher quality assessment. This enables CPU-only serving while a three-layer fallback guarantees service continuity under any model failure scenario.
++ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 1211 features; see companion paper for architecture and ablation) is distilled into per-task LGBM students via adaptive threshold gating that routes each task to DISTILL (soft labels), DIRECT (hard labels), or SKIP (rule engine) based on teacher quality assessment. This enables CPU-only serving while a three-layer fallback guarantees service continuity under any model failure scenario.
 
 + *Multi-Agent Reason Generation*: Three specialized LLM agents collaborate in a pipeline --- Feature Selector chooses explanation-worthy features, Reason Generator produces natural-language narratives, and Safety Gate validates regulatory compliance.
 
@@ -240,7 +240,7 @@ enabling independent improvement of each component.
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((1, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 13 Task, 349D] \ #text(size: 8pt)[GPU, weekly training]], width: 50mm, fill: teacher-fill, name: <teacher>),
+      node((1, 0), [*PLE Teacher* \ #text(size: 6pt)[8 Expert, 13 Task, 1211D] \ #text(size: 8pt)[GPU, weekly training]], width: 50mm, fill: teacher-fill, name: <teacher>),
 
       node((1, 1.2), [*Threshold Gate* \ #text(size: 8pt)[AUC $>$ 0.60 / F1 $>$ 2/K / R² $>$ 0.05] \ #text(size: 8pt)[routes: DISTILL / DIRECT / SKIP]], width: 65mm, fill: gate-fill, name: <gate>),
 
@@ -264,13 +264,13 @@ enabling independent improvement of each component.
   caption: [Teacher-student distillation architecture with threshold-gated three-way task routing.],
 ) <fig:distillation>
 
-The teacher model (PLE with 7 heterogeneous experts, 13 tasks, 349 features;
+The teacher model (PLE with 7 heterogeneous experts, 13 tasks, 1211 features;
 see companion paper for architecture details)
 produces soft probability outputs that serve as training targets
 for per-task LGBM @ke2017lightgbm students.
 The teacher's value as a distillation source stems from its _structural guarantee_
 against _expert collapse_: because the seven experts are architecturally distinct
-(DeepFM, Mamba, HGCN, PersLay, etc.), they cannot converge to the same function,
+(DeepFM, MLP, Mamba, HGCN, PersLay, etc.), they cannot converge to the same function,
 ensuring the soft labels encode genuinely multi-faceted customer understanding.
 Note on HGCN: the graph expert receives 27-dimensional `merchant_hierarchy` features
 (MCC L1 $arrow.r$ L2 $arrow.r$ code Poincaré embeddings), not product co-holding features.
@@ -466,7 +466,7 @@ which features actually drive student predictions.
 
 Features are ranked by cumulative gain importance and the top-$k$ features
 capturing approximately 95% of cumulative gain are retained per task.
-The resulting feature set is typically 40--80 features per task (down from 349).
+The resulting feature set is typically 40--80 features per task (down from 1211).
 
 This approach has three advantages over teacher IG attribution:
 (1) *Serving model alignment*: LGBM gain reflects what the deployed model computes,
@@ -474,7 +474,7 @@ not what the teacher model computed during training --- these may differ substan
 given the architectural gap between deep PLE and gradient-boosted trees.
 (2) *Operational stability*: LGBM gain computation is a fast post-hoc step on the trained student;
 teacher IG requires backpropagation through the full PLE graph at inference time,
-causing out-of-memory failures at production scale (941K customers, 349 features).
+causing out-of-memory failures at production scale (941K customers, 1211 features).
 (3) *Interpretability alignment*: SHAP/gain explanations produced from the LGBM student
 are directly grounded in the model that generated the recommendation,
 satisfying the EU AI Act Art. 13 requirement that explanations reflect

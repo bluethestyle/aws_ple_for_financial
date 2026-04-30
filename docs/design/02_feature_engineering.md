@@ -40,8 +40,8 @@ Stage 6:   SequenceBuilder (time-based + sliding window → sequences.npy, seq_l
 
 TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
 
-- **TDA Global** (Snapshot 축, 36D+10D): 12개월 장기 윈도우 Persistence Diagram
-- **TDA Local** (Timeseries 축, 24D): 90일 단기 윈도우 Persistence Diagram
+- **TDA Global** (Snapshot 축, 16D): 12개월 장기 윈도우 Persistence Diagram (h0+h1, 8 stats each)
+- **TDA Local** (Timeseries 축, 16D): 90일 단기 윈도우 Persistence Diagram (h0+h1, 8 stats each)
 
 ---
 
@@ -50,50 +50,46 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
 ### 전체 구조
 
 ```
-5-Axis Classification
+5-Axis Classification (Santander, 17 groups, 1211D)
     ↓
     ├── State (정적)
-    │   ├── base_rfm (34D) — 인구통계, RFM 프로필
-    │   ├── base_category (64D) — 업종별 소비 패턴
-    │   ├── multi_source (91D) — 예금/카드/멤버십/투자/디지털
-    │   ├── extended_source (84D) — 보험/상담/캠페인/해외결제
-    │   ├── economics (17D) — MPC, 소득 탄력성, 항상소득 가설
-    │   └── multidisciplinary (24D) — 화학동역학/전염병확산/간섭/범죄패턴
+    │   ├── demographics      (11D) — 나이/소득/재직기간/상품수/활성여부 + 6 categorical codes
+    │   ├── product_holdings  (24D) — 24개 prod_* 이진 보유 플래그
+    │   ├── txn_behavior      (14D) — synth_* RFM + 시간대/안정성/사기비율
+    │   └── derived_temporal  ( 4D) — 총 취득/해지/관측월/상품다양성
     │
     ├── Snapshot (장기)
-    │   ├── tda_topology [global] (36D+10D) — 12개월 Persistence Diagram + Phase Transition
-    │   ├── hmm_states (48D) — HMM Triple-Mode 상태 전이 (journey/lifecycle/behavior)
-    │   ├── gmm_clustering (22D) — 장기 고객 세그먼트 (20 soft + entropy + dominant)
-    │   ├── model_derived [HMM/LNN] (23D) — HMM summary(5) + LNN(18)
-    │   └── 상품 트렌드 — 월별 상품 보유 변화 패턴
+    │   ├── tda_global        (16D) — 12개월 Persistence Diagram h0+h1 (8 stats each)
+    │   ├── hmm_states        (25D) — HMM Triple-Mode (journey/lifecycle/behavior)
+    │   ├── gmm_clustering    (22D) — K=20 soft probs + entropy + dominant
+    │   └── model_derived     (27D) — KMeans(5) + Bandit(4) + LNN(18)
     │
-    ├── Timeseries (단기)
-    │   ├── tda_topology [local] (24D) — 90일 Persistence Diagram (short window)
-    │   ├── base_temporal (60D) — 시계열 집계 + 주기 인코딩
-    │   ├── mamba_temporal (50D) — Mamba SSM 시퀀스 출력
-    │   ├── base_txn_stats (80D) — 최근 기간 거래 통계
-    │   └── PatchTST — Patch 기반 시계열 트랜스포머
+    ├── Timeseries (단기 시계열)
+    │   ├── tda_local         (16D) — 90일 Persistence Diagram h0+h1
+    │   ├── mamba_temporal    (50D) — Mamba SSM (cached_embedding_uri 로 GPU 사전계산)
+    │   ├── txn_lag_tensor   (800D) — K=200 lag 평탄화 (amount/mcc/day/hour × 200)
+    │   └── txn_rolling_stats (20D) — 4 윈도우(7/30/90/180d) × 5 메트릭
     │
     ├── Hierarchy (구조)
-    │   ├── merchant_hierarchy (27D) — MCC 계층의 Poincaré 쌍곡 임베딩 (27D). HGCN 라우팅
-    │   ├── graph_embeddings (20D) — Poincare 쌍곡 임베딩 (MCC/상품/지역 계층)
-    │   └── product_hierarchy — 상품 카테고리 트리 (24개 금융 상품)
+    │   ├── product_hierarchy (34D) — 24상품 Poincaré 임베딩 32D + 2 통계
+    │   └── merchant_hierarchy(27D) — MCC 계층 Poincaré 임베딩 (HGCN 라우팅)
     │
     └── Item (관계)
-        ├── customer_product_bipartite — 고객×상품 상호작용 그래프
-        └── lightgcn_collaborative (64D) — LightGCN 협업 필터링 임베딩
+        ├── graph_collaborative(66D) — LightGCN 협업 필터링 64D + 2 통계
+        ├── nba_label_multihot (24D) — 24상품 고정어휘 NBA multi-hot
+        └── mcc_top30_multihot (31D) — Top-30 MCC multi-hot + others 1열
 ```
 
 ### 차원 요약
 
 | Axis | Feature Groups | Total Dim | Target Experts |
 |------|---------------|-----------|----------------|
-| **State** | 6 groups | ~314D | DeepFM, MLP, AutoInt |
-| **Snapshot** | 4-5 groups | ~139D | PersLay, Causal, OT |
-| **Timeseries** | 4-5 groups | ~214D | Temporal Ensemble, Mamba |
-| **Hierarchy** | 2-3 groups | ~41D | HGCN |
-| **Item** | 2 groups | ~64D | LightGCN |
-| **합계** | | ~772D+ | 11종 Expert Pool |
+| **State** | 4 groups | 53D | DeepFM, MLP, Causal, OT |
+| **Snapshot** | 4 groups | 90D | PersLay, Temporal, DeepFM, Causal, OT |
+| **Timeseries** | 4 groups | 882D | Temporal Ensemble, DeepFM, Causal, OT |
+| **Hierarchy** | 2 groups | 61D | LightGCN, Causal, HGCN |
+| **Item** | 3 groups | 121D | LightGCN, DeepFM, HGCN |
+| **합계** | **17 groups** | **1211D** | 7종 Shared Expert Pool (+ MLP per-task tower) |
 
 ---
 
@@ -102,27 +98,33 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
 ### State 축 — 정적 속성
 
 ```yaml
-- name: base_rfm
+- name: demographics
   axis: state
   group_type: transform
-  output_dim: 34
-  target_experts: [deepfm, mlp]
+  transformers: [quantile_transformer]
+  output_dim: 11    # 5 numeric + 6 categorical codes (dense-rank, not one-hot)
+  target_experts: [deepfm, mlp, causal, optimal_transport]
 
-- name: economics
+- name: product_holdings
   axis: state
-  group_type: generate
-  generator: economics
-  output_dim: 17
-  target_experts: [deepfm]
+  group_type: transform
+  transformers: []   # binary, no scaling
+  output_dim: 24    # 24 prod_* binary flags
+  target_experts: [deepfm, mlp, causal, optimal_transport]
 
-- name: multidisciplinary
+- name: txn_behavior
   axis: state
-  group_type: generate
-  generator: multidisciplinary
-  output_dim: 24
-  target_experts: [deepfm]
-  # 4 subgroups (6D each): chemical_kinetics, epidemic, crime, interference
-  # Per-task-group routing: engagement←chemical, lifecycle←epidemic, etc.
+  group_type: transform
+  transformers: [standard_scaler]
+  output_dim: 14    # synth_* RFM + time-of-day + stability + fraud_ratio
+  target_experts: [deepfm, temporal_ensemble, causal, optimal_transport]
+
+- name: derived_temporal
+  axis: state
+  group_type: transform
+  transformers: [standard_scaler]
+  output_dim: 4     # total_acquisitions, total_churns, months_observed, product_diversity
+  target_experts: [deepfm, causal, optimal_transport]
 ```
 
 ### Snapshot 축 — 장기 패턴
@@ -130,19 +132,24 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
 ```yaml
 - name: tda_global
   axis: snapshot
-  generator: tda
+  generator: tda_global
   generator_params:
-    window_days: 365
-    output_dim: 46        # long(36) + phase_transition(10)
+    input_filter:
+      dtype: continuous
+      exclude_binary: true
+      min_nunique: 20
+    max_homology_dim: 1    # h0 + h1 only (h2 excluded)
+  output_dim: 16           # 2 dims × 8 stats each
   target_experts: [perslay]
 
 - name: hmm_states
   axis: snapshot
   generator: hmm
   generator_params:
+    input_filter:
+      include_prefix: ["synth_"]
     modes: [journey, lifecycle, behavior]   # Triple-Mode
-    state_dim: 16
-  output_dim: 48          # 3 modes x 16D
+  output_dim: 25           # 3 modes × ~8 stats + 3 state-id cols
   target_experts: [temporal_ensemble]
   # HMM Triple-Mode → task group routing:
   #   journey  → value, consumption groups
@@ -153,13 +160,31 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
   axis: snapshot
   generator: gmm
   generator_params:
-    n_components: 20       # K=20 clusters
+    input_filter:
+      dtype: continuous
+      exclude_binary: true
+      min_nunique: 10
+      exclude_columns: [customer_id]
+    n_clusters: 20
     covariance_type: full
-    # BIC-based validation: warns if K is suboptimal
-    # Cold-start fallback: uniform distribution for small data
+    max_iter: 200
   output_dim: 22           # K soft probs(20) + entropy(1) + dominant(1)
-  target_experts: [deepfm, mlp]
-  # NOTE: GMM soft labels (not KMeans) — posterior probabilities + Shannon entropy
+  target_experts: [deepfm, mlp, causal, optimal_transport]
+  # NOTE: GMM soft labels — posterior probabilities + Shannon entropy
+
+- name: model_derived
+  axis: snapshot
+  generator: model_features
+  generator_params:
+    input_filter:
+      dtype: continuous
+      exclude_binary: true
+      exclude_columns: [customer_id]
+    kmeans_dim: 5
+    bandit_dim: 4
+    lnn_dim: 18
+  output_dim: 27           # KMeans(5) + Bandit/MAB(4) + LNN(18)
+  target_experts: [temporal_ensemble, deepfm]
 ```
 
 ### Timeseries 축 — 단기 시퀀스
@@ -167,106 +192,156 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
 ```yaml
 - name: tda_local
   axis: timeseries
-  generator: tda
+  generator: tda_local
   generator_params:
-    window_days: 90
-    output_dim: 24
-  target_experts: [temporal_ensemble]
+    input_filter:
+      dtype: continuous
+      exclude_binary: true
+      include_prefix: ["synth_"]
+    max_homology_dim: 1    # h0 + h1 only
+  output_dim: 16           # 2 dims × 8 stats each
+  target_experts: [perslay]
 
 - name: mamba_temporal
   axis: timeseries
   generator: mamba
   generator_params:
+    input_filter:
+      include_prefix: ["synth_"]
     d_model: 128
-    d_state: 16
-    expand: 2
     output_dim: 50
+    prefer_gpu: true
+    entity_column: customer_id
+    base_batch_size: 256
+    cached_embedding_uri: s3://aiops-ple-financial/santander_ple/mamba/embedding.parquet
+    # cached_embedding_uri: GPU 사전계산 Mamba 임베딩 parquet.
+    # Phase 0 CPU job이 DuckDB JOIN으로 가져옴 (60분 SSM fallback 불필요).
+    # 입력 피처 변경 또는 모델 가중치 drift 시 GPU job 재실행 필요.
   target_experts: [temporal_ensemble]
+
+- name: txn_lag_tensor
+  axis: timeseries
+  generator: lag_extractor
+  generator_params:
+    sequence_columns:
+      amount: txn_amount_seq
+      mcc: txn_mcc_seq
+      day: txn_day_offset_seq
+      hour: txn_hour_seq
+    k: 200
+    truncate_seq_last: 1   # last MCC == next_mcc label
+    pad_value: 0.0
+  output_dim: 800          # K=200 × 4 features (amount/mcc/day/hour)
+  target_experts: [deepfm, lightgcn]
+  # 800D is intentionally high; distill=false to keep student load manageable
+
+- name: txn_rolling_stats
+  axis: timeseries
+  generator: rolling_stats_extractor
+  generator_params:
+    amount_column: txn_amount_seq
+    day_offset_column: txn_day_offset_seq
+    windows_days: [7, 30, 90, 180]
+    metrics: [sum, mean, std, count, days_active]
+    truncate_seq_last: 1
+  output_dim: 20           # 4 windows × 5 metrics
+  target_experts: [deepfm, causal, optimal_transport]
 ```
 
 ### Hierarchy 축 — 구조적 계층
 
 ```yaml
-- name: graph_embeddings
+- name: product_hierarchy
   axis: hierarchy
   generator: graph
   generator_params:
-    hierarchy_sources: [mcc, product, region]
+    input_filter:
+      include_prefix: ["prod_"]
+    use_poincare: true
     curvature: 1.0
-  output_dim: 20
-  target_experts: [hgcn]
+    embedding_dim: 32
+    entity_column: customer_id
+  output_dim: 34              # 32 Poincaré dims + 2 geometric stats
+  target_experts: [lightgcn, causal]
 
 - name: merchant_hierarchy
   axis: hierarchy
   generator: merchant_hierarchy
   generator_params:
     mcc_hierarchy_path: configs/mcc_hierarchy.yaml   # ISO 18245, L1/L2/L3
-    n_svd_components: 8       # Brand SVD embedding dim
-    poincare_dim: 27          # Poincaré hyperbolic embedding of MCC hierarchy
+    truncate_seq_last: 1      # drop last MCC = next_mcc label, prevents leakage
+    l1_radius: 0.8
+    l2_radius: 0.5
+    time_decay_lambda: 0.01
   output_dim: 27              # Poincaré 27D embedding (쌍곡 공간, MCC 계층 구조 인코딩)
   target_experts: [hgcn]
   # MCC Hierarchy: 10 L1 groups, ~30 L2 subcategories, 109 L3 codes in dataset
-  # NOTE: txn_mcc_seq는 generator 호출 전에 마지막 1원소 제거 (next_mcc 누수 방지)
-
-- name: product_hierarchy
-  axis: hierarchy
-  generator: product_hierarchy
-  generator_params:
-    hierarchy_depth: 2        # Level 1: 예금/대출/투자/보험/카드/기타
-    embedding_dim: 16         # Level 2: 24개 세부 상품
-  output_dim: 16
-  target_experts: [hgcn]
+  # NOTE: txn_mcc_seq 마지막 1원소 제거 → next_mcc 누수 방지
 ```
 
 ### Item 축 — 관계적 상호작용
 
 ```yaml
-- name: customer_product_bipartite
+- name: graph_collaborative
   axis: item
-  generator: bipartite_graph
+  generator: graph
   generator_params:
-    customer_col: customer_id_idx
-    product_cols_prefix: "ind_"
-    edge_weight: holding_duration
-  output_dim: 64
+    input_filter:
+      dtype: all_numeric
+      exclude_columns: [customer_id, has_nba, churn_signal, product_stability]
+      exclude_prefix: ["label_"]
+    embedding_dim: 64
+    use_poincare: false
+    entity_column: customer_id
+  output_dim: 66              # 64 LightGCN dims + 2 graph stats
   target_experts: [lightgcn]
 
-- name: lightgcn_collab
+- name: nba_label_multihot
   axis: item
-  generator: lightgcn
+  generator: topn_multihot_extractor
   generator_params:
-    num_layers: 3
-    embedding_dim: 64
-  output_dim: 64
-  target_experts: [lightgcn]
+    source_column: nba_label
+    mode: fixed_vocab
+    vocab: [0..23]            # 24 Santander product slots
+    binary: true
+  output_dim: 24
+  target_experts: [lightgcn, deepfm]
+
+- name: mcc_top30_multihot
+  axis: item
+  generator: topn_multihot_extractor
+  generator_params:
+    source_column: txn_mcc_seq
+    mode: top_n
+    top_n: 30
+    include_others: true
+    truncate_seq_last: 1      # last MCC == next_mcc label, drop to avoid leak
+    binary: true
+  output_dim: 31              # 30 top MCC bins + 1 others col
+  target_experts: [lightgcn, deepfm, hgcn]
 ```
 
 ---
 
 ## Feature Generator Registry
 
-### 8 구현 완료 Generator
+### 11 구현 완료 Generator
 
-모든 Generator는 `core/feature/generators/` 디렉토리에 구현되어 ���으며, `FeatureGeneratorRegistry`에 ���록된다. cuDF primary / pandas fallback 패턴을 따른다. Generator output은 cuDF DataFrame 또는 pandas DataFrame이다.
+모든 Generator는 `core/feature/generators/` 디렉토리에 구현되어 있으며, `FeatureGeneratorRegistry`에 등록된다. cuDF primary / pandas fallback 패턴을 따른다. Generator output은 cuDF DataFrame 또는 pandas DataFrame이다.
 
-| # | 등록 이름 | 파일 | Axis | Output | GPU 가속 | 설명 |
-|---|-----------|------|------|--------|---------|------|
-| 1 | `tda` | `core/feature/generators/tda.py` | Snapshot/Timeseries | 70D | cuPY + ripser | Persistence Diagram (short+long) |
-| 2 | `hmm` | `core/feature/generators/hmm.py` | Snapshot | 48D | hmmlearn | HMM Triple-Mode 상태 |
-| 3 | `mamba` | `core/feature/generators/mamba.py` | Timeseries | 50D | GPU (mamba-ssm) | Mamba SSM 시퀀스 |
-| 4 | `graph` | `core/feature/generators/graph.py` | Hierarchy | 20D | - | Poincare 쌍곡 임베딩 |
-| 5 | `gmm` | `core/feature/generators/gmm.py` | Snapshot | 22D | cuML (optional) | GMM soft labels (K=20, not KMeans) |
-| 6 | `model_derived` | `core/feature/generators/model_features.py` | Snapshot | 27D | - | GMM soft probs(5D) + Bandit(4D) + LNN(18D) |
-| 7 | `economics` | `core/feature/generators/economics.py` | State | 17D | - | Income decomposition(8D) + Financial behavior(9D) |
-| 8 | `merchant_hierarchy` | `core/feature/generators/merchant_hierarchy.py` | Hierarchy | 27D | - | MCC 계층의 Poincaré 쌍곡 임베딩 (27D). txn_mcc_seq는 next_mcc 누수 방지를 위해 마지막 원소 제거 후 전달 |
-
-### 추가 Generator (보조)
-
-| # | 등록 이름 | 파일 | Axis | Output | 설명 |
-|---|-----------|------|------|--------|------|
-| 9 | `temporal_pattern` | `core/feature/generators/temporal.py` | Timeseries | 가변 | 시계열 집계 + 주기 인코딩 |
-| 10 | `multidisciplinary` | `core/feature/generators/multidisciplinary.py` | State | 24D | 화학/전염병/간섭/범죄 |
-| 11 | `phase_transition` | `core/feature/generators/phase_transition.py` | Snapshot | 10D | Phase transition features |
+| # | 등록 이름 | 파일 | Axis | Santander Output | GPU 가속 | 설명 |
+|---|-----------|------|------|-----------------|---------|------|
+| 1 | `tda_global` | `core/feature/generators/tda.py` | Snapshot | 16D | cuPY + ripser | Persistence Diagram h0+h1 (장기 윈도우) |
+| 2 | `tda_local` | `core/feature/generators/tda.py` | Timeseries | 16D | cuPY + ripser | Persistence Diagram h0+h1 (단기 90일) |
+| 3 | `hmm` | `core/feature/generators/hmm.py` | Snapshot | 25D | hmmlearn | HMM Triple-Mode 상태 (journey/lifecycle/behavior) |
+| 4 | `mamba` | `core/feature/generators/mamba.py` | Timeseries | 50D | GPU (mamba-ssm) | Mamba SSM — cached_embedding_uri로 Phase 0 CPU join |
+| 5 | `graph` | `core/feature/generators/graph.py` | Hierarchy/Item | 34D / 66D | - | Poincaré 임베딩 (product_hierarchy) / LightGCN (graph_collaborative) |
+| 6 | `gmm` | `core/feature/generators/gmm.py` | Snapshot | 22D | cuML (optional) | GMM soft labels (K=20) + entropy + dominant |
+| 7 | `model_features` | `core/feature/generators/model_features.py` | Snapshot | 27D | - | KMeans(5D) + Bandit(4D) + LNN(18D) |
+| 8 | `merchant_hierarchy` | `core/feature/generators/merchant_hierarchy.py` | Hierarchy | 27D | - | MCC 계층 Poincaré 쌍곡 임베딩; truncate_seq_last=1 (누수 방지) |
+| 9 | `lag_extractor` | `core/feature/generators/lag_extractor.py` | Timeseries | 800D | - | K=200 lag 평탄화 (amount/mcc/day/hour × 200) |
+| 10 | `rolling_stats_extractor` | `core/feature/generators/rolling_stats_extractor.py` | Timeseries | 20D | - | 4 윈도우(7/30/90/180d) × 5 메트릭 (sum/mean/std/count/days_active) |
+| 11 | `topn_multihot_extractor` | `core/feature/generators/topn_multihot_extractor.py` | Item | 24D / 31D | - | fixed_vocab(NBA 24상품) / top_n(MCC top-30+others) 모드 |
 
 ### GPU Utility Layer
 
