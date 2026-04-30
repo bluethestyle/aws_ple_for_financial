@@ -166,10 +166,42 @@ def load_ready_data(channel_dir: str) -> dict:
         # Identify scalar columns via DuckDB DESCRIBE (lightweight, no data load)
         scalar_cols = _detect_scalar_cols_duckdb(con, parquet_uri)
 
-        # PyArrow native parquet read (no pandas, no DuckDB data copy)
-        features = pq.read_table(str(features_path), columns=scalar_cols)
-        logger.info("Loaded features via PyArrow: %d rows, %d columns",
-                    features.num_rows, features.num_columns)
+        # max_rows pre-filter: when SM_HP_MAX_ROWS (or env override) is set,
+        # read only enough parquet row groups to cover max_rows. Without this,
+        # 1M-row × 1.3K-col datasets explode to 11 GB Arrow on g4dn.xlarge
+        # (16 GB RAM) before the post-load .take() subsample can fire.
+        max_rows_pre = int(os.environ.get("SM_HP_MAX_ROWS", "0") or 0)
+        if max_rows_pre > 0:
+            pf = pq.ParquetFile(str(features_path))
+            total_rows = pf.metadata.num_rows
+            if total_rows > max_rows_pre:
+                rows_so_far = 0
+                rg_indices: List[int] = []
+                for rg_i in range(pf.num_row_groups):
+                    rg_indices.append(rg_i)
+                    rows_so_far += pf.metadata.row_group(rg_i).num_rows
+                    if rows_so_far >= max_rows_pre:
+                        break
+                features = pf.read_row_groups(rg_indices, columns=scalar_cols)
+                if features.num_rows > max_rows_pre:
+                    features = features.slice(0, max_rows_pre)
+                logger.info(
+                    "Loaded features via PyArrow row-group subsample "
+                    "(max_rows=%d): %d row groups -> %d rows x %d columns",
+                    max_rows_pre, len(rg_indices),
+                    features.num_rows, features.num_columns,
+                )
+            else:
+                features = pq.read_table(str(features_path), columns=scalar_cols)
+                logger.info(
+                    "max_rows=%d >= total_rows=%d; reading full table.",
+                    max_rows_pre, total_rows,
+                )
+        else:
+            # PyArrow native parquet read (no pandas, no DuckDB data copy)
+            features = pq.read_table(str(features_path), columns=scalar_cols)
+            logger.info("Loaded features via PyArrow: %d rows, %d columns",
+                        features.num_rows, features.num_columns)
     else:
         # Fallback: load from generic parquet files (backward compat)
         parquet_files = sorted(channel_path.glob("**/*.parquet"))
@@ -211,7 +243,25 @@ def load_ready_data(channel_dir: str) -> dict:
     # -- Labels --
     labels_path = channel_path / "labels.parquet"
     if labels_path.exists():
-        labels = pq.read_table(str(labels_path))
+        # Mirror the features row-group subsample so labels stay aligned.
+        if max_rows_pre > 0:
+            pf_l = pq.ParquetFile(str(labels_path))
+            total_l = pf_l.metadata.num_rows
+            if total_l > max_rows_pre:
+                rows_so_far = 0
+                rg_idx_l: List[int] = []
+                for rg_i in range(pf_l.num_row_groups):
+                    rg_idx_l.append(rg_i)
+                    rows_so_far += pf_l.metadata.row_group(rg_i).num_rows
+                    if rows_so_far >= max_rows_pre:
+                        break
+                labels = pf_l.read_row_groups(rg_idx_l)
+                if labels.num_rows > max_rows_pre:
+                    labels = labels.slice(0, max_rows_pre)
+            else:
+                labels = pq.read_table(str(labels_path))
+        else:
+            labels = pq.read_table(str(labels_path))
     else:
         labels = None
     if labels is not None:
@@ -267,8 +317,28 @@ def load_ready_data(channel_dir: str) -> dict:
     if split_path.exists():
         with open(split_path) as f:
             split_indices = json.load(f)
-        logger.info("Loaded split_indices: %s",
-                     {k: len(v) for k, v in split_indices.items()})
+        # When max_rows_pre is active, the in-memory feature table only
+        # contains the first ``features.num_rows`` rows. Drop split indices
+        # that point past that boundary so ``merged.take(train_idx)`` does
+        # not raise ArrowIndexError. The remaining train/val/test still
+        # respect their original temporal ordering because we kept the
+        # earliest row groups.
+        if max_rows_pre > 0:
+            limit = features.num_rows
+            filtered = {
+                k: [i for i in v if i < limit]
+                for k, v in split_indices.items()
+            }
+            logger.info(
+                "Filtered split_indices to <%d rows: %s -> %s",
+                limit,
+                {k: len(v) for k, v in split_indices.items()},
+                {k: len(v) for k, v in filtered.items()},
+            )
+            split_indices = filtered
+        else:
+            logger.info("Loaded split_indices: %s",
+                         {k: len(v) for k, v in split_indices.items()})
 
     # Close DuckDB connection — all data is now in PyArrow Tables
     con.close()
