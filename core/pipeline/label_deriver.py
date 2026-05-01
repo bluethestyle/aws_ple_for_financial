@@ -875,35 +875,8 @@ class LabelDeriver:
                             f"WHERE column_name = ?",
                             [source_col],
                         ).fetchone()[0])
-                    except Exception as e:
-                        logger.warning(
-                            "LabelDeriver: DESCRIBE %s probe failed for '%s': %s",
-                            source_table, source_col, e,
-                        )
+                    except Exception:
                         col_in_sql = False
-                    if not col_in_sql:
-                        # Diagnostic dump: list every column on the SQL side
-                        # so we can see why the LIST source is missing.
-                        try:
-                            cols = [r[0] for r in con.execute(
-                                f"SELECT column_name FROM (DESCRIBE {source_table})"
-                            ).fetchall()]
-                            list_cols = [r[0] for r in con.execute(
-                                f"SELECT column_name FROM (DESCRIBE {source_table}) "
-                                f"WHERE column_type LIKE '%[]'"
-                            ).fetchall()]
-                            logger.warning(
-                                "LabelDeriver: probe miss '%s' on %s "
-                                "(total=%d cols, %d LIST cols=%s, "
-                                "first 30=%s)",
-                                source_col, source_table,
-                                len(cols), len(list_cols), list_cols[:10],
-                                cols[:30],
-                            )
-                        except Exception as e2:
-                            logger.warning(
-                                "LabelDeriver: dump cols also failed: %s", e2,
-                            )
                 if not col_in_sql:
                     logger.warning(
                         "LabelDeriver: source '%s' not in df for label '%s', using default",

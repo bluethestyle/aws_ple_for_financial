@@ -3017,11 +3017,44 @@ class PipelineRunner:
                 )
             else:
                 proj_parts.append(f'"{col_name}"')
-        con.execute(
-            f"CREATE OR REPLACE VIEW _post_stage3 AS\n"
-            f"  SELECT {', '.join(proj_parts)}\n"
-            f"  FROM read_parquet('{parquet_path}')"
-        )
+
+        # Stage 1 keeps long LIST columns (>50 elements avg — txn_*) lazy
+        # in the adapter's DuckDB connection rather than materialising them
+        # through pandas/Arrow. The spill therefore drops them from the
+        # post_stage3 parquet, which used to silently break Stage 4 label
+        # derivation for sequence_last / sequence_mode_shift /
+        # sequence_diversity_trend (every label fell back to the configured
+        # default).  POSITIONAL JOIN the lazy columns back from the adapter's
+        # raw table so the _post_stage3 view exposes the full schema.
+        # CLAUDE.md §1.3: row order is preserved by Stage 1 → Stage 3 (no
+        # ORDER BY changes), so positional alignment is safe; if a future
+        # stage shuffles rows this contract must be re-verified.
+        spill_proj = ", ".join(proj_parts)
+        lazy_cols: List[str] = []
+        meta_extra = getattr(self._adapter_ctx.metadata, "extra", None) or {}
+        if isinstance(meta_extra, dict):
+            lazy_cols = list(meta_extra.get("list_cols_lazy", []) or [])
+        if lazy_cols:
+            raw_table = self._adapter_ctx.table_name
+            lazy_proj = ", ".join(f'r."{c}"' for c in lazy_cols)
+            con.execute(
+                f"CREATE OR REPLACE VIEW _post_stage3 AS\n"
+                f"  SELECT s.*, {lazy_proj}\n"
+                f"  FROM (SELECT {spill_proj} "
+                f"        FROM read_parquet('{parquet_path}')) s\n"
+                f"  POSITIONAL JOIN {raw_table} r"
+            )
+            logger.info(
+                "[Stage 4-9 prep] _post_stage3 view rejoins %d lazy LIST "
+                "cols from %s: %s",
+                len(lazy_cols), raw_table, lazy_cols,
+            )
+        else:
+            con.execute(
+                f"CREATE OR REPLACE VIEW _post_stage3 AS\n"
+                f"  SELECT {spill_proj}\n"
+                f"  FROM read_parquet('{parquet_path}')"
+            )
         self._post_stage3_table = "_post_stage3"
 
         feature_col_set: set = set()
