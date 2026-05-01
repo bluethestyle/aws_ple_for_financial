@@ -136,6 +136,20 @@ class ModelSpec:
     dropout: float = 0.1
     expert_basket: Optional[dict] = None
     group_task_expert: Optional[dict] = None
+    # Per-expert MLP / DeepFM / Causal / OT hidden dim configuration. The
+    # config_builder reads ``expert_config.mlp.hidden_dims`` to size the
+    # shared/task expert internal MLPs. Without this field on the
+    # dataclass, ``_config_to_dict`` silently dropped the entire pipeline
+    # ``model.expert_config`` block from label_schema.json, and
+    # config_builder fell through to its dynamic fallback
+    # ``[input_dim*2, input_dim]`` — which on a 1355-D feature matrix
+    # ballooned the model from ~2.6 M params (v12, [128, 64]) to ~171 M
+    # params (v13, [2710, 1355]).
+    expert_config: dict = field(default_factory=dict)
+    ple: dict = field(default_factory=dict)
+    task_tower: dict = field(default_factory=dict)
+    cgc: dict = field(default_factory=dict)
+    adatt: dict = field(default_factory=dict)
 
 
 @dataclass

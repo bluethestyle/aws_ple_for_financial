@@ -477,7 +477,14 @@ feature_groups:
       pad_value: 0.0
       prefix: txn_lag
     output_dim: 800
-    target_experts: [deepfm, lightgcn]   # PM intent: time signal to non-Temporal experts
+    # 2026-05-01: added temporal_ensemble. Earlier "non-Temporal experts"
+    # framing was reconsidered — Mamba/LNN inside temporal_ensemble already
+    # consume the raw seq, but the lag tabularisation is a *different*
+    # representation (point-estimate per lag k=200 vs sequential mixing) and
+    # the temporal expert is the most architecturally aligned consumer for
+    # any lag-feature signal. Excluding it created a routing asymmetry that
+    # hid temporal contribution in v12-style ablation.
+    target_experts: [deepfm, lightgcn, temporal_ensemble]
     interpretation:
       category: temporal_lag
       template: "Recent lag-{position} {feature} at {value} indicates {direction} pattern"
@@ -513,7 +520,10 @@ feature_groups:
       truncate_seq_last: 1
       prefix: txn_roll
     output_dim: 20
-    target_experts: [deepfm, causal, optimal_transport]
+    # 2026-05-01: added temporal_ensemble (mirrors txn_lag_tensor change).
+    # Rolling window stats are explicit time aggregates and the temporal
+    # expert is the most architecturally aligned consumer.
+    target_experts: [deepfm, causal, optimal_transport, temporal_ensemble]
     interpretation:
       category: rolling_volume
       template: "{window}-day {metric} at {value} indicates {direction} activity"

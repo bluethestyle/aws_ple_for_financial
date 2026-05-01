@@ -73,13 +73,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-PHASE0 = "outputs/phase0_v12"
-RESULTS = "outputs/ablation_v12"
+PHASE0 = "outputs/phase0_v13/extracted"  # 0501-1246: 12 tasks, all-fix
+RESULTS = "outputs/ablation_v13"
 CONFIG = "configs/pipeline.yaml"
 DATASET_CONFIG = "configs/datasets/santander.yaml"
 EPOCHS = 10             # reduced from 20 — plateau observed at epoch 5-6 across scenarios
 WARMUP = 3              # 30% of epochs
-BATCH = 5632          # orchestrator CUDA-blocked, no VRAM spillover
+BATCH = 2048          # local: reduce VRAM pressure (5632 saturates RTX 4070 12GB)
 LR = 0.0005
 SEED = 42
 AMP = True
@@ -816,11 +816,22 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--scenario", type=str, default=None)
     parser.add_argument(
+        "--prefix", type=str, default=None,
+        help="Run all scenarios whose name starts with this prefix "
+             "(e.g. 'joint_' for the 15 expert add/remove scenarios, "
+             "'struct_' for the 23 architecture-toggle scenarios). "
+             "Mutually exclusive with --scenario.",
+    )
+    parser.add_argument(
         "--force-fresh",
         action="store_true",
         help="Archive existing results and start a clean ablation run.",
     )
     args = parser.parse_args()
+
+    if args.scenario and args.prefix:
+        logger.error("--scenario and --prefix are mutually exclusive.")
+        sys.exit(1)
 
     scenarios = SCENARIOS
     if args.scenario:
@@ -829,6 +840,19 @@ def main():
             logger.error("Unknown scenario '%s'. Available: %s",
                          args.scenario, [s["name"] for s in SCENARIOS])
             sys.exit(1)
+    elif args.prefix:
+        scenarios = [s for s in SCENARIOS if s["name"].startswith(args.prefix)]
+        if not scenarios:
+            logger.error(
+                "No scenarios match prefix '%s'. Available prefixes: %s",
+                args.prefix,
+                sorted({s["name"].split("_", 1)[0] + "_" for s in SCENARIOS}),
+            )
+            sys.exit(1)
+        logger.info(
+            "--prefix '%s' matched %d scenarios: %s",
+            args.prefix, len(scenarios), [s["name"] for s in scenarios],
+        )
 
     results_dir = Path(RESULTS)
 
