@@ -178,17 +178,22 @@ tasks:
       source_col: nba_label
       indices: [4, 17, 20, 22, 23]
 
-  - name: segment_prediction
-    type: multiclass
-    loss: ce
-    loss_weight: 1.0
-    label_col: label_segment
-    num_classes: 4
-    description: "Customer segment: 01-TOP=0, 02-PARTICULARES=1, 03-UNIVERSITARIO=2, UNKNOWN=3"
-    derive:
-      method: string_map
-      source_col: segment
-      mapping: {"01-TOP": 0, "02-PARTICULARES": 1, "03-UNIVERSITARIO": 2, "UNKNOWN": 3}
+  # REMOVED 2026-05-01: deterministic leakage — `segment` is a categorical
+  # model input feature; `label_segment` is its 1-to-1 string_map encoding
+  # (corr=1.0 in 0430-1031 leakage scan). Same pattern as income_tier /
+  # tenure_stage / spend_level / engagement_score (already removed earlier).
+  #
+  # - name: segment_prediction
+  #   type: multiclass
+  #   loss: ce
+  #   loss_weight: 1.0
+  #   label_col: label_segment
+  #   num_classes: 4
+  #   description: "Customer segment: 01-TOP=0, 02-PARTICULARES=1, 03-UNIVERSITARIO=2, UNKNOWN=3"
+  #   derive:
+  #     method: string_map
+  #     source_col: segment
+  #     mapping: {"01-TOP": 0, "02-PARTICULARES": 1, "03-UNIVERSITARIO": 2, "UNKNOWN": 3}
 
   # REMOVED: income_tier — bucket(income) is a model input; reconstructable.
 
@@ -295,10 +300,12 @@ labels:
     indices: [4, 17, 20, 22, 23]
 
   # Tier 3: segmentation
-  label_segment:
-    source: segment
-    type: string_map
-    mapping: {"01-TOP": 0, "02-PARTICULARES": 1, "03-UNIVERSITARIO": 2, "UNKNOWN": 3}
+  # REMOVED 2026-05-01: label_segment — deterministic leakage from `segment`
+  # input column (string_map is reconstructable; corr=1.0 in 0430-1031 scan).
+  # label_segment:
+  #   source: segment
+  #   type: string_map
+  #   mapping: {"01-TOP": 0, "02-PARTICULARES": 1, "03-UNIVERSITARIO": 2, "UNKNOWN": 3}
   # REMOVED: label_income_tier (deterministic leakage)
 
   # Tier 5: transaction-based NBA labels
@@ -395,7 +402,8 @@ task_groups:
 
   - name: lifecycle
     description: "고객이 어디에 있는가"
-    tasks: [churn_signal, product_stability, segment_prediction]
+    # REMOVED from tasks: segment_prediction (2026-05-01, deterministic leakage)
+    tasks: [churn_signal, product_stability]
     adatt_intra_strength: 0.7
     adatt_inter_strength: 0.3
 
@@ -442,7 +450,7 @@ grad_surgery:
     binary:     [churn_signal, will_acquire_deposits, will_acquire_investments,
                  will_acquire_accounts, will_acquire_lending, will_acquire_payments,
                  top_mcc_shift]
-    multiclass: [nba_primary, segment_prediction, next_mcc]
+    multiclass: [nba_primary, next_mcc]
     regression: [product_stability, cross_sell_count, mcc_diversity_trend]
 
 # ---------------------------------------------------------------------------
@@ -485,8 +493,9 @@ data:
   # Per-task validation split strategy
   split_strategy:
     state_tasks:
-      # REMOVED: tenure_stage, spend_level, income_tier, engagement_score (leakage)
-      tasks: [churn_signal, product_stability, segment_prediction]
+      # REMOVED: tenure_stage, spend_level, income_tier, engagement_score (2026-04-10),
+      #          segment_prediction (2026-05-01) — all six are deterministic leakage.
+      tasks: [churn_signal, product_stability]
       val_method: random
     future_tasks:
       tasks: [nba_primary, will_acquire_deposits, will_acquire_investments,
@@ -607,13 +616,15 @@ distillation:
 scoring:
   method: fd_tvs
   weights:
-    # Financial DNA task group weights (all 13 tasks)
+    # Financial DNA task group weights (12 tasks; segment_prediction removed
+    # 2026-05-01 due to deterministic leakage — its 0.05 weight is folded into
+    # nba_primary which now carries the segmentation signal via its 7-class
+    # product-group target).
     # Engagement group
     churn_signal: 0.15
     top_mcc_shift: 0.05
     # Lifecycle group
-    nba_primary: 0.15
-    segment_prediction: 0.05
+    nba_primary: 0.20
     next_mcc: 0.05
     # Value group
     product_stability: 0.10
@@ -723,24 +734,12 @@ ablation:
       - churn_signal
       - product_stability
       - nba_primary
-    tasks_5:    # was tasks_6; removed has_nba
+    tasks_4:    # was tasks_6→tasks_5; removed has_nba + segment_prediction
       - churn_signal
       - product_stability
       - nba_primary
       - cross_sell_count
-      - segment_prediction
-    tasks_10:   # was tasks_11; removed has_nba
-      - churn_signal
-      - product_stability
-      - nba_primary
-      - cross_sell_count
-      - will_acquire_deposits
-      - will_acquire_investments
-      - will_acquire_accounts
-      - will_acquire_lending
-      - will_acquire_payments
-      - segment_prediction
-    tasks_13:   # was tasks_14; removed has_nba — full task set
+    tasks_9:    # was tasks_11→tasks_10; removed has_nba + segment_prediction
       - churn_signal
       - product_stability
       - nba_primary
@@ -750,7 +749,16 @@ ablation:
       - will_acquire_accounts
       - will_acquire_lending
       - will_acquire_payments
-      - segment_prediction
+    tasks_12:   # was tasks_14→tasks_13; removed has_nba + segment_prediction — full task set
+      - churn_signal
+      - product_stability
+      - nba_primary
+      - cross_sell_count
+      - will_acquire_deposits
+      - will_acquire_investments
+      - will_acquire_accounts
+      - will_acquire_lending
+      - will_acquire_payments
       - next_mcc
       - mcc_diversity_trend
       - top_mcc_shift

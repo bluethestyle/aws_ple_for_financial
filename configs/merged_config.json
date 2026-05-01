@@ -1,814 +1,4 @@
 {
-  "model": {
-    "architecture": "ple",
-    "expert_basket": {
-      "shared": [
-        "deepfm",
-        "temporal_ensemble",
-        "hgcn",
-        "perslay",
-        "causal",
-        "lightgcn",
-        "optimal_transport"
-      ],
-      "task": [
-        "mlp"
-      ]
-    },
-    "expert_config": {
-      "deepfm": {
-        "embedding_dim": 16,
-        "hidden_dims": [
-          256,
-          128,
-          64
-        ],
-        "dropout": 0.2,
-        "field_dims": "auto"
-      },
-      "temporal_ensemble": {
-        "mamba_d_model": 64,
-        "mamba_n_layers": 2,
-        "transformer_n_heads": 4,
-        "transformer_n_layers": 2,
-        "lnn_hidden_dim": 64
-      },
-      "hgcn": {
-        "hyperbolic_dim": 20,
-        "product_dim": 24,
-        "refine_hidden": 128
-      },
-      "perslay": {
-        "phi_hidden_dim": 64,
-        "rho_hidden_dim": 64
-      },
-      "causal": {
-        "dag_hidden_dims": [
-          128,
-          64
-        ],
-        "lambda_dag": 0.01
-      },
-      "lightgcn": {
-        "embedding_dim": 64,
-        "n_layers": 3
-      },
-      "optimal_transport": {
-        "hidden_dims": [
-          128,
-          64
-        ],
-        "sinkhorn_iterations": 10
-      },
-      "mlp": {
-        "hidden_dims": [
-          128,
-          64
-        ],
-        "dropout": 0.2
-      }
-    },
-    "cgc": {
-      "dim_normalize": true
-    },
-    "ple": {
-      "num_layers": 3,
-      "extraction_dim": 64,
-      "num_shared_experts": 7,
-      "num_task_experts": 1
-    },
-    "evidential": {
-      "enabled": true,
-      "kl_lambda": 0.01,
-      "annealing_epochs": 10
-    },
-    "sae": {
-      "enabled": true,
-      "weight": 0.01,
-      "expansion_factor": 4,
-      "l1_lambda": 0.001
-    },
-    "loss_weighting": {
-      "strategy": "uncertainty"
-    },
-    "group_task_expert": {
-      "enabled": true,
-      "group_hidden": 128,
-      "group_output": 64,
-      "cluster_embed_dim": 32
-    },
-    "task_tower": {
-      "default_dims": [
-        64,
-        32
-      ],
-      "dropout": 0.1
-    },
-    "hmm_group_mode_map": {
-      "engagement": "behavior",
-      "lifecycle": "lifecycle",
-      "value": "journey",
-      "consumption": "journey"
-    },
-    "multidisciplinary_routing": {
-      "engagement": [
-        0,
-        1,
-        2,
-        3,
-        4,
-        5
-      ],
-      "lifecycle": [
-        6,
-        7,
-        8,
-        9,
-        10,
-        11
-      ],
-      "value": [
-        12,
-        13,
-        14,
-        15,
-        16,
-        17
-      ],
-      "consumption": [
-        18,
-        19,
-        20,
-        21,
-        22,
-        23
-      ]
-    }
-  },
-  "adatt": {
-    "transfer_lambda": 0.1,
-    "temperature": 1.0,
-    "warmup_epochs": 3,
-    "freeze_epoch": 8,
-    "grad_interval": 10,
-    "inter_group_strength": 0.3
-  },
-  "grad_surgery": {
-    "enabled": false,
-    "conflict_threshold": 0.0,
-    "warmup_epochs": 3,
-    "grad_interval": 10,
-    "ema_decay": 0.9,
-    "log_interval": 1,
-    "task_type_groups": {
-      "binary": [
-        "churn_signal",
-        "will_acquire_deposits",
-        "will_acquire_investments",
-        "will_acquire_accounts",
-        "will_acquire_lending",
-        "will_acquire_payments",
-        "top_mcc_shift"
-      ],
-      "multiclass": [
-        "nba_primary",
-        "segment_prediction",
-        "next_mcc"
-      ],
-      "regression": [
-        "product_stability",
-        "cross_sell_count",
-        "mcc_diversity_trend"
-      ]
-    }
-  },
-  "training": {
-    "experiment_name": "santander_ple",
-    "batch_size": 2048,
-    "epochs": 50,
-    "learning_rate": 0.0005,
-    "weight_decay": 0.01,
-    "gradient_clip_norm": 5.0,
-    "seed": 42,
-    "phase1": {
-      "epochs": 15,
-      "description": "shared expert learning"
-    },
-    "phase2": {
-      "epochs": 8,
-      "freeze_shared": true,
-      "description": "task head fine-tuning"
-    },
-    "early_stopping": {
-      "patience": 7,
-      "metric": "val_loss"
-    },
-    "scheduler": {
-      "type": "cosine",
-      "warmup_epochs": 3
-    },
-    "amp": {
-      "enabled": true,
-      "grad_scaler_init_scale": 1024.0,
-      "grad_scaler_growth_factor": 2.0,
-      "grad_scaler_backoff_factor": 0.5,
-      "grad_scaler_growth_interval": 2000,
-      "grad_scaler_max_scale": 4096.0
-    }
-  },
-  "distillation": {
-    "temperature": 1.0,
-    "alpha": 0.3,
-    "lgbm": {
-      "num_leaves": 127,
-      "learning_rate": 0.05,
-      "n_estimators": 500,
-      "min_child_samples": 50,
-      "subsample": 0.8,
-      "colsample_bytree": 0.8
-    },
-    "task_lgbm_overrides": {
-      "cross_sell_count": {
-        "objective": "huber",
-        "alpha": 0.9
-      },
-      "mcc_diversity_trend": {
-        "objective": "huber",
-        "alpha": 0.9
-      },
-      "product_stability": {
-        "objective": "huber",
-        "alpha": 0.9
-      }
-    },
-    "teacher_threshold": {
-      "binary_min_auc": 0.6,
-      "multiclass_min_f1_ratio": 2.0,
-      "regression_min_r2": 0.05,
-      "floor_binary_auc": 0.52,
-      "floor_multiclass_f1_ratio": 1.0,
-      "floor_regression_r2": 0.01
-    },
-    "calibration": {
-      "enabled": true,
-      "method": "platt",
-      "tasks": [
-        "churn_signal",
-        "product_stability",
-        "cross_sell_count"
-      ]
-    },
-    "fidelity": {
-      "binary": {
-        "max_auc_gap": 0.05,
-        "min_agreement": 0.85,
-        "max_jsd": 0.1,
-        "min_ranking_corr": 0.9,
-        "max_calibration_gap": 0.05
-      },
-      "multiclass": {
-        "min_agreement": 0.7,
-        "max_jsd": 0.1,
-        "max_f1_macro_gap": 0.1
-      },
-      "regression": {
-        "min_ranking_corr": 0.9,
-        "min_quartile_agreement": 0.7,
-        "max_mae_gap": 0.05,
-        "max_rmse_gap": 0.1
-      }
-    },
-    "feature_selection": {
-      "method": "lgbm_gain",
-      "top_k": null,
-      "cumulative_threshold": 0.95
-    },
-    "drift_monitoring": {
-      "enabled": true,
-      "max_psi": 0.2,
-      "max_jsd": 0.1,
-      "max_auc_shift": 0.05,
-      "max_prediction_shift": 0.1,
-      "min_rank_correlation": 0.95,
-      "baseline_path": "outputs/distillation_baseline/"
-    },
-    "feature_drift": {
-      "enabled": true,
-      "baseline_path": "outputs/distillation_baseline/feature_baseline.json",
-      "psi_threshold_warning": 0.1,
-      "psi_threshold_critical": 0.25
-    }
-  },
-  "monitoring": {
-    "fairness": {
-      "thresholds": {
-        "di_lower": 0.8,
-        "di_upper": 1.25,
-        "spd_max": 0.1,
-        "eod_max": 0.1
-      },
-      "auto_incident": true
-    },
-    "drift": {
-      "psi_warning": 0.1,
-      "psi_critical": 0.25,
-      "n_bins": 10
-    },
-    "incidents": {
-      "severity_thresholds": {
-        "critical": [
-          "kill_switch_activation",
-          "di_below_0.6",
-          "security_breach"
-        ],
-        "major": [
-          "di_below_0.8",
-          "herding_critical",
-          "model_rollback",
-          "consecutive_drift_retrain"
-        ],
-        "minor": [
-          "drift_warning",
-          "quality_drop",
-          "herding_high",
-          "single_feature_critical"
-        ]
-      }
-    },
-    "governance_report": {
-      "enabled": true,
-      "frequency": "weekly"
-    }
-  },
-  "evaluation": {
-    "binary": {
-      "metrics": [
-        "auc_roc",
-        "auc_pr",
-        "f1",
-        "precision",
-        "recall",
-        "accuracy",
-        "log_loss"
-      ],
-      "primary": "auc_roc"
-    },
-    "multiclass": {
-      "metrics": [
-        "accuracy",
-        "f1_macro",
-        "f1_weighted",
-        "top_k_accuracy"
-      ],
-      "primary": "f1_macro"
-    },
-    "regression": {
-      "metrics": [
-        "rmse",
-        "mae",
-        "r2",
-        "mape"
-      ],
-      "primary": "rmse"
-    }
-  },
-  "analysis": {
-    "enabled": true,
-    "ig_steps": 20,
-    "integrated_gradients": {
-      "n_steps": 50,
-      "baseline": "zeros",
-      "max_batches": 50
-    },
-    "expert_redundancy": {
-      "enabled": true,
-      "max_batches": 20,
-      "n_components": 10,
-      "min_samples": 256
-    },
-    "xai_quality": {
-      "enabled": true
-    },
-    "model_card": {
-      "enabled": true
-    }
-  },
-  "llm_provider": {
-    "backend": "bedrock",
-    "bedrock": {
-      "region": "ap-northeast-2",
-      "models": {
-        "reason_generation": {
-          "model_id": "global.anthropic.claude-sonnet-4-6",
-          "max_tokens": 500,
-          "temperature": 0.3
-        },
-        "reason_critique": {
-          "model_id": "global.anthropic.claude-sonnet-4-6",
-          "max_tokens": 500,
-          "temperature": 0.2
-        },
-        "factuality_check": {
-          "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-          "max_tokens": 300,
-          "temperature": 0.0
-        },
-        "agent_dialog": {
-          "model_id": "global.anthropic.claude-sonnet-4-6",
-          "max_tokens": 2000,
-          "temperature": 0.1
-        },
-        "agent_consensus": {
-          "model_id": "global.anthropic.claude-sonnet-4-6",
-          "max_tokens": 2000,
-          "temperature": 0.1
-        }
-      },
-      "default": {
-        "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "max_tokens": 500,
-        "temperature": 0.2
-      }
-    }
-  },
-  "reason": {
-    "fact_extractor": {
-      "config_path": "configs/financial/fact_extraction.yaml"
-    },
-    "template_engine": {
-      "item_name_map": {
-        "churn_signal": "고객 유지 프로그램",
-        "will_acquire_deposits": "예적금 상품",
-        "will_acquire_investments": "투자 상품",
-        "will_acquire_accounts": "입출금 계좌",
-        "will_acquire_lending": "대출 상품",
-        "will_acquire_payments": "결제 서비스",
-        "top_mcc_shift": "맞춤 소비 혜택",
-        "product_stability": "자산 안정화 서비스",
-        "nba_primary": "추천 금융 상품",
-        "cross_sell_count": "교차판매 상품",
-        "segment_prediction": "고객 맞춤 서비스",
-        "next_mcc": "소비 카테고리 추천",
-        "mcc_diversity_trend": "소비 다양성 혜택"
-      },
-      "feature_category_map": {
-        "synth_monthly_spend": "spending",
-        "synth_monthly_txns": "transaction",
-        "synth_frequency": "transaction",
-        "synth_recency_days": "engagement",
-        "synth_stability": "stability",
-        "synth_monetary": "spending",
-        "synth_avg_amount": "spending",
-        "synth_unique_mcc": "consumption",
-        "synth_unique_merchants": "consumption",
-        "hmm_states_journey": "lifecycle",
-        "hmm_states_lifecycle": "lifecycle",
-        "hmm_states_behavior": "behavior",
-        "gmm_clustering": "segment",
-        "model_derived_bandit": "recommendation",
-        "model_derived_lnn": "behavior",
-        "model_derived_gmm": "segment",
-        "income": "demographics",
-        "age": "demographics",
-        "is_active": "engagement",
-        "total_churns": "engagement",
-        "label_engagement_score": "engagement",
-        "label_income_tier": "demographics",
-        "label_tenure_stage": "lifecycle",
-        "label_segment": "segment",
-        "prod_": "product_holding",
-        "seq_": "product_holding",
-        "tda_": "topology",
-        "graph_": "topology",
-        "economics_pih": "income_stability"
-      },
-      "template_pool": {
-        "spending": [
-          "고객님의 소비 패턴을 분석한 결과, {item_name}이(가) 적합합니다.",
-          "최근 지출 활동을 기반으로 {item_name}을(를) 추천드립니다."
-        ],
-        "transaction": [
-          "고객님의 거래 빈도를 고려하면 {item_name}이(가) 유용할 수 있습니다.",
-          "활발한 거래 패턴에 맞는 {item_name}을(를) 안내드립니다."
-        ],
-        "engagement": [
-          "고객님의 이용 패턴을 분석하여 {item_name}을(를) 추천드립니다."
-        ],
-        "stability": [
-          "안정적인 금융 활동 이력에 적합한 {item_name}입니다."
-        ],
-        "consumption": [
-          "다양한 소비 카테고리를 활용하시는 고객님께 {item_name}을(를) 추천드립니다."
-        ],
-        "lifecycle": [
-          "현재 금융 라이프사이클 단계에 적합한 {item_name}입니다."
-        ],
-        "behavior": [
-          "고객님의 금융 행동 패턴에 맞는 {item_name}을(를) 추천드립니다."
-        ],
-        "segment": [
-          "유사한 고객군에서 높은 만족도를 보인 {item_name}입니다."
-        ],
-        "recommendation": [
-          "종합 분석 결과, {item_name}을(를) 최우선으로 추천드립니다."
-        ],
-        "demographics": [
-          "고객님의 재무 프로필에 적합한 {item_name}을(를) 안내드립니다.",
-          "고객님의 소득 수준과 재무 상황을 고려하여 {item_name}을(를) 추천드립니다."
-        ],
-        "product_holding": [
-          "현재 보유하신 금융 상품 구성을 고려하여 {item_name}을(를) 추천드립니다.",
-          "기존 상품과의 시너지를 고려한 {item_name} 안내입니다."
-        ],
-        "topology": [
-          "고객님의 거래 네트워크 분석 결과, {item_name}이(가) 적합합니다."
-        ],
-        "income_stability": [
-          "소득 안정성을 고려하여 적합한 {item_name}을(를) 안내드립니다.",
-          "장기적인 소득 흐름에 맞는 {item_name}입니다."
-        ]
-      },
-      "task_frames": {
-        "churn_signal": {
-          "positive": "고객님의 소중한 거래 관계를 유지하고자 합니다. {reason}",
-          "negative": "항상 함께해 주셔서 감사합니다. {reason}"
-        },
-        "will_acquire_deposits": {
-          "positive": "자산 증식에 도움이 될 수 있습니다. {reason}"
-        },
-        "will_acquire_investments": {
-          "positive": "고객님의 재무 목표에 부합할 수 있습니다. {reason}"
-        },
-        "will_acquire_accounts": {
-          "positive": "효율적인 자금 관리에 도움이 됩니다. {reason}"
-        },
-        "will_acquire_lending": {
-          "positive": "현재 자금 수요에 적합한 상품입니다. {reason}"
-        },
-        "will_acquire_payments": {
-          "positive": "간편한 결제 환경을 제공합니다. {reason}"
-        },
-        "top_mcc_shift": {
-          "positive": "소비 패턴의 변화에 맞춘 혜택입니다. {reason}"
-        },
-        "product_stability": {
-          "positive": "안정적인 자산 관리를 위해 추천드립니다. {reason}"
-        },
-        "nba_primary": {
-          "positive": "고객님께 가장 적합한 상품입니다. {reason}"
-        },
-        "cross_sell_count": {
-          "positive": "포트폴리오 확장에 도움이 될 수 있습니다. {reason}"
-        },
-        "segment_prediction": {
-          "positive": "고객님의 금융 니즈에 맞춤 설계된 서비스입니다. {reason}"
-        },
-        "next_mcc": {
-          "positive": "소비 패턴 분석을 기반으로 추천드립니다. {reason}"
-        },
-        "mcc_diversity_trend": {
-          "positive": "다양한 소비 경험을 위한 혜택입니다. {reason}"
-        }
-      }
-    },
-    "async_orchestrator": {
-      "sqs_queue_url": "",
-      "dynamo_table": "reason_cache"
-    },
-    "self_checker": {
-      "enable_llm_check": true,
-      "pii_check": true,
-      "hallucination_check": true,
-      "regulatory_check": true
-    }
-  },
-  "serving_prep": {
-    "enabled": false,
-    "context_store": {
-      "backend": "auto",
-      "embedding_source": "feature_pipeline",
-      "store_path": "s3://aiops-ple-financial/context_store/"
-    },
-    "reason_generation": {
-      "l1_batch": true,
-      "l2a_rewrite": true,
-      "l2b_validation": true,
-      "human_review_sample_rate": 0.05
-    }
-  },
-  "data": {
-    "backend": [
-      "cudf",
-      "duckdb",
-      "pandas"
-    ],
-    "format": "parquet",
-    "train_split": 0.7,
-    "val_split": 0.15,
-    "preprocessing": {
-      "fit_subsample_limit": 10000,
-      "income": {
-        "null_indicator": 0,
-        "null_rate": 0.254,
-        "strategy": "median"
-      },
-      "tenure_months": {
-        "sentinel": -999999,
-        "strategy": "clip_and_flag",
-        "clip_min": 0,
-        "clip_max": 256,
-        "flag_col": "tenure_unknown"
-      },
-      "leakage_prevention": {
-        "recompute_prod_from_seq": true,
-        "validate_after_split": true
-      }
-    },
-    "source": "data/benchmark/benchmark_v12.parquet",
-    "s3_path": "s3://YOUR_S3_BUCKET/data/santander/",
-    "id_col": "customer_id",
-    "total_rows": 1000000,
-    "temporal_split": {
-      "enabled": true,
-      "date_col": "snapshot_date",
-      "gap_days": 30,
-      "train_ratio": 0.7,
-      "val_ratio": 0.15
-    },
-    "split_strategy": {
-      "state_tasks": {
-        "tasks": [
-          "churn_signal",
-          "product_stability",
-          "segment_prediction"
-        ],
-        "val_method": "random"
-      },
-      "future_tasks": {
-        "tasks": [
-          "nba_primary",
-          "will_acquire_deposits",
-          "will_acquire_investments",
-          "will_acquire_accounts",
-          "will_acquire_lending",
-          "will_acquire_payments",
-          "cross_sell_count"
-        ],
-        "val_method": "temporal_latest"
-      },
-      "sequence_tasks": {
-        "tasks": [
-          "next_mcc",
-          "mcc_diversity_trend",
-          "top_mcc_shift"
-        ],
-        "val_method": "temporal_latest"
-      }
-    }
-  },
-  "features": {
-    "input_dim": 512,
-    "id_cols": [
-      "customer_id"
-    ],
-    "meta_cols": [
-      "snapshot_date"
-    ],
-    "categorical": [
-      {
-        "name": "gender",
-        "cardinality": 2,
-        "embedding_dim": 4
-      },
-      {
-        "name": "segment",
-        "cardinality": 4,
-        "embedding_dim": 4
-      },
-      {
-        "name": "country",
-        "cardinality": 118,
-        "embedding_dim": 16
-      },
-      {
-        "name": "channel",
-        "cardinality": 163,
-        "embedding_dim": 16
-      },
-      {
-        "name": "age_group",
-        "cardinality": 5,
-        "embedding_dim": 4
-      },
-      {
-        "name": "income_group",
-        "cardinality": 5,
-        "embedding_dim": 4
-      }
-    ],
-    "numeric": [
-      "age",
-      "income",
-      "tenure_months",
-      "is_active",
-      "num_products"
-    ]
-  },
-  "aws": {
-    "region": "ap-northeast-2",
-    "s3_bucket": "aiops-ple-financial",
-    "instance_type": "ml.g4dn.xlarge",
-    "cpu_instance_type": "ml.m5.2xlarge",
-    "use_spot": true,
-    "max_run_seconds": 43200,
-    "role_arn": "arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole"
-  },
-  "rule_engine": {
-    "enabled": true,
-    "suitability_check": true,
-    "product_adjacency": {
-      "path": [
-        "deposits",
-        "savings",
-        "investment",
-        "insurance",
-        "lending"
-      ]
-    },
-    "dormancy_thresholds": {
-      "warning_days": 30,
-      "alert_days": 60,
-      "dormant_days": 90
-    },
-    "clv_tiers": {
-      "premium_percentile": 80,
-      "target_products": {
-        "premium": 4,
-        "stable": 3,
-        "growth": 2,
-        "at_risk": 1
-      }
-    },
-    "rfm_thresholds": {
-      "recency_warning_days": 30,
-      "monetary_drop_pct": 0.2
-    },
-    "mcc_thresholds": {
-      "jsd_threshold": 0.15,
-      "top_k": 5
-    },
-    "deposits_thresholds": {
-      "surplus_ratio": 0.3
-    },
-    "investments_thresholds": {
-      "min_risk_grade": 3,
-      "asset_pct_threshold": 70.0
-    },
-    "accounts_thresholds": {
-      "new_customer_days": 90,
-      "interbank_transfer_pct": 0.3
-    },
-    "accounts_tenure_feature_prefix": "tenure",
-    "lending_thresholds": {
-      "max_dti": 0.4,
-      "max_credit_grade": 4,
-      "pih_income_threshold_lending": 3000.0
-    },
-    "payments_thresholds": {
-      "spend_top_pct": 70.0,
-      "foreign_pct": 0.1
-    },
-    "segment_thresholds": {
-      "balance_high": 50000.0,
-      "balance_mid": 10000.0,
-      "freq_high": 20.0,
-      "freq_mid": 5.0
-    },
-    "hmm_declining_threshold": 0.5,
-    "mamba_churn_threshold": 0.5,
-    "tda_shift_threshold": 0.5,
-    "product_risk_grades": {
-      "will_acquire_investments": 3,
-      "will_acquire_lending": 0,
-      "will_acquire_deposits": 0,
-      "will_acquire_accounts": 0,
-      "will_acquire_payments": 0,
-      "nba_primary": 0,
-      "churn_signal": 0,
-      "product_stability": 0,
-      "segment_prediction": 0,
-      "cross_sell_count": 0,
-      "next_mcc": 0,
-      "mcc_diversity_trend": 0,
-      "top_mcc_shift": 0
-    }
-  },
-  "dataset": {
-    "name": "santander",
-    "description": "Santander Customer Transactions benchmark. 1,000,000 users (17 monthly snapshots, ~58.8K rows each, uniform distribution), 403 raw columns, 13 tasks, 7 shared experts. Pre-aggregated user-level synthetic dataset with product holdings, transaction sequences, and demographic attributes.\n",
-    "total_rows": 1000000,
-    "feature_groups_file": "configs/santander/feature_groups.yaml"
-  },
   "task_name": "santander_ple",
   "adapter": "santander",
   "feature_groups_file": "configs/santander/feature_groups.yaml",
@@ -974,25 +164,6 @@
       }
     },
     {
-      "name": "segment_prediction",
-      "type": "multiclass",
-      "loss": "ce",
-      "loss_weight": 1.0,
-      "label_col": "label_segment",
-      "num_classes": 4,
-      "description": "Customer segment: 01-TOP=0, 02-PARTICULARES=1, 03-UNIVERSITARIO=2, UNKNOWN=3",
-      "derive": {
-        "method": "string_map",
-        "source_col": "segment",
-        "mapping": {
-          "01-TOP": 0,
-          "02-PARTICULARES": 1,
-          "03-UNIVERSITARIO": 2,
-          "UNKNOWN": 3
-        }
-      }
-    },
-    {
       "name": "next_mcc",
       "type": "multiclass",
       "loss": "ce",
@@ -1062,12 +233,42 @@
       "type": "list_first_group",
       "default": 0,
       "group_map": {
-        "1": [0, 1],
-        "2": [2, 3, 4, 5, 6, 7, 19, 20],
-        "3": [8, 9, 10, 11],
-        "4": [12, 13, 14],
-        "5": [15, 16, 17, 18],
-        "6": [21, 22, 23]
+        "1": [
+          0,
+          1
+        ],
+        "2": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          19,
+          20
+        ],
+        "3": [
+          8,
+          9,
+          10,
+          11
+        ],
+        "4": [
+          12,
+          13,
+          14
+        ],
+        "5": [
+          15,
+          16,
+          17,
+          18
+        ],
+        "6": [
+          21,
+          22,
+          23
+        ]
       }
     },
     "label_cross_sell_count": {
@@ -1121,16 +322,6 @@
         22,
         23
       ]
-    },
-    "label_segment": {
-      "source": "segment",
-      "type": "string_map",
-      "mapping": {
-        "01-TOP": 0,
-        "02-PARTICULARES": 1,
-        "03-UNIVERSITARIO": 2,
-        "UNKNOWN": 3
-      }
     },
     "label_next_mcc": {
       "source": "txn_mcc_seq",
@@ -1336,8 +527,7 @@
       "description": "고객이 어디에 있는가",
       "tasks": [
         "churn_signal",
-        "product_stability",
-        "segment_prediction"
+        "product_stability"
       ],
       "adatt_intra_strength": 0.7,
       "adatt_inter_strength": 0.3
@@ -1367,6 +557,42 @@
       "adatt_inter_strength": 0.3
     }
   ],
+  "adatt": {
+    "transfer_lambda": 0.1,
+    "temperature": 1.0,
+    "warmup_epochs": 3,
+    "freeze_epoch": 8,
+    "grad_interval": 10,
+    "inter_group_strength": 0.3
+  },
+  "grad_surgery": {
+    "enabled": false,
+    "conflict_threshold": 0.0,
+    "warmup_epochs": 3,
+    "grad_interval": 10,
+    "ema_decay": 0.9,
+    "log_interval": 1,
+    "task_type_groups": {
+      "binary": [
+        "churn_signal",
+        "will_acquire_deposits",
+        "will_acquire_investments",
+        "will_acquire_accounts",
+        "will_acquire_lending",
+        "will_acquire_payments",
+        "top_mcc_shift"
+      ],
+      "multiclass": [
+        "nba_primary",
+        "next_mcc"
+      ],
+      "regression": [
+        "product_stability",
+        "cross_sell_count",
+        "mcc_diversity_trend"
+      ]
+    }
+  },
   "task_relationships": [
     {
       "source": "churn_signal",
@@ -1384,32 +610,15 @@
     }
   ],
   "logit_transfer_strength": 0.5,
-  "cold_start": {
-    "seq_col": "txn_amount_seq",
-    "min_txn_count": 3,
-    "zero_features_prefix": [
-      "hmm_states",
-      "mamba_temporal",
-      "tda_local"
-    ],
-    "keep_features_prefix": [
-      "prod_",
-      "synth_",
-      "tda_global",
-      "gmm_",
-      "graph_"
-    ]
-  },
   "scoring": {
     "method": "fd_tvs",
     "weights": {
-      "churn_signal": 0.15,
-      "top_mcc_shift": 0.05,
-      "nba_primary": 0.15,
-      "segment_prediction": 0.05,
-      "next_mcc": 0.05,
-      "product_stability": 0.1,
+      "nba_primary": 0.2,
       "cross_sell_count": 0.1,
+      "churn_signal": 0.15,
+      "product_stability": 0.1,
+      "top_mcc_shift": 0.05,
+      "next_mcc": 0.05,
       "mcc_diversity_trend": 0.05,
       "will_acquire_deposits": 0.08,
       "will_acquire_investments": 0.07,
@@ -1424,6 +633,14 @@
         "03-UNIVERSITARIO": 0.8,
         "UNKNOWN": 0.7
       }
+    },
+    "fatigue": {
+      "decay_rate": 0.85,
+      "max_messages_7d": 5
+    },
+    "risk_penalty": {
+      "max_churn_prob": 0.6,
+      "min_score": 0.05
     },
     "segment_task_weights": {
       "01-TOP": {
@@ -1471,15 +688,7 @@
         "task": "will_acquire_investments",
         "boost": 1.2
       }
-    ],
-    "fatigue": {
-      "decay_rate": 0.85,
-      "max_messages_7d": 5
-    },
-    "risk_penalty": {
-      "max_churn_prob": 0.6,
-      "min_score": 0.05
-    }
+    ]
   },
   "constraints": {
     "filters": [
@@ -1514,6 +723,411 @@
       "diversity_lambda": 0.5
     }
   },
+  "cold_start": {
+    "seq_col": "txn_amount_seq",
+    "min_txn_count": 3,
+    "zero_features_prefix": [
+      "hmm_states",
+      "mamba_temporal",
+      "tda_local"
+    ],
+    "keep_features_prefix": [
+      "prod_",
+      "synth_",
+      "tda_global",
+      "gmm_",
+      "graph_"
+    ]
+  },
+  "data": {
+    "source": "data/benchmark/benchmark_v12.parquet",
+    "s3_path": "s3://YOUR_S3_BUCKET/data/santander/",
+    "id_col": "customer_id",
+    "backend": [
+      "cudf",
+      "duckdb",
+      "pandas"
+    ],
+    "format": "parquet",
+    "total_rows": 1000000,
+    "train_split": 0.7,
+    "val_split": 0.15,
+    "temporal_split": {
+      "enabled": true,
+      "date_col": "snapshot_date",
+      "gap_days": 30,
+      "train_ratio": 0.7,
+      "val_ratio": 0.15
+    },
+    "split_strategy": {
+      "state_tasks": {
+        "tasks": [
+          "churn_signal",
+          "product_stability"
+        ],
+        "val_method": "random"
+      },
+      "future_tasks": {
+        "tasks": [
+          "nba_primary",
+          "will_acquire_deposits",
+          "will_acquire_investments",
+          "will_acquire_accounts",
+          "will_acquire_lending",
+          "will_acquire_payments",
+          "cross_sell_count"
+        ],
+        "val_method": "temporal_latest"
+      },
+      "sequence_tasks": {
+        "tasks": [
+          "next_mcc",
+          "mcc_diversity_trend",
+          "top_mcc_shift"
+        ],
+        "val_method": "temporal_latest"
+      }
+    },
+    "preprocessing": {
+      "fit_subsample_limit": 10000,
+      "income": {
+        "null_indicator": 0,
+        "null_rate": 0.254,
+        "strategy": "median"
+      },
+      "tenure_months": {
+        "sentinel": -999999,
+        "strategy": "clip_and_flag",
+        "clip_min": 0,
+        "clip_max": 256,
+        "flag_col": "tenure_unknown"
+      },
+      "leakage_prevention": {
+        "recompute_prod_from_seq": true,
+        "validate_after_split": true
+      }
+    }
+  },
+  "features": {
+    "id_cols": [
+      "customer_id"
+    ],
+    "meta_cols": [
+      "snapshot_date"
+    ],
+    "input_dim": 512,
+    "normalizer": {
+      "categorical_id_suffixes": [
+        "_cluster_id",
+        "_state_id",
+        "_segment_id",
+        "_group_id"
+      ],
+      "categorical_id_prefixes": [
+        "txn_lag_mcc_",
+        "txn_lag_hour_"
+      ],
+      "probability_prefixes": [
+        "gmm_clustering_cluster_prob_",
+        "model_derived_gmm_prob_"
+      ]
+    },
+    "categorical": [
+      {
+        "name": "gender",
+        "cardinality": 2,
+        "embedding_dim": 4
+      },
+      {
+        "name": "segment",
+        "cardinality": 4,
+        "embedding_dim": 4
+      },
+      {
+        "name": "country",
+        "cardinality": 118,
+        "embedding_dim": 16
+      },
+      {
+        "name": "channel",
+        "cardinality": 163,
+        "embedding_dim": 16
+      },
+      {
+        "name": "age_group",
+        "cardinality": 5,
+        "embedding_dim": 4
+      },
+      {
+        "name": "income_group",
+        "cardinality": 5,
+        "embedding_dim": 4
+      }
+    ],
+    "numeric": [
+      "age",
+      "income",
+      "tenure_months",
+      "is_active",
+      "num_products"
+    ]
+  },
+  "model": {
+    "architecture": "ple",
+    "expert_basket": {
+      "shared": [
+        "deepfm",
+        "temporal_ensemble",
+        "hgcn",
+        "perslay",
+        "causal",
+        "lightgcn",
+        "optimal_transport"
+      ],
+      "task": [
+        "mlp"
+      ]
+    },
+    "expert_config": {
+      "deepfm": {
+        "embedding_dim": 16,
+        "hidden_dims": [
+          256,
+          128,
+          64
+        ],
+        "dropout": 0.2,
+        "field_dims": "auto"
+      },
+      "temporal_ensemble": {
+        "mamba_d_model": 64,
+        "mamba_n_layers": 2,
+        "transformer_n_heads": 4,
+        "transformer_n_layers": 2,
+        "lnn_hidden_dim": 64
+      },
+      "hgcn": {
+        "hyperbolic_dim": 20,
+        "product_dim": 24,
+        "refine_hidden": 128
+      },
+      "perslay": {
+        "phi_hidden_dim": 64,
+        "rho_hidden_dim": 64
+      },
+      "causal": {
+        "dag_hidden_dims": [
+          128,
+          64
+        ],
+        "lambda_dag": 0.01
+      },
+      "lightgcn": {
+        "embedding_dim": 64,
+        "n_layers": 3
+      },
+      "optimal_transport": {
+        "hidden_dims": [
+          128,
+          64
+        ],
+        "sinkhorn_iterations": 10
+      },
+      "mlp": {
+        "hidden_dims": [
+          128,
+          64
+        ],
+        "dropout": 0.2
+      }
+    },
+    "cgc": {
+      "dim_normalize": true
+    },
+    "ple": {
+      "num_layers": 3,
+      "extraction_dim": 64,
+      "num_shared_experts": 7,
+      "num_task_experts": 1
+    },
+    "evidential": {
+      "enabled": true,
+      "kl_lambda": 0.01,
+      "annealing_epochs": 10
+    },
+    "sae": {
+      "enabled": true,
+      "weight": 0.01,
+      "expansion_factor": 4,
+      "l1_lambda": 0.001
+    },
+    "loss_weighting": {
+      "strategy": "uncertainty"
+    },
+    "group_task_expert": {
+      "enabled": true,
+      "group_hidden": 128,
+      "group_output": 64,
+      "cluster_embed_dim": 32
+    },
+    "hmm_group_mode_map": {
+      "engagement": "behavior",
+      "lifecycle": "lifecycle",
+      "value": "journey",
+      "consumption": "journey"
+    },
+    "multidisciplinary_routing": {
+      "engagement": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "lifecycle": [
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "value": [
+        12,
+        13,
+        14,
+        15,
+        16,
+        17
+      ],
+      "consumption": [
+        18,
+        19,
+        20,
+        21,
+        22,
+        23
+      ]
+    },
+    "task_tower": {
+      "default_dims": [
+        64,
+        32
+      ],
+      "dropout": 0.1
+    }
+  },
+  "training": {
+    "experiment_name": "santander_ple",
+    "batch_size": 2048,
+    "epochs": 50,
+    "learning_rate": 0.0005,
+    "weight_decay": 0.01,
+    "gradient_clip_norm": 5.0,
+    "seed": 42,
+    "phase1": {
+      "epochs": 15,
+      "description": "shared expert learning"
+    },
+    "phase2": {
+      "epochs": 8,
+      "freeze_shared": true,
+      "description": "task head fine-tuning"
+    },
+    "early_stopping": {
+      "patience": 7,
+      "metric": "val_loss"
+    },
+    "scheduler": {
+      "type": "cosine",
+      "warmup_epochs": 3
+    },
+    "amp": {
+      "enabled": true,
+      "grad_scaler_init_scale": 1024.0,
+      "grad_scaler_growth_factor": 2.0,
+      "grad_scaler_backoff_factor": 0.5,
+      "grad_scaler_growth_interval": 2000,
+      "grad_scaler_max_scale": 4096.0
+    }
+  },
+  "distillation": {
+    "temperature": 1.0,
+    "alpha": 0.3,
+    "lgbm": {
+      "num_leaves": 127,
+      "learning_rate": 0.05,
+      "n_estimators": 500,
+      "min_child_samples": 50,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8
+    },
+    "task_lgbm_overrides": {
+      "cross_sell_count": {
+        "objective": "huber",
+        "alpha": 0.9
+      },
+      "mcc_diversity_trend": {
+        "objective": "huber",
+        "alpha": 0.9
+      },
+      "product_stability": {
+        "objective": "huber",
+        "alpha": 0.9
+      }
+    },
+    "teacher_threshold": {
+      "binary_min_auc": 0.6,
+      "multiclass_min_f1_ratio": 2.0,
+      "regression_min_r2": 0.05
+    },
+    "calibration": {
+      "enabled": true,
+      "method": "platt",
+      "tasks": [
+        "churn_signal",
+        "product_stability",
+        "cross_sell_count"
+      ]
+    },
+    "fidelity": {
+      "binary": {
+        "max_auc_gap": 0.05,
+        "min_agreement": 0.85,
+        "max_jsd": 0.1,
+        "min_ranking_corr": 0.9,
+        "max_calibration_gap": 0.05
+      },
+      "multiclass": {
+        "min_agreement": 0.7,
+        "max_jsd": 0.1,
+        "max_f1_macro_gap": 0.1
+      },
+      "regression": {
+        "min_ranking_corr": 0.9,
+        "min_quartile_agreement": 0.7,
+        "max_mae_gap": 0.05,
+        "max_rmse_gap": 0.1
+      }
+    },
+    "feature_selection": {
+      "method": "ig_dual",
+      "ig_alpha": 0.7,
+      "top_k": null,
+      "cumulative_threshold": 0.95,
+      "ig_sample_size": 10000
+    },
+    "drift_monitoring": {
+      "enabled": true,
+      "max_psi": 0.2,
+      "max_jsd": 0.1,
+      "max_auc_shift": 0.05,
+      "max_prediction_shift": 0.1,
+      "min_rank_correlation": 0.95,
+      "baseline_path": "outputs/distillation_baseline/"
+    }
+  },
   "ablation": {
     "feature_scenarios": "auto",
     "expert_scenarios": "auto",
@@ -1527,14 +1141,24 @@
         "product_stability",
         "nba_primary"
       ],
-      "tasks_5": [
+      "tasks_4": [
+        "churn_signal",
+        "product_stability",
+        "nba_primary",
+        "cross_sell_count"
+      ],
+      "tasks_9": [
         "churn_signal",
         "product_stability",
         "nba_primary",
         "cross_sell_count",
-        "segment_prediction"
+        "will_acquire_deposits",
+        "will_acquire_investments",
+        "will_acquire_accounts",
+        "will_acquire_lending",
+        "will_acquire_payments"
       ],
-      "tasks_10": [
+      "tasks_12": [
         "churn_signal",
         "product_stability",
         "nba_primary",
@@ -1544,19 +1168,6 @@
         "will_acquire_accounts",
         "will_acquire_lending",
         "will_acquire_payments",
-        "segment_prediction"
-      ],
-      "tasks_13": [
-        "churn_signal",
-        "product_stability",
-        "nba_primary",
-        "cross_sell_count",
-        "will_acquire_deposits",
-        "will_acquire_investments",
-        "will_acquire_accounts",
-        "will_acquire_lending",
-        "will_acquire_payments",
-        "segment_prediction",
         "next_mcc",
         "mcc_diversity_trend",
         "top_mcc_shift"
@@ -1626,77 +1237,86 @@
       ]
     }
   },
-  "scorer": {
-    "fd_tvs": {
-      "task_weights": {
-        "churn_signal": 0.15,
-        "top_mcc_shift": 0.05,
-        "nba_primary": 0.15,
-        "segment_prediction": 0.05,
-        "next_mcc": 0.05,
-        "product_stability": 0.1,
-        "cross_sell_count": 0.1,
-        "mcc_diversity_trend": 0.05,
-        "will_acquire_deposits": 0.08,
-        "will_acquire_investments": 0.07,
-        "will_acquire_accounts": 0.05,
-        "will_acquire_lending": 0.05,
-        "will_acquire_payments": 0.05
-      },
-      "modifier_map": {
-        "01-TOP": 1.3,
-        "02-PARTICULARES": 1.0,
-        "03-UNIVERSITARIO": 0.8,
-        "UNKNOWN": 0.7
-      },
-      "segment_task_weights": {
-        "01-TOP": {
-          "will_acquire_investments": 1.4,
-          "product_stability": 1.3,
-          "cross_sell_count": 1.2
-        },
-        "02-PARTICULARES": {
-          "will_acquire_deposits": 1.3,
-          "will_acquire_payments": 1.2,
-          "churn_signal": 1.2
-        },
-        "03-UNIVERSITARIO": {
-          "will_acquire_accounts": 1.4,
-          "will_acquire_payments": 1.3,
-          "top_mcc_shift": 1.2
-        },
-        "UNKNOWN": {
-          "churn_signal": 1.4,
-          "will_acquire_deposits": 1.2
-        }
-      },
-      "dynamic_weight_rules": [
-        {
-          "feature": "churn_prob",
-          "threshold": 0.5,
-          "task": "churn_signal",
-          "boost": 1.4
-        },
-        {
-          "feature": "income",
-          "threshold": 200000,
-          "task": "will_acquire_investments",
-          "boost": 1.3
-        },
-        {
-          "feature": "product_diversity",
-          "threshold": 0.3,
-          "task": "will_acquire_deposits",
-          "boost": 1.3
-        },
-        {
-          "feature": "engagement_score",
-          "threshold": 0.7,
-          "task": "will_acquire_investments",
-          "boost": 1.2
-        }
+  "evaluation": {
+    "binary": {
+      "metrics": [
+        "auc_roc",
+        "auc_pr",
+        "f1",
+        "precision",
+        "recall",
+        "accuracy",
+        "log_loss"
       ],
-      "fatigue_base_decay": 0.85
+      "primary": "auc_roc"
+    },
+    "multiclass": {
+      "metrics": [
+        "accuracy",
+        "f1_macro",
+        "f1_weighted",
+        "top_k_accuracy"
+      ],
+      "primary": "f1_macro"
+    },
+    "regression": {
+      "metrics": [
+        "rmse",
+        "mae",
+        "r2",
+        "mape"
+      ],
+      "primary": "rmse"
     }
+  },
+  "analysis": {
+    "enabled": true,
+    "ig_steps": 20,
+    "integrated_gradients": {
+      "n_steps": 50,
+      "baseline": "zeros",
+      "max_batches": 50
+    },
+    "expert_redundancy": {
+      "enabled": true,
+      "max_batches": 20,
+      "n_components": 10,
+      "min_samples": 256
+    },
+    "xai_quality": {
+      "enabled": true
+    },
+    "model_card": {
+      "enabled": true
+    }
+  },
+  "serving_prep": {
+    "enabled": false,
+    "context_store": {
+      "backend": "auto",
+      "embedding_source": "feature_pipeline"
+    },
+    "reason_generation": {
+      "l1_batch": true,
+      "l2a_rewrite": false,
+      "l2b_validation": true
+    }
+  },
+  "aws": {
+    "region": "ap-northeast-2",
+    "s3_bucket": "aiops-ple-financial",
+    "instance_type": "ml.g4dn.xlarge",
+    "cpu_instance_type": "ml.m5.4xlarge",
+    "gpu_instance_type": "ml.g4dn.xlarge",
+    "use_spot": true,
+    "max_run_seconds": 43200,
+    "role_arn": "arn:aws:iam::795833413857:role/AWSPLEPlatformSageMakerRole",
+    "mamba_image_uri": "795833413857.dkr.ecr.ap-northeast-2.amazonaws.com/ple-mamba-precompute:1908a1e3"
+  },
+  "dataset": {
+    "name": "santander",
+    "description": "Santander Customer Transactions benchmark. 1,000,000 users (17 monthly snapshots, ~58.8K rows each, uniform distribution), 403 raw columns, 13 tasks, 7 shared experts. Pre-aggregated user-level synthetic dataset with product holdings, transaction sequences, and demographic attributes.\n",
+    "total_rows": 1000000,
+    "feature_groups_file": "configs/santander/feature_groups.yaml"
   }
 }
