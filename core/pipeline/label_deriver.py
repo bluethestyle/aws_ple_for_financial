@@ -857,21 +857,42 @@ class LabelDeriver:
             # Check source column exists (skip early for missing columns)
             source_col = cfg.get("source")
             if source_col and not isinstance(source_col, list) and source_col not in df.columns and derive_type != "weighted_sum":
-                logger.warning(
-                    "LabelDeriver: source '%s' not in df for label '%s', using default",
-                    source_col, label_name,
-                )
-                # Let the pandas fallback handle defaults gracefully
-                method = self.DERIVE_METHODS.get(derive_type)
-                if method is not None:
+                # The runner passes ``df`` as the slim, scalar-only frame
+                # (df_lite, ~192 cols) while keeping LIST/wide columns inside
+                # the DuckDB ``_post_stage3`` view (con + source_table). For
+                # sequence-based labels (sequence_last / sequence_mode_shift /
+                # sequence_diversity_trend) the source is a LIST column that
+                # never lands in df_lite — so the pandas .columns check fails
+                # even though the column is reachable via SQL. Re-probe the
+                # DuckDB side before bailing out; only fall through to the
+                # pandas-default path when the column is genuinely absent
+                # from both surfaces.
+                col_in_sql = False
+                if con is not None and source_table is not None:
                     try:
-                        results[label_name] = method(df, cfg)
+                        col_in_sql = bool(con.execute(
+                            f"SELECT COUNT(*) FROM (DESCRIBE {source_table}) "
+                            f"WHERE column_name = ?",
+                            [source_col],
+                        ).fetchone()[0])
                     except Exception:
-                        logger.exception(
-                            "LabelDeriver: failed to derive '%s' (type=%s)",
-                            label_name, derive_type,
-                        )
-                continue
+                        col_in_sql = False
+                if not col_in_sql:
+                    logger.warning(
+                        "LabelDeriver: source '%s' not in df for label '%s', using default",
+                        source_col, label_name,
+                    )
+                    # Let the pandas fallback handle defaults gracefully
+                    method = self.DERIVE_METHODS.get(derive_type)
+                    if method is not None:
+                        try:
+                            results[label_name] = method(df, cfg)
+                        except Exception:
+                            logger.exception(
+                                "LabelDeriver: failed to derive '%s' (type=%s)",
+                                label_name, derive_type,
+                            )
+                    continue
 
             # Attempt DuckDB derivation
             duckdb_done = False
