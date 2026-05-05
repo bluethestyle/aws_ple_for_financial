@@ -61,7 +61,7 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
     ├── Snapshot (장기)
     │   ├── tda_global        (16D) — 12개월 Persistence Diagram h0+h1 (8 stats each)
     │   ├── hmm_states        (25D) — HMM Triple-Mode (journey/lifecycle/behavior)
-    │   ├── gmm_clustering    (22D) — K=20 soft probs + entropy + dominant
+    │   ├── gmm_clustering    (22D) — K=20 soft probs + entropy + dominant  (v14: K=14 → 16D)
     │   └── model_derived     (27D) — KMeans(5) + Bandit(4) + LNN(18)
     │
     ├── Timeseries (단기 시계열)
@@ -149,6 +149,14 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
     input_filter:
       include_prefix: ["synth_"]
     modes: [journey, lifecycle, behavior]   # Triple-Mode
+    # v14 Phase 0 (2026-05-04): mode_observation_cols per-mode 입력 분리
+    mode_observation_cols:
+      journey:   [synth_unique_mcc, synth_unique_merchants, synth_recency_days,
+                  synth_frequency, synth_unique_mcc_l1_idx]
+      lifecycle: [synth_monthly_txns, synth_avg_amount, synth_monthly_spend,
+                  synth_monetary, synth_stability]
+      behavior:  [synth_morning_ratio, synth_afternoon_ratio, synth_evening_ratio,
+                  synth_night_ratio, synth_fraud_ratio]
   output_dim: 25           # 3 modes × ~8 stats + 3 state-id cols
   target_experts: [temporal_ensemble]
   # HMM Triple-Mode → task group routing:
@@ -165,10 +173,10 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
       exclude_binary: true
       min_nunique: 10
       exclude_columns: [customer_id]
-    n_clusters: 20
+    n_clusters: 14         # v14 Phase 0 (2026-05-04): K=20 → K=14 (BIC sweep, dead clusters 제거)
     covariance_type: full
     max_iter: 200
-  output_dim: 22           # K soft probs(20) + entropy(1) + dominant(1)
+  output_dim: 16           # K soft probs(14) + entropy(1) + dominant(1)
   target_experts: [deepfm, mlp, causal, optimal_transport]
   # NOTE: GMM soft labels — posterior probabilities + Shannon entropy
 
@@ -336,7 +344,7 @@ TDA 피처는 두 개의 별도 Generator 호출로 분리된다:
 | 3 | `hmm` | `core/feature/generators/hmm.py` | Snapshot | 25D | hmmlearn | HMM Triple-Mode 상태 (journey/lifecycle/behavior) |
 | 4 | `mamba` | `core/feature/generators/mamba.py` | Timeseries | 50D | GPU (mamba-ssm) | Mamba SSM — cached_embedding_uri로 Phase 0 CPU join |
 | 5 | `graph` | `core/feature/generators/graph.py` | Hierarchy/Item | 34D / 66D | - | Poincaré 임베딩 (product_hierarchy) / LightGCN (graph_collaborative) |
-| 6 | `gmm` | `core/feature/generators/gmm.py` | Snapshot | 22D | cuML (optional) | GMM soft labels (K=20) + entropy + dominant |
+| 6 | `gmm` | `core/feature/generators/gmm.py` | Snapshot | 22D / 16D (v14) | cuML (optional) | GMM soft labels (K=20 → K=14 in v14) + entropy + dominant |
 | 7 | `model_features` | `core/feature/generators/model_features.py` | Snapshot | 27D | - | KMeans(5D) + Bandit(4D) + LNN(18D) |
 | 8 | `merchant_hierarchy` | `core/feature/generators/merchant_hierarchy.py` | Hierarchy | 27D | - | MCC 계층 Poincaré 쌍곡 임베딩; truncate_seq_last=1 (누수 방지) |
 | 9 | `lag_extractor` | `core/feature/generators/lag_extractor.py` | Timeseries | 800D | - | K=200 lag 평탄화 (amount/mcc/day/hour × 200) |
@@ -367,6 +375,9 @@ Numeric Features (all axes merged)
 │   · `exclude_from_scaler: [categorical_id, probability]` 선언 컬럼 제외
 │     (ID 버킷 정수, [0,1] 확률 컬럼은 scaling 시 분포 왜곡되므로 skip — CLAUDE.md §1.9)
 │   · 연속형 (non-binary, non-categorical-ID, non-probability) 컬럼에만 적용
+│   · v14 Phase 0 (2026-05-04): `_probability_prefixes` default 10 패턴 + `_prob_`
+│     infix 자동 감지 — GMM/HMM probability 컬럼이 z-score 로 ±1.7 까지 왜곡되던
+│     버그 차단 (`core/pipeline/normalizer.py`)
 │
 └─ Stage 3 ─── Stage 1 에서 생성된 `_log` 컬럼은 **raw magnitude 보존**
                 (scaler 재적용 금지 — heavy-tail 신호 유지)
@@ -498,6 +509,62 @@ assert idx.max() < features.shape[-1], "router index OOB ..."
 - `demographics` 의 declared 5 cols 가 모두 contiguous block 에 포함.
 
 이 시점부터 `_rebuild_group_ranges_post_normalization` 은 input range 와 동일한 output 을 emit 하며 (no-op), expert routing / IG attribution / group-level FRIA 분석 이 모두 동일한 인덱스 공간을 공유한다.
+
+---
+
+## v14 Phase 0 Fixes (2026-05-04)
+
+> 관련 파일: `core/feature/generators/hmm.py`, `core/feature/generators/gmm.py`,
+> `configs/santander/feature_groups.yaml`, `core/pipeline/normalizer.py`.
+
+### 1) HMM mode-specific observation columns (`core/feature/generators/hmm.py`)
+
+**Previous**: 3 mode (journey / lifecycle / behavior) 가 모두 동일 input X 를 받아 학습되었다.
+세 mode 모두 `n_states=5`, `random_state=42` 로 고정되어 있어 journey 와 lifecycle 이
+**결정론적으로 같은 모델로 수렴** — 두 state assignment 간 Cramer V = 1.0 (완전 동일).
+
+**Current**: `mode_observation_cols` 로 mode 별 입력 컬럼을 분리:
+
+| Mode | 의미 | Observation columns |
+|------|------|---------------------|
+| `journey` | engagement (다양성/활성도) | `synth_unique_mcc`, `synth_unique_merchants`, `synth_recency_days`, `synth_frequency`, `synth_unique_mcc_l1_idx` |
+| `lifecycle` | volume / maturity | `synth_monthly_txns`, `synth_avg_amount`, `synth_monthly_spend`, `synth_monetary`, `synth_stability` |
+| `behavior` | temporal pattern | `synth_morning_ratio`, `synth_afternoon_ratio`, `synth_evening_ratio`, `synth_night_ratio`, `synth_fraud_ratio` |
+
+추가로 mode 별 `random_state` 를 mode 이름의 hash 로 자동 생성하여, 동일 입력 분포에서도
+서로 다른 local optima 로 수렴하도록 보장. 검증 결과 journey vs lifecycle Cramer V 가
+**1.0 → 0.5281** 로 떨어져 mode 분리가 성립한다.
+
+### 2) GMM K=14 + flat-kwarg parsing fix (`core/feature/generators/gmm.py`, `feature_groups.yaml`)
+
+**Previous**: `K=20`, 1M-row BIC sweep 에서 7 개 cluster 가 dead (각 1 row 만 점유),
+output_dim=22 (= 20 soft probs + entropy + dominant). 추가로 `GMMClusteringGenerator.__init__`
+의 flat-kwarg parsing 버그로 yaml 의 `n_clusters: 14` 가 `GMMConfig` 까지 전파되지
+않아 K override 자체가 무시되고 있었다.
+
+**Current**: `K=14`, output_dim=16. 1M rows BIC sweep 결과:
+
+| K | BIC | Dead clusters |
+|---|-----|---------------|
+| 14 | -58.8M | 0 (모든 cluster ≥ 0.24% 점유) |
+| 20 | -63.1M | 6 |
+
+Flat-kwarg parsing 도 수정하여 `feature_groups.yaml::generator_params.n_clusters` 가
+실제 GMM 학습에 반영되도록 함.
+
+### 3) Normalizer probability exclusion (`core/pipeline/normalizer.py`)
+
+**Previous**: GMM soft probs / HMM posterior probs 등 이미 [0, 1] 범위인 컬럼이
+`StandardScaler` 에 포함되어 z-score 변환 후 약 ±1.7 범위로 분포가 왜곡되었다.
+
+**Current**: `_probability_prefixes` 의 default 를 10 개 패턴으로 확장하고, 컬럼 이름
+중간에 `_prob_` infix 가 있으면 자동 감지하도록 normalizer 보강. CLAUDE.md §1.9 의
+`exclude_from_scaler: [categorical_id, probability]` 정책을 코드 레벨에서 구현. 검증 결과
+probability 컬럼이 정확히 `[0.0, 1.0]` 범위를 유지한다.
+
+이 3 가지 픽스는 §1.7 (group-level routing) / §1.9 (probability exclusion) 의 정책
+조항이 코드와 어긋나 있던 부분을 동기화한 것이며, Phase 0 v3 schema-invariant audit
+이후 발견된 잔존 누수 (mode redundancy, dead cluster, prob distortion) 를 차단한다.
 
 ---
 

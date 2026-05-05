@@ -719,6 +719,29 @@ $ P(q_(t+1) | q_t, q_(t-1), ..., q_1) = P(q_(t+1) | q_t) $
 
 세 모드의 48D는 별도 입력(separate input)으로 PLE의 HMM Triple-Mode Projector에 공급된다.
 
+=== v14 Phase 0 개선 (2026-05-04): mode_observation_cols 분리
+
+#note[Triple-Mode 결정론적 동치 문제][
+  v13 까지는 세 모드(journey/lifecycle/behavior)가 동일 입력 + 동일 `random_state=42` + 동일 `n_states=5` (journey/lifecycle) 로 학습되어, 결정론적으로 동일한 모델로 수렴하였다. 결과적으로 journey 와 lifecycle 의 상태 할당이 Cramer V $= 1.0$ 으로 완전 일치하여, "Triple-Mode" 라는 설계 의도가 무효화되었다.
+]
+
+*이전*: 모든 모드가 동일 관측 컬럼 + 동일 seed 로 학습 -> 동일 모델로 결정론적 수렴.
+
+*수정 1*: mode 별 관측 컬럼을 분리하여 의미적으로 다른 시간 스케일을 포착 (`configs/santander/feature_groups.yaml:245-274`).
+
+#styled-table(
+  (1fr, 3.2fr),
+  table.header([*모드*], [*전용 관측 컬럼 (`mode_observation_cols`)*]),
+  [Journey], [`synth_unique_mcc`, `synth_unique_merchants`, `synth_recency_days`, `synth_frequency`, `synth_unique_mcc_l1_idx`],
+  [Lifecycle], [`synth_monthly_txns`, `synth_avg_amount`, `synth_monthly_spend`, `synth_monetary`, `synth_stability`],
+  [Behavior], [`synth_morning_ratio`, `synth_afternoon_ratio`, `synth_evening_ratio`, `synth_night_ratio`, `synth_fraud_ratio`],
+)
+
+*수정 2*: mode 이름 hash 로 per-mode `random_state` 자동 생성 (`core/feature/generators/hmm.py`). 동일 입력이라도 seed 가 다르므로 EM 수렴 경로가 분기된다.
+
+*검증*: journey vs lifecycle Cramer V $1.0 arrow 0.5281$. 두 모드가 더 이상 동일 모델이 아니며, 의미적 분리가 달성됨.
+
+
 == 세 가지 핵심 알고리즘
 
 #styled-table(
@@ -819,6 +842,20 @@ $ "BIC" = -2 ln hat(L) + k ln(n) $
 )
 
 Mahalanobis 거리 $d_M = sqrt((bold(x)-bold(mu))^top bold(Sigma)^(-1)(bold(x)-bold(mu)))$는 피처 상관과 스케일 차이를 반영하여 유클리드 거리($bold(Sigma) = bold(I)$)를 일반화한다.
+
+== v14 Phase 0 개선 (2026-05-04): K=14 + flat-kwarg fix
+
+*이전*: $K = 20$ 로 BIC 기반 선택을 가정하였으나, 실제 학습 결과 7 개 클러스터가 dead (각각 1 row) 상태로 수렴하였다. 출력은 22D (= 20 prob + cluster\_id + entropy) 였으나 유효 클러스터는 13 개에 불과하여 라우팅 신호가 희석되었다.
+
+*수정 1*: $K = 14$ 로 축소 (`configs/santander/feature_groups.yaml:407`). 출력 차원은 16D (= 14 prob + cluster\_id + entropy). 14 개 클러스터 모두 활성 (min $= 4{,}798$ rows, max $= 144{,}763$ rows).
+
+*수정 2*: `GMMClusteringGenerator.__init__` 의 yaml flat-kwarg parsing 버그 수정. 이전에는 yaml 의 `n_clusters: 14` 가 평탄화된 kwargs 로 전달되었으나 `GMMConfig` 로 라우팅되지 않아 내부적으로 default $K = 20$ 이 사용되었다. v14 에서 flat-kwarg 도 `GMMConfig` 필드로 매핑되도록 수정.
+
+*검증*: 14 클러스터 모두 살아있음. 소프트 할당의 엔트로피 분포가 정상화되어 GroupTaskExpertBasket 의 라우팅 신호가 의미를 회복.
+
+#note[K 선택의 함의][
+  $K = 14$ 는 BIC 의 *전역* 최적이라기보다, *유효 클러스터 수* 와 *PLE 서브헤드 수* 의 정합을 우선한 *운영적* 선택이다. dead cluster 가 존재하면 PLE Task Expert 서브헤드 중 일부가 항상 zero gating 을 받아 학습 신호가 끊기므로, BIC 가 약간 더 낮더라도 모두 활성인 $K$ 를 선택한다.
+]
 
 
 // =====================================================================
@@ -1056,6 +1093,18 @@ MCC 계층 구조(Root -> L1 -> L2 -> Brand)를 반영한 좌표 및 임베딩. 
   [Raw power-law copy], [90D], [Stage 1 log1p만 적용, Stage 2 미적용],
   [*합계*], [*734D*], [644D normalized + 90D raw],
 )
+
+== v14 Phase 0 개선 (2026-05-04): 확률 컬럼 scaler 제외
+
+*이전*: GMM 의 `gmm_cluster_prob_*` 와 HMM 의 `hmm_*_prob_*` 컬럼이 Stage 2 의 StandardScaler 에 그대로 입력되었다. 원본 분포가 $[0, 1]$ 범위인 확률값이 평균 0, 표준편차 1 로 변환되어 대략 $plus.minus 1.7$ 범위로 *왜곡* 되었고, 합 $= 1.0$ 의 시뮬렉스 제약도 깨졌다. PLE 의 라우팅 가중치로 직접 사용되어야 하는 확률 신호가 의미를 잃은 셈이다.
+
+*수정*: `core/pipeline/normalizer.py:112-141` 에서 `_probability_prefixes` 의 default 를 확장하고, `_prob_` infix 를 자동 감지하여 StandardScaler 에서 제외. 확률 컬럼은 raw $[0, 1]$ 그대로 모델에 공급된다.
+
+*근거*: CLAUDE.md §1.9 의 `exclude_from_scaler: [categorical_id, probability]` 정책의 실 구현. 범주형 ID 파생 정수도 동일하게 제외 대상이다.
+
+#note[확률 컬럼 식별 규칙][
+  자동 감지는 두 단계로 작동한다 --- (1) `gmm_cluster_prob_`, `hmm_journey_prob_`, `hmm_lifecycle_prob_`, `hmm_behavior_prob_` 등 prefix 매칭, (2) 컬럼명에 `_prob_` infix 가 포함된 모든 컬럼. 추가로 `feature_groups.yaml` 의 `exclude_from_scaler` 필드에 generator 측이 명시적으로 선언할 수도 있다.
+]
 
 == 정규화 파이프라인 흐름 요약
 

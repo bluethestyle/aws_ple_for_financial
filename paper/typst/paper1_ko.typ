@@ -1230,6 +1230,77 @@ CGC 추출 레이어의 게이트 가중치는 태스크별 전문가 활용 프
 
 _태스크별 게이트 가중치 프로파일과 지배적 전문가 할당의 상세 내용은 아래 게이트 엔트로피 분석(RQ6)에서 제공하며, 라우팅 붕괴와 태스크-전문가 특화를 함께 다룬다._
 
+== 에포크 예산 민감도 (RQ4 후속)
+
+로컬 10-에포크 합동 어블레이션(@tab:joint-ablation)은 예상치 못한 순서를 드러냈다: shared\_bottom(평균 AUC 0.8139)이 집계 AUC에서 PLE softmax(0.7980)를 앞서며, v13 프로토타입의 PLE 우위 서사와 상충하는 결과였다.
+세 가지 경쟁 가설을 검토하였다:
+*(A) 신호 정제로 인해 게이트 라우팅이 불필요해졌다*,
+*(B) PLE+CGC 게이트가 수렴하기까지 10 에포크를 넘는 학습이 필요하다*,
+*(D) 게이트 파라미터가 도움보다 빠르게 과적합한다*.
+
+네 개 핵심 시나리오(shared\_bottom, PLE-softmax, PLE-full = sigmoid+CGC+GTE+LT+HMM-projectors, PLE-full+adaTT)를 ml.g4dn.2xlarge 위에서 동일한 하드웨어, 동일한 fp32 DuckDB 스트리밍 파이프라인(3.4절 메모리 예산)으로 *10 에포크와 15 에포크 모두* 재실행하여 결과를 SageMaker 에서 확보하였다.
+일치된 10-에포크 컬럼은 fp64 pq.read\_table 로컬 베이스라인과 fp32 SageMaker 파이프라인 사이의 정밀도 경로 드리프트를 분리하여 에포크 예산 효과만을 격리한다.
+결과는 @tab:epoch-budget 에 정리된다.
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto, auto),
+    inset: 4pt,
+    align: (left, right, right, right, right, right),
+    stroke: 0.5pt,
+    table.header(
+      [*변형*], [*Local 10ep AUC*], [*SM 10ep AUC*], [*SM 15ep AUC*], [*ΔAUC (15$-$10)*], [*SM 15ep val\_loss*],
+    ),
+    [shared\_bottom],            [0.8139], [0.8197], [0.8015], [$-$0.0182], [17.64],
+    [PLE softmax],               [0.7980], [*0.8233*], [*0.8249*], [$+$0.0016], [*17.09*],
+    [PLE full (sigmoid + 5개 토글)], [—], [0.8216], [0.8203], [$-$0.0013], [17.43],
+    [PLE full $+$ adaTT],        [0.8200], [0.8223], [0.8213], [$-$0.0010], [17.60],
+  ),
+  caption: [에포크 예산 민감도, v14 phase0 (1M행). _Local 10ep_: RTX 4070 fp64 pq.read\_table. _SM 10ep / 15ep_: ml.g4dn.2xlarge fp32 DuckDB-stream. ΔAUC 는 SageMaker 상에서 일치된 15$-$10 차이를 비교한다. PLE 4개 변형 모두 10-15 에포크 사이 plateau ($|$ΔAUC$|<$0.002) 에 도달하며, shared\_bottom 만 $-$0.0182 의 강한 과적합을 보인다 — 이 데이터셋의 architecture-class 시그니처이다.],
+) <tab:epoch-budget>
+
+일치된 쌍 비교는 *가설 B*를 기각한다.
+SageMaker 10 에포크 시점에서 이미 PLE softmax(0.8233)는 shared\_bottom(0.8197)을 $+$0.0036 AUC로 앞서며, 로컬 10ep 의 역전 순서는 fp64 pq.read\_table 경로의 부산물이지 PLE 의 에포크 수렴 부족이 아니다.
+@tab:epoch-budget 가 실제로 드러내는 것은 *가설 D*(과적합 비대칭)이다: shared\_bottom은 10 → 15 에포크에서 $-$0.0182 AUC 가 떨어지고 val\_loss 가 16.58 → 17.64 로 상승하는 반면, PLE softmax는 사실상 정체한다($+$0.0016 AUC, val\_loss 16.04 → 17.09).
+세 가지 함의를 도출한다.
+
+*함의 1: 10-에포크 예산에서 shared\_bottom은 조기 종료 또는 정규화가 필요하다.*
+10 → 15 에포크 사이의 $-$0.018 AUC 감소와 동반된 val\_loss 상승(16.58 → 17.64)은 구속받지 않는 공유 표현이 일반화보다 학습 잡음 암기를 더 빠르게 진행함을 보여준다.
+정규화를 인식한 shared-bottom 배포는 조기 종료 epoch 의 체크포인트에 고정되어야 한다.
+
+*함의 2: adaTT 손실 수준 전이는 여전히 null 효과를 보인다.*
+PLE-full($+$ adaTT)의 AUC 0.8213은 adaTT 없는 PLE-full(0.8203)과 $\pm$0.001 이내에 머문다.
+이는 v13 결과(@tab:structure-ablation 의 발견 2)를 보다 긴 15-에포크 예산과 정제된 v14 데이터에서 재확인한 것이다: 손실 수준 그래디언트-코사인 신호는 PLE 단독 베이스라인 대비 무시 가능한 효과만 보인다.
+
+*함의 3: 보조 토글 (GTE + LT + HMM-projector) 추가는 집계 AUC 에서 PLE softmax 를 개선하지 않는다.*
+PLE-full(sigmoid + CGC + GTE + LT + HMM-proj) AUC 0.8203은 PLE-softmax 단독 AUC 0.8249 대비 $-$0.0046 낮다.
+GTE 단독 추가(PLE-sigmoid-GTE: 0.8214)와 GTE+LT(PLE-sigmoid-GTE-LT: 0.8204)는 softmax 베이스라인 약간 아래에서 평탄선을 그린다.
+보조 스택은 본 데이터에서 AUC 이득 없이 복잡도만 누적하므로, 프로덕션은 더 단순한 PLE-softmax 구성으로 출시하고 라우팅 보조 메커니즘은 태스크별 fine-tune 단계로 미루는 편이 합리적이다.
+
+정규화 변형 *PLE-softmax-reg*(dropout 0.3, weight\_decay $1 times 10^(-4)$)는 AUC 0.8256과 val\_loss 16.57로 추가 개선된다(PLE-softmax 0.8249, val\_loss 17.09 대비).
+이 $+$0.0007 AUC 와 $-$0.52 val\_loss 는 게이트 과적합 가설을 확인한다: 최적 아키텍처 상태에서도 PLE 는 calibration loss 측면에서 여유 공간을 남기고 있으며, 일반적인 정규화가 아키텍처 추가 없이 그 여유를 회수한다.
+
+*adaTT 손실 수준 전이는 모든 gate 유형에서 val\_loss 를 일관되게 증가시킨다* (@tab:adatt-vs-vanilla).
+adaTT 추가는 shared\_bottom 에서 val\_loss 를 $+$0.44 (17.64 → 18.08), PLE-sigmoid 에서 $+$1.54 (16.99 → 18.53), PLE-softmax 에서 $+$1.93 (17.09 → 19.02) 만큼 끌어올리며, 평균 AUC 는 어느 방향으로도 최대 $\pm$0.005 이내에서만 움직인다.
+보조 손실 수준 신호는 따라서 집계 AUC 보상 없이 calibration tail 을 불안정하게 만들며, v13 결과(@tab:structure-ablation 의 발견 2)인 "adaTT 는 이 규모에서 AUC 에 null" 은 더 긴 학습 예산 하에서 *adaTT 는 이 규모에서 val-loss 에 유해하다* 로 갱신된다.
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    inset: 4pt,
+    align: (left, right, right, right, right),
+    stroke: 0.5pt,
+    table.header(
+      [*기준*], [*Vanilla AUC*], [*$+$adaTT AUC*], [*Vanilla val\_loss*], [*$+$adaTT val\_loss*],
+    ),
+    [shared\_bottom],     [0.8015], [*0.8097*], [*17.64*], [18.08],
+    [PLE sigmoid],        [*0.8240*], [0.8217], [*16.99*], [18.53],
+    [PLE softmax],        [*0.8249*], [0.8197], [*17.09*], [19.02],
+    [PLE full (sigmoid+5)],[*0.8203*], [0.8213], [*17.43*], [17.60],
+  ),
+  caption: [15 에포크 SageMaker g4dn.2xlarge 에서의 adaTT 쌍별 비교. 굵게 표시된 항목은 각 행에서 더 나은 선택(더 낮은 val\_loss, 더 높은 AUC)을 표시한다. adaTT 는 shared\_bottom 과 PLE-full 에서만 AUC 향상을 제공하지만 모든 쌍에서 val\_loss 가 증가한다 — PLE-softmax ($+$1.93) 와 PLE-sigmoid ($+$1.54) 에서 가장 심각하다.],
+) <tab:adatt-vs-vanilla>
+
 == 게이트 엔트로피 분석 (RQ6: 라우팅 붕괴가 발생하는가?)
 
 함수 공간 붕괴(이종 전문가에 의해 구조적으로 방지됨)를 넘어,

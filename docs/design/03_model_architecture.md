@@ -676,6 +676,48 @@ class PLEEvaluator:
 
 ---
 
+## v14 Phase 0: Training Data Loading Refactor (2026-05-04)
+
+> 관련 파일: `containers/training/train.py` (`load_ready_data`,
+> `_arrow_table_to_tensor`).
+
+### Problem — SageMaker g4dn.xlarge OOM
+
+**Previous** path used `pyarrow.parquet.read_table()` to fully materialize the Phase 0
+output before tensor conversion. For Santander v12 the trainer faced a **1M × 1210**
+column matrix which, decoded as fp64, expanded to **9.68 GB Arrow** in RAM. The
+ml.g4dn.xlarge instance has only 16 GB system memory shared with the SageMaker SDK,
+data download buffers, and the GPU staging area, which produced OOM kills before
+the first forward pass.
+
+In addition, `_arrow_table_to_tensor` performed an unnecessary fp32 round-trip and
+materialized an intermediate via `np.column_stack(...)` which doubled peak memory
+during the Arrow → numpy → torch.Tensor conversion.
+
+### Current — DuckDB streaming + zero-copy slicing + fp32 cast
+
+| Stage | Previous | Current |
+|-------|----------|---------|
+| Parquet load | `pq.read_table(path)` (fp64 materialization) | `duckdb.execute("SELECT ... ::FLOAT FROM 'file.parquet'")` (fp32 columns) |
+| Train/val split | `table.take(indices)` (full copy) | `table.slice(offset, length)` (zero-copy view) |
+| Arrow → Tensor | column_stack copy + fp32 round-trip | direct per-column buffer fill into preallocated fp32 tensor |
+| Peak Arrow size | 9.68 GB | **4.99 GB** (50% reduction from fp32 cast) |
+| Peak RAM during conversion | ~16 GB (OOM) | **~5 GB** |
+
+The DuckDB SELECT also inherits the §3.3 backend policy (cuDF → DuckDB → pandas),
+keeping the trainer aligned with the pipeline-wide preference for columnar SQL over
+ad-hoc pandas operations.
+
+### Instance change
+
+After the refactor, ml.g4dn.xlarge (16 GB) is sufficient for a 50K smoke test, but
+the full 1M-row training run is now provisioned on **ml.g4dn.2xlarge (32 GB)** to
+leave headroom for batch staging and AMP scaling buffers. This is set via
+`pipeline.yaml::aws.training.instance_type`; no code change is required to swap
+back to xlarge for smaller datasets.
+
+---
+
 ## PLEInput 데이터 컨테이너
 
 ```python
