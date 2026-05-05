@@ -17,6 +17,7 @@ ALL config from schema JSON files (produced by PipelineRunner).
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import os
@@ -159,49 +160,71 @@ def load_ready_data(channel_dir: str) -> dict:
 
     con = duckdb.connect()
 
-    # -- Features --
+    # -- Features (DuckDB streaming + float32 cast, CLAUDE.md §3.3) --
+    # Replaces the older ``pq.read_table()`` path which materialised the
+    # whole 1M × 1210-col DOUBLE table (~10 GB) before any downstream
+    # split could shrink it. On g4dn.xlarge (16 GB system RAM) that path
+    # crashed with OOM. The DuckDB streaming SELECT below pushes the cast
+    # and projection into the parquet reader so peak RSS = the float32
+    # output buffer (~4.8 GB at 1M × 1210), comfortably within the
+    # container memory budget. Numerical impact: feature values are
+    # already z-score normalised in [-3, 3] range so float32 mantissa
+    # (~7 decimal digits) is more than enough — no measurable
+    # downstream metric drift in smoke tests.
     features_path = channel_path / "features.parquet"
     if features_path.exists():
         parquet_uri = str(features_path).replace("\\", "/")
-        # Identify scalar columns via DuckDB DESCRIBE (lightweight, no data load)
-        scalar_cols = _detect_scalar_cols_duckdb(con, parquet_uri)
+        # DESCRIBE: get name + DuckDB type for every column.
+        schema_rows = con.execute(
+            f"DESCRIBE SELECT * FROM '{parquet_uri}'"
+        ).fetchall()
+        # Filter scalar columns (no LIST/STRUCT/VARCHAR/DATE).
+        scalar_cols: List[str] = []
+        col_types: Dict[str, str] = {}
+        for row in schema_rows:
+            cname, ctype = row[0], (row[1] or "")
+            ctype_u = ctype.upper()
+            if ctype.endswith("[]") or "STRUCT" in ctype_u:
+                continue
+            if ctype_u in ("VARCHAR", "DATE", "TIMESTAMP"):
+                continue
+            scalar_cols.append(cname)
+            col_types[cname] = ctype_u
 
-        # max_rows pre-filter: when SM_HP_MAX_ROWS (or env override) is set,
-        # read only enough parquet row groups to cover max_rows. Without this,
-        # 1M-row × 1.3K-col datasets explode to 11 GB Arrow on g4dn.xlarge
-        # (16 GB RAM) before the post-load .take() subsample can fire.
-        max_rows_pre = int(os.environ.get("SM_HP_MAX_ROWS", "0") or 0)
-        if max_rows_pre > 0:
-            pf = pq.ParquetFile(str(features_path))
-            total_rows = pf.metadata.num_rows
-            if total_rows > max_rows_pre:
-                rows_so_far = 0
-                rg_indices: List[int] = []
-                for rg_i in range(pf.num_row_groups):
-                    rg_indices.append(rg_i)
-                    rows_so_far += pf.metadata.row_group(rg_i).num_rows
-                    if rows_so_far >= max_rows_pre:
-                        break
-                features = pf.read_row_groups(rg_indices, columns=scalar_cols)
-                if features.num_rows > max_rows_pre:
-                    features = features.slice(0, max_rows_pre)
-                logger.info(
-                    "Loaded features via PyArrow row-group subsample "
-                    "(max_rows=%d): %d row groups -> %d rows x %d columns",
-                    max_rows_pre, len(rg_indices),
-                    features.num_rows, features.num_columns,
-                )
+        # Build projection: DOUBLE/REAL → FLOAT (float32), keep ints as-is.
+        proj_parts: List[str] = []
+        n_cast_to_fp32 = 0
+        for c in scalar_cols:
+            t = col_types[c]
+            if t in ("DOUBLE", "REAL", "FLOAT", "DECIMAL"):
+                proj_parts.append(f'CAST("{c}" AS FLOAT) AS "{c}"')
+                n_cast_to_fp32 += 1
             else:
-                features = pq.read_table(str(features_path), columns=scalar_cols)
-                logger.info(
-                    "max_rows=%d >= total_rows=%d; reading full table.",
-                    max_rows_pre, total_rows,
-                )
-        else:
-            # PyArrow native parquet read (no pandas, no DuckDB data copy)
-            features = pq.read_table(str(features_path), columns=scalar_cols)
-            logger.info("Loaded features via PyArrow: %d rows, %d columns",
-                        features.num_rows, features.num_columns)
+                proj_parts.append(f'"{c}"')
+        proj_sql = ",\n  ".join(proj_parts)
+
+        max_rows_pre = int(os.environ.get("SM_HP_MAX_ROWS", "0") or 0)
+        limit_clause = f" LIMIT {max_rows_pre}" if max_rows_pre > 0 else ""
+
+        sql = (
+            f"SELECT\n  {proj_sql}\n"
+            f"FROM read_parquet('{parquet_uri}'){limit_clause}"
+        )
+        logger.info(
+            "Streaming features via DuckDB (fp32 cast on %d float cols)%s",
+            n_cast_to_fp32,
+            f" with LIMIT {max_rows_pre}" if max_rows_pre > 0 else "",
+        )
+        # ``.arrow()`` materialises the streamed result into a single
+        # Arrow Table.  DuckDB does the parquet read, projection and
+        # cast in vectorised batches before this final allocation, so
+        # the RSS spike is bounded by the output table size (not the
+        # 2× spike of pyarrow .cast()).
+        features = con.execute(sql).fetch_arrow_table()
+        logger.info(
+            "Features (DuckDB stream → Arrow): %d rows × %d cols",
+            features.num_rows, features.num_columns,
+        )
     else:
         # Fallback: load from generic parquet files (backward compat)
         parquet_files = sorted(channel_path.glob("**/*.parquet"))
@@ -240,28 +263,17 @@ def load_ready_data(channel_dir: str) -> dict:
         logger.warning("Features contain %d NaN values across %d columns",
                         nan_count, nan_cols_count)
 
-    # -- Labels --
+    # -- Labels (DuckDB streaming, mirrors features path) --
     labels_path = channel_path / "labels.parquet"
     if labels_path.exists():
-        # Mirror the features row-group subsample so labels stay aligned.
-        if max_rows_pre > 0:
-            pf_l = pq.ParquetFile(str(labels_path))
-            total_l = pf_l.metadata.num_rows
-            if total_l > max_rows_pre:
-                rows_so_far = 0
-                rg_idx_l: List[int] = []
-                for rg_i in range(pf_l.num_row_groups):
-                    rg_idx_l.append(rg_i)
-                    rows_so_far += pf_l.metadata.row_group(rg_i).num_rows
-                    if rows_so_far >= max_rows_pre:
-                        break
-                labels = pf_l.read_row_groups(rg_idx_l)
-                if labels.num_rows > max_rows_pre:
-                    labels = labels.slice(0, max_rows_pre)
-            else:
-                labels = pq.read_table(str(labels_path))
-        else:
-            labels = pq.read_table(str(labels_path))
+        labels_uri = str(labels_path).replace("\\", "/")
+        # Labels are typically int/binary; no float cast needed but keep
+        # the same streaming path for symmetry with features and to honor
+        # the max_rows truncation atomically.
+        limit_clause_l = f" LIMIT {max_rows_pre}" if max_rows_pre > 0 else ""
+        labels = con.execute(
+            f"SELECT * FROM read_parquet('{labels_uri}'){limit_clause_l}"
+        ).fetch_arrow_table()
     else:
         labels = None
     if labels is not None:
@@ -513,8 +525,16 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
         logger.info("Merged features+labels via PyArrow: %d rows, %d columns",
                      merged.num_rows, merged.num_columns)
 
-    # Release original tables to free memory
+    # Release original tables to free memory.  ``append_column`` is
+    # zero-copy (shared column buffers), so until ``features`` and
+    # ``labels`` are both deref'd the merged Table holds backing
+    # buffers from both inputs.  Explicit gc.collect() forces the Arrow
+    # Table objects to be released before the take()/dataloader phase
+    # peaks memory.
     del features
+    if labels is not None:
+        del labels
+    gc.collect()
 
     # -- Build FeatureColumnSpec from schema --
     feature_columns = feature_schema.get("columns", _feature_col_names)
@@ -562,20 +582,53 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
         train_idx = split_indices.get("train", [])
         val_idx = split_indices.get("val", split_indices.get("validation", []))
 
-        tbl_train = merged.take(train_idx)
-        tbl_val = merged.take(val_idx) if val_idx else None
+        # Memory-aware split.  ``Table.take(idx_list)`` always copies,
+        # peaking at merged (5 GB) + tbl_train (3.2 GB) + tbl_val (0.9 GB)
+        # before any DataLoader build → 9+ GB Arrow on top of the
+        # 16 GB g4dn.xlarge container.  When the indices are a
+        # contiguous range (the v14 phase0 temporal split) we use
+        # ``Table.slice`` instead, which is zero-copy and shares
+        # buffers with the parent.  Falls back to ``take`` for the
+        # general case (random or stratified splits).
+        def _take_or_slice(table: pa.Table, idx_list: List[int]):
+            if not idx_list:
+                return None
+            sorted_idx = sorted(idx_list)
+            if sorted_idx[-1] - sorted_idx[0] + 1 == len(sorted_idx):
+                return table.slice(sorted_idx[0], len(sorted_idx))
+            return table.take(idx_list)
 
+        tbl_train = _take_or_slice(merged, train_idx)
+        n_train_rows = tbl_train.num_rows if tbl_train is not None else 0
+
+        # Build train DataLoader first — this materialises the train
+        # tensor.  After that, we no longer need ``merged`` for train
+        # and can release one of the views before slicing val.
         train_loader = build_ple_dataloader(
             df=tbl_train, feature_spec=feature_spec, label_columns=label_map,
             batch_size=batch_size, shuffle=True, use_gpu_loading=use_gpu_loading,
         )
+        del tbl_train
+        gc.collect()
 
         val_loader = None
-        if tbl_val is not None and tbl_val.num_rows > 0:
-            val_loader = build_ple_dataloader(
-                df=tbl_val, feature_spec=feature_spec, label_columns=label_map,
-                batch_size=batch_size, shuffle=False, use_gpu_loading=use_gpu_loading,
-            )
+        n_val_rows = 0
+        if val_idx:
+            tbl_val = _take_or_slice(merged, val_idx)
+            del merged   # tbl_val (slice) still references buffers
+            gc.collect()
+
+            n_val_rows = tbl_val.num_rows if tbl_val is not None else 0
+            if n_val_rows > 0:
+                val_loader = build_ple_dataloader(
+                    df=tbl_val, feature_spec=feature_spec, label_columns=label_map,
+                    batch_size=batch_size, shuffle=False, use_gpu_loading=use_gpu_loading,
+                )
+            del tbl_val
+            gc.collect()
+        else:
+            del merged
+            gc.collect()
 
         # Inject sequences if present
         if sequences is not None:
@@ -588,7 +641,7 @@ def build_dataloaders(features, labels, sequences, seq_lengths, feature_schema,
                 _inject_sequences_into_ple_dataset(val_loader.dataset, val_seqs, val_lens)
 
         logger.info("Train: %d samples, Val: %d samples (from split_indices)",
-                     tbl_train.num_rows, tbl_val.num_rows if tbl_val is not None else 0)
+                     n_train_rows, n_val_rows)
     else:
         # No split indices — build single loader then split
         full_loader = build_ple_dataloader(
@@ -1409,6 +1462,12 @@ def main() -> None:
     feature_schema = data["feature_schema"]
     label_schema = data["label_schema"]
     split_indices = data["split_indices"]
+    # Drop the dict ref so ``del features`` later actually frees the
+    # Arrow Table.  Without this, ``data["features"]`` keeps the 5 GB
+    # buffer alive past the merge step, contributing to OOM on
+    # g4dn.xlarge (16 GB).
+    del data
+    gc.collect()
 
     # Merge YAML config into label_schema if present (backward compat).
     # Supports two patterns:

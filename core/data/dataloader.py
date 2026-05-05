@@ -142,17 +142,33 @@ def _check_cudf() -> bool:
 
 
 def _arrow_table_to_tensor(table: Any, columns: List[str], dtype: str = "float32") -> Any:
-    """Convert Arrow Table columns to a CPU torch.Tensor (zero-copy when possible)."""
+    """Convert Arrow Table columns to a CPU torch.Tensor.
+
+    Memory-efficient implementation: pre-allocates the output array in
+    the target dtype and copies each Arrow column into it one at a
+    time, replacing NaN in-place.  Avoids the previous path's three
+    intermediate buffers (per-column numpy list, np.column_stack
+    result, and an unnecessary float64 round-trip), which together
+    peaked at ~5x the final tensor size and OOMed g4dn.xlarge on
+    1M-row × 1210-col matrices.
+    """
     import numpy as np
     import torch
 
-    # Select columns and convert to a single contiguous numpy array
     subset = table.select(columns)
-    # to_pandas(zero_copy_only=...) may fail for some types; use numpy directly
-    # Arrow -> numpy via .to_pydict() is slow; prefer chunked array path
-    arrays = [subset.column(c).to_numpy(zero_copy_only=False) for c in range(subset.num_columns)]
-    arr = np.column_stack(arrays) if len(arrays) > 1 else arrays[0].reshape(-1, 1)
-    arr = np.nan_to_num(arr.astype(np.float64), nan=0.0).astype(getattr(np, dtype))
+    n_rows = subset.num_rows
+    n_cols = len(columns)
+    np_dtype = getattr(np, dtype)
+    arr = np.empty((n_rows, n_cols), dtype=np_dtype)
+    for i in range(n_cols):
+        # zero_copy_only=False because Arrow columns may be chunked;
+        # to_numpy() returns a read-only view, so we cannot mutate it
+        # directly.  Assigning into ``arr[:, i]`` copies + casts in
+        # one shot.
+        col = subset.column(i).to_numpy(zero_copy_only=False)
+        arr[:, i] = col
+    # Replace NaN on the writable contiguous output (single pass).
+    np.nan_to_num(arr, copy=False, nan=0.0)
     return torch.from_numpy(arr)
 
 

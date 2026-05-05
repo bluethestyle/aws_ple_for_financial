@@ -109,10 +109,34 @@ class FeatureNormalizer:
             "categorical_id_prefixes",
             [],
         )
+        # Generators emit probability columns under several prefixes
+        # depending on whether the runner injected the group name.  The
+        # defaults below cover the four observed patterns; the
+        # ``probability_infix`` check below also catches anything matching
+        # ``*_prob_*`` so a new generator does not silently get its
+        # probability outputs z-scored.
         self._probability_prefixes: List[str] = cfg.get(
             "probability_prefixes",
-            ["gmm_clustering_cluster_prob_", "model_derived_gmm_prob_"],
+            [
+                "gmm_cluster_prob_",
+                "gmm_clustering_cluster_prob_",
+                "gmm_prob_",
+                "model_derived_gmm_prob_",
+                "hmm_journey_prob_",
+                "hmm_lifecycle_prob_",
+                "hmm_behavior_prob_",
+                "hmm_states_journey_prob_",
+                "hmm_states_lifecycle_prob_",
+                "hmm_states_behavior_prob_",
+            ],
         )
+        # Optional generic infix detection (CLAUDE.md §1.9): any column
+        # whose name contains ``_prob_`` is treated as an already-bounded
+        # [0, 1] probability and excluded from the StandardScaler unless
+        # disabled via ``probability_infix_detect: false``.
+        self._probability_infix_detect: bool = bool(cfg.get(
+            "probability_infix_detect", True,
+        ))
 
     # ------------------------------------------------------------------
     # Public API
@@ -157,7 +181,10 @@ class FeatureNormalizer:
             c for c in feature_cols
             if c not in self.binary_cols
             and c not in self.categorical_int_cols
-            and any(c.startswith(pfx) for pfx in self._probability_prefixes)
+            and (
+                any(c.startswith(pfx) for pfx in self._probability_prefixes)
+                or (self._probability_infix_detect and "_prob_" in c)
+            )
         ]
 
         _exclude = set(self.binary_cols) | set(self.categorical_int_cols) | set(self.probability_cols)
@@ -395,7 +422,10 @@ class FeatureNormalizer:
             c for c in present
             if c not in self.binary_cols
             and c not in self.categorical_int_cols
-            and any(c.startswith(p) for p in self._probability_prefixes)
+            and (
+                any(c.startswith(p) for p in self._probability_prefixes)
+                or (self._probability_infix_detect and "_prob_" in c)
+            )
         ]
         excluded = set(self.binary_cols) | set(self.categorical_int_cols) | set(self.probability_cols)
         self.continuous_cols = [c for c in present if c not in excluded

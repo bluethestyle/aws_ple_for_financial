@@ -153,8 +153,20 @@ class GMMClusteringGenerator(AbstractFeatureGenerator):
         prefix: str = "gmm",
         **kwargs: Any,
     ) -> None:
+        # Hoist GMMConfig fields out of **kwargs so a flat YAML
+        # ``generator_params`` block (e.g. ``n_clusters: 14``) is
+        # honoured instead of silently absorbed by the kwargs catch-all
+        # (which produced K=20 even after configs/santander/feature_groups.yaml
+        # set n_clusters: 14).  Explicit ``config=`` still wins.
+        _gmm_field_names = {f.name for f in GMMConfig.__dataclass_fields__.values()}
+        _flat_gmm = {k: kwargs.pop(k) for k in list(kwargs.keys()) if k in _gmm_field_names}
         super().__init__(**kwargs)
-        self.config = config or GMMConfig()
+        if config is not None:
+            self.config = config
+        elif _flat_gmm:
+            self.config = GMMConfig(**_flat_gmm)
+        else:
+            self.config = GMMConfig()
         self.feature_columns = feature_columns or []
         self.prefix = prefix
 

@@ -73,8 +73,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-PHASE0 = "outputs/phase0_v13/extracted"  # 0501-1246: 12 tasks, all-fix
-RESULTS = "outputs/ablation_v13"
+PHASE0 = "outputs/phase0_v14/extracted"  # 0502-11xx: HMM mode-split + GMM K=14 + prob un-scaled
+RESULTS = "outputs/ablation_v14"
 CONFIG = "configs/pipeline.yaml"
 DATASET_CONFIG = "configs/datasets/santander.yaml"
 EPOCHS = 10             # reduced from 20 — plateau observed at epoch 5-6 across scenarios

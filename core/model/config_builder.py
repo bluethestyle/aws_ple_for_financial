@@ -442,9 +442,37 @@ def build_ple_config(
             ]
         else:
             routing_iter = expert_routing
+
+        # Filter out input_groups that are not in the actual group_ranges
+        # (e.g., when ablation removes generated groups via
+        # ``removed_feature_groups``).  Without this, FeatureRouter raises
+        # ``ValueError: Expert 'deepfm' references unknown feature group
+        # 'txn_behavior'`` because expert_routing was authored for the
+        # full group set and was never re-derived after removal.
+        available_groups = set(group_ranges.keys()) if group_ranges else set()
+
+        def _filter_routing(r):
+            if isinstance(r, dict):
+                expert = r.get("expert_name")
+                groups = list(r.get("input_groups") or [])
+            else:
+                expert = getattr(r, "expert_name", None)
+                groups = list(getattr(r, "input_groups", []) or [])
+            if not available_groups:
+                kept = groups
+                dropped: list = []
+            else:
+                kept = [g for g in groups if g in available_groups]
+                dropped = [g for g in groups if g not in available_groups]
+            if dropped:
+                logger.info(
+                    "config_builder: expert %r routing trimmed; dropped removed groups %s; kept %s",
+                    expert, dropped, kept,
+                )
+            return {"expert_name": expert, "input_groups": kept}
+
         ple_config.expert_input_routing = [
-            ExpertInputConfig(**r) if isinstance(r, dict) else r
-            for r in routing_iter
+            ExpertInputConfig(**_filter_routing(r)) for r in routing_iter
         ]
 
     # Task group map

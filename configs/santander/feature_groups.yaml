@@ -243,6 +243,33 @@ feature_groups:
       input_filter:
         include_prefix: ["synth_"]
       modes: [journey, lifecycle, behavior]
+      # Per-mode observation columns enforce semantic separation between
+      # the three modes.  Without this every mode receives the same
+      # synth_* matrix and the journey/lifecycle fits collapse onto
+      # identical local optima (n_states=5 for both).  See CLAUDE.md note
+      # on HMM journey/lifecycle duplication regression.
+      mode_observation_cols:
+        # Journey -- engagement breadth + recency (awareness -> advocacy)
+        journey:
+          - synth_unique_mcc
+          - synth_unique_merchants
+          - synth_recency_days
+          - synth_frequency
+          - synth_unique_mcc_l1_idx
+        # Lifecycle -- volume / monetary maturity (new -> churn)
+        lifecycle:
+          - synth_monthly_txns
+          - synth_avg_amount
+          - synth_monthly_spend
+          - synth_monetary
+          - synth_stability
+        # Behavior -- short-term tactical pattern
+        behavior:
+          - synth_morning_ratio
+          - synth_afternoon_ratio
+          - synth_evening_ratio
+          - synth_night_ratio
+          - synth_fraud_ratio
     # 3 modes × ~8 stats each + 3 state-id cols = 25 cols actual.
     # Previous 48 was the "ideal" max but the generator emits fewer
     # per-mode stats than originally planned.
@@ -391,9 +418,15 @@ feature_groups:
   # =========================================================================
 
   # -------------------------------------------------------------------------
-  # 11. GMM clustering (generate) -- 22D
+  # 11. GMM clustering (generate) -- 16D (K=14 + cluster_id + entropy)
   #     GMM on demographics + txn_behavior features.
-  #     20 soft assignments + entropy + dominant cluster.
+  #     14 soft assignments + entropy + dominant cluster.
+  #
+  #     K=14 was chosen over the previous K=20 because the 1M production
+  #     data only had 13 effective clusters (the other 7 carried 1 row
+  #     each).  100K-sample BIC sweep at K=14 keeps all clusters >=0.14%
+  #     populated and recovers ~95% of the BIC at K=20 without the dead
+  #     dimensions hitting downstream experts.
   # -------------------------------------------------------------------------
   - name: gmm_clustering
     group_type: generate
@@ -404,10 +437,10 @@ feature_groups:
         exclude_binary: true      # CRITICAL: no binary features for GMM
         min_nunique: 10
         exclude_columns: [customer_id]
-      n_clusters: 20
+      n_clusters: 14
       covariance_type: full
       max_iter: 200
-    output_dim: 22
+    output_dim: 16
     target_experts: [deepfm, mlp, causal, optimal_transport]
     interpretation:
       category: customer_segment

@@ -326,6 +326,7 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
         hmm_config: Optional[HMMConfig] = None,
         mode_hmm_configs: Optional[Dict[str, HMMConfig]] = None,
         sequence_columns: Optional[List[str]] = None,
+        mode_observation_cols: Optional[Dict[str, List[str]]] = None,
         prefix: str = "hmm",
         **kwargs: Any,
     ) -> None:
@@ -334,9 +335,9 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
         self.hmm_config = hmm_config or HMMConfig()
         self.mode_hmm_configs = mode_hmm_configs or {}
         self.sequence_columns = sequence_columns or []
+        self.mode_observation_cols = mode_observation_cols or {}
         self.prefix = prefix
 
-        # Validate modes
         for mode in self.modes:
             if mode not in _DEFAULT_MODES:
                 raise ValueError(
@@ -344,15 +345,33 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
                     f"Available: {list(_DEFAULT_MODES.keys())}"
                 )
 
-        # Fitted models per mode
         self._models: Dict[str, Any] = {}
         self._mode_configs = {m: dict(_DEFAULT_MODES[m]) for m in self.modes}
+        self._mode_resolved_cols: Dict[str, List[str]] = {}
 
     # -- helpers -----------------------------------------------------------
 
     def _get_hmm_config(self, mode: str) -> HMMConfig:
-        """Return the HMMConfig for a given mode (per-mode override or shared)."""
-        return self.mode_hmm_configs.get(mode, self.hmm_config)
+        """Return the HMMConfig for a given mode.
+
+        If the user did not provide a per-mode override, derive a unique
+        random_state from the mode name so that different modes do not
+        converge to identical local optima when given the same observation
+        matrix.  This breaks the journey/lifecycle symmetry that previously
+        produced numerically identical features (n_states=5 vs 5 with the
+        same shared random_state=42).
+        """
+        if mode in self.mode_hmm_configs:
+            return self.mode_hmm_configs[mode]
+        base = self.hmm_config
+        # Stable per-mode seed derived from the mode name (range fits int32).
+        mode_seed = (base.random_state + (hash(mode) & 0xFFFF)) & 0x7FFFFFFF
+        return HMMConfig(
+            n_states=base.n_states,
+            n_iter=base.n_iter,
+            covariance_type=base.covariance_type,
+            random_state=mode_seed,
+        )
 
     def _build_model(self, mode: str) -> Any:
         """Construct the HMM model object for *mode*."""
@@ -431,46 +450,82 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
 
     # -- Core API ----------------------------------------------------------
 
-    def fit(self, df: Any, **context: Any) -> "HMMFeatureGenerator":
-        """Fit a Gaussian HMM per mode on the observation matrix."""
-        # Extract declared input columns up-front; fall back to full
-        # column resolution when no columns were pre-declared.
-        if self.input_cols:
-            col_arrays = self._input_to_numpy(df, columns=self.input_cols)
-            n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0
-        else:
-            col_arrays = self._input_to_numpy(df)
-            n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0
-        obs_cols = self._resolve_observation_columns(df)
+    def _resolve_mode_columns(self, mode: str, df: Any) -> List[str]:
+        """Resolve observation columns specific to *mode*.
 
-        if not obs_cols:
+        Resolution order:
+          1. Explicit ``mode_observation_cols[mode]`` from config (filtered
+             to columns actually present in df).
+          2. Fallback to the global ``sequence_columns`` / numeric columns
+             via :meth:`_resolve_observation_columns`.
+        """
+        wanted = self.mode_observation_cols.get(mode)
+        if wanted:
+            cols = list(df.columns) if hasattr(df, "columns") else []
+            present = [c for c in wanted if c in cols]
+            if present:
+                return present
             logger.warning(
-                "No numeric observation columns found -- HMM will use "
-                "uniform state assignments."
+                "HMM mode '%s' requested cols %s but none present in df; "
+                "falling back to shared observation columns.",
+                mode,
+                wanted,
             )
+        return self._resolve_observation_columns(df)
 
-        X = self._extract_numeric(df, obs_cols) if obs_cols else np.zeros((n_rows, 1))
-        # Replace NaN with column means
+    @staticmethod
+    def _fill_nan(X: np.ndarray) -> np.ndarray:
+        """Replace NaN with per-column mean in-place; return X."""
         col_means = np.nanmean(X, axis=0)
         nan_mask = np.isnan(X)
-        X[nan_mask] = np.take(col_means, np.where(nan_mask)[1]) if nan_mask.any() else X[nan_mask]
+        if nan_mask.any():
+            X[nan_mask] = np.take(col_means, np.where(nan_mask)[1])
+        return X
+
+    def fit(self, df: Any, **context: Any) -> "HMMFeatureGenerator":
+        """Fit a Gaussian HMM per mode on the observation matrix.
+
+        When ``mode_observation_cols`` is configured each mode fits on its
+        own feature subset (so journey, lifecycle, behavior receive
+        semantically distinct observations).  Otherwise all modes share a
+        single matrix derived from ``sequence_columns``.
+        """
+        if self.input_cols:
+            col_arrays = self._input_to_numpy(df, columns=self.input_cols)
+        else:
+            col_arrays = self._input_to_numpy(df)
+        n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0
 
         for mode in self.modes:
+            obs_cols = self._resolve_mode_columns(mode, df)
+            self._mode_resolved_cols[mode] = obs_cols
+            if not obs_cols:
+                logger.warning(
+                    "HMM mode '%s' found no observation columns; "
+                    "using uniform fallback.",
+                    mode,
+                )
+                self._models[mode] = None
+                continue
+
+            X_mode = self._fill_nan(self._extract_numeric(df, obs_cols))
+            if X_mode.shape[0] == 0:
+                X_mode = np.zeros((n_rows, max(1, len(obs_cols))))
+
             model = self._build_model(mode)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 try:
-                    if GaussianHMM is not None:
-                        model.fit(X)
-                    else:
-                        model.fit(X)
+                    model.fit(X_mode)
                     self._models[mode] = model
                     logger.info(
-                        "HMM mode '%s' fitted: n_states=%d, n_obs=%d, n_features=%d",
+                        "HMM mode '%s' fitted: n_states=%d, n_obs=%d, n_features=%d, "
+                        "cols=%s",
                         mode,
                         self._mode_configs[mode]["n_states"],
-                        X.shape[0],
-                        X.shape[1],
+                        X_mode.shape[0],
+                        X_mode.shape[1],
+                        obs_cols[:6] + (["..."] if len(obs_cols) > 6 else []),
                     )
                 except Exception as exc:
                     logger.warning(
@@ -495,20 +550,11 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
                 "HMMFeatureGenerator must be fitted before generate()."
             )
 
-        # Extract declared input columns up-front.
         if self.input_cols:
             col_arrays = self._input_to_numpy(df, columns=self.input_cols)
         else:
             col_arrays = self._input_to_numpy(df)
         n_rows = len(next(iter(col_arrays.values()))) if col_arrays else 0
-        obs_cols = self._resolve_observation_columns(df)
-        X = self._extract_numeric(df, obs_cols) if obs_cols else np.zeros((n_rows, 1))
-
-        # Fill NaN
-        col_means = np.nanmean(X, axis=0)
-        nan_mask = np.isnan(X)
-        if nan_mask.any():
-            X[nan_mask] = np.take(col_means, np.where(nan_mask)[1])
 
         results: Dict[str, np.ndarray] = {}
 
@@ -518,16 +564,17 @@ class HMMFeatureGenerator(AbstractFeatureGenerator):
             state_names = cfg["state_names"]
             model = self._models.get(mode)
 
+            obs_cols = self._mode_resolved_cols.get(mode) or self._resolve_mode_columns(mode, df)
+            X_mode = self._fill_nan(self._extract_numeric(df, obs_cols)) if obs_cols else np.zeros((n_rows, 1))
+
             if model is not None:
-                # Viterbi decoding
                 try:
-                    states = model.predict(X)
+                    states = model.predict(X_mode)
                 except Exception:
                     states = np.zeros(n_rows, dtype=np.int32)
 
-                # Posterior probabilities
                 try:
-                    probs = model.predict_proba(X)
+                    probs = model.predict_proba(X_mode)
                 except Exception:
                     probs = np.full((n_rows, n_states), 1.0 / n_states, dtype=np.float32)
 
