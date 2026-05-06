@@ -1459,7 +1459,15 @@ attention aggregation to reduce parameter redundancy.
 
 == Findings Summary
 
-The ablation experiments yield the following principal findings.
+The ablation experiments yield the following principal findings. The
+five claims below summarise the system-level outcomes; readers seeking
+the full hypothesis discrimination across A--E (signal cleaning, epoch
+budget, ensemble, gate overfitting, regularisation), per-task v14
+phase0 numbers across all 13 tasks, the 9-way fusion-mechanism
+comparison (BRP-detached, NEAS, M1 complement, ECEB, AdaTT-sp), and
+the 30-epoch loss--metric decoupling diagnostic should consult the
+companion Paper 3 (Findings 1--7) where each is reported with the
+full ablation table and per-task breakdown.
 
 *Loss balancing correctness dominates architecture choice.*
 The single largest performance improvement across all experiments came from
@@ -1492,6 +1500,7 @@ The mechanism --- adding weighted auxiliary losses $L_i^"adaTT" = L_i + lambda s
 An earlier draft reported a $-$0.019 AUC drop and attributed it to a 156 task-pair affinity estimation limit; with the bug-fixed implementation, the effect vanishes, so the attribution is no longer supported by our data.
 The honest conclusion is operational: at 13-task heterogeneous scale, the gradient-cosine loss-level variant (TAG @fifty2021tag + GradNorm @chen2018gradnorm in spirit) neither helps nor hurts, adds compute cost, and can be disabled without loss.
 The representation-level adaTT of @li2023 is a distinct mechanism that learns fusion weights end-to-end on expert activations and is not directly evaluated here; we leave that comparison to follow-up work.
+A 9-way comparison that places loss-level adaTT alongside seven other fusion-augmentation mechanisms (AdaTT-sp, M1 complement, ECEB, BRP-MV, BRP-detached, NEAS, NEAS+BRP-detached) is reported in companion Paper 3, Finding 7; the v14 verdict isolates only two non-trivial recipes (M1 complement, NEAS) on disjoint axes and confirms the null verdict for loss-level adaTT.
 
 *GradSurgery: gradient-level projection as an alternative.*
 To address the loss-level transfer limitation,

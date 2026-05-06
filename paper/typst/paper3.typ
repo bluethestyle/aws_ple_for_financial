@@ -106,7 +106,40 @@ experience, organised into three themes: loss dynamics and gating
 causal expert reinterpretation (Findings 8--13). We make no claims
 of state-of-the-art performance; instead, we document *phenomena
 and practical guidelines* that emerge when MTL is pushed beyond the
-homogeneous-task regime. Our contributions:
+homogeneous-task regime.
+
+*Position relative to companion papers.*
+This work sits between two companion papers that share the same
+13-task benchmark, the same 7-expert PLE backbone, and the same v14
+phase0 data pipeline.
+Paper 1 (Heterogeneous Expert PLE: An Explainable Multi-Task
+Architecture for Financial Product Recommendation) presents the
+architecture and a system-level summary of the principal ablation
+findings; the present paper *extends Paper 1's summary* with (a) full
+hypothesis discrimination across A--E (signal cleaning, epoch
+budget, ensemble, gate overfitting, regularisation) and per-task v14
+numbers across all 13 tasks (Findings 1--6), (b) a 9-way fusion-
+mechanism comparison that isolates the design space of "what kinds of
+fusion-augmentation work on top of CGC" (Finding 7), and (c) a
+causal expert reinterpretation arc that has no counterpart in
+Paper 1 (Findings 8--13).
+Paper 2 (From Prediction to Persuasion: Agentic Recommendation Reason
+Generation for Regulatory-Compliant Financial AI) takes the outputs
+of two of our findings --- the per-sample feature-attribution vector
+produced by the Causal Explainability Head (Finding 9) and the
+per-prediction reliability score produced by the Causal Guardrail
+(Findings 10--11) --- and routes both into a single HMAC-signed
+hash-chained per-prediction audit log that satisfies GDPR Art.~22
+meaningful-explanation and EU AI Act Art.~13 transparency
+requirements. The handshake is concrete: this paper produces the
+attribution vector and the coherence score; Paper 2 wires both into
+the audit log and exposes them through the recommendation reason
+generation pipeline. The W-amplification result of Finding 11
+specifically motivates the audit log's reliability column: at
+baseline W scale CG would discriminate poorly, so Paper 2's audit
+surface is only viable on top of an amplified-W teacher.
+
+Our contributions:
 
 - A diagnosis of how Kendall et al.'s uncertainty weighting
   silently fails when per-task loss weights are omitted (Section 4.1).

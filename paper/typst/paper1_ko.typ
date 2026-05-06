@@ -1374,7 +1374,13 @@ _높은 엔트로피 태스크_(will_acquire_payments: 0.882, nba_primary: 0.877
 
 == 주요 발견 요약
 
-어블레이션 실험에서 다음의 주요 발견을 도출하였다.
+어블레이션 실험에서 다음의 주요 발견을 도출하였다. 아래 다섯 가지 항목은 시스템
+수준의 결과 요약이다. 가설 A--E (신호 정제, 에포크 예산, 앙상블, 게이트 과적합,
+정규화) 전반의 가설 판별, 13-태스크 모두에 대한 v14 phase0 태스크별 수치, 9-way
+fusion 메커니즘 비교 (BRP-detached, NEAS, M1 complement, ECEB, AdaTT-sp), 그리고
+30-에포크 손실--지표 분리 진단을 모두 수반한 전체 어블레이션 표가 필요한 독자는
+companion Paper 3 (Findings 1--7) 을 참조한다. 본 Paper 1 의 결론은 그곳의 분석에
+근거한 시스템 수준 요약이다.
 
 *손실 균형 정확성이 아키텍처 선택을 압도한다.*
 모든 실험에서 가장 큰 단일 성능 향상은 불확실성 가중치(Kendall et al.)의
@@ -1406,6 +1412,7 @@ AUC에서는 sigmoid와 거의 동일하다.
 초기 드래프트는 $-$0.019 AUC 저하를 보고하며 156 태스크 쌍 친화도 추정 한계에 귀인하였으나, 버그 수정 후 효과가 사라졌으므로 그 귀인은 본 데이터에서 더 이상 지지되지 않는다.
 정직한 결론은 운영적이다: 13-태스크 이종 환경에서 그래디언트-코사인 손실 수준 변종(TAG #cite(<fifty2021tag>) + GradNorm #cite(<chen2018gradnorm>) 에 가까운)은 도움도 해도 되지 않으며, 계산 비용만 추가하므로 비활성화해도 무방하다.
 #cite(<li2023>) 의 표현 수준 adaTT는 전문가 activation에 대해 학습된 게이팅으로 융합 가중치를 end-to-end로 결정하는 별개 메커니즘으로 본 연구에서 직접 평가하지 않았으며, 그 비교는 후속 연구로 미룬다.
+손실 수준 adaTT 를 일곱 개의 다른 fusion-augmentation 메커니즘 (AdaTT-sp, M1 complement, ECEB, BRP-MV, BRP-detached, NEAS, NEAS+BRP-detached) 과 함께 비교한 9-way 어블레이션은 companion Paper 3 의 Finding 7 에 보고되어 있으며, v14 결론은 disjoint axes 위의 두 비자명 recipe (M1 complement, NEAS) 만 추출하고 손실 수준 adaTT 의 null verdict 를 재확인한다.
 
 *대안으로서의 GradSurgery: 그래디언트 수준 투영.*
 손실 수준 전이의 한계를 해소하기 위해
