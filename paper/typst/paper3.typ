@@ -857,7 +857,11 @@ injects a residual nor modifies the primary output.
 additivity. Both are enabled with their standalone settings; no other
 modification.
 
-Results on the 13-task benchmark (10 epochs, seed=42):
+Results on the 13-task benchmark are reported as a v14 SageMaker
+re-run (15 epochs, ml.g4dn.2xlarge, fp32 DuckDB-stream pipeline, seed=42)
+for the seven scenarios where v14 NDCG is available; the three rows
+marked $dagger$ retain their v13 phase0 numbers and 10-epoch budget
+pending the BRP-detached / NEAS / combined re-run on v14 phase0.
 
 #figure(
   table(
@@ -868,27 +872,33 @@ Results on the 13-task benchmark (10 epochs, seed=42):
     table.header(
       [*Fusion*], [*Final AUC*], [*F1 macro*], [*NDCG\@3*], [*$Delta$ AUC*]
     ),
-    [CGC gate (baseline)],   [0.6728],   [0.2002],   [0.6820],   [---],
-    [Loss-level adaTT],      [0.6717],   [0.2013],   [0.6646],   [$-$0.0011],
-    [AdaTT-sp (Li 2023)],    [0.6696],   [0.1998],   [0.6570],   [$-$0.0032],
-    [M1 complement],         [0.6675],   [0.1998],   [0.6611],   [$-$0.0053],
-    [ECEB (MV)],             [0.6665],   [0.1998],   [0.6549],   [$-$0.0063],
-    [BRP (MV)],              [0.6650],   [*0.2117*], [*0.7039*], [$-$0.0078],
-    [BRP-detached],          [0.6721],   [0.2075],   [0.6965],   [$-$0.0007 (tied)],
-    [*NEAS*],                [*0.6739*], [0.2019],   [0.6896],   [*$+$0.0011 (positive)*],
-    [NEAS + BRP-detached],   [0.6722],   [0.2062],   [0.6864],   [$-$0.0006 (non-additive)],
+    [Shared-Bottom (no gate)], [0.8015],   [*0.1426*], [0.7149], [(reference)],
+    [CGC gate (sigmoid baseline)], [0.8234], [0.1404], [0.7619], [---],
+    [PLE-full (sigmoid+5 toggles)], [0.8204], [0.1306], [*0.7702*], [$-$0.0030],
+    [PLE-full $+$ adaTT], [0.8202], [0.1311], [0.7697], [$-$0.0032],
+    [M1 complement],     [*0.8240*], [0.1366], [0.7685], [*$+$0.0006*],
+    [ECEB (MV)],         [0.8231], [0.1325], [0.7625], [$-$0.0003],
+    [BRP (MV)],          [0.8216], [0.1327], [0.7679], [$-$0.0018],
+    [BRP-detached#super[†]], [0.6721 / v13], [0.2075 / v13], [0.6965 / v13], [$-$0.0007 (tied) / v13],
+    [NEAS#super[†]],     [0.6739 / v13], [0.2019 / v13], [0.6896 / v13], [$+$0.0011 (positive) / v13],
+    [NEAS + BRP-detached#super[†]], [0.6722 / v13], [0.2062 / v13], [0.6864 / v13], [$-$0.0006 (non-additive) / v13],
   ),
-  caption: [9-way comparison of fusion mechanisms on the 13-task
-  benchmark. The five representation-additive variants (rows 2--6)
-  degrade aggregate AUC below CGC, with magnitude growing monotonically
-  in the invasiveness of the intervention. BRP-detached (row 7) ties CGC
-  on AUC ($Delta = -0.0007$, best $= 0.6736$ at epoch 8, $+$0.0008 over
-  the baseline final) and lifts F1/NDCG\@3. NEAS (row 8) is the first
-  mechanism of the family to *raise* aggregate AUC ($Delta = +0.0011$),
-  with a monotone-increasing trajectory through all 10 epochs and near-
-  uniform small per-task lifts. The combined scenario (row 9) collapses
-  NEAS's AUC gain --- the two mechanisms exert opposing pressures on the
-  shared experts and do not stack.]
+  caption: [Fusion-mechanism comparison with NDCG\@3 restored.  Rows 1--7:
+  v14 SageMaker ml.g4dn.2xlarge, 15 epochs.  $Delta$ AUC compares each
+  variant to the CGC sigmoid baseline (row 2; the v14 equivalent of v13's
+  PLE+CGC reference).  Three v14 patterns emerge:
+  *(i)* M1 complement is the only mechanism that *raises* aggregate AUC
+  ($Delta = +$0.0006) — a v14-specific reversal of v13's M1 ranking
+  ($-$0.0053) attributable to the cleaner phase0 features
+  (HMM mode-split, GMM K=14, prob-column scaler-excluded);
+  *(ii)* PLE-full posts the highest NDCG\@3 (0.7702), confirming that
+  the sigmoid + GTE + LT + HMM-projector stack pays off on multiclass
+  ranking even when its aggregate AUC plateaus; *(iii)* shared\_bottom's
+  F1 macro (0.1426) tops the v14 column despite its lowest AUC (0.8015) —
+  the no-gate baseline preserves minority-class signal that the gated
+  variants softmax-redistribute away.  Rows 8--10 ($dagger$): v13 phase0
+  numbers at the 10-epoch budget retained pending v14 BRP-detached and
+  NEAS re-runs.]
 ) <tab:fusion9way>
 
 M1's best AUC at epoch 1 (pre-training) with monotone decline thereafter

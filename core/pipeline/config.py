@@ -47,6 +47,17 @@ class TaskSpec:
     tower_type: str = ""        # "" = use default ("standard")
     tower_dims: List[int] = field(default_factory=list)  # [] = use global default
     description: str = ""
+    # Top-K accuracy / NDCG@K gate (multiclass only). When the YAML task
+    # block declares e.g. ``topk_k: [1, 3]``, the trainer's
+    # _compute_topk_metrics path activates and ``avg_ndcg@3`` flows
+    # through to the saved checkpoint metrics + SageMaker FinalMetrics.
+    # Previously absent from the dataclass: yaml ``topk_k`` was silently
+    # dropped at load time, so PLEConfig.get_task_topk_k returned None
+    # for nba_primary / next_mcc and NDCG never appeared in any v14 run.
+    topk_k: List[int] = field(default_factory=list)
+    # Per-task domain expert preferences (optional task-level routing
+    # hint).  Read by PLEConfig.get_domain_experts.
+    domain_experts: List[str] = field(default_factory=list)
     # Label-derivation rule when the YAML uses
     # ``derive: {method, source_col, filter_col, ...}``. The runner reads
     # this dict to (a) build labels in Stage 4 and (b) exclude the

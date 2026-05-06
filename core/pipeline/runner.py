@@ -1046,6 +1046,22 @@ class PipelineRunner:
                 "loss": task.loss,
                 "loss_weight": task.loss_weight,
             }
+            # Propagate optional task-config fields that downstream PLEConfig
+            # task_overrides reads.  Without this, fields like ``topk_k``
+            # (NDCG@K / top-K accuracy gates), ``domain_experts``,
+            # ``tower_type`` (contrastive towers), and ``description``
+            # silently disappear at the label_schema → PLEConfig boundary,
+            # which previously caused
+            # ``PLEConfig.get_task_topk_k(nba_primary) → None`` and
+            # zero NDCG@3 keys in trainer / SageMaker FinalMetrics
+            # outputs even though ``configs/datasets/santander.yaml``
+            # declared ``topk_k: [1, 3]``.
+            for opt in ("topk_k", "domain_experts", "tower_type", "description"):
+                val = getattr(task, opt, None)
+                # Skip None and empty-list / empty-string defaults so the
+                # schema stays compact for tasks that don't opt in.
+                if val:
+                    task_info[opt] = val
             if task.label_col in labels_df.columns:
                 col_data = labels_df[task.label_col]
                 if task.type == "multiclass":

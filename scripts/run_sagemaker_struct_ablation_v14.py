@@ -387,6 +387,7 @@ def submit_training_jobs(
                 {"Name": "val:avg_auc", "Regex": r"avg_auc=([0-9.]+)"},
                 {"Name": "val:avg_f1_macro", "Regex": r"avg_f1_macro=([0-9.]+)"},
                 {"Name": "val:avg_mae", "Regex": r"avg_mae=([0-9.]+)"},
+                {"Name": "val:avg_ndcg3", "Regex": r"avg_ndcg@3=([0-9.]+)"},
                 {"Name": "epoch", "Regex": r"Epoch (\d+):"},
             ],
         )
