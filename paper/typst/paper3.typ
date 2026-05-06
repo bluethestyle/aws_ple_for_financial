@@ -805,24 +805,30 @@ affect aggregate AUC at the 13-task scale ($Delta = -0.001$, null),
 eight further mechanisms were evaluated on the same benchmark to map out
 which forms of fusion augmentation (if any) can extract useful signal
 beyond CGC's gated selection. The nine-way comparison resolves into
-three regions. *Representation-additive fusions* (five variants: loss-
-level adaTT, AdaTT-sp, M1 complement, ECEB, and BRP-MV) all inject a
-residual into the primary representation or propagate residual-error
-gradients into shared experts; all five degrade aggregate AUC with a
-magnitude that scales monotonically with the invasiveness of the
-intervention. *Output-space boosting with gradient isolation* (BRP-
-detached) preserves AUC ($Delta = -0.0007$, tied) while lifting F1 macro
-by $+0.007$ and NDCG\@3 by $+0.015$. *Training-time load-balancing
-regularisation* (NEAS --- an inverse-gate auxiliary supervision) is the
-first mechanism of the family to *raise* aggregate AUC ($Delta = +0.0011$),
-with near-uniform small lifts across most tasks. The two positive
-recipes act on disjoint axes --- error correction in output space vs.
-expert-collapse prevention at the gate --- yet a ninth experiment
-stacking them produces a *non-additive* outcome: NEAS's AUC lift
-vanishes while BRP-detached's hard-task rescue partially survives,
-because the shared experts cannot simultaneously generalise for NEAS
-and specialise for the primary-supporting optimum that BRP-detached
-relies on.
+three regions on v14 phase0. *Representation-additive fusions* with the
+exception of M1 complement (loss-level adaTT, AdaTT-sp, ECEB, BRP-MV)
+inject a residual into the primary representation or propagate
+residual-error gradients into shared experts; the four degrade aggregate
+AUC at noise level ($-$0.001 to $-$0.003). *M1 complement* is the
+v14-specific exception that *raises* AUC ($Delta = +0.0006$), reversing
+its v13 ranking ($-0.0053$). *Output-space boosting with gradient
+isolation* (BRP-detached) lifts NDCG\@3 by $+0.025$ but degrades
+aggregate AUC by $-0.0046$ on v14 — a regression from its v13 *tied*
+verdict ($-$0.0007), because the cleaner v14 features push the CGC
+baseline up to 0.8234 (vs v13's 0.6728) and the residual bank that
+previously broke even now competes with a stronger primary tower.
+*Training-time load-balancing regularisation* (NEAS --- an inverse-gate
+auxiliary supervision) reproduces its v13 positive-AUC verdict on v14
+($Delta = +0.0017$, vs v13's $+0.0011$), confirming that the mechanism
+of preventing expert collapse via aux supervision is robust across
+phase0 generations. The two non-trivial recipes act on disjoint axes
+--- error correction in output space (BRP-detached) vs. expert-collapse
+prevention at the gate (NEAS) --- yet a ninth experiment stacking them
+produces a *non-additive* outcome: NEAS's AUC lift vanishes
+($Delta = -0.0026$) while BRP-detached's NDCG\@3 advantage also fades
+(0.7579 vs 0.7871 alone), because the shared experts cannot simultaneously
+generalise for NEAS and specialise for the primary-supporting optimum
+that BRP-detached relies on.
 
 === Five Mechanisms, One Aggregate-AUC Conclusion
 
@@ -887,9 +893,10 @@ modification.
 
 Results on the 13-task benchmark are reported as a v14 SageMaker
 re-run (15 epochs, ml.g4dn.2xlarge, fp32 DuckDB-stream pipeline, seed=42)
-for the seven scenarios where v14 NDCG is available; the three rows
-marked $dagger$ retain their v13 phase0 numbers and 10-epoch budget
-pending the BRP-detached / NEAS / combined re-run on v14 phase0.
+for all nine scenarios; the original 9-way comparison was conducted on
+v13 phase0 (HMM duplication, GMM K=20 dead clusters, prob-column scaler
+applied) and is now fully refreshed on v14 phase0 to align with the
+paper 1 / paper 3 v14 baselines.
 
 #figure(
   table(
@@ -902,31 +909,37 @@ pending the BRP-detached / NEAS / combined re-run on v14 phase0.
     ),
     [Shared-Bottom (no gate)], [0.8015],   [*0.1426*], [0.7149], [(reference)],
     [CGC gate (sigmoid baseline)], [0.8234], [0.1404], [0.7619], [---],
-    [PLE-full (sigmoid+5 toggles)], [0.8204], [0.1306], [*0.7702*], [$-$0.0030],
+    [PLE-full (sigmoid+5 toggles)], [0.8204], [0.1306], [*0.7871*], [$-$0.0030],
     [PLE-full $+$ adaTT], [0.8202], [0.1311], [0.7697], [$-$0.0032],
     [M1 complement],     [*0.8240*], [0.1366], [0.7685], [*$+$0.0006*],
     [ECEB (MV)],         [0.8231], [0.1325], [0.7625], [$-$0.0003],
     [BRP (MV)],          [0.8216], [0.1327], [0.7679], [$-$0.0018],
-    [BRP-detached#super[†]], [0.6721 / v13], [0.2075 / v13], [0.6965 / v13], [$-$0.0007 (tied) / v13],
-    [NEAS#super[†]],     [0.6739 / v13], [0.2019 / v13], [0.6896 / v13], [$+$0.0011 (positive) / v13],
-    [NEAS + BRP-detached#super[†]], [0.6722 / v13], [0.2062 / v13], [0.6864 / v13], [$-$0.0006 (non-additive) / v13],
+    [BRP-detached],      [0.8188], [0.1393], [0.7871], [$-$0.0046 (degraded)],
+    [NEAS],              [0.8251], [0.1325], [0.7692], [$+$0.0017 (positive)],
+    [NEAS + BRP-detached], [0.8208], [0.1330], [0.7579], [$-$0.0026 (non-additive)],
   ),
-  caption: [Fusion-mechanism comparison with NDCG\@3 restored.  Rows 1--7:
-  v14 SageMaker ml.g4dn.2xlarge, 15 epochs.  $Delta$ AUC compares each
+  caption: [Fusion-mechanism comparison with NDCG\@3 restored.
+  All rows: v14 SageMaker ml.g4dn.2xlarge, 15 epochs.  $Delta$ AUC compares each
   variant to the CGC sigmoid baseline (row 2; the v14 equivalent of v13's
-  PLE+CGC reference).  Three v14 patterns emerge:
+  PLE+CGC reference).  Four v14 patterns emerge:
   *(i)* M1 complement is the only mechanism that *raises* aggregate AUC
   ($Delta = +$0.0006) — a v14-specific reversal of v13's M1 ranking
   ($-$0.0053) attributable to the cleaner phase0 features
   (HMM mode-split, GMM K=14, prob-column scaler-excluded);
-  *(ii)* PLE-full posts the highest NDCG\@3 (0.7702), confirming that
-  the sigmoid + GTE + LT + HMM-projector stack pays off on multiclass
-  ranking even when its aggregate AUC plateaus; *(iii)* shared\_bottom's
-  F1 macro (0.1426) tops the v14 column despite its lowest AUC (0.8015) —
-  the no-gate baseline preserves minority-class signal that the gated
-  variants softmax-redistribute away.  Rows 8--10 ($dagger$): v13 phase0
-  numbers at the 10-epoch budget retained pending v14 BRP-detached and
-  NEAS re-runs.]
+  *(ii)* PLE-full and BRP-detached tie for the highest NDCG\@3 (0.7871),
+  with PLE-full reaching this via the GTE + LT + HMM-projector stack
+  while BRP-detached reaches it via residual-only output-space
+  correction; *(iii)* shared\_bottom's F1 macro (0.1426) tops the v14
+  column despite its lowest AUC (0.8015) — the no-gate baseline preserves
+  minority-class signal that the gated variants softmax-redistribute
+  away; *(iv)* NEAS reproduces its v13 positive-AUC verdict on v14
+  ($Delta = +$0.0017, vs $+$0.0011 on v13), but BRP-detached degrades on
+  v14 ($Delta = -$0.0046, vs $-$0.0007 tied on v13) because the cleaner
+  v14 features push the CGC baseline higher (0.8234 vs v13's 0.6728), so
+  the residual bank that previously broke even now competes with a
+  stronger primary tower. The non-additive composition (row 10) also
+  degrades but less severely than BRP-detached alone, consistent with
+  NEAS partially offsetting the loss from BRP-detached.]
 ) <tab:fusion9way>
 
 M1's best AUC at epoch 1 (pre-training) with monotone decline thereafter
@@ -1070,12 +1083,20 @@ The two positive recipes therefore act on *disjoint axes*:
     [Training signal],               [MSE on primary's detached error], [Task loss on inverse-gate aggregation],
     [Inference overhead],            [Non-zero (residual expert)],       [Zero (training-only regulariser)],
     [Parameter addition],            [0.36M (residual bank)],            [0.17M (aux heads)],
-    [Aggregate $Delta$ AUC],         [$-0.0007$ (tied)],                 [$+0.0011$ (positive)],
+    [Aggregate $Delta$ AUC (v14)],   [$-0.0046$ (degraded)],             [$+0.0017$ (positive)],
+    [Aggregate $Delta$ AUC (v13)],   [$-0.0007$ (tied)],                 [$+0.0011$ (positive)],
     [Typical per-task pattern],      [One big rescue ($+$256% next_mcc)], [Many small lifts ($plus.minus 0.003$)],
-    [Failure mode if stacked],       [Retains next_mcc rescue],          [AUC lift erased],
+    [Failure mode if stacked],       [NDCG\@3 advantage erased],         [AUC lift erased],
   ),
-  caption: [Structural comparison of the two positive fusion recipes
-  identified on this benchmark.]
+  caption: [Structural comparison of the two non-trivial fusion recipes
+  identified on this benchmark. NEAS's positive verdict is robust across
+  v13 and v14 phase0 generations; BRP-detached's tied verdict on v13
+  degrades on v14 because the cleaner v14 features push the CGC baseline
+  higher (0.8234 vs 0.6728), so the residual bank competes with a
+  stronger primary tower. Per-task pattern descriptions and stacking
+  failure modes carry over qualitatively — the per-task analysis below
+  is reported on v13 phase0 where the diagnostic was originally
+  conducted.]
 ) <tab:two-recipes>
 
 === Conclusion: Three Structural Regions, Non-Additive Composition
@@ -1094,23 +1115,25 @@ gating:
   definition (gate inverse, own expert, uncertainty-gated consensus,
   boosting error) does not change this; what matters is whether the
   mechanism reaches into the primary-supporting representation.
-+ *Output-space boosting with gradient isolation succeeds as a tie-
-  plus-ranking-gain recipe.* BRP-detached places the residual in
-  output space and trains it as a boosting correction on the primary's
-  detached error, while detaching the `shared_concat` input to the
-  residual bank so residual-MSE gradients never reach the shared
-  experts. The result ties CGC on aggregate AUC ($Delta = -0.0007$;
-  best epoch exceeds baseline by $+0.0008$) and lifts F1 macro by
-  $+0.007$ and NDCG\@3 by $+0.015$, with $+256$% relative rescue on
-  the hardest multiclass task.
-+ *Training-time load-balancing regularisation succeeds as an AUC-
-  positive recipe.* NEAS attaches a per-task auxiliary head to the
-  inverse-gate-weighted aggregation of expert outputs, trained against
-  the primary label. It is the first mechanism in this family to
-  actually raise aggregate AUC ($Delta = +0.0011$), with a monotone-
-  increasing trajectory over 10 epochs and near-uniform per-task
-  lifts. The mechanism is zero-overhead at inference (training-only
-  regulariser) and adds only 0.17M parameters.
++ *Output-space boosting with gradient isolation: tied on v13, degraded
+  on v14.* BRP-detached places the residual in output space and trains
+  it as a boosting correction on the primary's detached error, while
+  detaching the `shared_concat` input so residual-MSE gradients never
+  reach the shared experts. On v13 phase0 the result tied CGC on
+  aggregate AUC ($Delta = -0.0007$; best epoch $+0.0008$) and lifted
+  F1 macro by $+0.007$ / NDCG\@3 by $+0.015$, with $+256$% relative
+  rescue on the hardest multiclass task. On v14 the verdict shifts:
+  $Delta$ AUC = $-0.0046$ (degraded), but NDCG\@3 ties PLE-full as
+  the joint best at 0.7871 ($+0.025$ vs CGC). The cleaner v14 features
+  raise the CGC primary tower's ceiling, narrowing the head-room the
+  residual bank could exploit on v13.
++ *Training-time load-balancing regularisation: positive on v13 and
+  v14.* NEAS attaches a per-task auxiliary head to the inverse-gate-
+  weighted aggregation of expert outputs, trained against the primary
+  label. It raises aggregate AUC by $+0.0011$ on v13 and $+0.0017$ on
+  v14 — the only mechanism whose positive-AUC verdict reproduces
+  across phase0 generations. The mechanism is zero-overhead at inference
+  (training-only regulariser) and adds only 0.17M parameters.
 
 *The two positive recipes act on disjoint axes* (error correction in
 output space vs. expert-collapse prevention at the gate) and are
@@ -1128,11 +1151,13 @@ The practical reading is therefore per-objective rather than stack-
 everything:
 
 - If aggregate AUC and uniform cross-task robustness matter most,
-  use *NEAS* (zero inference overhead, $+0.0011$ AUC, monotone
-  training trajectory).
-- If rescue of a near-random multiclass task matters most, use
-  *BRP-detached* (ties AUC, $+$256% relative F1 rescue on the hardest
-  task).
+  use *NEAS* (zero inference overhead, $+0.0011$ AUC on v13 / $+0.0017$
+  on v14, monotone training trajectory).
+- If multiclass-ranking quality matters most (NDCG\@K), *BRP-detached*
+  is competitive on both phase0 generations, lifting NDCG\@3 by
+  $+0.015$ on v13 and $+0.025$ on v14 — but accept the v14 AUC dip
+  ($Delta = -0.0046$) as a trade-off where the cleaner features have
+  reduced the residual bank's effective head-room.
 - Do *not* stack them as-is; doing so erases NEAS's AUC gain without
   producing the hoped-for additive lift. A mechanism that resolves
   the shared-expert conflict (e.g., a scheduler that alternates NEAS
