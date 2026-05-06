@@ -62,8 +62,12 @@ S3_CHECKPOINT_PREFIX = "checkpoints/distillation"
 S3_OUTPUT_PREFIX = "output/distillation"
 S3_SOURCE_PREFIX = "source/distillation"
 
-# Distillation job defaults — GPU for soft-label inference, CPU cores for LGBM
-DISTILL_INSTANCE_TYPE = "ml.g4dn.xlarge"    # T4 GPU (soft labels) + 4 vCPU (LGBM)
+# Distillation job defaults — GPU for soft-label inference, CPU cores for LGBM.
+# ml.g4dn.2xlarge has 32 GB system RAM (vs 16 GB on g4dn.xlarge), required
+# for the v14 phase0 1M-row × 1210-col features.parquet load + tensor
+# conversion on the soft-label inference path; the same memory budget
+# constraint that drove the training-pipeline refactor applies here.
+DISTILL_INSTANCE_TYPE = "ml.g4dn.2xlarge"   # T4 GPU (soft labels) + 8 vCPU (LGBM)
 DISTILL_MAX_RUN = 10800                       # 3 hr max (LGBM x 13 tasks + IG)
 DISTILL_MAX_WAIT = 14400                      # max_run + 1hr (CLAUDE.md 1.5)
 
@@ -88,7 +92,10 @@ def get_aws_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "s3_bucket": aws.get("s3_bucket", "aiops-ple-financial"),
         "role_arn": aws.get("role_arn"),
         "use_spot": aws.get("use_spot", True),
-        "distill_instance_type": aws.get("instance_type", DISTILL_INSTANCE_TYPE),
+        # Pipeline.yaml aws.instance_type is g4dn.xlarge (16 GB RAM); v14
+        # 1M-row distillation OOMs there even with the slim soft-label
+        # inference path, so we always force g4dn.2xlarge for distill jobs.
+        "distill_instance_type": DISTILL_INSTANCE_TYPE,
     }
 
 

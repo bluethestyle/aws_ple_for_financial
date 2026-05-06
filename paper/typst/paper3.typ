@@ -671,6 +671,9 @@ task --- in future work.
 
 Extending training from 10 to 30 epochs (with $T_0 = 10$, cosine warm
 restarts) exposes a fundamental tension in composite loss monitoring.
+The v14 SageMaker re-run (ml.g4dn.2xlarge, fp32 DuckDB-stream pipeline,
+PLE softmax, seed 42) refines the v13 trajectory by reaching higher
+absolute AUC magnitudes but preserves the same decoupling pattern.
 
 #figure(
   table(
@@ -679,43 +682,57 @@ restarts) exposes a fundamental tension in composite loss monitoring.
     align: (left, right, right, right, right),
     stroke: 0.5pt,
     table.header([*Epoch*], [*Val Loss*], [*Avg AUC*], [*NDCG\@3*], [*Avg MAE*]),
-    [1], [32.11], [---], [---], [1.07],
-    [10], [26.43], [*0.6726*], [*0.6976*], [1.01],
-    [11], [25.89], [0.6702], [0.6853], [0.99],
-    [19], [24.01], [0.6718], [0.7004], [0.97],
-    [20], [23.52], [0.6691], [0.6657], [0.96],
-    [29], [22.95], [0.6704], [0.6540], [0.96],
-    [30], [22.68], [0.6687], [---], [0.96],
+    [1],  [19.71], [0.7032], [0.6321], [0.4322],
+    [5],  [17.51], [0.7903], [*0.7904*], [0.3717],
+    [10], [16.44], [0.8142], [0.7655], [0.3382],
+    [13], [*16.20*], [0.8239], [0.7134], [*0.3291*],
+    [15], [16.38], [*0.8272*], [0.7707], [0.3216],
+    [20], [18.43], [0.8196], [0.7702], [0.3102],
+    [21], [17.35], [0.8210], [0.7692], [0.3203],
+    [25], [17.92], [0.8147], [0.7565], [0.3199],
+    [30], [19.04], [0.8133], [0.7726], [0.3166],
   ),
-  caption: [Loss–metric decoupling over 30 epochs (teacher model, 1M customers,
-  $T_0=10$ cosine warm restarts). Val loss decreases monotonically while AUC
-  peaks at epoch 10 (−0.4\%p by epoch 30) and NDCG\@3 peaks at epoch 19
-  then collapses (−4.4\%p by epoch 29). Avg MAE continues improving throughout.
-  Bold = metric peak across all epochs.],
+  caption: [Loss–metric decoupling over 30 epochs on v14 phase0 (teacher = PLE
+  softmax, 1M customers, $T_0=10$ cosine warm restarts).  Val loss reaches
+  its minimum at epoch 13 (16.20) and rises afterwards (overfit onset);
+  Avg AUC peaks at epoch 15 (0.8272) and declines $-$1.4\%p by epoch 30;
+  NDCG\@3 peaks remarkably early at epoch 5 (0.7904) and recovers
+  partially by epoch 30 (0.7726, $-$1.8\%p from peak).  Avg MAE continues
+  improving through epoch 20 then stabilises.  Bold = metric peak.],
 ) <tab:loss-metric-decouple>
 
-Val loss decreases monotonically (32.11 → 22.68), which would conventionally
-indicate continuous improvement. However:
+The v14 trajectory shows three task-type-specific peaks at different epochs:
 
-- *Avg AUC* (binary tasks): peaks at epoch 10 (0.6726), then declines to 0.6687
-  by epoch 30 (−0.4%p). The decline is modest but consistent.
-- *NDCG\@3* (ranking quality): peaks at epoch 19 (0.7004), then collapses to
-  0.6540 at epoch 29 (−4.6%p relative to peak, −3.0%p relative to epoch 10).
-- *Avg MAE* (regression tasks): improves steadily, 1.07 → 0.96, throughout
-  all 30 epochs.
+- *Avg AUC* (binary tasks): peaks at epoch 15 (0.8272), then declines to
+  0.8133 by epoch 30 ($-$1.4\%p).  This is more pronounced than the v13
+  $-$0.4\%p decline because the cleaner v14 features push the binary
+  ceiling higher early in training, leaving more room for overfitting in
+  the second cosine cycle.
+- *NDCG\@3* (ranking quality): peaks remarkably early at epoch 5
+  (0.7904) — well before any cosine restart.  The recommendation
+  ranking quality is sensitive to the initial high-LR phase: as the
+  cosine schedule decays the LR through epoch 10, the gate's expert
+  preferences harden in directions that hurt rank-aware NDCG even as
+  AUC continues to improve.  Post-epoch-15 NDCG oscillates in
+  0.71--0.79 with no monotone direction.
+- *Avg MAE* (regression tasks): improves steadily 0.4322 → 0.3102
+  through epoch 20, then plateaus.  Composite val\_loss shows the
+  reverse U-shape (16.20 minimum at epoch 13) because the binary task
+  cross-entropy dominates as MAE saturates.
 
-The root cause is *task-type dominance in composite loss*:
-regression tasks contribute continuously shrinking MAE to the composite loss
-and pull the aggregate downward even as classification tasks saturate.
-With 3 regression tasks whose losses have no natural lower bound (unlike
-cross-entropy, which approaches 0 for well-separated data),
-the composite loss signal is *not a valid proxy* for classification or ranking
-quality after the first cosine cycle.
+The root cause carries over from v13: *task-type dominance in composite
+loss*.  Each task type peaks at a different epoch (NDCG\@3 at 5, AUC at
+15, MAE at 20+), so any single-metric checkpoint selection sacrifices
+two of the three task types.  v14's wider absolute magnitudes
+($Delta$ AUC peak-to-final $-$1.4\%p, $Delta$ NDCG peak-to-final
+$-$1.8\%p) make the trade-off sharper, not gentler.
 
 === Cosine Restart Oscillation Across Task Types
 
-Cosine warm restarts ($T_0 = 10$) create learning rate spikes at cycle
-boundaries. NDCG\@3 exhibits strong oscillation at these boundaries:
+Cosine warm restarts ($T_0 = 10$, $T_"mult" = 2$) create learning rate spikes
+at cycle boundaries (epoch 10 → second cycle 11–30 wraps around its own
+mid-point at epoch 20).  NDCG\@3 exhibits strong oscillation at these
+boundaries on v14:
 
 #figure(
   table(
@@ -724,25 +741,36 @@ boundaries. NDCG\@3 exhibits strong oscillation at these boundaries:
     align: (left, right, left),
     stroke: 0.5pt,
     table.header([*Epoch (event)*], [*NDCG\@3*], [*Change*]),
-    [10 (cycle 1 end)], [0.6976], [peak],
-    [11 (restart 1)], [0.6853], [−1.2%p (sharp drop)],
-    [19 (cycle 2 near-end)], [0.7004], [recovery, new peak],
-    [20 (restart 2)], [0.6657], [−3.5%p (sharp drop)],
-    [29 (cycle 3 near-end)], [0.6540], [recovery failure],
+    [5 (cycle 1 mid)],   [*0.7904*], [global peak — early high-LR phase],
+    [10 (cycle 1 end)],  [0.7655], [$-$2.5\%p (drift before restart)],
+    [11 (restart 1)],    [0.7201], [$-$4.5\%p (sharpest drop)],
+    [13 (val\_loss min)], [0.7134], [recovery deferred],
+    [15 (AUC peak)],     [0.7707], [recovers $+$5.7\%p but below epoch 5],
+    [21 (LR mini-bump)], [0.7692], [stable through small perturbation],
+    [28 (late cycle 2)], [0.7874], [secondary peak, $-$0.3\%p vs.~epoch 5],
+    [30 (final)],        [0.7726], [stable below initial peak],
   ),
-  caption: [NDCG\@3 oscillation at cosine restart boundaries.
-  Each LR spike pushes the model away from the ranking-optimal parameter region.
-  The second restart produces a larger drop than the first, and the third
-  cycle fails to recover, indicating progressive divergence.],
+  caption: [NDCG\@3 oscillation at cosine restart boundaries on v14.
+  The global peak is at epoch 5 (during the high-LR phase of cycle 1) —
+  *not* at the cycle 1 end as one would expect from the v13 trajectory.
+  The first restart drops NDCG\@3 by $-$4.5\%p at epoch 11; recovery to
+  0.7707 at epoch 15 is partial.  Late cycle 2 (epoch 28) approaches the
+  global peak again but does not exceed it.],
 ) <tab:cosine-oscillation>
 
-The pattern is asymmetric across task types. Avg MAE is *unaffected* by
-restarts --- regression loss landscapes are smooth and the optimizer quickly
-returns to a low-MAE region after each LR spike. Binary AUC shows a small dip
-(−0.4%p per restart) and recovers partially. NDCG\@3 suffers the largest
-disruption (up to −3.5%p per restart) because ranking metrics are sensitive to
-the relative ordering of scores, and LR restarts temporarily scramble the score
-scale before the model re-converges.
+The v14 pattern is asymmetric across task types.  Avg MAE continues to
+improve through the second cosine cycle (0.4322 → 0.3102 by epoch 20)
+because regression loss landscapes are smooth and the optimiser
+returns to low-MAE regions after each LR spike.  Binary AUC shows a
+small dip ($-$0.4\%p) at restart 1 and recovers strongly to a new
+peak at epoch 15.  NDCG\@3 suffers the largest disruption ($-$4.5\%p
+at restart 1) because ranking metrics are sensitive to the relative
+ordering of scores, and LR restarts temporarily scramble the score
+scale before the model re-converges.  Most importantly, the v14
+NDCG\@3 *global peak* sits inside the high-LR phase of cycle 1
+(epoch 5) — well before the AUC peak (epoch 15) — confirming that
+ranking-aware multiclass tasks have an earlier optimal checkpoint
+than binary classification on the same composite-loss schedule.
 
 *Implication*: For ranking-sensitive applications, cosine restarts with
 $T_"mult" = 1$ (constant cycle length) should be replaced with
