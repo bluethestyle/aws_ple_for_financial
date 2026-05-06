@@ -489,38 +489,66 @@ minority task types.
 
 == Finding 4: Epoch Budget Sensitivity <find4>
 
-At 10 epochs, the performance gap between structures is small
-(AUC varies by ±0.002 across variants). This raises the question:
-are complex structures genuinely no better, or simply underfitted?
+A v14 SageMaker matched-pair study (ml.g4dn.2xlarge, identical fp32
+DuckDB-streaming pipeline at both budgets) directly tests whether
+the small AUC gap observed at 10 epochs is an underfitting artefact
+or a true plateau.  The matched setup isolates epoch-budget effect
+from precision-path drift between the local fp64 baseline and the
+SageMaker fp32 inference, so the 10ep / 15ep delta in @tab:epoch is
+attributable to training duration alone.
 
 #figure(
   table(
-    columns: (auto, auto, auto, auto),
+    columns: (auto, auto, auto, auto, auto),
     inset: 5pt,
-    align: (left, right, right, right),
+    align: (left, right, right, right, right),
     stroke: 0.5pt,
-    table.header([*Epoch*], [*Shared-Bottom*], [*PLE Softmax*], [*PLE Sig + adaTT*]),
-    [5], [{{sb_e5_auc}}], [{{soft_e5_auc}}], [{{sigadatt_e5_auc}}],
-    [6 (NDCG peak)], [{{sb_e6_auc}}], [{{soft_e6_auc}}], [{{sigadatt_e6_auc}}],
-    [10], [{{sb_e10_auc}}], [{{soft_e10_auc}}], [{{sigadatt_e10_auc}}],
-    [20], [{{sb_e20_auc}}], [{{soft_e20_auc}}], [{{sigadatt_e20_auc}}],
+    table.header(
+      [*Epoch*], [*Shared-Bottom*], [*PLE Softmax*], [*PLE Full*], [*PLE Full+adaTT*],
+    ),
+    [10], [0.8197], [*0.8233*], [0.8216], [0.8223],
+    [15], [0.8015], [*0.8249*], [0.8203], [0.8213],
+    [Δ (15$-$10)], [$-$0.0182], [$+$0.0016], [$-$0.0013], [$-$0.0010],
   ),
-  caption: [Avg AUC by epoch. Complex structures may differentiate
-  with longer training budgets. 20-epoch results pending.],
+  caption: [Avg AUC at matched 10 / 15 epochs on v14 phase0 (1M rows,
+  ml.g4dn.2xlarge SageMaker spot, fp32 DuckDB stream).  PLE variants
+  plateau ($|Delta| <= 0.002$) while shared\_bottom drops $-$0.0182
+  with val\_loss climbing 16.58 $arrow.r$ 17.64 — the shared
+  representation memorises training noise faster than it generalises.],
 ) <tab:epoch>
 
-NDCG\@3 peaks at epoch 6, coinciding with the cosine learning rate valley
-before restart. This suggests that ranking quality is sensitive to learning
-rate scheduling, and the apparent performance plateau at epoch 10 may reflect
-a scheduling artifact rather than a convergence plateau.
+The matched-pair table makes two corrections to the local-only
+interpretation in earlier drafts:
 
-With cosine warm restarts ($T_"mult" = 2$), the second cycle spans epochs 10--30.
-Complex structures (PLE + adaTT) have more parameters to warm up, and may
-only differentiate from simpler baselines in the second cosine cycle.
+*Correction 1: PLE softmax beats shared\_bottom at 10 epochs already.*
+PLE softmax (0.8233) leads shared\_bottom (0.8197) by $+$0.0036 AUC
+at 10 epochs on identical SageMaker infrastructure, contradicting an
+earlier local-10-epoch reading where shared\_bottom appeared to lead.
+The local ordering was a precision-path artefact (fp64 pq.read\_table
+vs.~fp32 DuckDB), not an epoch-budget deficit of the gated structure.
 
-*Guideline*: When comparing MTL structures, ensure the training budget
-is at least $2 times T_0$ to observe post-restart behavior.
-10-epoch comparisons may prematurely favor simpler architectures.
+*Correction 2: shared\_bottom overfits, not PLE.*  Extending from 10
+to 15 epochs degrades shared\_bottom by $-$0.0182 AUC while leaving
+all three PLE variants flat ($|Delta| <= 0.002$).  The recommendation
+to "ensure budget is at least $2 times T_0$" therefore needs
+inversion for shared-representation variants: they require *early
+stopping* once the unfettered shared bottom enters the noise-memorising
+regime.  PLE+CGC's $T times K$ gate parameters ($T = 13$ tasks,
+$K = 7$ experts) act as a structural regularizer that absorbs the
+budget extension without overfitting.
+
+A *PLE-softmax-reg* variant (dropout 0.3, weight\_decay $1 times 10^(-4)$)
+further improves to AUC 0.8256, val\_loss 16.57 (vs.~0.8249 / 17.09
+for the unregularised PLE-softmax baseline), showing that even at the
+plateau the gated variant leaves calibration-loss headroom that
+conventional regularisation recovers.
+
+*Guideline (revised)*: When comparing MTL structures at the v14
+phase0 scale (1M rows, 1210 features, fp32 streaming), the 10-epoch
+matched comparison is sufficient to discriminate gated from shared
+architectures. Longer budgets (15+) require regularisation on
+shared\_bottom to prevent overfitting; PLE variants tolerate the
+extension without it.
 
 == Finding 5: GTE Pre-Gating Degrades Mixed-Type Groups <find5>
 
