@@ -62,14 +62,21 @@ S3_CHECKPOINT_PREFIX = "checkpoints/distillation"
 S3_OUTPUT_PREFIX = "output/distillation"
 S3_SOURCE_PREFIX = "source/distillation"
 
-# Distillation job defaults — GPU for soft-label inference, CPU cores for LGBM.
-# ml.g4dn.2xlarge has 32 GB system RAM (vs 16 GB on g4dn.xlarge), required
-# for the v14 phase0 1M-row × 1210-col features.parquet load + tensor
-# conversion on the soft-label inference path; the same memory budget
-# constraint that drove the training-pipeline refactor applies here.
-DISTILL_INSTANCE_TYPE = "ml.g4dn.2xlarge"   # T4 GPU (soft labels) + 8 vCPU (LGBM)
-DISTILL_MAX_RUN = 10800                       # 3 hr max (LGBM x 13 tasks + IG)
-DISTILL_MAX_WAIT = 14400                      # max_run + 1hr (CLAUDE.md 1.5)
+# Distillation job defaults — CPU-only (m5.4xlarge), 64 GB system RAM.
+# Distillation peaks around 35-45 GB: features array 4.6 GB (1M x 1210
+# float32), 12-task soft labels ~250 MB (next_mcc 50-class dominates),
+# 7 trained LGBM students + 3 direct-mode students kept in memory
+# simultaneously while the validator iterates the fidelity gate (each
+# LGBM builds a Dataset cache during training, ~3 GB per task because
+# of binned feature buffers). 2026-05-08 attempt on g4dn.2xlarge (32 GB)
+# OOM-killed at the boundary between distill and direct training
+# (SIGKILL/exit 137); g4dn.4xlarge spot quota = 0; m5.4xlarge has
+# 64 GB + spot quota 4. Soft-label inference runs on CPU (PyTorch
+# auto-detects no CUDA and falls back), ~20 min slower than GPU but
+# acceptable within 3-hr max_run.
+DISTILL_INSTANCE_TYPE = "ml.m5.4xlarge"     # 16 vCPU + 64 GB RAM, CPU-only
+DISTILL_MAX_RUN = 14400                       # 4 hr max (CPU soft-label inference + 10 LGBMs)
+DISTILL_MAX_WAIT = 18000                      # max_run + 1hr (CLAUDE.md 1.5)
 
 
 # ---------------------------------------------------------------------------
