@@ -50,14 +50,14 @@ logger = logging.getLogger("sagemaker_distillation")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "configs" / "pipeline.yaml"
 DATASET_CONFIG_PATH = PROJECT_ROOT / "configs" / "datasets" / "santander.yaml"
-PHASE0_DIR = PROJECT_ROOT / "outputs" / "phase0_v12"
+PHASE0_DIR = PROJECT_ROOT / "outputs" / "phase0_v14" / "extracted"
 
 # Container-internal config paths (inside the source_dir extraction)
 CONTAINER_CONFIG = "configs/pipeline.yaml"
 CONTAINER_DATASET_CONFIG = "configs/datasets/santander.yaml"
 
 # S3 path segments (bucket comes from pipeline.yaml)
-S3_DATA_PREFIX = "data/phase0_v12"
+S3_DATA_PREFIX = "data/phase0_v14"
 S3_CHECKPOINT_PREFIX = "checkpoints/distillation"
 S3_OUTPUT_PREFIX = "output/distillation"
 S3_SOURCE_PREFIX = "source/distillation"

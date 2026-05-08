@@ -601,14 +601,38 @@ distillation:
     product_stability:
       objective: huber
       alpha: 0.9
+    # Multiclass tasks need more LGBM capacity to match teacher's prediction
+    # distribution (v3 nba_primary agreement 0.603 < 0.70 threshold). LGBM
+    # multiclass internally trains C × n_estimators trees (one-vs-rest), so
+    # raising num_leaves + n_estimators with a smaller learning_rate gives
+    # the student room to fit the soft-label distribution more closely.
+    nba_primary:           # 7-class
+      num_leaves: 255
+      n_estimators: 1000
+      learning_rate: 0.03
+    next_mcc:              # 50-class — most demanding
+      num_leaves: 255
+      n_estimators: 1500
+      learning_rate: 0.02
+      min_child_samples: 30
 
   calibration:
     enabled: true
     method: platt
     tasks:
-      - churn_signal        # 이탈 확률 → 리텐션 예산 배분 기준
-      - product_stability   # 안정성 점수 → 이탈 위험 등급 산정
-      - cross_sell_count    # 예상 교차판매 수 → 목표 대비 gap 계산
+      # 이진 분류 7종 — fidelity validator는 binary task에 대해 calibration_gap을
+      # 항상 평가하므로 (max_calibration_gap=0.05), 7개 모두 등록해야 게이트
+      # 통과 가능 (v3 결과: churn 0.329 + 6 will_acquire 0.082~0.096 모두 실패).
+      - churn_signal              # 이탈 확률 → 리텐션 예산 배분 기준
+      - will_acquire_deposits     # 예금 가입 확률 → 캠페인 타겟팅
+      - will_acquire_investments  # 투자상품 확률 → 적합성 + 캠페인
+      - will_acquire_accounts     # 계좌 개설 확률
+      - will_acquire_lending      # 대출 확률 → 사전 한도 책정
+      - will_acquire_payments     # 결제수단 채택 확률
+      - top_mcc_shift             # 주요 MCC 변경 → 라이프이벤트 신호
+      # 회귀 2종 — bias corrector 적용
+      - product_stability         # 안정성 점수 → 이탈 위험 등급 산정
+      - cross_sell_count          # 예상 교차판매 수 → 목표 대비 gap 계산
 
 # ---------------------------------------------------------------------------
 # Scoring — FD-TVS composite scoring for Santander

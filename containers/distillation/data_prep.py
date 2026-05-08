@@ -19,13 +19,23 @@ logger = logging.getLogger("distill-entry")
 def load_data_pyarrow(channel_path: Path) -> Tuple[Any, Dict, Dict, Dict]:
     """Load Phase 0 data via PyArrow (CLAUDE.md §3.3 — no pandas in hot path).
 
+    Phase 0 writes ``features.parquet`` and ``labels.parquet`` as separate
+    files (runner.py Stage 9). Distillation needs both: features for
+    teacher inference / student input, labels for the threshold-gate
+    viability check and fidelity validation. This function loads
+    features first, then horizontally concatenates the label columns
+    from labels.parquet so downstream code (``prepare_features_and_labels``)
+    can build hard_labels by ``table.column(t.label_col)`` indexing.
+
     Args:
-        channel_path: Directory containing features.parquet and schema JSONs.
+        channel_path: Directory containing features.parquet, labels.parquet,
+                      and schema JSONs.
 
     Returns:
         (table, feature_schema, label_schema, split_indices)
-        where ``table`` is a ``pyarrow.Table``.
+        where ``table`` is a ``pyarrow.Table`` carrying features + labels.
     """
+    import pyarrow as pa
     import pyarrow.parquet as pq
 
     features_parquet = channel_path / "features.parquet"
@@ -45,6 +55,28 @@ def load_data_pyarrow(channel_path: Path) -> Tuple[Any, Dict, Dict, Dict]:
         logger.info(
             "Loaded %s: %d rows, %d columns",
             parquet_files[0].name, table.num_rows, table.num_columns,
+        )
+
+    # v14 phase0 writes labels separately; merge them in so that
+    # ``prepare_features_and_labels`` can resolve label_col via table.column().
+    labels_parquet = channel_path / "labels.parquet"
+    if labels_parquet.exists():
+        labels_table = pq.read_table(str(labels_parquet))
+        if labels_table.num_rows != table.num_rows:
+            raise RuntimeError(
+                f"labels.parquet rows ({labels_table.num_rows}) != "
+                f"features.parquet rows ({table.num_rows}) — phase0 schema mismatch"
+            )
+        feature_col_set = set(table.column_names)
+        added = 0
+        for col_name in labels_table.column_names:
+            if col_name in feature_col_set:
+                continue
+            table = table.append_column(col_name, labels_table.column(col_name))
+            added += 1
+        logger.info(
+            "Merged labels.parquet: +%d label columns -> total %d cols",
+            added, table.num_columns,
         )
 
     feature_schema_path = channel_path / "feature_schema.json"

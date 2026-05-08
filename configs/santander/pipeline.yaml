@@ -943,9 +943,18 @@ distillation:
     enabled: true
     method: platt       # platt | isotonic
     tasks:
-      - churn_signal          # 이탈 확률 → 리텐션 예산 배분 기준
-      - product_stability     # 안정성 점수 → 이탈 위험 등급 산정
-      - cross_sell_count      # 예상 교차판매 수 → 목표 대비 gap 계산
+      # 이진 분류 7종 — fidelity validator는 binary task에 대해 calibration_gap을
+      # 항상 평가하므로 (max_calibration_gap=0.05), 7개 모두 등록해야 게이트 통과.
+      - churn_signal              # 이탈 확률 → 리텐션 예산 배분 기준
+      - will_acquire_deposits     # 예금 가입 확률 → 캠페인 타겟팅
+      - will_acquire_investments  # 투자상품 확률 → 적합성 + 캠페인
+      - will_acquire_accounts     # 계좌 개설 확률
+      - will_acquire_lending      # 대출 확률 → 사전 한도 책정
+      - will_acquire_payments     # 결제수단 채택 확률
+      - top_mcc_shift             # 주요 MCC 변경 → 라이프이벤트 신호
+      # 회귀 2종 — bias corrector 적용
+      - product_stability         # 안정성 점수 → 이탈 위험 등급 산정
+      - cross_sell_count          # 예상 교차판매 수 → 목표 대비 gap 계산
 
   # Fidelity validation thresholds (per task type)
   fidelity:
@@ -954,7 +963,7 @@ distillation:
       min_agreement: 0.85
       max_jsd: 0.10
       min_ranking_corr: 0.90
-      max_calibration_gap: 0.05  # only checked for calibration.tasks
+      max_calibration_gap: 0.05  # checked for ALL binary tasks (validator does not gate on calibration.tasks list)
     multiclass:
       min_agreement: 0.70
       max_jsd: 0.10
