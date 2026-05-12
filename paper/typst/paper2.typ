@@ -1901,6 +1901,80 @@ contribution to both predictive performance and explanation quality.
 - *Reason quality maintenance*: Periodic human review + automated quality scoring.
 - *Regulatory updates*: Architecture supports adding new compliance checks without redesign.
 
+== Fidelity Gate Semantics under Cross-Architecture Distillation
+
+The v14 SageMaker distillation re-run (2026-05-08, `m5.4xlarge`,
+3-layer fallback enabled) surfaced two latent defects in the fidelity
+gate that were masked on v13 phase0 by the teacher's lower aggregate
+AUC. Both defects are now fixed and the resulting semantics are worth
+documenting explicitly because they shape how a reviewer should read
+the gate's pass/fail tallies in the audit trail.
+
+*Defect 1: the gate scored fallback-routed tasks against their own
+fallback rationale.* The 3-layer serving fallback
+(CLAUDE.md~§1.8) routes a task to Layer 2 (direct hard-label LGBM)
+when the teacher's discriminative quality is below the viability
+threshold, and to Layer 3 (rule engine) when it falls below floor.
+The previous implementation passed *all* tasks with trained
+students through `validate_fidelity`, so a task that was explicitly
+routed away from soft-label distillation *because* the teacher was
+unreliable would then be scored on "how closely the student matches
+the teacher" — exactly the divergence the routing was designed to
+introduce. The fix scopes the gate to the `distill_tasks` set
+returned by `evaluate_teacher_thresholds` and emits an explicit
+`[SKIP-GATE]` log line for the fallback-routed tasks so the audit
+log records *why* a task was excluded rather than appearing as a
+silent omission. The post-fix `fidelity_report.json` carries a new
+`gate_scope` field (`"distilled_tasks_only"` or
+`"all_tasks_with_students"`) and a `scoped_tasks` list, so a
+regulator can verify which tasks fell under which control without
+inspecting the source.
+
+*Defect 2: `calibration_gap` confounded teacher and student
+calibration.* The historical definition,
+$|"ECE"("teacher") - "ECE"("student")|$, treats a perfectly
+Platt-scaled student against a focal-loss-trained teacher (whose
+calibration is by-construction poor because focal optimises
+ranking-not-calibration on class-imbalanced binary tasks) as a
+*failure*: the student's near-zero ECE differences against a 0.25
+teacher ECE produces a $0.25$ gap, dwarfing the audit threshold
+$0.05$. Yet from an operational standpoint the relevant question
+is "is the student's probability value trustworthy at a decision
+threshold?" — i.e., the student's *own* ECE against ground-truth
+labels. The fix redefines `_compute_calibration_gap` to return
+student ECE directly; teacher predictions are no longer consulted.
+The same $0.05$ threshold now interprets as an absolute calibration
+quality requirement on the production scorer rather than a similarity
+requirement that the teacher's defects rule out.
+
+*Residual signal: agreement and ranking-correlation gaps are
+architecture-inherent, not student defects.* After both fixes,
+the v14 binary distillation set still reports
+`min_agreement` $approx 0.75$--$0.82$ and `min_ranking_corr` $approx
+0.87$--$0.91$ against thresholds $0.85$ and $0.90$. These metrics
+measure the *local* match between teacher and student decisions
+(top-$1$ argmax agreement, Spearman correlation of scores), and
+their inherent floor depends on the teacher-student architecture
+pair. Same-architecture distillation (e.g., BERT teacher $arrow$
+BERT student, GPT teacher $arrow$ GPT student) routinely achieves
+agreement $> 0.92$ because the student inherits the teacher's
+inductive bias; the heterogeneous expert PLE $arrow$ LGBM pair in
+this work is *cross-architecture*, with a smooth multi-layer
+mixture-of-experts teacher and a tree-ensemble student that
+expresses decision boundaries as axis-aligned step functions. The
+student can match the teacher's *global* ranking (witness the
+$0.0058$ mean AUC gap, well below the abstract's claim of
+$<3.6$~pp) while disagreeing on individual point estimates exactly
+because LGBM cannot interpolate a smooth decision surface. We
+therefore do *not* relax the thresholds —- weakening an audit
+control because the architecture choice cannot meet it is the
+SR~11-7 anti-pattern. Instead, we keep the thresholds and let
+future cross-architecture distillation runs report them as observed
+floors, so a sudden drop (e.g., agreement $< 0.5$ on a new student)
+remains an actionable anomaly signal. A separate audit metric for
+*cross-architecture* runs (agreement *delta vs.~the historical
+floor*) is a natural follow-up but not adopted here.
+
 == Limitations
 
 - LLM dependency introduces cost, latency, and residual hallucination risk.

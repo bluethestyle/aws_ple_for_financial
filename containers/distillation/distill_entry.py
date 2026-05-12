@@ -247,6 +247,11 @@ def run_distillation(
     )
 
     # --- Step 4: Fidelity validation ---
+    # Scope the gate to distilled tasks: tasks routed via fallback layers
+    # (DIRECT — teacher below threshold, SKIP — teacher below floor) are
+    # intentionally trained against hard labels and would always fail the
+    # fidelity-vs-teacher gate by design (cf. CLAUDE.md §1.8 3-layer
+    # serving fallback).
     fidelity_results, fidelity_report = validate_fidelity(
         pipeline_config=pipeline_config,
         students=students,
@@ -258,6 +263,7 @@ def run_distillation(
         trainer=trainer,
         out_dir=out_dir,
         skip_gate=skip_fidelity_gate,
+        distill_tasks=distill_tasks,
     )
     failed_count = fidelity_report["failed"]
     passed_count = fidelity_report["passed"]

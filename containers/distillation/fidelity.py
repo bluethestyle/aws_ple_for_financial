@@ -68,6 +68,7 @@ def validate_fidelity(
     trainer: Any,
     out_dir: Path,
     skip_gate: bool,
+    distill_tasks: Optional[List[str]] = None,
 ) -> Tuple[List[Any], Dict[str, Any]]:
     """Run per-task fidelity validation and write fidelity_report.json.
 
@@ -82,9 +83,15 @@ def validate_fidelity(
         trainer:          StudentTrainer (to retrieve soft labels).
         out_dir:          Directory where ``fidelity_report.json`` is written.
         skip_gate:        When True, continue despite failures.
-
-    Returns:
-        (fidelity_results, fidelity_report_dict)
+        distill_tasks:    When provided, restrict the fidelity gate to these
+                          task names. Tasks routed to direct-training (teacher
+                          unreliable) or skipped (teacher below floor) cannot
+                          be meaningfully scored against teacher predictions:
+                          the gate is intended to detect drift in
+                          distillation quality, not to penalise the
+                          intentional teacher-divergence of fallback layers.
+                          When ``None`` (legacy mode), all tasks with
+                          available students are scored.
     """
     from core.training.distillation_validator import (
         DistillationValidator,
@@ -113,11 +120,27 @@ def validate_fidelity(
     soft_labels = trainer.get_soft_labels()
     fidelity_results: List[FidelityResult] = []
 
+    distill_set = set(distill_tasks) if distill_tasks is not None else None
+
     logger.info("Running fidelity validation (8 metrics per task)...")
+    if distill_set is not None:
+        logger.info(
+            "Fidelity gate scoped to %d distilled task(s); direct-trained and "
+            "skipped tasks are excluded because teacher-divergence there is "
+            "intentional (3-layer fallback design).",
+            len(distill_set),
+        )
 
     for task_spec in pipeline_config.tasks:
         task_name = task_spec.name
         if task_name not in students:
+            continue
+        if distill_set is not None and task_name not in distill_set:
+            logger.info(
+                "  [SKIP-GATE] %s: routed via fallback layer (direct/skip), "
+                "fidelity-vs-teacher is not the relevant audit signal here.",
+                task_name,
+            )
             continue
 
         student_preds = get_student_predictions(
@@ -165,6 +188,12 @@ def validate_fidelity(
         "status": "FAILED" if failed_count > 0 else "PASSED",
         "passed": passed_count,
         "failed": failed_count,
+        "gate_scope": (
+            "distilled_tasks_only"
+            if distill_set is not None
+            else "all_tasks_with_students"
+        ),
+        "scoped_tasks": sorted(distill_set) if distill_set is not None else None,
         "details": {
             r.task_name: {"passed": r.passed, "metrics": r.metrics, "failures": r.failures}
             for r in fidelity_results

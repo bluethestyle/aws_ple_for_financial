@@ -1773,6 +1773,68 @@ DeepFM과의 입력 라우팅 중복(둘 다 전체 피처 벡터를 수신)에 
 - *추천사유 품질 유지*: 주기적 인간 검토 + 자동화된 품질 점수.
 - *규제 업데이트*: 아키텍처가 재설계 없이 새로운 규제 준수 검증 추가를 지원.
 
+== Cross-Architecture Distillation 에서의 Fidelity 게이트 의미
+
+v14 SageMaker 증류 재실행 (2026-05-08, `m5.4xlarge`, 3-layer fallback
+활성) 결과는 v13 phase0 의 낮은 teacher 집계 AUC 에 가려져 있던 fidelity
+게이트의 두 가지 잠재 결함을 표면화하였다. 두 결함 모두 수정되었으며,
+감사 트레일에서 게이트의 통과/실패 집계를 어떻게 읽어야 하는지를
+결정하는 의미 이슈이므로 명시적으로 문서화한다.
+
+*결함 1: 게이트가 fallback 라우팅된 task 를 그 fallback 근거 자체로
+평가하였다.* 3-layer 서빙 fallback (CLAUDE.md ~§1.8) 은 teacher 의
+판별 품질이 viability 임계값 이하이면 task 를 Layer 2 (direct hard-label
+LGBM) 로, floor 이하이면 Layer 3 (룰 엔진) 으로 라우팅한다. 그러나 기존
+구현은 *학습된 student 가 있는 모든 task* 를 `validate_fidelity` 에
+통과시켰으므로, *teacher 가 신뢰 불가하다는 이유로* soft-label 증류에서
+의도적으로 라우팅 이탈된 task 가 "student 가 teacher 와 얼마나 닮았는가"
+로 점수가 매겨졌다 — 라우팅 자체가 도입하려고 한 바로 그 divergence 가
+실패로 잡힌 셈이다. 수정안은 `evaluate_teacher_thresholds` 가 반환하는
+`distill_tasks` 집합으로 게이트 적용 범위를 좁히고, fallback 라우팅된
+task 에 대해 `[SKIP-GATE]` 로그 라인을 명시적으로 남겨 *왜 제외됐는지*
+가 감사 로그에 기록되도록 한다 (silent omission 방지). 수정 후
+`fidelity_report.json` 에는 새로운 `gate_scope` 필드
+(`"distilled_tasks_only"` 또는 `"all_tasks_with_students"`) 와
+`scoped_tasks` 리스트가 추가되어, 규제기관이 소스 코드를 보지 않고도
+어떤 task 가 어느 control 적용 대상이었는지 검증 가능하다.
+
+*결함 2: `calibration_gap` 이 teacher 와 student 의 calibration 을
+혼동하였다.* 기존 정의 $|"ECE"("teacher") - "ECE"("student")|$ 는
+focal-loss 로 학습된 teacher 에 대해 완벽 Platt 스케일링된 student 를
+*실패* 로 판정한다: focal 은 calibration 이 아닌 ranking 을
+최적화하므로 클래스 불균형 binary task 에서 teacher 의 ECE 는 구조적으로
+높고 (예: $0.25$), 이에 대해 student 의 ECE 가 0 에 가까워도 gap 은
+$0.25$ 로 평가되어 감사 임계값 $0.05$ 를 크게 초과한다. 그러나 운영
+관점의 핵심 질문은 "student 의 확률값이 결정 임계값에서 신뢰 가능한가"
+— 즉, ground truth 에 대한 student *자신의* ECE 다. 수정안은
+`_compute_calibration_gap` 이 student ECE 만 반환하도록 재정의했으며,
+teacher 의 예측은 더 이상 참조하지 않는다. 동일한 $0.05$ 임계값이 이제
+teacher 결함이 배제한 유사도 요구가 아니라 *프로덕션 스코어러에 대한
+절대 calibration 품질 요구*로 해석된다.
+
+*잔여 신호: agreement 와 ranking-correlation 은 student 결함이 아닌
+architecture 의 본질적 특성이다.* 두 수정안 모두 적용 후에도 v14 binary
+증류 집합은 `min_agreement` $approx 0.75$--$0.82$ 와 `min_ranking_corr`
+$approx 0.87$--$0.91$ 을 보고하며, 임계값 $0.85$ 와 $0.90$ 을 일부
+하회한다. 이 지표들은 teacher 와 student 의 *국소* 결정 매칭 (top-$1$
+argmax 일치, score 의 스피어만 상관) 을 측정하며, 이들의 본질적 하한은
+teacher-student architecture 쌍에 좌우된다. 동종 architecture 증류
+(예: BERT $arrow$ BERT, GPT $arrow$ GPT) 는 student 가 teacher 의 귀납
+편향을 그대로 상속받으므로 agreement $> 0.92$ 가 일상적이다. 그러나 본
+연구의 heterogeneous expert PLE $arrow$ LGBM 은 *cross-architecture*
+쌍이다: smooth multi-layer mixture-of-experts teacher 와 axis-aligned
+step 함수로 결정 경계를 표현하는 tree-ensemble student. Student 는
+teacher 의 *전역* ranking 을 일치시킬 수 있으나 (평균 AUC gap $0.0058$
+은 abstract 의 $<3.6$~pp 주장 이내) , 개별 point estimate 에서는
+LGBM 이 매끄러운 결정 표면을 interpolate 할 수 없어 불일치가 발생한다.
+따라서 임계값은 *완화하지 않는다* — architecture 선택이 충족 못한다고
+감사 control 을 약화시키는 것은 SR~11-7 안티패턴이다. 임계값을 유지하고,
+향후 cross-architecture 증류 실행에서 관측된 floor 를 그대로 보고하여
+새로운 student 에서 agreement 가 $0.5$ 이하로 급락하는 등의 사례가
+여전히 실행 가능한 이상치 신호로 남도록 한다. *Cross-architecture* 실행
+전용으로 (agreement 의 *역사적 floor 대비 delta*) 별도 감사 지표를
+도입하는 것은 자연스러운 후속 과제이나 본 연구에서는 채택하지 않는다.
+
 == 한계
 
 - LLM 의존성이 비용, 지연시간, 잔여 환각 위험을 발생시킨다.

@@ -468,28 +468,55 @@ class DistillationValidator:
 
     @staticmethod
     def _compute_calibration_gap(
-        teacher: np.ndarray,
+        teacher: np.ndarray,  # noqa: ARG004 — kept for signature stability
         student: np.ndarray,
         labels: np.ndarray,
         n_bins: int = 10,
     ) -> float:
-        """Absolute difference in Expected Calibration Error (ECE)."""
+        """Expected Calibration Error of student predictions vs ground truth.
 
-        def _ece(preds: np.ndarray, labels: np.ndarray, n_bins: int) -> float:
-            bins = np.linspace(0, 1, n_bins + 1)
-            total = 0.0
-            for lo, hi in zip(bins[:-1], bins[1:]):
-                mask = (preds >= lo) & (preds < hi)
-                if mask.sum() == 0:
-                    continue
-                acc = labels[mask].mean()
-                conf = preds[mask].mean()
-                total += mask.sum() * abs(acc - conf)
-            return total / len(preds)
+        Previously this returned ``|ECE(teacher) - ECE(student)|``, which
+        confounds two unrelated quantities: the student's own calibration
+        quality (what operations care about — probability values must be
+        trustworthy at decision thresholds) and the teacher's calibration
+        quality (a property of the teacher checkpoint, unchanged by
+        distillation). When a focal-loss-trained teacher has poor ECE
+        (typical for class-imbalanced binary tasks where focal optimises
+        ranking over calibration), every student inherits a large positive
+        gap regardless of its own calibration — even a perfectly Platt-
+        scaled student.
 
-        t_ece = _ece(teacher.flatten(), labels.flatten(), n_bins)
-        s_ece = _ece(student.flatten(), labels.flatten(), n_bins)
-        return abs(t_ece - s_ece)
+        For audit and operational use, the relevant question is "is the
+        student's probability score trustworthy?" — i.e. does
+        ``P(student=p)`` align with the empirical positive rate among
+        samples scored at ``p``. This is exactly the student's own ECE
+        against ground-truth labels.
+
+        Args:
+            teacher:  (unused; signature retained for backward compat)
+            student:  Student probability predictions, shape (N,).
+            labels:   Ground-truth binary labels, shape (N,).
+            n_bins:   Number of equal-width probability bins.
+
+        Returns:
+            Student ECE in ``[0, 1]``. Lower is better; the validator's
+            ``max_calibration_gap`` threshold (default 0.05) now interprets
+            this as an absolute calibration quality requirement.
+        """
+        del teacher  # No longer used — see docstring.
+
+        preds = student.flatten()
+        labs = labels.flatten().astype(float)
+        bins = np.linspace(0, 1, n_bins + 1)
+        total = 0.0
+        for lo, hi in zip(bins[:-1], bins[1:]):
+            mask = (preds >= lo) & (preds < hi)
+            if mask.sum() == 0:
+                continue
+            acc = labs[mask].mean()
+            conf = preds[mask].mean()
+            total += mask.sum() * abs(acc - conf)
+        return float(total / len(preds))
 
     @staticmethod
     def _compute_quartile_agreement(
