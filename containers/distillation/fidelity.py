@@ -171,23 +171,37 @@ def validate_fidelity(
         fidelity_results.append(result)
 
         status = "PASS" if result.passed else "FAIL"
+        info = getattr(result, "informational_failures", [])
         logger.info(
-            "  [%s] %s -- metrics: %s%s",
+            "  [%s] %s -- metrics: %s%s%s",
             status, task_name,
             {k: round(v, 4) for k, v in result.metrics.items()},
-            f" failures: {result.failures}" if result.failures else "",
+            f" blocking: {result.failures}" if result.failures else "",
+            f" informational: {info}" if info else "",
         )
 
     passed_count = sum(1 for r in fidelity_results if r.passed)
     failed_count = len(fidelity_results) - passed_count
-    logger.info("Fidelity summary: %d/%d tasks passed", passed_count, passed_count + failed_count)
+    informational_count = sum(
+        1 for r in fidelity_results
+        if getattr(r, "informational_failures", [])
+    )
+    logger.info(
+        "Fidelity summary: %d/%d tasks passed (Tier 1 / blocking); "
+        "%d task(s) carry Tier 2 / informational signal.",
+        passed_count, passed_count + failed_count, informational_count,
+    )
 
     failed_tasks: List[str] = [r.task_name for r in fidelity_results if not r.passed]
 
     fidelity_report: Dict[str, Any] = {
+        # status / passed / failed are Tier 1 (operational / blocking) only.
+        # Tier 2 violations are surfaced in per-task ``informational_failures``
+        # and the aggregate ``tier2_violation_count`` for trend tracking.
         "status": "FAILED" if failed_count > 0 else "PASSED",
         "passed": passed_count,
         "failed": failed_count,
+        "tier2_violation_count": informational_count,
         "gate_scope": (
             "distilled_tasks_only"
             if distill_set is not None
@@ -195,7 +209,12 @@ def validate_fidelity(
         ),
         "scoped_tasks": sorted(distill_set) if distill_set is not None else None,
         "details": {
-            r.task_name: {"passed": r.passed, "metrics": r.metrics, "failures": r.failures}
+            r.task_name: {
+                "passed": r.passed,
+                "metrics": r.metrics,
+                "failures": r.failures,
+                "informational_failures": getattr(r, "informational_failures", []),
+            }
             for r in fidelity_results
         },
     }

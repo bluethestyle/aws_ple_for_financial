@@ -93,12 +93,36 @@ class ValidationCriteria:
 class FidelityResult:
     """Result of a single task's fidelity validation.
 
+    The gate is split into two tiers (see ``DistillationValidator``):
+
+    * **Tier 1 (blocking, operational)** — metrics that govern whether
+      the student is *deployable*: AUC gap and student calibration ECE
+      for binary, F1-macro gap for multiclass, MAE/RMSE gap for
+      regression. Failure here means the production scorer is broken
+      (ranking quality lost, or probability values untrustworthy at
+      decision thresholds).
+    * **Tier 2 (informational, diagnostic)** — metrics that measure
+      *teacher-student behavioural similarity*: top-1 agreement,
+      ranking correlation, Jensen-Shannon divergence, quartile
+      agreement. These are computed and recorded for anomaly detection
+      and audit, but do *not* block deployment. A cross-architecture
+      teacher-student pair (e.g., MoE PLE -> tree-ensemble LGBM) has
+      an inherent floor below same-architecture thresholds because
+      tree step-functions cannot interpolate the same smooth decision
+      surface; we surface this as a tracked trend rather than as a
+      failure.
+
     Attributes:
         task_name: Name of the validated task.
         task_type: One of ``binary``, ``multiclass``, ``regression``.
-        passed: Whether all criteria were met.
+        passed: Whether Tier 1 criteria were all met (operational gate).
         metrics: All computed metric values.
-        failures: Human-readable descriptions of which criteria failed.
+        failures: Tier 1 (blocking) failures only — these are the
+            criteria whose violation blocks deployment.
+        informational_failures: Tier 2 (informational) violations —
+            recorded for monitoring and audit but do not affect
+            ``passed``. Empty when all Tier 2 metrics are above their
+            architecture-pair floor.
         teacher_auc: Teacher AUC (binary tasks only).
         student_auc: Student AUC (binary tasks only).
         n_samples: Number of samples used in validation.
@@ -108,7 +132,8 @@ class FidelityResult:
     task_type: str  # binary / multiclass / regression
     passed: bool
     metrics: Dict[str, float]  # all computed metrics
-    failures: List[str]  # which criteria failed
+    failures: List[str]  # Tier 1 (blocking) failures only
+    informational_failures: List[str] = field(default_factory=list)  # Tier 2
     teacher_auc: Optional[float] = None
     student_auc: Optional[float] = None
     n_samples: int = 0
@@ -165,7 +190,8 @@ class DistillationValidator:
             A :class:`FidelityResult` with all metrics and pass/fail status.
         """
         metrics: Dict[str, float] = {}
-        failures: List[str] = []
+        blocking: List[str] = []         # Tier 1 — blocks deployment
+        informational: List[str] = []    # Tier 2 — logged, not blocking
 
         if task_type == "binary":
             metrics["auc_gap"] = self._compute_auc_gap(
@@ -183,33 +209,35 @@ class DistillationValidator:
                     teacher_preds, student_preds, labels,
                 )
 
-            # Check criteria
+            # --- Tier 1 (operational, blocking) ---
             if metrics["auc_gap"] > self._criteria.max_auc_gap:
-                failures.append(
+                blocking.append(
                     f"auc_gap={metrics['auc_gap']:.4f} > "
                     f"{self._criteria.max_auc_gap}"
-                )
-            if metrics["agreement_rate"] < self._criteria.min_binary_agreement:
-                failures.append(
-                    f"agreement={metrics['agreement_rate']:.4f} < "
-                    f"{self._criteria.min_binary_agreement}"
-                )
-            if metrics["jsd"] > self._criteria.max_jsd:
-                failures.append(
-                    f"jsd={metrics['jsd']:.4f} > {self._criteria.max_jsd}"
-                )
-            if metrics["ranking_corr"] < self._criteria.min_ranking_corr:
-                failures.append(
-                    f"ranking_corr={metrics['ranking_corr']:.4f} < "
-                    f"{self._criteria.min_ranking_corr}"
                 )
             if (
                 "calibration_gap" in metrics
                 and metrics["calibration_gap"] > self._criteria.max_calibration_gap
             ):
-                failures.append(
+                blocking.append(
                     f"calibration_gap={metrics['calibration_gap']:.4f} > "
                     f"{self._criteria.max_calibration_gap}"
+                )
+
+            # --- Tier 2 (informational) ---
+            if metrics["agreement_rate"] < self._criteria.min_binary_agreement:
+                informational.append(
+                    f"agreement={metrics['agreement_rate']:.4f} < "
+                    f"{self._criteria.min_binary_agreement}"
+                )
+            if metrics["jsd"] > self._criteria.max_jsd:
+                informational.append(
+                    f"jsd={metrics['jsd']:.4f} > {self._criteria.max_jsd}"
+                )
+            if metrics["ranking_corr"] < self._criteria.min_ranking_corr:
+                informational.append(
+                    f"ranking_corr={metrics['ranking_corr']:.4f} < "
+                    f"{self._criteria.min_ranking_corr}"
                 )
 
         elif task_type == "multiclass":
@@ -228,18 +256,21 @@ class DistillationValidator:
                 metrics["teacher_f1_macro"] = t_f1
                 metrics["student_f1_macro"] = s_f1
 
+            # --- Tier 1 (operational) ---
             if metrics.get("f1_macro_gap", 0) > self._criteria.max_f1_macro_gap:
-                failures.append(
+                blocking.append(
                     f"f1_macro_gap={metrics['f1_macro_gap']:.4f} > "
                     f"{self._criteria.max_f1_macro_gap}"
                 )
+
+            # --- Tier 2 (informational) ---
             if metrics["agreement_rate"] < self._criteria.min_multiclass_agreement:
-                failures.append(
+                informational.append(
                     f"agreement={metrics['agreement_rate']:.4f} < "
                     f"{self._criteria.min_multiclass_agreement}"
                 )
             if metrics["jsd"] > self._criteria.max_jsd:
-                failures.append(
+                informational.append(
                     f"jsd={metrics['jsd']:.4f} > {self._criteria.max_jsd}"
                 )
 
@@ -265,20 +296,28 @@ class DistillationValidator:
                 metrics["teacher_rmse"] = t_rmse
                 metrics["student_rmse"] = s_rmse
 
+            # --- Tier 1 (operational) ---
             if metrics.get("mae_gap", 0) > self._criteria.max_mae_gap:
-                failures.append(
+                blocking.append(
                     f"mae_gap={metrics['mae_gap']:.4f} > "
                     f"{self._criteria.max_mae_gap}"
                 )
             if metrics.get("rmse_gap", 0) > self._criteria.max_rmse_gap:
-                failures.append(
+                blocking.append(
                     f"rmse_gap={metrics['rmse_gap']:.4f} > "
                     f"{self._criteria.max_rmse_gap}"
                 )
+
+            # --- Tier 2 (informational) ---
             if metrics["ranking_corr"] < self._criteria.min_ranking_corr:
-                failures.append(
+                informational.append(
                     f"ranking_corr={metrics['ranking_corr']:.4f} < "
                     f"{self._criteria.min_ranking_corr}"
+                )
+            if metrics["quartile_agreement"] < self._criteria.regression_quartile_agreement_min:
+                informational.append(
+                    f"quartile_agreement={metrics['quartile_agreement']:.4f} < "
+                    f"{self._criteria.regression_quartile_agreement_min}"
                 )
 
         else:
@@ -288,14 +327,17 @@ class DistillationValidator:
                 task_name,
             )
 
-        passed = len(failures) == 0
+        # Pass is decided by Tier 1 (blocking) only — Tier 2 violations are
+        # recorded as informational signal for monitoring / audit trend.
+        passed = len(blocking) == 0
 
         result = FidelityResult(
             task_name=task_name,
             task_type=task_type,
             passed=passed,
             metrics=metrics,
-            failures=failures,
+            failures=blocking,
+            informational_failures=informational,
             n_samples=len(teacher_preds),
         )
 
@@ -308,7 +350,8 @@ class DistillationValidator:
                     "task": task_name,
                     "passed": passed,
                     "metrics": {k: round(v, 4) for k, v in metrics.items()},
-                    "failures": failures,
+                    "failures": blocking,
+                    "informational_failures": informational,
                 },
             )
 

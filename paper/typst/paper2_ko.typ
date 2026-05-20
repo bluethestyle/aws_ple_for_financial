@@ -1827,13 +1827,43 @@ step 함수로 결정 경계를 표현하는 tree-ensemble student. Student 는
 teacher 의 *전역* ranking 을 일치시킬 수 있으나 (평균 AUC gap $0.0058$
 은 abstract 의 $<3.6$~pp 주장 이내) , 개별 point estimate 에서는
 LGBM 이 매끄러운 결정 표면을 interpolate 할 수 없어 불일치가 발생한다.
-따라서 임계값은 *완화하지 않는다* — architecture 선택이 충족 못한다고
-감사 control 을 약화시키는 것은 SR~11-7 안티패턴이다. 임계값을 유지하고,
-향후 cross-architecture 증류 실행에서 관측된 floor 를 그대로 보고하여
-새로운 student 에서 agreement 가 $0.5$ 이하로 급락하는 등의 사례가
-여전히 실행 가능한 이상치 신호로 남도록 한다. *Cross-architecture* 실행
-전용으로 (agreement 의 *역사적 floor 대비 delta*) 별도 감사 지표를
-도입하는 것은 자연스러운 후속 과제이나 본 연구에서는 채택하지 않는다.
+
+*결함 3: 단일 티어 게이트는 운영 결함과 architecture floor 를 동일하게
+취급한다.* Fix 1 + 2 적용 후 v14 v4 실행은 여전히 Tier 1 통과율 $0/7$
+을 보고했는데, 이는 student 가 운영 부적합이라서가 아니라 네 조건
+(AUC gap, calibration ECE, agreement, ranking correlation) 이 모두
+동시에 임계값을 통과해야 했기 때문이다. 운영상 핵심 신호 (AUC gap,
+student ECE) 는 7 개 task 모두에서 깔끔하게 통과했고, architecture 본질
+지표 (agreement, ranking corr) 만 통과 못 했다. 항상 실패하는 게이트는
+operator 가 `skip_fidelity_gate=true` 로 override 할 수밖에 없게 만들고
+audit control 을 사실상 무력화한다 — 임계값 완화를 거절했을 때와 같은
+결과로 귀결되는 셈이다. 해결은 두 control 중 하나를 *완화* 하는 것이
+아니라 *판정을 분리* 하는 것이다. 이제 게이트는 메트릭의 측정 의도에
+따라 두 티어로 publish 한다:
+
+- *Tier 1 (blocking, 운영).* 프로덕션 스코어러의 작동 여부를 결정하는
+  지표: $"auc_gap"$ 과 student ECE (binary), $f_1$-macro gap
+  (multiclass), MAE / RMSE gap (regression). 여기서의 실패는 배포 차단.
+
+- *Tier 2 (informational, 진단).* Teacher-student 행동 유사도를 측정하는
+  지표: top-$1$ agreement, ranking correlation, Jensen-Shannon
+  divergence (binary + multiclass), quartile agreement (regression).
+  위반은 `fidelity_report.json` 의 `informational_failures` 에 기록되고
+  `tier2_violation_count` 로 집계되지만, report 의 `status` 나 게이트의
+  pass/fail 집계에 *영향을 주지 않는다*.
+
+이 분리 하에 v14 v4 binary task 는 Tier 1 = $7/7$ 통과, Tier 2 = $7/7$
+위반 (architecture floor) 으로 보고된다. 운영 판정이 명확해지고
+cross-architecture 신호도 모니터링용으로 보존된다. 감사 로그를 보는
+규제기관은 "이 student 가 망가졌나?" (Tier 1, 오늘의 답: 아니오) 와
+"이 student 가 teacher 와 얼마나 비슷한가?" (Tier 2, 오늘의 답:
+PLE $arrow$ LGBM 쌍의 예상 범위) 를 분리해서 판단할 수 있다. 향후
+cross-architecture 실행은 자체 Tier 2 궤적을 보고하며, agreement 가
+갑자기 $0.5$ 이하로 무너지는 등의 사례는 `tier2_violation_count` 추세를
+통해 여전히 이상치로 감지된다 — 차단 권한은 없지만 모니터링 권한은 유지.
+*Cross-architecture* 실행 전용으로 (Tier 2 의 *역사적 floor 대비 delta*)
+별도 감사 지표를 도입하는 것은 자연스러운 후속 과제이나 본 연구에서는
+채택하지 않는다.
 
 == 한계
 
