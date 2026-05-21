@@ -75,8 +75,13 @@ S3_SOURCE_PREFIX = "source/distillation"
 # auto-detects no CUDA and falls back), ~20 min slower than GPU but
 # acceptable within 3-hr max_run.
 DISTILL_INSTANCE_TYPE = "ml.m5.4xlarge"     # 16 vCPU + 64 GB RAM, CPU-only
-DISTILL_MAX_RUN = 14400                       # 4 hr max (CPU soft-label inference + 10 LGBMs)
-DISTILL_MAX_WAIT = 18000                      # max_run + 1hr (CLAUDE.md 1.5)
+# max_run is cumulative across spot interruption + restart. v5 attempt
+# (2026-05-20) was hit by a single spot interruption at ~2h49m mark; the
+# restart began from scratch and the 4h cap forced MaxRuntimeExceeded
+# before the second attempt finished. 6h gives one full ~3h run plus
+# a complete restart, with headroom for a second spot interruption.
+DISTILL_MAX_RUN = 21600                       # 6 hr cumulative (spot-resilient)
+DISTILL_MAX_WAIT = 25200                      # max_run + 1hr (CLAUDE.md 1.5)
 
 
 # ---------------------------------------------------------------------------
