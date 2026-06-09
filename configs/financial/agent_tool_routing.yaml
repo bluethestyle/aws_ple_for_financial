@@ -1,0 +1,37 @@
+# 추론 에이전트 도구 라우팅 (BedrockDialogSession 동적 선택용)
+# ─────────────────────────────────────────────────────────────
+# 온프렘 sync(2026-06-09). 스키마=agent_tools.yaml, 구현=tool_wrappers.py.
+# 이 파일은 "어떤 문제(focus)에 어떤 도구를 LLM에 노출할지"만 관리.
+#   - focus_keys 미지정 → curated(정적 폴백)
+#   - focus_keys 지정    → common + tool_map[focus] 합집합 → availability 필터
+# 미존재 시 bedrock_dialog 내장 기본값으로 폴백. tool_map 도구명은 AWS agent_tools.yaml 에
+# 실제 존재하는 것으로 조정할 것(없는 도구는 get_bedrock_tools 가 자동 제외).
+
+curated:
+  ops:
+    - read_feature_stats
+    - read_pipeline_state
+    - detect_drift
+  audit:
+    - run_regulatory_checks
+    - trace_feature_lineage
+    - read_feature_stats
+
+tool_map:
+  CP1: [read_ingestion_manifest]
+  CP2: [read_feature_stats, detect_drift]
+  CP3: [read_experiment_metrics]
+  CP4: [read_distillation_fidelity]
+  CP5: [check_served_artifact]
+  CP6: [read_recommendation_output, check_served_artifact]
+  herding:    [detect_herding]
+  fairness:   [evaluate_fairness]
+  regulatory: [run_regulatory_checks]
+  lineage:    [trace_feature_lineage]
+
+common:
+  ops:   [read_feature_stats, read_pipeline_state]
+  audit: [read_feature_stats]
+
+# 가용성 필터: 도구 → 데이터 소스 env. AWS 는 S3 경로 env 로 조정.
+availability: {}

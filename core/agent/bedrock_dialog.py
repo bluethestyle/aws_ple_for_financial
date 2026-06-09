@@ -31,6 +31,66 @@ logger = logging.getLogger(__name__)
 __all__ = ["BedrockDialogSession", "DialogTurn"]
 
 
+# ── 도구 동적 선택 라우팅 (on-prem sync 2026-06-09) ──
+# focus(체크포인트/관점) → 관련 도구만 LLM 에 노출 → 도구 과부하 방지(소형/대형 모두).
+# agent_tool_routing.yaml 로 관리, 미존재시 내장 폴백.
+_ROUTING_DEFAULT = {
+    "curated": {"ops": ["read_feature_stats", "read_pipeline_state", "detect_drift"],
+                "audit": ["run_regulatory_checks", "trace_feature_lineage", "read_feature_stats"]},
+    "tool_map": {
+        "CP1": ["read_ingestion_manifest"], "CP2": ["read_feature_stats", "detect_drift"],
+        "CP3": ["read_experiment_metrics"], "CP4": ["read_distillation_fidelity"],
+        "CP5": ["check_served_artifact"], "CP6": ["read_recommendation_output", "check_served_artifact"],
+        "herding": ["detect_herding"], "fairness": ["evaluate_fairness"],
+        "regulatory": ["run_regulatory_checks"], "lineage": ["trace_feature_lineage"],
+    },
+    "common": {"ops": ["read_feature_stats", "read_pipeline_state"], "audit": ["read_feature_stats"]},
+    "availability": {},
+}
+
+
+def _load_routing() -> Dict[str, Any]:
+    import os
+    from pathlib import Path
+    path = os.getenv("AGENT_TOOL_ROUTING") or str(
+        Path(__file__).resolve().parents[2] / "configs" / "financial" / "agent_tool_routing.yaml")
+    try:
+        if Path(path).exists():
+            import yaml
+            cfg = yaml.safe_load(open(path, encoding="utf-8")) or {}
+            return {k: cfg.get(k, _ROUTING_DEFAULT[k]) for k in _ROUTING_DEFAULT}
+    except Exception as e:
+        logger.warning("tool routing config 로드 실패(%s) — 내장 기본값", e)
+    return _ROUTING_DEFAULT
+
+
+_ROUTING = _load_routing()
+
+
+def _tool_available(name: str) -> bool:
+    import os
+    from pathlib import Path
+    env_var = _ROUTING["availability"].get(name)
+    if not env_var:
+        return True
+    p = os.getenv(env_var, "")
+    return bool(p) and Path(p).exists()
+
+
+def _select_tools(agent_type: str, focus_keys: Optional[List[str]]) -> Optional[List[str]]:
+    """focus_keys → 동적 도구명 목록. None 이면 전체(필터 안함)."""
+    if not focus_keys:
+        cur = _ROUTING["curated"].get(agent_type)
+        return [t for t in cur if _tool_available(t)] if cur else None
+    tools, seen, out = list(_ROUTING["common"].get(agent_type, [])), set(), []
+    for k in focus_keys:
+        tools += _ROUTING["tool_map"].get(k, [])
+    for t in tools:
+        if t not in seen and _tool_available(t):
+            seen.add(t); out.append(t)
+    return out
+
+
 @dataclass
 class DialogTurn:
     """A single turn in the dialog."""
@@ -62,6 +122,7 @@ class BedrockDialogSession:
         system_prompt: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         recall_memory: Optional[Any] = None,  # DialogRecallMemory instance
+        focus_keys: Optional[List[str]] = None,  # 동적 도구 선택(체크포인트/관점)
     ) -> None:
         self._registry = registry
         self._agent_type = agent_type
@@ -70,6 +131,8 @@ class BedrockDialogSession:
         self._config = config or {}
         self._history: List[DialogTurn] = []
         self._recall_memory = recall_memory
+        # focus_keys → 관련 도구만 노출(None 이면 전체). on-prem sync.
+        self._allowed_tools = _select_tools(agent_type, focus_keys)
 
         self._system_prompt = system_prompt or self._default_system_prompt()
         self._client = None  # lazy init
@@ -228,11 +291,32 @@ class BedrockDialogSession:
         return messages
 
     def _build_tool_config(self) -> Dict[str, Any]:
-        """Build Bedrock tool configuration from ToolRegistry."""
+        """Build Bedrock tool configuration from ToolRegistry.
+        focus_keys 지정시 _allowed_tools 로 동적 필터(과부하 방지). on-prem sync."""
         tools = self._registry.get_bedrock_tools(agent=self._agent_type)
+        if self._allowed_tools is not None:
+            allowed = set(self._allowed_tools)
+            tools = [t for t in tools if t.get("toolSpec", {}).get("name") in allowed]
         if not tools:
             return {}
         return {"tools": tools}
+
+    def triage(self, finding: str) -> Dict[str, Any]:
+        """WARNING(경고) 트리아지 — 도구로 관련성·미래영향 확인 후 분류(on-prem sync).
+        IGNORE(무관→로그정리) / MONITOR(미미·관찰) / FIX_NOW(증가·누적→즉시수정)."""
+        import re
+        prompt = (
+            f"다음은 경고(WARNING)입니다. 도구로 현재 파이프라인과의 관련성과 미래 영향 가능성을 "
+            f"직접 확인한 뒤 분류하세요.\n\n[경고]\n{finding}\n\n"
+            "- IGNORE: 현재 파이프라인과 무관 → 추후 워닝 로그 정리 권장\n"
+            "- MONITOR: 현재 미미하고 악화 징후도 없음 → 관찰만\n"
+            "- FIX_NOW: 증가/누적 추세이거나 방치시 추후 큰 영향 가능 → 즉시 수정 신호\n"
+            "  (증가추세/누적 신호가 있으면 임계값 미만이어도 FIX_NOW 적극 고려)\n"
+            "조사 후 마지막 줄에 '[분류] IGNORE|MONITOR|FIX_NOW' 형식으로 결론을 쓰고 [근거][권고]도 작성하세요."
+        )
+        text = self.chat(prompt)
+        m = re.search(r"\[분류\]\s*(IGNORE|MONITOR|FIX_NOW)", text)
+        return {"reasoning": text, "triage": m.group(1) if m else "MONITOR"}
 
     def _call_bedrock(self, messages: List[Dict], tool_config: Dict, system_override: Optional[str] = None) -> Dict:
         """Call Bedrock converse API."""

@@ -165,6 +165,10 @@ class ToolRegistry:
                 return {"status": "denied", "tool": name}
 
         # Execute: via tracer if available, else direct
+        # LLM tool-calling 이 스키마대로 보낸 인자가 실제 시그니처와 달라 TypeError 나는 것 방지
+        # (on-prem sync 2026-06-09). **kwargs 받는 함수는 그대로 통과.
+        params = self._filter_params(tool.func, params)
+
         if self._tracer:
             return self._tracer.trace(name, params, tool.func)
         else:
@@ -174,6 +178,21 @@ class ToolRegistry:
             except Exception as e:
                 logger.error("Tool '%s' execution failed: %s", name, e, exc_info=True)
                 raise
+
+    @staticmethod
+    def _filter_params(func, params):
+        """함수가 받지 않는 파라미터 제거 (스키마/LLM 파라미터 불일치에 강건)."""
+        if not params:
+            return params or {}
+        try:
+            import inspect
+            sig = inspect.signature(func)
+            if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+                return params
+            allowed = set(sig.parameters.keys())
+            return {k: v for k, v in params.items() if k in allowed}
+        except (ValueError, TypeError):
+            return params
 
     def get_tools(self, agent: Optional[str] = None, category: Optional[str] = None) -> List[ToolDefinition]:
         """Get tool definitions filtered by agent and/or category."""
