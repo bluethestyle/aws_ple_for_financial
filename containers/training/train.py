@@ -1865,34 +1865,65 @@ def main() -> None:
     _phase_map = {"single": "phase1", "1": "phase1", "2": "phase2", "full": "full"}
     trainer_phase = _phase_map.get(phase, "full")
 
-    # Build TrainingConfig
-    # All scheduler/optimizer params read from hp first, then YAML config, then safe defaults.
-    _warmup_epochs = int(hp.get("warmup_epochs", max(3, epochs // 3)))
-    _weight_decay = float(hp.get("weight_decay", 0.01))
-    _clip_norm = float(hp.get("clip_norm", 5.0))
-    _cosine_t0 = int(hp.get("cosine_t0", max(10, epochs // 3)))
-    _cosine_t_mult = int(hp.get("cosine_t_mult", 2))
-    _phase2_warmup_epochs = int(hp.get("phase2_warmup_epochs", 2))
-    _phase2_cosine_t0 = int(hp.get("phase2_cosine_t0", max(6, epochs // 5)))
+    # Build TrainingConfig.
+    #
+    # The tunable scheduler/optimizer/gradient params follow a 3-tier
+    # priority:  hp  >  YAML  >  code default. The previous code collapsed
+    # this to two tiers — it pre-resolved each value as
+    # ``hp.get(key, <code default>)`` and then merged that over YAML, so when
+    # hp omitted a key the *code default* (e.g. warmup=max(3, epochs//3))
+    # overrode the YAML value, making YAML's training block unreachable.
+    #
+    # Fix: resolve each tunable section as ``default <- YAML <- hp`` BEFORE it
+    # enters training_cfg_dict. The downstream per-section merge over YAML is
+    # then idempotent for these sections, while amp/early_stopping/checkpoint/
+    # phase keep their original "code/CLI wins" behaviour unchanged.
+    import copy
+    yaml_training = config.get("training", {})
+    _yt = copy.deepcopy(yaml_training) if yaml_training else {}
+
+    def _resolve(section_defaults, yaml_section, hp_keys, cast):
+        resolved = dict(section_defaults)
+        if isinstance(yaml_section, dict):
+            resolved.update(yaml_section)
+        for k in hp_keys:
+            if k in hp and hp[k] is not None:
+                resolved[k] = cast(hp[k])
+        return resolved
+
+    _scheduler = _resolve(
+        {"name": "cosine",
+         "warmup_epochs": max(3, epochs // 3),
+         "cosine_t0": max(10, epochs // 3),
+         "cosine_t_mult": 2,
+         "phase2_warmup_epochs": 2,
+         "phase2_cosine_t0": max(6, epochs // 5)},
+        _yt.get("scheduler"),
+        ["warmup_epochs", "cosine_t0", "cosine_t_mult",
+         "phase2_warmup_epochs", "phase2_cosine_t0"], int)
+    _optimizer = _resolve(
+        {"name": "adamw", "weight_decay": 0.01},
+        _yt.get("optimizer"), ["weight_decay"], float)
+    _optimizer["learning_rate"] = lr  # operational (CLI/HP-resolved upstream)
+    _gradient = _resolve(
+        {"clip_norm": 5.0}, _yt.get("gradient"), ["clip_norm"], float)
+    _gradient["accumulation_steps"] = grad_accum_steps  # operational
+
     logger.info(
-        "Scheduler/optimizer HPs: warmup=%d, cosine_t0=%d, cosine_t_mult=%d, "
-        "phase2_warmup=%d, phase2_cosine_t0=%d, weight_decay=%.4f, clip_norm=%.1f",
-        _warmup_epochs, _cosine_t0, _cosine_t_mult,
-        _phase2_warmup_epochs, _phase2_cosine_t0, _weight_decay, _clip_norm,
+        "Scheduler/optimizer resolved (hp>YAML>default): warmup=%s, "
+        "cosine_t0=%s, cosine_t_mult=%s, phase2_warmup=%s, phase2_cosine_t0=%s, "
+        "weight_decay=%s, clip_norm=%s, lr=%s",
+        _scheduler.get("warmup_epochs"), _scheduler.get("cosine_t0"),
+        _scheduler.get("cosine_t_mult"), _scheduler.get("phase2_warmup_epochs"),
+        _scheduler.get("phase2_cosine_t0"), _optimizer.get("weight_decay"),
+        _gradient.get("clip_norm"), lr,
     )
     training_cfg_dict: Dict[str, Any] = {
         "batch_size": batch_size,
-        "optimizer": {"name": "adamw", "learning_rate": lr, "weight_decay": _weight_decay},
-        "scheduler": {
-            "name": "cosine",
-            "warmup_epochs": _warmup_epochs,
-            "cosine_t0": _cosine_t0,
-            "cosine_t_mult": _cosine_t_mult,
-            "phase2_warmup_epochs": _phase2_warmup_epochs,
-            "phase2_cosine_t0": _phase2_cosine_t0,
-        },
+        "optimizer": _optimizer,
+        "scheduler": _scheduler,
         "amp": {"enabled": use_amp},
-        "gradient": {"clip_norm": _clip_norm, "accumulation_steps": grad_accum_steps},
+        "gradient": _gradient,
         "early_stopping": {"enabled": True, "patience": patience, "auc_decline_patience": patience},
         "checkpoint": {"dir": checkpoint_dir, "save_every_n_epochs": 1, "max_to_keep": 3},
         "phase1": {"epochs": epochs if trainer_phase in ("phase1", "full") else 0},
@@ -1900,19 +1931,17 @@ def main() -> None:
         "experiment_name": task_name,
     }
 
-    # Merge YAML training block if present
-    # HP (SM_HPS) values in training_cfg_dict take priority over YAML defaults.
-    yaml_training = config.get("training", {})
+    # Merge YAML training block if present. training_cfg_dict values take
+    # priority per-section; the tunable sections above already incorporated
+    # YAML (default<-YAML<-hp), so this is idempotent for them while
+    # amp/early_stopping/checkpoint/phase keep "code/CLI wins" as before.
     if yaml_training:
-        import copy
         merged = copy.deepcopy(yaml_training)
         merged.setdefault("optimizer", {}).update(training_cfg_dict["optimizer"])
         merged.setdefault("gradient", {}).update(training_cfg_dict["gradient"])
         merged.setdefault("amp", {}).update(training_cfg_dict["amp"])
         merged.setdefault("early_stopping", {}).update(training_cfg_dict["early_stopping"])
         merged.setdefault("checkpoint", {}).update(training_cfg_dict["checkpoint"])
-        # CRITICAL: scheduler must be merged too — otherwise YAML's warmup_epochs
-        # silently overrides the HP value. This was the source of the warmup=3 bug.
         merged.setdefault("scheduler", {}).update(training_cfg_dict["scheduler"])
         merged["batch_size"] = batch_size
         merged["experiment_name"] = task_name
