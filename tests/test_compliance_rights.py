@@ -423,6 +423,95 @@ class TestOptOutPredictIntegration:
         assert not decision.is_opted_out
 
 
+class TestProfilingRecompute:
+    """신정법 §36의2 재산출 요구 (정정 → 재산출)."""
+
+    def test_recompute_request_links_correction(self, store):
+        wf = ProfilingWorkflow(store=store)
+        corr = wf.request_correction(
+            user_id="u1", field_name="income", new_value=50000,
+        )
+        rc = wf.request_recompute(
+            user_id="u1", correction_request_id=corr.request_id,
+        )
+        assert rc.request_type == RequestType.RECOMPUTE
+        assert rc.metadata["correction_request_id"] == corr.request_id
+
+    def test_fulfill_recompute_runs_provider(self, store):
+        refreshed = {"recommendations": ["A", "B"], "score": 0.7}
+        wf = ProfilingWorkflow(
+            store=store, recompute_provider=lambda uid: refreshed,
+        )
+        rc = wf.request_recompute(user_id="u1")
+        result = wf.fulfill_recompute(rc.request_id, notes="post-correction")
+        assert result == refreshed
+        updated = store.get_request(rc.request_id)
+        assert updated.status == RequestStatus.PROCESSED
+
+    def test_fulfill_recompute_without_provider_closes_not_applied(self, store):
+        wf = ProfilingWorkflow(store=store)
+        rc = wf.request_recompute(user_id="u1")
+        result = wf.fulfill_recompute(rc.request_id)
+        assert result == {}
+        updated = store.get_request(rc.request_id)
+        assert updated.status == RequestStatus.PROCESSED
+        processed = store.query_events(
+            event_type=EventType.REQUEST_PROCESSED, user_id="u1",
+        )
+        assert any(
+            e.payload.get("recomputed") is False for e in processed
+        )
+
+    def test_recompute_appears_in_pending(self, store):
+        wf = ProfilingWorkflow(store=store)
+        wf.request_recompute(user_id="u1")
+        pending = wf.list_pending_for_user("u1")
+        assert [r.request_type for r in pending] == [RequestType.RECOMPUTE]
+
+
+class TestCreditExplanation:
+    """신정법 §36의2 전용 설명요소 (PIPA §37의2 일반 설명과 분기)."""
+
+    def test_build_elements_structures_disclosure(self, store):
+        els = OptOutManager.build_credit_explanation_elements(
+            user_id="u1",
+            assessment_performed=True,
+            main_criteria=["소비패턴", "연령대"],
+            base_information=[{"feature": "spend_3m", "source": "거래원장"}],
+            assessment_result="적합",
+            recommendation_id="rec-9",
+        )
+        d = els.to_dict()
+        assert d["assessment_performed"] is True
+        assert d["main_criteria"] == ["소비패턴", "연령대"]
+        assert d["base_information"][0]["source"] == "거래원장"
+        assert d["legal_basis"] == "신용정보법 §36의2"
+
+    def test_request_credit_explanation_carries_elements(self, store):
+        mgr = OptOutManager(store=store)
+        els = mgr.build_credit_explanation_elements(
+            user_id="u1", assessment_performed=True,
+            main_criteria=["소비패턴"],
+        )
+        req = mgr.request_credit_explanation("u1", "rec-9", elements=els)
+        assert req.request_type == RequestType.CREDIT_EXPLANATION
+        assert "credit_explanation_elements" in req.metadata
+
+    def test_mark_provided_closes_credit_explanation(self, store):
+        mgr = OptOutManager(store=store)
+        req = mgr.request_credit_explanation("u1", "rec-9")
+        mgr.mark_explanation_provided(req.request_id, "구조화 설명 제공")
+        updated = store.get_request(req.request_id)
+        assert updated.status == RequestStatus.PROCESSED
+        processed = store.query_events(
+            event_type=EventType.REQUEST_PROCESSED, user_id="u1",
+        )
+        assert any(
+            e.payload.get("sla_name") == "credit_explanation"
+            for e in processed
+        )
+
+
 class TestValidConstants:
     def test_valid_fallbacks_stable(self):
         assert VALID_FALLBACKS == ("rule_based", "human_review", "disable")

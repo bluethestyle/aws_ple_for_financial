@@ -11,7 +11,7 @@
 - ✅ **Phase 2 Should 15/15 완료** — S1~S15 전체 완료.
 - ✅ **Phase 3 Could 4/5 완료** — C1, C3, C4, C5. C2는 Won't (AWS SageMaker 네이티브).
 - ✅ **Phase 0 schema audit + Mamba precompute (2026-04-26~28)** — Phase 0 invariant 위반 6종 차단 + Mamba GPU precompute 를 별도 SageMaker 잡 (custom ECR) 으로 분리. 상세 §8.
-- 누적 테스트: **620/620 PASS** (PR #1~#3 + §1.7 feature_group_ranges rebuild regression 14건 반영, commit ec8587b 2026-04-21), 하드코딩 0건 (`ap-northeast-2` repo-wide 0 hits).
+- 누적 테스트: **639/639 PASS** (2026-06-10 갱신: PR #1~#3 + §1.7 feature_group_ranges rebuild regression 14건 + rights 신규분 + test_normalizer output_columns 계약 정합 수정 반영). 하드코딩: 2026-06-10 감사 시 `core/agent/pipeline_reports.py` `_BedrockProvider`에 `ap-northeast-2`/model_id 잔존 확인 → config 주입으로 정리 예정(P3).
 - **§1.7 Group Range Rebuild (commit ec8587b, 2026-04-21)**: 3-stage 정규화가 `_log` 접미사 컬럼을 append 한 뒤 `feature_group_ranges` 를 stale 상태로 남겨 FeatureRouter 가 잘못된 컬럼을 슬라이싱하던 silent bug 를 차단. `core/pipeline/runner.py` 에 longest-contiguous-block 헬퍼 추가 + 14 regression 테스트.
 - **Tracking Backend Flip (commit 9426162, 2026-04-21)**: `configs/pipeline.yaml::compliance.tracking.backend` 를 `in_memory → sagemaker` 전환. IAM 도달성 사전 검증 완료 (계정 795833413857, training-job 역할이 Experiments 권한 보유).
 - **PromotionGate Live Wiring (PR #2/#3)**: `core/compliance/metadata_aggregator.py` (신규) 로 lineage / fairness / review queue / model registry / LLM config / static overrides 6 source 를 composite 하여 차원 점수 공급. `GateVerdict.details` 가 per-dimension 유도 트레일을 `AuditLogger.log_model_promotion` 의 HMAC + hash-chain 레코드에 임베드하고, 동시에 SageMakerComplianceTracker 에 `promotion_gate_verdict` artifact 로 기록. 이로써 `compliance.promotion_gate.enabled: true` 가 pipeline.yaml 기본값으로 전환 (conservative LIMITED collapse 리스크 해소).
@@ -54,7 +54,7 @@ AWS 로 이식할 때는 **AWS 의 config-중심 / 모듈화 패턴** 에 맞게
 | **M3** | Marketing Consent (5채널, config-driven) | ✅ 완료 | `core/compliance/consent_manager.py` (`ConsentConfig`) | 개보법 §22, 정통망 §50 |
 | **M4** | AI Decision Opt-out + explanation | ✅ 완료 | `core/compliance/rights/opt_out.py` | 개보법 §37의2, AI기본법 §31 |
 | **M5** | Profiling Rights Workflow | ✅ 완료 | `core/compliance/rights/profiling.py` | 신정법 §36의2 |
-| **M6** | Explanation SLA Tracker (10-일) | ✅ 완료 | `core/compliance/rights/explanation_sla.py` | 개보법 시행령 §44의2~4 |
+| **M6** | Explanation SLA Tracker (내부 10일/법정 30일) | ✅ 완료 | `core/compliance/rights/explanation_sla.py` | 개보법 §37의2 / 시행령 §44의3⑤ (30일) |
 | **M7** | Korean FRIA Assessor (7-차원) | ✅ 완료 | `core/compliance/fria_assessment.py` | AI기본법 §35 + 시행령 §27 |
 | **M8** | 36-항목 Compliance Registry | ✅ 완료 | `core/compliance/compliance_registry.py` | 금감원 AI RMF + 개보법 + 신정법 |
 | **M9** | AI Risk Classifier (6-차원) | ✅ 완료 | `core/compliance/ai_risk_classifier.py` | 금감원 AI RMF |

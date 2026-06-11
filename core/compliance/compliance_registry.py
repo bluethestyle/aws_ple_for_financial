@@ -281,7 +281,7 @@ GAP_GROUP: List[ComplianceItem] = [
     ComplianceItem(
         item_id="GAP-06", group="GAP",
         description="Explanation SLA Tracker (M6)",
-        legal_basis=["개보법 시행령 §44의2~4"],
+        legal_basis=["개보법 §37의2 / 시행령 §44의2 (응답기한 §44의3⑤, 30일)"],
         check_type="module_exists",
         check_params={"module": "core.compliance.rights.explanation_sla"},
         severity="high", owner="compliance-eng",

@@ -3,10 +3,13 @@ ProfilingWorkflow - profiling rights (access / correction / deletion).
 
 Legal basis: 신정법 §36의2, 개보법 §35~37.
 
-Three rights with a shared lifecycle:
+Four rights with a shared lifecycle (신정법 §36의2 자동화평가 대응권):
 - access     : disclose what profiling data / features were used
 - correction : update profiling data (field + new value)
 - deletion   : erase profiling data (scope = full | profiling_only)
+- recompute  : re-run the automated assessment/recommendation with the
+               corrected inputs and refresh the result + reasons. Follows a
+               correction; closes the loop on §36의2 (정정 → 재산출).
 
 Each request has a 30-day SLA by default (신정법 §36의2 시행령).
 """
@@ -78,20 +81,26 @@ class ProfilingAccessResult:
 
 
 ProfileProviderFn = Callable[[str], Dict[str, Any]]
+# Re-runs the automated assessment/recommendation for a user with the corrected
+# inputs and returns the refreshed result (recommendations, reasons, score, ...).
+# Injected by the caller so this workflow stays decoupled from the serving path.
+RecomputeFn = Callable[[str], Dict[str, Any]]
 
 
 class ProfilingWorkflow:
-    """Profiling access / correction / deletion workflow (M5)."""
+    """Profiling access / correction / deletion / recompute workflow (M5)."""
 
     def __init__(
         self,
         store: ComplianceStore,
         config: Optional[ProfilingConfig] = None,
         profile_provider: Optional[ProfileProviderFn] = None,
+        recompute_provider: Optional[RecomputeFn] = None,
     ) -> None:
         self._store = store
         self._cfg = config or ProfilingConfig()
         self._provider = profile_provider
+        self._recompute = recompute_provider
 
     # ------------------------------------------------------------------
     # Request submission
@@ -128,6 +137,27 @@ class ProfilingWorkflow:
                 "new_value": new_value,
                 "reason": reason,
                 "legal_basis": "개보법 §36",
+            },
+        )
+
+    def request_recompute(
+        self,
+        user_id: str,
+        correction_request_id: Optional[str] = None,
+        reason: str = "",
+    ) -> ComplianceRequest:
+        """Open a recompute request (re-run assessment with corrected inputs).
+
+        Typically filed after a PROFILING_CORRECTION; ``correction_request_id``
+        links the two for the audit trail.
+        """
+        return self._open_request(
+            user_id=user_id,
+            request_type=RequestType.RECOMPUTE,
+            metadata={
+                "correction_request_id": correction_request_id,
+                "reason": reason,
+                "legal_basis": "신정법 §36의2 (자동화평가 재산출 요구)",
             },
         )
 
@@ -209,6 +239,48 @@ class ProfilingWorkflow:
             "notes": notes,
         })
 
+    def fulfill_recompute(
+        self,
+        request_id: str,
+        notes: str = "",
+    ) -> Dict[str, Any]:
+        """Re-run the assessment via ``recompute_provider`` and close the request.
+
+        Returns the refreshed result dict. If no provider is wired, closes the
+        request as not-applied and returns an empty dict (logged), mirroring
+        ``fulfill_access``'s missing-provider behaviour.
+        """
+        req = self._require_request(request_id, RequestType.RECOMPUTE)
+
+        if self._recompute is None:
+            logger.warning(
+                "ProfilingWorkflow has no recompute_provider; closing "
+                "request_id=%s without re-running", request_id,
+            )
+            self._close_request(req, utcnow(), extra_payload={
+                "recomputed": False, "reason": "no_recompute_provider",
+                "notes": notes,
+            })
+            return {}
+
+        try:
+            result = self._recompute(req.user_id) or {}
+            recomputed = True
+        except Exception:
+            logger.exception(
+                "recompute_provider failed for user_id=%s request_id=%s",
+                req.user_id, request_id,
+            )
+            result = {}
+            recomputed = False
+
+        self._close_request(req, utcnow(), extra_payload={
+            "recomputed": recomputed,
+            "result_keys": sorted(result.keys()),
+            "notes": notes,
+        })
+        return result
+
     def fulfill_deletion(
         self,
         request_id: str,
@@ -235,6 +307,7 @@ class ProfilingWorkflow:
             RequestType.PROFILING_ACCESS,
             RequestType.PROFILING_CORRECTION,
             RequestType.PROFILING_DELETION,
+            RequestType.RECOMPUTE,
         )
         out: List[ComplianceRequest] = []
         for rtype in owned:
@@ -252,6 +325,7 @@ class ProfilingWorkflow:
             RequestType.PROFILING_ACCESS,
             RequestType.PROFILING_CORRECTION,
             RequestType.PROFILING_DELETION,
+            RequestType.RECOMPUTE,
         )
         out: List[ComplianceRequest] = []
         for rtype in owned:

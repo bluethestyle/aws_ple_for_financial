@@ -1,7 +1,13 @@
 """
-ExplanationSLATracker - SLATracker specialization for 10-day explanation SLA.
+ExplanationSLATracker - SLATracker specialization for explanation requests.
 
-Legal basis: 개보법 시행령 §44의2~4 (설명요구권 답변 10일 이내).
+Legal basis
+-----------
+- 개인정보 보호법 §37의2 + 시행령 §44의2 (자동화된 결정에 대한 거부·설명
+  요구의 방법 및 절차).
+- 응답(처리) 법정 기한: 시행령 §44의3⑤ — 요구를 받은 날부터 30일 이내.
+  본 트래커는 이보다 엄격한 내부 SLA(기본 10일)를 적용한다(과준수, config로
+  조정 가능). 10일은 법정 기한이 아니라 내부 목표치이며, 법정 한도는 30일이다.
 
 This is a thin specialization that wires the generic SLATracker to the
 explanation request type and supplies a monthly compliance report helper.
@@ -25,8 +31,14 @@ logger = logging.getLogger(__name__)
 
 
 class ExplanationSLATracker(SLATracker):
-    """Pre-wired SLATracker for explanation requests (10-day SLA)."""
+    """Pre-wired SLATracker for explanation requests.
 
+    Internal SLA defaults to 10 days — stricter than the 30-day legal maximum
+    (개인정보 보호법 시행령 §44의3⑤). The 10-day value is an internal target,
+    not the statutory deadline.
+    """
+
+    # 내부 SLA 기본 10일 = 법정 30일(시행령 §44의3⑤)보다 엄격한 과준수 목표치.
     DEFAULT_SLA_DAYS = 10
     DEFAULT_WARNING_DAYS = 2
 

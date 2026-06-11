@@ -116,7 +116,7 @@
 | **Kill Switch** | `src/recommendation/kill_switch.py` | 운영 긴급 대응 | **High** |
 | **Dynamic Item Universe Loader** | `src/recommendation/dynamic_item_universe_loader.py` | G3 캠페인 / G6 상품 실시간 로딩 | **High** |
 | **Marketing Consent 4-모듈** | `marketing_consent.py` + `ai_decision_opt_out.py` + `profiling_rights_manager.py` + `explanation_sla_tracker.py` | 개보법 §22·§37의2, 신정법 §36의2, 정통망 §50, AI기본법 §31·§34 | **High** (규제) |
-| **Explanation SLA Tracker** | `src/recommendation/explanation_sla_tracker.py` | 개보법 시행령 §44의2~4 (10일 SLA) | **High** (규제) |
+| **Explanation SLA Tracker** | `src/recommendation/explanation_sla_tracker.py` | 개보법 §37의2 / 시행령 §44의3⑤ (법정 30일, 내부 SLA 10일) | **High** (규제) |
 | **Constraint 금소법 §17 매핑** | `checkcard_constraints.py` | 금융소비자보호법 적합성 원칙 | Medium |
 | **L2a Safety Gate 3-layer (파싱→Rule→품질)** | `src/grounding/l2a_rewrite_engine.py` | 할루시네이션 방어 | Medium |
 | **Audit Archive 확장 컬럼** (thinking_trace, hallucination_flags, tools_used) | `src/grounding/recommendation_audit_archiver.py` | 민원 대응 AI 판단 과정 재현 | **High** |
@@ -343,14 +343,16 @@ C2 Airflow DAG 는 AWS SageMaker managed orchestration 로 대체 (이식 불필
 - `tests/test_promotion_gate_tracker.py` — 194줄
 - `tests/test_metadata_archive_sources.py` — 321줄
 
-**누적 테스트 (2026-04-22 최종, PR #1~#3 + §1.7 group-range rebuild 반영)**: 447 + 34 (audit+tracker+archive) + 75 (metadata aggregator + live wiring) + 50 (기타 regression) + 14 (feature_group_ranges rebuild regression) = **620/620 PASS**.
+**누적 테스트 (2026-06-10 갱신, PR #1~#3 + §1.7 group-range rebuild + rights 신규분 + normalizer 계약 수정 반영)**: 447 + 34 (audit+tracker+archive) + 75 (metadata aggregator + live wiring) + 50 (기타 regression) + 14 (feature_group_ranges rebuild regression) + rights/normalizer 증가분 = **639/639 PASS**.
 
 **운영 전환 체크리스트** (`compliance.promotion_gate.enabled: true` 를 프로덕션 활성화하기 전):
-1. ✅ **완료** — `monitoring.fairness.archive_parquet_path` 가 S3 경로 `s3://aiops-ple-financial/compliance/fairness/metrics.parquet` 로 설정됨 (commit 51149f3, 2026-04-21). `containers/lambda/fairness_evaluation.py` 가 매 평가마다 `monitor.archive_metrics()` 를 호출하여 아카이브를 실제로 채움. `compliance.promotion_gate.providers.aggregator.sources.fairness_archive_parquet_path` 도 동일 경로를 가리키도록 wire 되어, `fairness_risk` 차원이 실증거를 읽고 더 이상 heuristic 0.5 로 silent collapse 하지 않는다.
+1. ✅ **완료 (2026-06-10 실효화)** — `monitoring.fairness.archive_parquet_path` 가 S3 경로로 설정됨 (commit 51149f3, 2026-04-21). **단, 쓰기(`fairness_monitor._flush_parquet`)·읽기(`build_fairness_archive_source`)가 `pathlib.Path` 기반이라 `s3://` URI 를 깨뜨려 실제로는 항상 0.5 fallback 이었음** (2026-06-10 감사 확인). `core/monitoring/parquet_io.py` (pyarrow.fs 기반 s3-aware helper) 로 양쪽을 교체하여 비로소 `fairness_risk` 차원이 S3 아카이브를 실제로 읽는다. 드리프트(S8)도 동일 helper 로 교체 + `monitoring.drift.archive_parquet_path` 추가. 회귀: `tests/test_parquet_io.py`.
 2. ✅ lineage YAML (`configs/financial/feature_groups.yaml`) 존재 확인. 피처 스키마 최신화 여부는 주기적 점검 필요.
 3. ✅ **완료** — `compliance.tracking.backend: sagemaker` 가 `configs/pipeline.yaml` 배포 기본값 (commit 9426162, 2026-04-21). IAM 도달성 사전 검증: 계정 795833413857 에서 `list_experiments` 성공, 미생성 experiment 이름에 대한 `describe_experiment` 는 access-denied 가 아닌 `ResourceNotFound` 반환 → training-job 역할이 필요 Experiments 권한 (CreateExperiment / CreateTrialComponent / DescribeExperiment / ListTrialComponents) 을 이미 보유. `in_memory` backend 는 단위 테스트와 로컬 개발용으로만 유지.
 4. `manual_overrides: {}` 비어있음 — critical model version override 는 선택사항 (heuristic 으로 충분한 경우 불필요).
 5. Dry-run: `--force-promote` 없이 테스트 환경에서 챌린저 1회 제출하여 게이트가 accept/reject 판정을 audit log + SageMaker TrialComponent 양쪽에 남기는지 확인. (SageMaker 비용 발생, 다음 submit_pipeline 실행 시 end-to-end 검증 예정.)
+6. ⏳ **규제 레코드 영속화 backend 전환** (2026-06-10 추가) — `compliance.store.backend` 와 `serving.review.queue_backend` 가 배포 기본값 `in_memory` 이다. 프로덕션에서는 권리요청·동의·심사·FRIA(5년 보존) 레코드가 프로세스 종료와 함께 소실되므로, `dynamodb` 로 전환하고 IAM 도달성을 §5.10-3 과 동일하게 사전 검증해야 한다. 전환 전까지 `in_memory` 가 의도적 기본값임을 `pipeline.yaml` 주석에 명기.
+7. ⏳ **누락 IaC** (2026-06-10 추가, 별도 인프라 트랙) — 다음 프로덕션 리소스의 IaC(CloudFormation/SAM)가 없어 수기 생성에 의존: `ple-kill-switch` / `ple-compliance-requests` / `ple-compliance-events` / `ple-review-queue` DynamoDB 테이블, 감사 버킷의 **버킷 레벨 Object Lock(COMPLIANCE 모드)+버저닝**. 코드 측 fail-safe 는 2026-06-10 적용 완료(킬스위치 `fail_closed`, 감사 `AUDIT_FAIL_CLOSED`, HMAC SSM `/ple/audit/hmac-secret-key` 프로비저닝). 테이블/버킷 프로비저닝 스택은 미작성.
 
 ---
 

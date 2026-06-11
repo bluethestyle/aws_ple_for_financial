@@ -1229,7 +1229,7 @@ AI 기반 교차판매(cross-sell) 추천은 고영향에 해당할 수 있다.
 
 본 논문의 v2 개정에서는 통합된 `ComplianceStore` / `SLATracker` foundation 위에 구축된 확장 규제 모듈 세트를 추가한다. 각 모듈은 #text(stroke: 0pt)[플러그형]이다: `RecommendationService` 는 이들을 선택적 생성자 주입(optional constructor injection)으로 받으며, 주입이 없으면 v1 이전과 동일하게 동작한다. 따라서 핫패스 코드를 건드리지 않고도 환경별로 확장 규제 경로를 활성화할 수 있다.
 
-- *사용자 권리 관리자* (`core/compliance/rights/`). `OptOutManager`, `ProfilingWorkflow`, `ExplanationSLATracker` 3-클래스 조합으로 한국 개인정보보호법 §37의2(opt-out + 설명권), 신용정보법 §36의2(프로파일링 접근 / 정정 / 삭제), 그리고 개인정보 보호법 시행령 §44의2~4 의 10일 응답 기한을 커버한다. 모든 요청은 자동 SLA 마감이 설정된 `ComplianceRequest` 로 영속화되며, 마감을 초과하면 `SLA_BREACH` 이벤트가 발행된다.
+- *사용자 권리 관리자* (`core/compliance/rights/`). `OptOutManager`, `ProfilingWorkflow`, `ExplanationSLATracker` 3-클래스 조합으로 한국 개인정보보호법 §37의2(opt-out + 설명권), 신용정보법 §36의2(프로파일링 접근 / 정정 / 삭제), 그리고 개인정보 보호법 시행령 §44의3⑤의 법정 응답 기한 30일을 커버한다(추적기는 이보다 엄격한 내부 SLA 10일을 적용). 모든 요청은 자동 SLA 마감이 설정된 `ComplianceRequest` 로 영속화되며, 마감을 초과하면 `SLA_BREACH` 이벤트가 발행된다.
 
 - *한국 AI기본법 FRIA* (`core/compliance/fria_assessment.py::KoreanFRIAAssessor`). AI기본법 시행령 §27 에 열거된 7차원 평가(데이터 민감도, 자동화 수준, 영향 범위, 모델 복잡도, 외부 의존성, 공정성 리스크, 설명가능성 갭)를 구현하며 §35③ 에 따라 5년 보관 기간을 강제한다. 감사 리포트에서 법적 근거를 분리 유지하기 위해 EU AI Act 제9조 평가기와 _별도 클래스_ 로 관리한다.
 

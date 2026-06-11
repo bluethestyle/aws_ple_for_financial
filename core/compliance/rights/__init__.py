@@ -8,7 +8,7 @@ User-facing regulatory rights managers, all built on the Sprint 0 foundation
 Modules:
 - opt_out           : AI decision opt-out + explanation request (M4)
 - profiling         : Profiling access / correction / deletion (M5)
-- explanation_sla   : 10-day explanation SLA tracker (M6)
+- explanation_sla   : explanation SLA tracker (M6; internal 10d, legal max 30d)
 
 These are Sprint 1 additions. The legacy modules
 `core.compliance.ai_opt_out` and `core.compliance.profiling_rights`
@@ -21,6 +21,7 @@ from core.compliance.rights.explanation_sla import (
     build_explanation_sla_tracker,
 )
 from core.compliance.rights.opt_out import (
+    CreditExplanationElements,
     OptOutConfig,
     OptOutDecision,
     OptOutManager,
@@ -35,6 +36,7 @@ __all__ = [
     "OptOutConfig",
     "OptOutDecision",
     "OptOutManager",
+    "CreditExplanationElements",
     "ProfilingConfig",
     "ProfilingWorkflow",
     "ProfilingAccessResult",

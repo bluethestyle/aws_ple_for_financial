@@ -11,7 +11,8 @@ ComplianceStore backends defined in core/compliance/store.py.
 
 Legal context
 -------------
-- 개보법 시행령 §44의2~4 (설명요구권 10일 SLA)
+- 개보법 §37의2 + 시행령 §44의2 (자동화 결정 거부·설명 요구의 방법·절차);
+  법정 응답기한은 시행령 §44의3⑤ = 30일 (내부 SLA 10일은 과준수 목표치)
 - AI기본법 §31 (자동화 결정 거부권), §35 (FRIA 5년 보존)
 - 신정법 §36의2 (프로파일링 권리)
 - 금소법 §17 (적합성 원칙) - suitability requests
@@ -59,13 +60,20 @@ class RequestType:
     PROFILING_ACCESS = "profiling_access"
     PROFILING_CORRECTION = "profiling_correction"
     PROFILING_DELETION = "profiling_deletion"
+    # 정정된 기초정보로 자동평가·추천을 재실행하는 재산출 요구
+    # (신정법 §36의2 자동화평가 대응권 4번째 권리). PROFILING_CORRECTION 의 후속.
+    RECOMPUTE = "recompute"
     EXPLANATION = "explanation"
+    # 신정법 §36의2 전용 설명 (자동화평가 실시 여부·주요 기준·기초정보 구조화).
+    # PIPA §37의2 일반 설명(EXPLANATION)과 disclosure 요소가 다르므로 분기.
+    CREDIT_EXPLANATION = "credit_explanation"
 
     VALID = frozenset({
         CONSENT_GRANT, CONSENT_REVOKE,
         OPT_OUT, OPT_OUT_REVOKE,
         PROFILING_ACCESS, PROFILING_CORRECTION, PROFILING_DELETION,
-        EXPLANATION,
+        RECOMPUTE,
+        EXPLANATION, CREDIT_EXPLANATION,
     })
 
 
