@@ -1,4 +1,4 @@
-# Claude Code Agent Guidelines — AIOps PLE Platform
+# Agent Guidelines — AIOps PLE Platform
 
 ## 1. 절대 준수사항 (MUST)
 
@@ -239,6 +239,24 @@ generator_params:
 - **SageMaker는 코드 디버깅에 사용하지 않는다** — 로컬에서 전체 데이터 테스트 통과 후 제출만 한다.
 - 개발 순서: 로컬 테스트 → 전체 데이터 검증 → SageMaker 제출 (ablation 실행)
 - SageMaker 제출 전에 로컬에서 최소 1 epoch end-to-end 성공을 확인한다.
+
+### 5.2 graphify 사용 권장 (2026-05-22)
+프로젝트 내부 개념·구조·연결 관계 질문에는 grep/Read 전에 `graphify` CLI를 우선 활용한다.
+
+- "X가 뭐야 / X 설명해줘" → `graphify explain "X"`
+- "X 관련 코드·문서 어디?" → `graphify query "X 관련 ..."`
+- "X와 Y 관계" → `graphify path "X" "Y"`
+- 광범위 탐색 → `graphify query "..." --budget 3000`
+
+grep/Read는 graphify 결과의 `source_file` 보강 용도로만 사용한다.
+
+산출물: `graphify-out/graph.html` (인터랙티브) / `GRAPH_REPORT.md` (감사 보고서, onboarding 1회 Read OK) / `graph.json` (raw 데이터).
+
+**`graphify-out/graph.json` 직접 Read 금지** — 9.9MB / 수백만 토큰. Grep·json.load로 전체 dump도 같은 이유로 금지.
+
+갱신: `graphify update .` — code-only 변경은 LLM 0 토큰, 문서·논문 변경은 풀 semantic pipeline (수십만~수백만 토큰). post-commit 훅 (`graphify hook install`) 설치 시 코드 변경만 자동 처리, 문서·논문 변경은 수동 update 필요.
+
+일반 코딩·환경·문법 질문 (프로젝트 맥락 아님)은 graphify 우회.
 
 ## 6. 금지사항
 - **SageMaker에서 코드 디버깅 금지** — 제출당 $0.50+ 비용 발생, 로컬에서 먼저 검증

@@ -78,6 +78,14 @@ outreach/
 # Personal resume / CV / LinkedIn exports (local only)
 resume/
 
+# Personal job-search / comp negotiation notes (contain salary figures — local only)
+KB_처우협의_준비노트.txt
+/KB_자기소개서.pdf
+
+# Personal submission working files at repo root (Word/PDF drafts — local only)
+/*.docx
+/garp_article_draft*.md
+
 # Typst compile / auxiliary artifacts
 *.pdf.bak
 typst-package/
@@ -98,6 +106,9 @@ paper/typst/print/
 # Node (if ever added)
 node_modules/
 .codebuild_tmp/
+
+# graphify knowledge graph artifacts
+graphify-out/
 
 # Local artifact / debug dirs (Phase 0 / Mamba / CodeBuild)
 .phase0_artifacts/
