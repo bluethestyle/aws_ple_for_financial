@@ -286,6 +286,40 @@ class TestKillSwitchInMemory:
         assert state.active is False
 
 
+class _FailingTable:
+    """DynamoDB table stub whose get_item always raises (simulates outage)."""
+    def get_item(self, *args, **kwargs):
+        raise RuntimeError("DynamoDB unavailable")
+
+
+class TestKillSwitchFailClosed:
+    """Read-failure direction: fail-open (legacy) vs fail-closed (fail-safe)."""
+
+    def test_read_failure_fail_open_default(self):
+        ks = KillSwitch(use_dynamo=False)
+        ks._table = _FailingTable()  # force the read path to raise
+        state = ks.check()
+        # Legacy default: cannot read → assume inactive (fail-open)
+        assert state.active is False
+
+    def test_read_failure_fail_closed_active(self):
+        ks = KillSwitch(use_dynamo=False, fail_closed=True)
+        ks._table = _FailingTable()
+        state = ks.check()
+        # Fail-safe: cannot confirm the stop is off → treat as ACTIVE
+        assert state.active is True
+        assert state.reason == "kill_switch_read_failed_fail_closed"
+
+    def test_from_config_reads_fail_closed(self):
+        cfg = {
+            "serving": {
+                "kill_switch": {"backend": "in_memory", "fail_closed": True},
+            }
+        }
+        ks = KillSwitch.from_config(pipeline_config=cfg)
+        assert ks._fail_closed is True
+
+
 # ---------------------------------------------------------------------------
 # M10 - DynamicItemUniverseLoader
 # ---------------------------------------------------------------------------
@@ -537,6 +571,47 @@ class TestAuditArchiveColumns:
         assert row["agent_tier"] == 0
         assert row["hallucination_flags"] == "[]"
         assert row["tools_used"] == "[]"
+
+    def test_record_from_result_populates_agent_trace_columns(self):
+        """record_from_result must extract the 5 extended columns (M11).
+
+        Regression: the production caller used record_from_result, which
+        previously never passed thinking_trace / hallucination_flags /
+        tools_used / critique_verdict / agent_tier, so they were always empty.
+        """
+        archiver = RecommendationAuditArchiver(local_path="tmp_audit")
+        archiver.start_batch("batch_trace")
+
+        class _Item:
+            customer_id = 7
+            item_id = "p9"
+            rank = 1
+            score = 0.91
+            score_components = {"ctr": 0.5}
+            metadata = {"task_name": "churn", "segment_id": 3}
+
+        class _Reason:
+            reason_text = "사유"
+            layer = "L2a"
+            confidence = 0.8
+            thinking_trace = "A→B→C"
+            tools_used = ["feature_lookup", "llm_rewrite"]
+            agent_tier = 2
+
+        class _Check:
+            verdict = "pass"
+            hallucination_flags = ["low_entropy"]
+            critique_verdict = "approved"
+
+        archiver.record_from_result(
+            _Item(), reason_result=_Reason(), check_result=_Check(),
+        )
+        row = archiver._buffer[0]
+        assert row["thinking_trace"] == "A→B→C"
+        assert row["agent_tier"] == 2
+        assert row["critique_verdict"] == "approved"
+        assert "low_entropy" in row["hallucination_flags"]
+        assert "feature_lookup" in row["tools_used"]
 
 
 # ---------------------------------------------------------------------------

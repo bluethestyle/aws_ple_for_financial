@@ -1091,16 +1091,45 @@ class RecommendationService:
     def _apply_llm_marker_to_recommendations(
         self, recommendations: List[Dict[str, Any]],
     ) -> None:
-        """M12 MarkerApplier - idempotent AI 생성 표시 on reason_text."""
+        """M12 MarkerApplier — idempotent AI-generation disclosure (AI기본법 §31).
+
+        Handles both shapes a recommendation may carry:
+
+        * legacy ``reason_text`` (a single string), and
+        * the pipeline output ``reasons`` — a list of strings or
+          ``{"text": ...}`` dicts. The previous version only looked at
+          ``reason_text``, which the pipeline never sets, so the marker was a
+          silent no-op (the §31 disclosure never appeared). Here the marker is
+          applied to the first textual reason (primary, shown to the user);
+          if none is textual, it is appended as a standalone reason so the
+          disclosure is always present.
+        """
         applier = self._marker_applier
         if applier is None or not recommendations:
             return
         try:
             for rec in recommendations:
-                text = rec.get("reason_text")
-                if not isinstance(text, str):
+                # Legacy single-field path.
+                if isinstance(rec.get("reason_text"), str):
+                    rec["reason_text"] = applier.apply(rec["reason_text"])
+
+                reasons = rec.get("reasons")
+                if not isinstance(reasons, list) or not reasons:
                     continue
-                rec["reason_text"] = applier.apply(text)
+                marked = False
+                for i, r in enumerate(reasons):
+                    if isinstance(r, str):
+                        reasons[i] = applier.apply(r)
+                        marked = True
+                        break
+                    if isinstance(r, dict) and isinstance(r.get("text"), str):
+                        r["text"] = applier.apply(r["text"])
+                        marked = True
+                        break
+                if not marked:
+                    # No textual reason to annotate — append the marker itself
+                    # so the AI-generation disclosure is still surfaced.
+                    reasons.append(applier.apply(""))
         except Exception:
             logger.debug(
                 "MarkerApplier post-processing failed", exc_info=True,

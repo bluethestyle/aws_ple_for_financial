@@ -169,14 +169,18 @@ else:
     logger.warning("No current URI; using empty current")
     current = {{}}
 
-# Convert to 2D arrays for DriftDetector
+# Pass the fetchnumpy() {{column: 1D array}} dicts straight to DriftDetector.
+# detect_drift accepts a column dict natively — the previous code
+# column_stacked them into a 2D ndarray, which DriftDetector._to_column_dict
+# rejects (TypeError), so the report was never written and the
+# auto_retrain_trigger PSI check was permanently False.
 if baseline and current:
     common_cols = sorted(set(baseline.keys()) & set(current.keys()))
-    baseline_arr = np.column_stack([baseline[c] for c in common_cols]).astype(np.float32)
-    current_arr = np.column_stack([current[c] for c in common_cols]).astype(np.float32)
+    baseline_d = {{c: baseline[c] for c in common_cols}}
+    current_d = {{c: current[c] for c in common_cols}}
 
     detector = DriftDetector()
-    result = detector.detect_drift(baseline_arr, current_arr)
+    result = detector.detect_drift(baseline_d, current_d)
 
     # Build report in the format auto_retrain_trigger expects
     psi_scores = {{}}

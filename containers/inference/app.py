@@ -163,6 +163,21 @@ async def startup_event() -> None:
                 exc_info=True,
             )
 
+    # ---- Sprint 1~4 regulatory serving hooks (M1/M4/M5/M6/M9/M10/M12) ----
+    # Wired through the single hook builder from the pipeline.yaml-shaped
+    # compliance/serving blocks in SERVING_CONFIG. Only built when a
+    # compliance block is present so non-regulatory deployments are unaffected.
+    compliance_hooks: Dict[str, Any] = {}
+    if config_dict.get("compliance"):
+        try:
+            from core.serving.hook_builder import build_compliance_hooks
+            compliance_hooks = build_compliance_hooks(config_dict)
+        except Exception:
+            logger.warning(
+                "Regulatory hook builder failed; serving without Sprint "
+                "1~4 hooks", exc_info=True,
+            )
+
     _service = RecommendationService(
         model=model,
         feature_store=feature_store,
@@ -171,9 +186,13 @@ async def startup_event() -> None:
         ab_manager=ab_manager,
         pipeline=pipeline,
         pipeline_config=config.pipeline_config,
+        **compliance_hooks,
     )
 
-    logger.info("RecommendationService initialised successfully")
+    logger.info(
+        "RecommendationService initialised successfully (regulatory hooks: %s)",
+        sorted(compliance_hooks.keys()) or "none",
+    )
 
 
 def _get_service():

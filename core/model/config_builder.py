@@ -312,6 +312,35 @@ def build_ple_config(
     if cgc_cfg_raw and not cgc_cfg_raw.get("enabled", True):
         ple_config.cgc = CGCConfig(enabled=False)
 
+    # Evidential head + SAE (research-gated; default false). Previously the
+    # model.evidential / model.sae YAML blocks had no mapping here, so
+    # ``enabled: true`` was silently ignored and the PLEConfig defaults
+    # (False) applied. Map them through so the flags actually take effect,
+    # and keep the YAML defaults false (activation needs research validation).
+    evidential_cfg = model_config.get("evidential", {})
+    if evidential_cfg:
+        ple_config.evidential_enabled = bool(evidential_cfg.get("enabled", False))
+        ple_config.evidential_kl_lambda = float(
+            evidential_cfg.get("kl_lambda", ple_config.evidential_kl_lambda)
+        )
+        ple_config.evidential_annealing_epochs = int(
+            evidential_cfg.get(
+                "annealing_epochs", ple_config.evidential_annealing_epochs
+            )
+        )
+    sae_cfg = model_config.get("sae", {})
+    if sae_cfg:
+        ple_config.sae_enabled = bool(sae_cfg.get("enabled", False))
+        ple_config.sae_weight = float(
+            sae_cfg.get("weight", ple_config.sae_weight)
+        )
+        ple_config.sae_expansion_factor = int(
+            sae_cfg.get("expansion_factor", ple_config.sae_expansion_factor)
+        )
+        ple_config.sae_l1_lambda = float(
+            sae_cfg.get("l1_lambda", ple_config.sae_l1_lambda)
+        )
+
     # Per-expert input dimensions
     expert_input_dims_raw = model_config.get("expert_input_dims", {})
     if expert_input_dims_raw:

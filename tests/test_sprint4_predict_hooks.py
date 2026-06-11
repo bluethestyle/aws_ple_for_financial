@@ -293,6 +293,42 @@ class TestMarkerApplication:
         service._apply_llm_marker_to_recommendations(recs)
         assert recs[0]["reason_text"] == "unchanged"
 
+    # --- 'reasons' list shape (actual pipeline output) -------------------
+
+    def test_marker_applied_to_reasons_list_of_strings(self):
+        applier = MarkerApplier()
+        service = _make_service(marker_applier=applier)
+        recs = [{"item_id": "p1", "reasons": ["주요 사유입니다.", "부가 사유."]}]
+        service._apply_llm_marker_to_recommendations(recs)
+        # First (primary) reason carries the disclosure exactly once.
+        assert DEFAULT_MARKER_TEXT in recs[0]["reasons"][0]
+        assert "AI기본법" not in recs[0]["reasons"][1]
+
+    def test_marker_applied_to_reasons_list_of_dicts(self):
+        applier = MarkerApplier()
+        service = _make_service(marker_applier=applier)
+        recs = [{"item_id": "p1", "reasons": [{"text": "사유 본문"}]}]
+        service._apply_llm_marker_to_recommendations(recs)
+        assert DEFAULT_MARKER_TEXT in recs[0]["reasons"][0]["text"]
+
+    def test_marker_appended_when_no_textual_reason(self):
+        applier = MarkerApplier()
+        service = _make_service(marker_applier=applier)
+        recs = [{"item_id": "p1", "reasons": [{"code": "X"}]}]  # no text
+        service._apply_llm_marker_to_recommendations(recs)
+        # Disclosure appended as a standalone reason so §31 is still surfaced.
+        assert any(
+            isinstance(r, str) and "AI기본법" in r for r in recs[0]["reasons"]
+        )
+
+    def test_idempotent_on_reasons_list(self):
+        applier = MarkerApplier()
+        service = _make_service(marker_applier=applier)
+        recs = [{"item_id": "p1", "reasons": ["사유"]}]
+        service._apply_llm_marker_to_recommendations(recs)
+        service._apply_llm_marker_to_recommendations(recs)
+        assert recs[0]["reasons"][0].count("AI기본법") == 1
+
 
 # ---------------------------------------------------------------------------
 # Hook wiring smoke: __init__ does not explode

@@ -462,8 +462,14 @@ class ConstraintEngine:
         engine_cfg = config.get("constraint_engine", {})
         self.fail_fast: bool = engine_cfg.get("fail_fast", True)
 
+        # 'suitability' (금소법 §17) is in the default chain so the
+        # suitability principle is enforced out of the box. It is a no-op
+        # pass-through when the candidate context carries no item_risk_level,
+        # so deployments that have not yet wired risk context are unaffected;
+        # once item_risk_level is present, an unassessed customer is blocked
+        # (require_assessment default true) — the regulator-correct direction.
         chain_names: List[str] = engine_cfg.get("filter_chain", [
-            "fatigue", "eligibility", "owned_product",
+            "fatigue", "eligibility", "owned_product", "suitability",
         ])
 
         self.filters: List[AbstractFilter] = []

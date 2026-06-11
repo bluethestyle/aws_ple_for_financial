@@ -94,6 +94,16 @@ def _get_service():
     user_count = int(user_count_str) if user_count_str else None
     feature_store = FeatureStoreFactory.create(config, user_count=user_count)
 
+    # ---- Fail-closed posture (regulatory safety direction) ----
+    # When set, compliance/kill-switch init failures abort the cold start
+    # (the function returns 5xx) instead of silently serving without those
+    # controls. Resolved from serving.kill_switch.fail_closed and
+    # compliance.hooks.strict; either turns the posture on.
+    _serving_cfg = config_dict.get("serving") or {}
+    _ks_cfg = _serving_cfg.get("kill_switch") or {}
+    _hooks_cfg = (config_dict.get("compliance") or {}).get("hooks") or {}
+    fail_closed = bool(_ks_cfg.get("fail_closed", False) or _hooks_cfg.get("strict", False))
+
     # ---- Kill switch ----
     kill_switch = None
     if config.kill_switch_table:
@@ -101,8 +111,16 @@ def _get_service():
             kill_switch = KillSwitch(
                 table_name=config.kill_switch_table,
                 fallback_strategy=config.fallback_strategy,
+                fail_closed=bool(_ks_cfg.get("fail_closed", False)),
             )
         except Exception:
+            if fail_closed:
+                logger.error(
+                    "KillSwitch init failed and fail_closed=True — aborting "
+                    "cold start rather than serving without an emergency stop",
+                    exc_info=True,
+                )
+                raise
             logger.warning(
                 "KillSwitch init failed, proceeding without it",
                 exc_info=True,
@@ -189,12 +207,24 @@ def _get_service():
             logger.info("RegulatoryComplianceChecker initialised")
 
         except Exception:
-            logger.warning(
-                "Compliance module init failed; proceeding without compliance checks "
-                "(non-blocking)",
+            if fail_closed:
+                # Fail-closed: a deployment that declared compliance_enabled but
+                # cannot construct the compliance modules must NOT serve
+                # unchecked. Abort the cold start so the function returns 5xx.
+                logger.error(
+                    "Compliance module init failed and fail_closed=True — "
+                    "aborting cold start (refusing to serve without compliance "
+                    "checks). [COMPLIANCE_INIT_FAILED_FAIL_CLOSED]",
+                    exc_info=True,
+                )
+                raise
+            # Degraded (fail-open): log at ERROR (not warning) so a CloudWatch
+            # metric filter on the marker below can alarm, then reset to None.
+            logger.error(
+                "Compliance module init failed; proceeding WITHOUT compliance "
+                "checks (fail_closed=False). [COMPLIANCE_DISABLED_UNCHECKED]",
                 exc_info=True,
             )
-            # Reset to None so the service runs unchecked rather than crashing
             consent_manager = None
             ai_opt_out = None
             profiling_rights_manager = None
@@ -215,6 +245,31 @@ def _get_service():
                 exc_info=True,
             )
 
+    # ---- Sprint 1~4 regulatory serving hooks (M1/M4/M5/M6/M9/M10/M12) ----
+    # Wired through the single hook builder from the pipeline.yaml-shaped
+    # compliance/serving blocks carried in SERVING_CONFIG. strict=None lets
+    # the builder read compliance.hooks.strict (default fail-open / degraded);
+    # the entrypoint-level posture is set in the compliance block above.
+    compliance_hooks: Dict[str, Any] = {}
+    if compliance_enabled:
+        try:
+            from core.serving.hook_builder import build_compliance_hooks
+            compliance_hooks = build_compliance_hooks(
+                config_dict, strict=fail_closed,
+            )
+        except Exception:
+            if fail_closed:
+                logger.error(
+                    "Regulatory hook builder failed and fail_closed=True — "
+                    "aborting cold start. [HOOKS_BUILD_FAILED_FAIL_CLOSED]",
+                    exc_info=True,
+                )
+                raise
+            logger.warning(
+                "Regulatory hook builder failed; serving with legacy "
+                "compliance modules only", exc_info=True,
+            )
+
     _service = RecommendationService(
         model=model,
         feature_store=feature_store,
@@ -227,6 +282,7 @@ def _get_service():
         regulatory_checker=regulatory_checker,
         ai_opt_out=ai_opt_out,
         compliance_audit_store=compliance_audit_store,
+        **compliance_hooks,
     )
 
     logger.info(

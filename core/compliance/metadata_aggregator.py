@@ -515,27 +515,11 @@ def build_fairness_archive_source(
     """
 
     def _src(_model_version: str) -> Dict[str, Any]:
-        try:
-            import pyarrow.parquet as pq  # type: ignore
-        except ImportError:
-            logger.debug(
-                "pyarrow not installed; fairness_archive_source will "
-                "fallback"
-            )
-            return {}
-        from pathlib import Path
+        # s3:// and local both handled by the parquet_io helper (was
+        # Path-based, so s3:// URIs always returned {} → 0.5 fallback).
+        from core.monitoring.parquet_io import read_parquet_rows
 
-        try:
-            target = Path(parquet_path)
-            if not target.exists():
-                return {}
-            table = pq.read_table(str(target))
-            rows = table.to_pylist()
-        except Exception:
-            logger.exception(
-                "failed to read fairness archive %s", parquet_path,
-            )
-            return {}
+        rows = read_parquet_rows(parquet_path)
         if not rows:
             return {}
         tail = rows[-limit:] if limit > 0 else rows

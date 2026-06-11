@@ -29,6 +29,16 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+
+class AuditIntegrityError(RuntimeError):
+    """Raised for fail-closed audit conditions that must NOT be swallowed.
+
+    Used when integrity cannot be guaranteed (no real HMAC key in production,
+    or a WORM-store write failure under fail_closed). ``log_operation`` lets
+    this propagate instead of catching it like a routine logging error.
+    """
+
+
 # ---------------------------------------------------------------------------
 # HMAC secret management
 # ---------------------------------------------------------------------------
@@ -71,19 +81,27 @@ def _get_hmac_secret() -> bytes:
         logger.info("HMAC secret loaded from environment variable.")
         return _HMAC_SECRET_KEY
 
-    # Fallback -- development only
+    # No configured key. The hardcoded default is public (it lives in this
+    # repo), so audit logs signed with it have ZERO tamper-evidence value.
+    # In production/prod/staging this is a hard failure — refuse to sign
+    # rather than emit a chain that anyone can forge.
     _env = os.environ.get("ENVIRONMENT", os.environ.get("ENV", "development"))
-    if _env.lower() in ("production", "prod", "staging"):
-        logger.critical(
-            "SECURITY WARNING: No HMAC secret configured in %s environment. "
-            "Set AUDIT_HMAC_SSM_PARAM (preferred) or AUDIT_HMAC_SECRET_KEY.",
-            _env,
+    _allow_insecure = os.environ.get(
+        "AUDIT_HMAC_ALLOW_INSECURE_DEFAULT", ""
+    ).lower() in ("1", "true", "yes")
+    if _env.lower() in ("production", "prod", "staging") and not _allow_insecure:
+        raise AuditIntegrityError(
+            f"No HMAC secret configured in {_env} environment. Set "
+            "AUDIT_HMAC_SSM_PARAM (preferred) or AUDIT_HMAC_SECRET_KEY. "
+            "The public default key provides no tamper protection and is "
+            "refused outside development. (Override only for a deliberate "
+            "non-prod run with AUDIT_HMAC_ALLOW_INSECURE_DEFAULT=true.)"
         )
-    else:
-        logger.warning(
-            "AUDIT_HMAC_SECRET_KEY not set -- using default key. "
-            "Acceptable for development; must be configured in production."
-        )
+    logger.warning(
+        "AUDIT_HMAC_SECRET_KEY not set -- using public default key. "
+        "Acceptable for development only; audit signatures are NOT "
+        "tamper-evident."
+    )
     _HMAC_SECRET_KEY = b"aws-ple-audit-default-key-CHANGE-ME"
     return _HMAC_SECRET_KEY
 
@@ -134,6 +152,7 @@ class AuditLogger:
         local_fallback_dir: Optional[str] = None,
         object_lock_mode: str = "GOVERNANCE",
         object_lock_days: int = 2555,
+        fail_closed: bool = False,
     ) -> None:
         self.s3_bucket = s3_bucket or os.environ.get("AUDIT_S3_BUCKET", "")
         self.s3_prefix = s3_prefix.strip("/")
@@ -142,6 +161,13 @@ class AuditLogger:
         self._local_dir = local_fallback_dir or os.environ.get(
             "AUDIT_LOG_DIR", "/tmp/audit_logs"
         )
+        # When True, an S3 write failure raises instead of silently falling
+        # back to (ephemeral) local disk. On Lambda/SageMaker the local FS is
+        # discarded at container teardown, so a silent fallback = lost audit
+        # trail. Default False preserves the legacy degraded behaviour.
+        self._fail_closed = fail_closed or os.environ.get(
+            "AUDIT_FAIL_CLOSED", ""
+        ).lower() in ("1", "true", "yes")
 
         self._s3_client = None
         if self.s3_bucket:
@@ -226,6 +252,10 @@ class AuditLogger:
 
             logger.info("Audit log recorded: %s (%s)", operation, status)
             return log_entry
+        except AuditIntegrityError:
+            # Fail-closed condition — must not be swallowed as a routine
+            # logging error. Propagate so the caller/deployment fails loudly.
+            raise
         except Exception as exc:
             logger.warning("Failed to record audit log: %s", exc)
             return None
@@ -427,18 +457,32 @@ class AuditLogger:
     # Chain verification
     # ------------------------------------------------------------------
 
-    def verify_chain(self, log_lines: List[str]) -> bool:
+    def verify_chain(self, log_lines: List[str], verify_hmac: bool = True) -> bool:
         """Verify the integrity of a sequence of JSONL audit entries.
+
+        Two independent checks per entry:
+
+        1. **Hash chain** — each ``prev_hash`` must equal the SHA256 of the
+           previous full entry. This detects reordering/deletion.
+        2. **HMAC signature** — each entry's ``hmac`` is recomputed over the
+           entry (minus the ``hmac`` field) with the secret key and compared
+           in constant time. The chain hash alone is keyless and can be
+           recomputed by anyone, so without this step a tamperer could edit
+           an entry and re-link the chain undetected. HMAC is the actual
+           tamper-evidence; verifying it requires the signing key.
 
         Parameters
         ----------
         log_lines : list of str
             Raw JSONL lines (each a JSON object).
+        verify_hmac : bool
+            When True (default) re-verify each entry's HMAC. Set False only
+            when the signing key is unavailable (chain-only, weaker) check.
 
         Returns
         -------
         bool
-            ``True`` if the hash chain is intact, ``False`` if tampered.
+            ``True`` if intact, ``False`` if the chain or any HMAC fails.
         """
         prev_hash = "GENESIS"
         for i, line in enumerate(log_lines):
@@ -451,6 +495,28 @@ class AuditLogger:
                     entry.get("prev_hash"),
                 )
                 return False
+
+            if verify_hmac:
+                stored_hmac = entry.get("hmac")
+                if stored_hmac is None:
+                    logger.warning(
+                        "Audit entry at line %d has no HMAC field — cannot "
+                        "verify tamper-evidence", i + 1,
+                    )
+                    return False
+                entry_wo_hmac = {k: v for k, v in entry.items() if k != "hmac"}
+                expected_hmac = _compute_hmac(
+                    json.dumps(
+                        entry_wo_hmac, ensure_ascii=False, sort_keys=True
+                    ).encode("utf-8")
+                )
+                if not hmac_module.compare_digest(stored_hmac, expected_hmac):
+                    logger.warning(
+                        "HMAC mismatch at line %d — entry was tampered or "
+                        "signed with a different key", i + 1,
+                    )
+                    return False
+
             full_entry_str = json.dumps(entry, ensure_ascii=False, sort_keys=True)
             prev_hash = _compute_chain_hash(full_entry_str)
         return True
@@ -497,7 +563,24 @@ class AuditLogger:
                 self._append_to_s3(log_line, s3_key)
                 return
             except Exception as exc:
-                logger.warning("S3 write failed, falling back to local: %s", exc)
+                if self._fail_closed:
+                    # WORM S3 is the system of record. On ephemeral compute
+                    # (Lambda/SageMaker) the local fallback is discarded at
+                    # teardown, so a silent fallback loses the trail. Surface
+                    # the failure to the caller instead.
+                    logger.error(
+                        "S3 audit write failed and fail_closed=True — refusing "
+                        "silent ephemeral fallback. [AUDIT_S3_WRITE_FAILED]",
+                        exc_info=True,
+                    )
+                    raise AuditIntegrityError(
+                        "S3 audit write failed under fail_closed"
+                    ) from exc
+                logger.error(
+                    "S3 audit write failed, falling back to (ephemeral) local "
+                    "disk — trail may be lost at container teardown: %s "
+                    "[AUDIT_S3_FALLBACK_LOCAL]", exc,
+                )
 
         # Local fallback
         from pathlib import Path

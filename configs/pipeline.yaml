@@ -94,13 +94,16 @@ model:
     num_shared_experts: 7
     num_task_experts: 1
 
+  # Research-gated (default false): activation requires offline validation
+  # before operational use. build_ple_config now maps these flags, so setting
+  # enabled: true here actually builds the evidential head / SAE.
   evidential:
-    enabled: true
+    enabled: false
     kl_lambda: 0.01
     annealing_epochs: 10
 
   sae:
-    enabled: true
+    enabled: false
     weight: 0.01
     expansion_factor: 4
     l1_lambda: 0.001
@@ -370,6 +373,10 @@ monitoring:
     psi_warning: 0.1
     psi_critical: 0.25
     n_bins: 10
+    # Audit-friendly drift archive (symmetric with fairness.archive_parquet_path).
+    # When set, every detect_drift result is appended (one row per feature).
+    # s3:// and local both supported via core/monitoring/parquet_io.
+    archive_parquet_path: s3://aiops-ple-financial/compliance/drift/psi.parquet
 
   incidents:
     severity_thresholds:
@@ -626,6 +633,8 @@ serving:
     tier_1_sample_rate: 0.05      # 5% post-hoc random sample
     tier_2_review_required: true  # 100% mandatory agent review
     tier_3_human_fallback: true   # mandatory human fallback path
+    # 의도적 기본값: in_memory. 프로덕션 전환 전 §5.10 체크리스트 항목 6 참조
+    # (dynamodb 전환 + ple-review-queue 테이블 IaC + IAM 도달성 검증 필요).
     queue_backend: in_memory      # in_memory | dynamodb
     dynamodb_table: ple-review-queue
     sla_hours: 24
@@ -637,6 +646,10 @@ serving:
     backend: dynamodb             # dynamodb | in_memory
     table_name: ple-kill-switch
     fallback_strategy: rule_based # rule_based | previous_model | disable
+    # Fail-safe: when true, a backend read failure is treated as ACTIVE
+    # (cannot confirm the emergency stop is off → assume it may be on).
+    # Recommended true in production once the ple-kill-switch table exists.
+    fail_closed: false
 
   # M10 Dynamic Item Universe Loader
   item_universe:
@@ -707,10 +720,23 @@ aws:
 #   금소법 §17 (적합성)
 # ---------------------------------------------------------------------------
 compliance:
+  # Sprint 1~4 regulatory serving hooks (M1 review queue, M4 opt-out,
+  # M5 profiling, M6 explanation SLA, M9 AI-risk, M10 item universe,
+  # M12 LLM marker). Wired into both serving entrypoints via
+  # core/serving/hook_builder.build_compliance_hooks. Default ON.
+  hooks:
+    enabled: true     # false → serving runs with legacy compliance modules only
+    strict: false     # true → fail-closed: a hook that fails to build raises
+                      #         instead of being silently omitted (recommended
+                      #         posture once prod tables/IaC are provisioned)
+
   # region / s3_bucket are inherited from the top-level `aws` block via
   # build_compliance_store — override here only when the compliance store
   # lives in a different account/region.
   store:
+    # 의도적 기본값: in_memory. 프로덕션에서는 권리요청·동의·FRIA(5년 보존)가
+    # 프로세스 종료와 함께 소실되므로 전환 필요. §5.10 체크리스트 항목 6/7 참조
+    # (dynamodb 전환 + ple-compliance-* 테이블 IaC + IAM 도달성 검증).
     backend: in_memory                       # in_memory | dynamodb | s3_parquet
     requests_table: ple-compliance-requests  # DynamoDB table name (prod)
     events_table: ple-compliance-events

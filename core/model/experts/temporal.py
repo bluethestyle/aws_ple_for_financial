@@ -474,6 +474,23 @@ class TemporalEnsembleExpert(AbstractExpert):
         t_cfg = config.get("transformer", {})
         l_cfg = config.get("lnn", {})
 
+        # Surface flat keys that this expert does NOT read. Some configs carry
+        # flat keys (e.g. ``mamba_d_model``) but the architecture is driven by
+        # the nested blocks above (``mamba: {d_model: ...}``); a flat key is
+        # therefore silently ignored. Warn rather than auto-remap, since
+        # changing the effective dims would drift existing experiments.
+        _flat_ignored = [
+            k for k in config
+            if (k.startswith(("mamba_", "transformer_", "lnn_")))
+        ]
+        if _flat_ignored:
+            logger.warning(
+                "TemporalEnsembleExpert: ignoring flat config keys %s — this "
+                "expert reads nested blocks (mamba/transformer/lnn: {...}). "
+                "Move e.g. 'mamba_d_model: 64' to 'mamba: {d_model: 64}'.",
+                _flat_ignored,
+            )
+
         self.mamba_enabled: bool = m_cfg.get("enabled", True)
         self.transformer_enabled: bool = t_cfg.get("enabled", True)
         self.lnn_enabled: bool = l_cfg.get("enabled", True)

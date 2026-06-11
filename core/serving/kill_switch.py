@@ -92,6 +92,7 @@ class KillSwitch:
         region: Optional[str] = None,
         audit_store=None,
         use_dynamo: bool = True,
+        fail_closed: bool = False,
     ) -> None:
         self._table_name = table_name
         self._fallback = FallbackStrategy(fallback_strategy)
@@ -99,6 +100,10 @@ class KillSwitch:
         self._audit_store = audit_store
         self._table = None
         self._memory: Dict[str, Dict[str, Any]] = {}
+        # When True, a backend read failure is treated as ACTIVE (fail-safe):
+        # if we cannot confirm the emergency stop is *off*, we must assume it
+        # may be *on*. Default False preserves the legacy fail-open behaviour.
+        self._fail_closed = fail_closed
 
         if use_dynamo:
             try:
@@ -152,6 +157,7 @@ class KillSwitch:
             region=region,
             audit_store=audit_store,
             use_dynamo=(backend == "dynamodb"),
+            fail_closed=bool(ks_cfg.get("fail_closed", False)),
         )
 
     # ------------------------------------------------------------------
@@ -219,9 +225,20 @@ class KillSwitch:
                 ConsistentRead=False,
             )
         except Exception:
+            if self._fail_closed:
+                logger.exception(
+                    "KillSwitch: failed to read key=%s; fail_closed=True → "
+                    "treating as ACTIVE (fail-safe)", switch_key,
+                )
+                return KillSwitchState(
+                    active=True,
+                    scope=switch_key,
+                    reason="kill_switch_read_failed_fail_closed",
+                    fallback_strategy=self._fallback,
+                )
             logger.exception(
-                "KillSwitch: failed to read key=%s, defaulting to inactive",
-                switch_key,
+                "KillSwitch: failed to read key=%s, defaulting to inactive "
+                "(fail_closed=False)", switch_key,
             )
             return KillSwitchState(active=False, scope=switch_key)
 

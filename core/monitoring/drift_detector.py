@@ -138,6 +138,17 @@ class PSICalculator:
             cols = data.select_dtypes(include=[np.number]).columns.tolist()
             return {c: data[c].values for c in cols}, cols
 
+        # Defensive: a bare 2D ndarray (N rows × D features). Callers should
+        # prefer a column dict, but accept the matrix with positional column
+        # names rather than raising TypeError and killing the drift chain.
+        if isinstance(data, np.ndarray):
+            arr = np.asarray(data)
+            if arr.ndim == 2:
+                cols = [f"feature_{i}" for i in range(arr.shape[1])]
+                return {c: arr[:, i] for i, c in enumerate(cols)}, cols
+            if arr.ndim == 1:
+                return {"feature_0": arr}, ["feature_0"]
+
         raise TypeError(f"Unsupported data type: {type(data)}")
 
 
@@ -260,17 +271,12 @@ class DriftDetector:
         Returns the number of rows written. Silent-no-op (with a warning) if
         pyarrow is unavailable.
         """
-        try:
-            import pyarrow as pa  # type: ignore
-            import pyarrow.parquet as pq  # type: ignore
-        except ImportError:
-            logger.warning(
-                "pyarrow not installed; drift archive skipped for %s",
-                parquet_path,
-            )
-            return 0
         from datetime import datetime, timezone
-        from pathlib import Path
+
+        from core.monitoring.parquet_io import (
+            read_parquet_rows,
+            write_parquet_rows,
+        )
 
         ts = recorded_at or datetime.now(timezone.utc).isoformat()
         psi_scores: Dict[str, float] = result.get("psi_scores", {})
@@ -297,25 +303,13 @@ class DriftDetector:
         if not rows:
             return 0
 
-        target = Path(parquet_path)
-        existing: List[Dict[str, Any]] = []
-        if target.exists():
-            try:
-                existing = pq.read_table(str(target)).to_pylist()
-            except Exception:
-                logger.exception(
-                    "Could not read existing drift archive %s; overwriting",
-                    parquet_path,
-                )
-
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            pq.write_table(
-                pa.Table.from_pylist(existing + rows), str(target),
-            )
-        except Exception:
-            logger.exception(
-                "Failed to write drift archive to %s", parquet_path,
+        # s3:// and local both handled by parquet_io (was Path-based, which
+        # silently broke for s3:// URIs — symmetric with the fairness fix).
+        existing = read_parquet_rows(parquet_path)
+        if not write_parquet_rows(existing + rows, parquet_path):
+            logger.error(
+                "Failed to write drift archive to %s [DRIFT_ARCHIVE_WRITE_FAILED]",
+                parquet_path,
             )
             return 0
         return len(rows)

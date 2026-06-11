@@ -4,7 +4,7 @@ Verifies:
   - Scaler fits on train only (val/test use same params)
   - Power-law _log columns are NOT scaled
   - Binary columns are NOT scaled (pass-through)
-  - Output column order: [scaled_continuous | binary | power_law_log_copies]
+  - Output column order: input feature_cols order + power_law _log tail
   - Save / load round-trip preserves parameters
 """
 
@@ -236,7 +236,8 @@ class TestBinaryPassThrough:
 
 
 class TestOutputColumnOrder:
-    """Output must be [scaled_continuous | binary | power_law_log_copies]."""
+    """Output preserves input feature_cols order, with power-law _log copies
+    appended at the tail (invariant: feature_groups order = concat order)."""
 
     def test_column_order(self):
         train, _, feature_cols = _make_dataset()
@@ -245,8 +246,7 @@ class TestOutputColumnOrder:
         out = norm.transform(train, feature_cols)
 
         expected_order = (
-            norm.continuous_cols
-            + norm.binary_cols
+            list(feature_cols)
             + [f"{c}_log" for c in norm.power_law_cols]
         )
         assert list(out.columns) == expected_order

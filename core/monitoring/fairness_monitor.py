@@ -181,30 +181,17 @@ class FairnessMonitor:
     def _flush_parquet(
         self, entry: Dict[str, Any], path: str,
     ) -> None:
-        try:
-            import pyarrow as pa  # type: ignore
-            import pyarrow.parquet as pq  # type: ignore
-        except ImportError:
-            logger.warning(
-                "pyarrow not installed; fairness archive kept in-memory only",
-            )
-            return
-        from pathlib import Path
-
         import json
 
-        # Best-effort: append by reading existing file (small dataset).
-        target = Path(path)
-        existing: List[Dict[str, Any]] = []
-        if target.exists():
-            try:
-                table = pq.read_table(str(target))
-                existing = table.to_pylist()
-            except Exception:
-                logger.exception(
-                    "Could not read existing fairness archive %s; overwriting",
-                    path,
-                )
+        from core.monitoring.parquet_io import (
+            read_parquet_rows,
+            write_parquet_rows,
+        )
+
+        # Best-effort append by read+rewrite (small dataset). s3:// and local
+        # are both handled by the parquet_io helper (was Path-based, which
+        # silently broke for s3:// URIs).
+        existing = read_parquet_rows(path)
         # JSON-normalize complex values so pyarrow can build a stable schema.
         serialisable = [
             {k: (json.dumps(v, default=str)
@@ -212,13 +199,10 @@ class FairnessMonitor:
              for k, v in e.items()}
             for e in (existing + [entry])
         ]
-        try:
-            table = pa.Table.from_pylist(serialisable)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            pq.write_table(table, str(target))
-        except Exception:
-            logger.exception(
-                "Failed to flush fairness archive to %s", path,
+        if not write_parquet_rows(serialisable, path):
+            logger.error(
+                "Failed to flush fairness archive to %s [FAIRNESS_ARCHIVE_WRITE_FAILED]",
+                path,
             )
 
     # ------------------------------------------------------------------

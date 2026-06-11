@@ -234,6 +234,32 @@ class RecommendationAuditArchiver:
         elif hasattr(result, "check_result") and result.check_result is not None:
             verdict = getattr(result.check_result, "verdict", "pass")
 
+        # Extended agent-trace fields (M11). Previously these five columns
+        # were never populated by record_from_result (the only production
+        # caller), so the audit archive's agent-trace columns were always
+        # empty. Extract them from the reason/check objects when present.
+        thinking_trace = ""
+        tools_used: List[str] = []
+        agent_tier = 0
+        if reason_result is not None:
+            thinking_trace = getattr(reason_result, "thinking_trace", "") or ""
+            tools_used = list(getattr(reason_result, "tools_used", []) or [])
+            agent_tier = int(
+                getattr(reason_result, "agent_tier",
+                        getattr(reason_result, "tier", 0)) or 0
+            )
+
+        hallucination_flags: List[str] = []
+        critique_verdict = ""
+        if check_result is not None:
+            hallucination_flags = list(
+                getattr(check_result, "hallucination_flags", []) or []
+            )
+            critique_verdict = (
+                getattr(check_result, "critique_verdict", "")
+                or getattr(check_result, "verdict", "")
+            )
+
         # Build customer_id as int
         cid = getattr(result, "customer_id", 0)
         if isinstance(cid, str):
@@ -255,6 +281,11 @@ class RecommendationAuditArchiver:
             self_check_verdict=verdict,
             feature_importances=feature_importances or [],
             segment_id=getattr(result, "metadata", {}).get("segment_id", -1),
+            thinking_trace=thinking_trace,
+            hallucination_flags=hallucination_flags,
+            tools_used=tools_used,
+            critique_verdict=critique_verdict,
+            agent_tier=agent_tier,
         )
         self.record(audit_record)
 

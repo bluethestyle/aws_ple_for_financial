@@ -93,6 +93,10 @@ class FeatureNormalizer:
         self.categorical_int_cols: List[str] = []  # integer IDs excluded from scaler
         self.probability_cols: List[str] = []       # already 0~1, excluded from scaler
         self.power_law_details: Dict[str, Dict] = {}
+        # Fitted input feature order, preserved so output_columns reflects the
+        # transform contract "input feature_cols order + power-law _log tail"
+        # (see transform/transform_sql). Set by fit()/fit_sql().
+        self._fitted_feature_cols: List[str] = []
         self._fitted: bool = False
 
         # Patterns for columns that should NOT be StandardScaled.
@@ -158,6 +162,8 @@ class FeatureNormalizer:
         """
         # Only consider columns actually present in df
         feature_cols = [c for c in feature_cols if c in df.columns]
+        # Preserve input order for output_columns (transform emits in this order)
+        self._fitted_feature_cols = list(feature_cols)
 
         # --- Classify columns ---
         self.binary_cols = [
@@ -379,6 +385,8 @@ class FeatureNormalizer:
         ).fetchall()
         type_map = {r[0]: (r[1] or "").upper() for r in type_rows}
         present = [c for c in feature_cols if c in type_map]
+        # Preserve input order for output_columns (transform_sql emits in this order)
+        self._fitted_feature_cols = list(present)
 
         # Binary detection: all distinct non-null values are subset of {0, 1}.
         # Done in a single SQL by counting distinct values per column.
@@ -718,9 +726,26 @@ class FeatureNormalizer:
 
     @property
     def output_columns(self) -> List[str]:
-        """Return the ordered list of output column names."""
-        cols = list(self.continuous_cols)
-        cols.extend(self.binary_cols)
+        """Return the ordered list of output column names.
+
+        Mirrors the transform contract: every fitted input column in its
+        original ``feature_cols`` order, followed by the power-law ``_log``
+        copies appended at the tail (see transform/transform_sql). This
+        preserves the invariant "feature_groups.yaml order = concat order
+        = parquet order = sequential group_ranges".
+        """
+        if self._fitted_feature_cols:
+            cols = list(self._fitted_feature_cols)
+        else:
+            # Backward-compat for normalizers loaded from a pre-order-preserving
+            # save (no _fitted_feature_cols persisted): best-effort reconstruction
+            # from buckets. Order may not match a fresh fit's input order.
+            cols = (
+                list(self.continuous_cols)
+                + list(self.binary_cols)
+                + list(self.categorical_int_cols)
+                + list(self.probability_cols)
+            )
         cols.extend(f"{c}_log" for c in self.power_law_cols)
         return cols
 
@@ -860,6 +885,7 @@ class FeatureNormalizer:
             "probability_cols": self.probability_cols,
             "power_law_cols": self.power_law_cols,
             "power_law_details": self.power_law_details,
+            "fitted_feature_cols": self._fitted_feature_cols,
         }
         with open(path / "normalizer_meta.json", "w") as f:
             json.dump(meta, f, indent=2)
@@ -887,6 +913,7 @@ class FeatureNormalizer:
         obj.probability_cols = meta.get("probability_cols", [])
         obj.power_law_cols = meta["power_law_cols"]
         obj.power_law_details = meta.get("power_law_details", {})
+        obj._fitted_feature_cols = meta.get("fitted_feature_cols", [])
         obj._fitted = True
 
         logger.info("FeatureNormalizer loaded from %s", path)

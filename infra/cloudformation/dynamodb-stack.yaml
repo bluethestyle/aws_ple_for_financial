@@ -1,10 +1,24 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: PLE Financial - DynamoDB tables + SQS queue
+Description: PLE Financial - DynamoDB tables + SQS queue + audit WORM bucket
 
 Parameters:
   Environment:
     Type: String
     Default: dev
+  AuditBucketName:
+    Type: String
+    Default: ""
+    Description: >-
+      S3 bucket for HMAC-signed audit logs with bucket-level Object Lock
+      (WORM). Leave empty to skip bucket creation (e.g. when it already
+      exists). Object Lock requires the bucket be created with versioning.
+  AuditObjectLockDays:
+    Type: Number
+    Default: 2555
+    Description: Default Object Lock retention (days). 2555 = ~7 years.
+
+Conditions:
+  CreateAuditBucket: !Not [!Equals [!Ref AuditBucketName, ""]]
 
 Resources:
   # --- Compliance Audit Tables (7) ---
@@ -116,8 +130,122 @@ Resources:
       VisibilityTimeout: 300
       MessageRetentionPeriod: 86400
 
+  # --- Operational State Tables -------------------------------------------
+  # Live state the serving/compliance code reads/writes (distinct from the
+  # ple-audit-* event tables above). Without these, KillSwitch /
+  # ComplianceStore / HumanReviewQueue fall back to in-memory and lose state
+  # at container teardown. Key schemas match the code's access patterns.
+
+  # KillSwitch state — kill_switch.py: Key={"switch_key": ...}
+  KillSwitch:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ple-kill-switch
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: switch_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: switch_key
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # Compliance requests — store.py: Key={"request_id": ...}; GSI per-user
+  ComplianceRequests:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ple-compliance-requests
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: request_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: submitted_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: request_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: user_id-submitted_at-index
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+            - AttributeName: submitted_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # Compliance events — store.py: HASH user_id, RANGE sk (timestamp#event_id)
+  ComplianceEvents:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ple-compliance-events
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # Human review queue — review_id PK (DynamoDB backend pending wire-in;
+  # HumanReviewQueue currently in-memory, this provisions the target table)
+  ReviewQueue:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ple-review-queue
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: review_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: review_id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # --- Audit WORM bucket (bucket-level Object Lock COMPLIANCE) -------------
+  # Closes the gap where setup_aws.sh created the audit bucket WITHOUT
+  # --object-lock-enabled-for-bucket, so audit_logger's ObjectLockMode put
+  # always failed → ephemeral local fallback. COMPLIANCE mode is immutable
+  # even to the root account for the retention period.
+  AuditLogBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateAuditBucket
+    Properties:
+      BucketName: !Ref AuditBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Mode: COMPLIANCE
+            Days: !Ref AuditObjectLockDays
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
 Outputs:
   AuditTablesCreated:
     Value: "7 audit + 1 reason_cache"
+  OperationalTablesCreated:
+    Value: "ple-kill-switch, ple-compliance-requests, ple-compliance-events, ple-review-queue"
   ReasonQueueUrl:
     Value: !GetAtt ReasonL2aQueue.QueueUrl
+  AuditLogBucketName:
+    Condition: CreateAuditBucket
+    Value: !Ref AuditLogBucket
