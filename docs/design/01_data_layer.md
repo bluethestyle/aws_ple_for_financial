@@ -277,6 +277,17 @@ if not result.passed:
         logger.error(f"LEAKAGE: {warning}")
 ```
 
+### 누수 분류학 (2026-06-12 명문화, PORT-12)
+
+누수는 **방어 수단이 다른 두 계열**로 나뉜다. 형식 기준: *라벨 윈도 시작 시점이 feature_cutoff 보다 뒤인가?*
+
+| 계열 | 정의 | 방어 수단 | 담당 체크 |
+|------|------|----------|----------|
+| **Class A — split-방어 가능** | 라벨 윈도 시작 > feature_cutoff 인 정상 설계에서 구현 실수로 미래 정보가 피처에 새는 경우 | 분할 경계 + gap_days, 시퀀스 절단, train-fit scaler | Sequence, Temporal, Product Column |
+| **Class B — 라벨 정의 내부** | 라벨 자체가 feature_cutoff 이전 피처의 결정론적 변환(bucketing, 선형 결합)으로 정의된 경우 — **split 으로 방어 불가**, 태스크 설계 단계에서 제거해야 함 (18→13 task 축소 사례) | 태스크 제거 (AGENTS.md §1.3) | Feature-Label Correlation (탐지기) |
+
+신규 체크는 불필요 — 기존 4종이 두 계열을 모두 커버함을 2026-06-12 온프렘 대비 분석에서 확인.
+
 ---
 
 ## Stage 7: DataLoader (Auto-detect Split Strategy)

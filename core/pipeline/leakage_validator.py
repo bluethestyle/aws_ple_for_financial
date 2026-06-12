@@ -20,6 +20,29 @@ Checks performed:
 4. **Product column leakage** -- Check that ``prod_*`` columns reflect the
    pre-label state (month 16) rather than the label state (month 17).
 
+Leakage taxonomy (누수 분류학, 2026-06-12 명문화)
+--------------------------------------------------
+
+누수는 방어 수단이 다른 두 계열로 나뉜다. 형식 기준: **라벨 윈도 시작
+시점이 feature_cutoff 보다 뒤인가?**
+
+- **Class A — split-방어 가능 (temporal leakage)**: 라벨 윈도 시작 >
+  feature_cutoff 인 정상 설계에서, 구현 실수로 미래 정보가 피처에 새는
+  경우. 분할 경계 + gap_days, 시퀀스 절단, train-fit scaler 로 방어
+  가능하다. 위 체크 1(sequence), 3(temporal), 4(product column) 이 이
+  계열을 잡는다.
+
+- **Class B — 라벨 정의 내부 (label-definition leakage)**: 라벨 자체가
+  feature_cutoff 이전 피처의 결정론적 변환(bucketing, 선형 결합)으로
+  정의된 경우. 모델이 입력에서 라벨을 완벽 복원할 수 있어 **split 을
+  아무리 잘해도 방어가 불가능**하다 — 태스크 설계 단계에서 제거해야
+  한다 (2026-04 의 18→13 task 축소: income_tier, tenure_stage,
+  spend_level, engagement_score 가 이 사유로 제거됨, AGENTS.md §1.3).
+  위 체크 2(correlation, |r|≥threshold) 가 이 계열의 탐지기다.
+
+신규 체크는 불필요 — 기존 4종이 두 계열을 모두 커버함을 2026-06-12
+온프렘 대비 분석에서 확인 (docs/onprem_to_aws_import_plan.md PORT-12).
+
 Usage::
 
     from core.pipeline.leakage_validator import LeakageValidator
