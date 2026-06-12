@@ -30,9 +30,9 @@
 | PORT-08 | HITL consumer 진입점 + 큐 백엔드 영속화 | P2 | 8f38dece | ✅ 완료 | 14aa2df |
 | PORT-06 | CloudWatch LogAnalyzer + query_cloudwatch_logs 도구 | P2 | b67db29a~939960a0 | ✅ 완료 | 7159f64 |
 | PORT-09 | 동기화 문서 정비 (본 문서 + matrix/work_plan 정정) | P2 | — | ✅ 완료 | (본 커밋) |
-| PORT-10 | _embed_finding → Bedrock Titan Embed v2 옵트인 provider | P3 | 온프렘 bge-m3 등가 | 진행 예정 | — |
-| PORT-12 | LeakageValidator 누수 분류학 명문화 (docstring/docs) | P3 | — | 진행 예정 | — |
-| PORT-13 | quality_gate degenerate 가드 + schema_changed 경고 게이트 | P3 | — | 진행 예정 | — |
+| PORT-10 | _embed_finding → Bedrock Titan Embed v2 옵트인 provider | P3 | 온프렘 bge-m3 등가 | ✅ 완료 | 7635800 |
+| PORT-12 | LeakageValidator 누수 분류학 명문화 (docstring/docs) | P3 | — | ✅ 완료 | 52f8f32 |
+| PORT-13 | quality_gate degenerate 가드 + schema_changed 경고 게이트 | P3 | — | ✅ 완료 | fd9d434 |
 | PORT-11 | 충족도 매트릭스 문서 | P3 | — | ⏸ 별도 트랙 (V2 publish/outreach) | — |
 | PORT-15 | kill_switch TTL 캐시 | P3 | — | ⛔ 보류 — fail-closed 의미론 충돌 검토 전 도입 금지 | — |
 
@@ -62,6 +62,7 @@ LLM 비용 옵트인 env (전부 기본 off):
 | `REPORTS_LLM_TRIAGE_ENABLED` | verdict 분기 investigate/triage | off |
 | `REPORTS_LLM_VERIFY_GROUNDING` | 결론↔도구결과 대조 (위 플래그 안에서) | on (off 로 끄기) |
 | `REPORTS_LOG_ANALYSIS_ENABLED` | CloudWatch 로그 증분 분석 | off (LLM 없이 룰 분류) |
+| `AGENT_EMBED_BACKEND=titan` | case store 임베딩을 Titan Embed v2 (1024D) 로 | off (HashingVectorizer 384D) |
 
 ## 3. 이식 제외 항목과 근거 (환경 특이)
 
@@ -78,7 +79,8 @@ LLM 비용 옵트인 env (전부 기본 off):
 ## 4. 검증 기준
 
 - 시작 베이스라인: 698 passed / 0 fail (2026-06-12). 모든 Phase 커밋 후 전체
-  테스트 무회귀 확인.
+  테스트 무회귀 확인. 트랙 완료 시점 785 passed / 0 fail (2026-06-12 실측,
+  본 트랙 신규 테스트 73건 + 동시 진행 세션 추가분 포함).
 - 신규 LLM 기능은 전부 env 옵트인 기본 off (위 표) — CI/dry-run 에서 Bedrock
   호출 0.
 - `scripts/agent_healthcheck.py` 기본 모드가 도구 스키마↔구현↔라우팅 정합을
