@@ -111,7 +111,13 @@ _DEFAULT_CONFIG: Dict[str, Any] = {
         "schema_type",
         "drift",
         "pii",
+        "degenerate_columns",
+        "schema_changed",
     },
+    # Degenerate guard (PORT-13): 전부-0/상수 컬럼 검출. 기본은 ERROR 로그 +
+    # WARN check (가시화만). degenerate_hard_fail=True 옵트인 시 FAIL 승격.
+    "degenerate_check_enabled": True,
+    "degenerate_hard_fail": False,
 }
 
 
@@ -153,6 +159,14 @@ class QualityGate:
         self._config: Dict[str, Any] = {**_DEFAULT_CONFIG, **(config or {})}
         self._registry = schema_registry
 
+        # degenerate hard-fail 옵트인 → critical 승격. 공유 default set 을
+        # 변형하지 않도록 새 set 으로 복사한다.
+        if self._config.get("degenerate_hard_fail"):
+            self._config["critical_checks"] = (
+                set(self._config.get("critical_checks", set()))
+                | {"degenerate_columns"}
+            )
+
         if validation_engine is not None:
             self._validator = validation_engine
         else:
@@ -172,6 +186,7 @@ class QualityGate:
         source_name: str,
         *,
         reference_df: Optional[Any] = None,
+        version_diff: Optional[Dict[str, Any]] = None,
     ) -> QualityGateResult:
         """Run all quality checks and return a gate result.
 
@@ -184,16 +199,64 @@ class QualityGate:
             Name of the data source (must match schema registry key).
         reference_df : pandas.DataFrame or pyarrow.Table, optional
             Reference dataset for drift detection.
+        version_diff : dict, optional
+            :meth:`DatasetRegistry.compare_versions` 결과 (PORT-13 배선).
+            ``schema_changed=True`` 면 WARN check 로 게이트 verdict 에 반영.
 
         Returns
         -------
         QualityGateResult
         """
-        from core.data.validation import CheckStatus, ValidationResult
+        from core.data.validation import CheckResult, CheckStatus, ValidationResult
 
         validation: ValidationResult = self._validator.validate(
             source_name, df, reference_df=reference_df,
         )
+
+        # Degenerate guard (PORT-13): 전부-0/상수 컬럼은 generator 오류 또는
+        # 업스트림 join 실패의 강한 신호인데 종전엔 어느 체크도 잡지 않았다.
+        if self._config.get("degenerate_check_enabled", True):
+            degenerate = self._find_degenerate_columns(df)
+            if degenerate:
+                hard_fail = bool(self._config.get("degenerate_hard_fail", False))
+                logger.error(
+                    "QualityGate [%s] degenerate columns (%d): %s%s",
+                    source_name, len(degenerate), degenerate,
+                    " — hard-fail enabled" if hard_fail else "",
+                )
+                validation.checks.append(CheckResult(
+                    name="degenerate_columns",
+                    status=CheckStatus.FAIL if hard_fail else CheckStatus.WARN,
+                    message=(
+                        f"{len(degenerate)} degenerate column(s) "
+                        f"(all-zero/constant): {sorted(degenerate)[:10]}"
+                    ),
+                    details={"columns": degenerate},
+                ))
+
+        # schema_changed 경고 게이트 (PORT-13): dataset_registry 의 버전 비교
+        # 결과가 게이트 verdict 에 반영되도록 배선.
+        if version_diff and version_diff.get("schema_changed"):
+            logger.warning(
+                "QualityGate [%s] schema changed between versions %s → %s "
+                "(added=%s, removed=%s)",
+                source_name,
+                version_diff.get("version_a"), version_diff.get("version_b"),
+                version_diff.get("columns_added"),
+                version_diff.get("columns_removed"),
+            )
+            validation.checks.append(CheckResult(
+                name="schema_changed",
+                status=CheckStatus.WARN,
+                message=(
+                    f"Schema hash changed "
+                    f"{version_diff.get('version_a')} → {version_diff.get('version_b')}"
+                ),
+                details={
+                    "columns_added": version_diff.get("columns_added", []),
+                    "columns_removed": version_diff.get("columns_removed", []),
+                },
+            ))
 
         # Aggregate per-category flags
         schema_valid = self._all_checks_ok(validation, "schema")
@@ -295,6 +358,46 @@ class QualityGate:
         }
 
     # ── Internal helpers ──────────────────────────────────────────────
+
+    @staticmethod
+    def _find_degenerate_columns(df: Any) -> Dict[str, str]:
+        """전부-0 또는 상수 컬럼 검출 → {column: "all_zero" | "constant"}.
+
+        pandas DataFrame 과 pyarrow Table 모두 지원. 0행이거나 스캔이
+        실패한 컬럼은 건너뛴다 (게이트 자체를 막지 않음).
+        """
+        out: Dict[str, str] = {}
+        try:
+            if hasattr(df, "column_names"):  # pyarrow.Table
+                import pyarrow.compute as pc
+                if df.num_rows == 0:
+                    return out
+                for col in df.column_names:
+                    try:
+                        arr = df.column(col)
+                        if pc.count_distinct(arr).as_py() <= 1:
+                            first = arr[0].as_py()
+                            out[col] = (
+                                "all_zero" if first in (0, 0.0) else "constant"
+                            )
+                    except Exception:
+                        continue
+            elif hasattr(df, "columns"):  # pandas.DataFrame
+                if len(df) == 0:
+                    return out
+                for col in df.columns:
+                    try:
+                        series = df[col]
+                        if series.nunique(dropna=False) <= 1:
+                            first = series.iloc[0]
+                            out[col] = (
+                                "all_zero" if first in (0, 0.0) else "constant"
+                            )
+                    except Exception:
+                        continue
+        except Exception:
+            logger.debug("degenerate column scan failed", exc_info=True)
+        return out
 
     def _compute_verdict(
         self,
