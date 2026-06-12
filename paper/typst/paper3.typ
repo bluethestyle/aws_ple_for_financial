@@ -724,7 +724,8 @@ $E_t = 0$ means a single expert captures all weight.
 The entropy ratios reveal three behaviorally distinct task clusters:
 
 *Single-expert dominance* ($E_t$ 0.33--0.43): Tasks such as `top_mcc_shift`
-(MCC category shift prediction) and `segment_prediction` (3-class customer segment)
+(MCC category shift prediction) and `segment_prediction` (4-class customer segment ---
+three named segments plus UNKNOWN)
 are captured by 1--2 experts. These tasks appear to encode simple patterns
 that a single specialized expert --- DeepFM for transactional features,
 or HGCN for hierarchical segments --- handles near-optimally.

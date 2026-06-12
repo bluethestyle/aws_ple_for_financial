@@ -1,7 +1,8 @@
 # =============================================================================
 # Santander Customer Transactions Pipeline Configuration
-# 941,132 users x 89 columns x 13 tasks x 7 shared experts
-# (was 18 tasks; 4 deterministic-leakage removed 2026-04-10, has_nba folded 2026-04-12)
+# 941,132 users x 89 columns x 12 tasks x 7 shared experts
+# (was 18 tasks; 4 deterministic-leakage removed 2026-04-10, has_nba folded 2026-04-12,
+#  segment_prediction removed 2026-05-01 -- deterministic leakage, commit 541a982)
 # =============================================================================
 # User-level synthetic dataset with product holdings, transaction sequences,
 # and demographic attributes.  Pre-aggregated -- no transaction-level joins.
@@ -16,7 +17,8 @@ adapter: santander
 feature_groups_file: configs/santander/feature_groups.yaml
 
 # ---------------------------------------------------------------------------
-# Tasks -- 13 tasks across 4 tiers  (was 18→14→13; has_nba folded into nba_primary)
+# Tasks -- 12 tasks across 4 tiers  (was 18→14→13→12; has_nba folded into nba_primary,
+#                                    segment_prediction removed 2026-05-01)
 # ---------------------------------------------------------------------------
 # NOTE: fraud_risk excluded -- synth_fraud_ratio is ALL ZERO (useless label)
 # NOTE: has_nba folded into nba_primary (class 0 = no NBA, 2026-04-12)
