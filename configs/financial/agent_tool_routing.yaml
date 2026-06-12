@@ -1,11 +1,14 @@
 # 추론 에이전트 도구 라우팅 (BedrockDialogSession 동적 선택용)
 # ─────────────────────────────────────────────────────────────
-# 온프렘 sync(2026-06-09). 스키마=agent_tools.yaml, 구현=tool_wrappers.py.
-# 이 파일은 "어떤 문제(focus)에 어떤 도구를 LLM에 노출할지"만 관리.
+# 온프렘 sync(2026-06-09), AWS 도구명 정합(2026-06-12). 스키마=agent_tools.yaml,
+# 구현=tool_wrappers.py. 이 파일은 "어떤 문제(focus)에 어떤 도구를 LLM에 노출할지"만 관리.
 #   - focus_keys 미지정 → curated(정적 폴백)
 #   - focus_keys 지정    → common + tool_map[focus] 합집합 → availability 필터
-# 미존재 시 bedrock_dialog 내장 기본값으로 폴백. tool_map 도구명은 AWS agent_tools.yaml 에
-# 실제 존재하는 것으로 조정할 것(없는 도구는 get_bedrock_tools 가 자동 제외).
+# 미존재 시 bedrock_dialog 내장 기본값으로 폴백.
+# tool_map 도구명은 agent_tools.yaml 에 실존해야 한다 (tests/test_agent_tool_routing.py 가 검증).
+# CP5/CP6 의 AWS 구현: CP5 서빙 헬스=check_feature_store_health,
+# CP6 추천 감사 아카이브=read_audit_archive (온프렘 check_served_artifact /
+# read_recommendation_output 의 AWS 등가물 — pipeline_reports.py 등록명 기준).
 
 curated:
   ops:
@@ -22,8 +25,9 @@ tool_map:
   CP2: [read_feature_stats, detect_drift]
   CP3: [read_experiment_metrics]
   CP4: [read_distillation_fidelity]
-  CP5: [check_served_artifact]
-  CP6: [read_recommendation_output, check_served_artifact]
+  CP5: [check_feature_store_health]
+  CP6: [read_audit_archive, check_feature_store_health]
+  CP7: [query_cloudwatch_metrics]
   herding:    [detect_herding]
   fairness:   [evaluate_fairness]
   regulatory: [run_regulatory_checks]

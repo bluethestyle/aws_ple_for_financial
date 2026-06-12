@@ -40,7 +40,9 @@ _ROUTING_DEFAULT = {
     "tool_map": {
         "CP1": ["read_ingestion_manifest"], "CP2": ["read_feature_stats", "detect_drift"],
         "CP3": ["read_experiment_metrics"], "CP4": ["read_distillation_fidelity"],
-        "CP5": ["check_served_artifact"], "CP6": ["read_recommendation_output", "check_served_artifact"],
+        "CP5": ["check_feature_store_health"],
+        "CP6": ["read_audit_archive", "check_feature_store_health"],
+        "CP7": ["query_cloudwatch_metrics"],
         "herding": ["detect_herding"], "fairness": ["evaluate_fairness"],
         "regulatory": ["run_regulatory_checks"], "lineage": ["trace_feature_lineage"],
     },
