@@ -1236,7 +1236,7 @@ Avg AUC covers binary tasks only; NDCG\@3 is reported for nba\_primary (7-class 
     [SB + adaTT], [0.6708], [0.7048], [0.6791], [0.1999], [0.9606],
     [Sigmoid + adaTT], [0.6717], [0.7127], [0.6646], [0.2013], [0.9598],
     [Softmax + adaTT], [0.6722], [0.7022], [0.6856], [0.2015], [0.9597],
-    table.cell(colspan: 6, align: left, [_GradSurgery gradient-level projection†_]),
+    table.cell(colspan: 6, align: left, [_GradSurgery gradient-level projection‡_]),
     [SB + GradSurgery (exp.)], [0.6704], [0.6963], [0.6860], [0.1986], [0.9614],
     [Softmax + GradSurgery (exp.)], [0.6726], [0.6918], [0.6830], [*0.2027*], [0.9588],
     [Sigmoid + GradSurgery (exp.)], [0.6721], [0.6888], [0.6811], [0.2020], [0.9603],
