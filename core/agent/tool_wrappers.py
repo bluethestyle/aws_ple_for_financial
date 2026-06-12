@@ -576,22 +576,56 @@ def _get_case_store(**kwargs):
     return DiagnosticCaseStore(store_path=store_path)
 
 
+def _embed_finding_titan(finding: str) -> "np.ndarray":
+    """Bedrock Titan Embed Text v2 임베딩 (1024D, 다국어) — 온프렘 bge-m3 등가.
+
+    호출자는 AGENT_EMBED_BACKEND=titan 옵트인일 때만 이 경로를 탄다.
+    """
+    import os
+    import numpy as np
+    import boto3
+    model_id = os.getenv("AGENT_EMBED_MODEL_ID", "amazon.titan-embed-text-v2:0")
+    client = boto3.client(
+        "bedrock-runtime", region_name=os.getenv("AGENT_EMBED_REGION") or None,
+    )
+    body = json.dumps({
+        "inputText": finding[:8000],
+        "dimensions": 1024,
+        "normalize": True,
+    })
+    resp = client.invoke_model(modelId=model_id, body=body)
+    embedding = json.loads(resp["body"].read())["embedding"]
+    return np.asarray(embedding, dtype=np.float32)
+
+
 def _embed_finding(finding: str, dim: int = 384) -> "np.ndarray":
     """Return a unit-normalised embedding vector for *finding*.
 
     Strategy (in order of preference):
-    1. TF-IDF bag-of-words via sklearn (produces meaningful cosine distances).
-    2. Hash-based fallback when sklearn is unavailable (warns once).
+    1. Bedrock Titan Embed Text v2 (1024D, 다국어) — env 옵트인
+       ``AGENT_EMBED_BACKEND=titan`` (Bedrock 과금, 기본 off). 온프렘
+       bge-m3 의 AWS 등가물. 실패 시 아래로 폴백.
+    2. HashingVectorizer bag-of-words via sklearn (token-presence hashing —
+       정확히는 TF-IDF 가 아니다; 단일 문서라 IDF 항이 없음).
+    3. Hash-based fallback when sklearn is unavailable (warns once).
 
     The store uses cosine / L2 similarity so the exact dimensionality does not
     need to match a pre-trained model — relative distances are what matters for
-    case retrieval.
+    case retrieval. 단, 백엔드 전환 시 기존 store 의 벡터(384D)와 차원이
+    달라지므로 titan(1024D) 전환은 새 store_path 에서 시작해야 한다.
     """
+    import os
     import numpy as np
+    if os.getenv("AGENT_EMBED_BACKEND", "").strip().lower() == "titan":
+        try:
+            return _embed_finding_titan(finding)
+        except Exception as e:
+            logger.warning(
+                "Titan 임베딩 실패 — HashingVectorizer 폴백: %s", e,
+            )
     try:
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        # Single-document vectoriser: project to *dim* via hashing trick on
-        # TF-IDF term indices so the output is always length *dim*.
+        # Single-document vectoriser: project to *dim* via the hashing trick
+        # so the output is always length *dim*.
         from sklearn.feature_extraction.text import HashingVectorizer
         vec_model = HashingVectorizer(
             n_features=dim, norm="l2", alternate_sign=False, token_pattern=r"(?u)\b\w+\b"
