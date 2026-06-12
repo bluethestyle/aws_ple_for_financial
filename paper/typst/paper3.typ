@@ -56,10 +56,11 @@
   --- 7 binary, 3 multiclass, 3 regression ---
   in a financial product recommendation system with 7 structurally distinct experts
   and 1M synthetic customers.
-  Thirteen findings organize into three themes.
-  *Loss dynamics and gating* (Findings 1--6): an uncertainty-weighting implementation bug silently suppresses minority-type tasks (+0.018 NDCG\@3 when fixed); softmax gating outperforms sigmoid for heterogeneous task mixes, *reversing* the homogeneous-setting advantage; learned uncertainty weights converge identically across architectures; 10-epoch budgets may be insufficient for structural comparisons; GroupTaskExpert pre-gating degrades multiclass performance in mixed-type groups; gate entropy analysis shows extraction-layer specialization (entropy ratios 0.33--0.88) while attention-level aggregation collapses to uniform averaging (ratio 1.00), and composite val-loss is an unreliable checkpoint signal once regression tasks are present.
+  Fourteen findings organize into four themes.
+  *Loss dynamics and gating* (Findings 1--6): an uncertainty-weighting implementation bug silently suppresses minority-type tasks (+0.018 NDCG\@3 when fixed); softmax gating outperforms sigmoid for heterogeneous task mixes, *reversing* the homogeneous-setting advantage; learned uncertainty weights converge identically across architectures; shared-bottom baselines overfit extended epoch budgets that gated PLE variants absorb without regularisation; GroupTaskExpert pre-gating degrades multiclass performance in mixed-type groups; gate entropy analysis shows extraction-layer specialization (entropy ratios 0.33--0.88) while attention-level aggregation collapses to uniform averaging (ratio 1.00), and composite val-loss is an unreliable checkpoint signal once regression tasks are present.
   *Fusion augmentation trade-offs* (Finding 7): a 9-way comparison isolates two positive recipes on disjoint axes --- output-space boosting with gradient isolation (BRP-detached, hard-task rescue) and inverse-gate auxiliary supervision (NEAS, aggregate-AUC gain) --- that do *not* compose additively.
   *Causal expert reinterpretation* (Findings 8--13): the causal expert's adjacency matrix $bold(W)$ collapses to zero in every trained checkpoint examined, rendering its forward equivalent to a plain MLP; a two-part patch (NOTEARS reconstruction loss + initialisation rescale) restores DAG learning at zero task-metric cost; routing the functional DAG into consumable outputs yields a Causal Explainability Head (CEH, per-sample attribution, Pearl Rung 1) and a Causal Guardrail (CG, z-space-Mahalanobis OOD detection at 100% TPR / 5% FPR on three synthetic probes); W-amplification via init $0.1 arrow 0.3$ + $lambda_"recon" 0.5 arrow 2.0$ grows the adjacency matrix $14 times$ in Frobenius norm with zero primary-task cost, establishing that the "decorative DAG" is a training-choice artefact, not an architectural constraint; and a counterfactual probe (CCP, Pearl Rung 3) shows that at baseline W scale the DAG carries $0.16%$ of the counterfactual effect but at the amplified scale the mediation ratio rises to $32%$ at median and $61%$ at the 95th percentile, establishing that Pearl's Rung 3 is viable on top of the amplified teacher; and a CEH v3 variant replacing the causal-encoder-output target with a specific task-logit gradient target is an honest negative result --- the head re-collapses to a global importance pattern despite training signal, showing that target design for attribution is more sensitive than the v1$arrow$v2 pivot suggested.
+  *Serving-side distillation control* (Finding 14): distilling the 13-task teacher into per-task gradient-boosted students passes operational gates (AUC gap $<= 0.0125$, student calibration error $<= 0.0114$) while behavioural similarity shows a structural floor (teacher--student agreement $0.75$--$0.82$, ranking correlation $0.78$--$0.91$) that is invariant across three generations of gate semantics scored on identical predictions; a single-tier gate over both metric families therefore always fails --- and an always-failing gate invites bypass --- so the control splits into a blocking operational tier and an informational behavioural-diagnostic tier.
   We distill these observations into practical guidelines for
   practitioners scaling MTL beyond the homogeneous-task regime.
 
@@ -100,10 +101,11 @@ The result is a regime that large-scale CTR teams have no reason to enter
 (they can afford model-per-task) but that resource-constrained regulated
 industries are forced into.
 
-This paper reports thirteen empirical findings from this scaling
-experience, organised into three themes: loss dynamics and gating
-(Findings 1--6), fusion augmentation trade-offs (Finding 7), and
-causal expert reinterpretation (Findings 8--13). We make no claims
+This paper reports fourteen empirical findings from this scaling
+experience, organised into four themes: loss dynamics and gating
+(Findings 1--6), fusion augmentation trade-offs (Finding 7),
+causal expert reinterpretation (Findings 8--13), and serving-side
+distillation control (Finding 14). We make no claims
 of state-of-the-art performance; instead, we document *phenomena
 and practical guidelines* that emerge when MTL is pushed beyond the
 homogeneous-task regime.
@@ -120,9 +122,13 @@ hypothesis discrimination across A--E (signal cleaning, epoch
 budget, ensemble, gate overfitting, regularisation) and per-task v14
 numbers across all 13 tasks (Findings 1--6), (b) a 9-way fusion-
 mechanism comparison that isolates the design space of "what kinds of
-fusion-augmentation work on top of CGC" (Finding 7), and (c) a
+fusion-augmentation work on top of CGC" (Finding 7), (c) a
 causal expert reinterpretation arc that has no counterpart in
-Paper 1 (Findings 8--13).
+Paper 1 (Findings 8--13), and (d) a measurement-side analysis of the
+serving stack's distillation fidelity gate (Finding 14) whose
+governance counterpart --- audit-trail semantics and operator-override
+risk --- is treated in Paper 2's discussion of fidelity-gate
+semantics.
 Paper 2 (From Prediction to Persuasion: Agentic Recommendation Reason
 Generation for Regulatory-Compliant Financial AI) takes the outputs
 of two of our findings --- the per-sample feature-attribution vector
@@ -213,8 +219,10 @@ Our contributions:
   logit and collapsed the head back below the v1 baseline
   (variance ratio $0.719 arrow 0.043$), documenting that the
   demeaned target is narrowly effective rather than robustly so
-  (Section 4.13). Audit-log integration and cross-dataset reproduction
-  remain deferred.
+  (Section 4.13). Audit-log integration has since been implemented ---
+  the per-sample attribution vector feeds
+  `AuditLogger.log_attribution` in the companion serving stack
+  (Paper 2 v2) --- while cross-dataset reproduction remains deferred.
 
   Causal Guardrail (CG), a per-prediction reliability flag derived
   from the causal expert's latent $bold(z)$. A W-reconstruction
@@ -246,6 +254,18 @@ Our contributions:
   improvement is narrowly target-dependent rather than a robust
   design principle and closing that branch of CEH exploration
   (Section 4.13).
+
+- A re-analysis of three successive generations of distillation
+  fidelity reports (Finding 14), all scored on *identical*
+  teacher--student predictions, isolating a behavioural-similarity
+  floor inherent to the cross-architecture PLE $arrow.r$ LightGBM
+  pair (teacher--student agreement $0.75$--$0.82$, ranking
+  correlation $0.78$--$0.91$) beneath cleanly passing operational
+  metrics (AUC gap $<= 0.0125$, student calibration error
+  $<= 0.0114$), and the control-design conclusion that fidelity
+  gates must be partitioned into a blocking operational tier and an
+  informational behavioural tier --- because a gate that always
+  fails is a gate that gets bypassed (Section 4.14).
 
 The system, data generator, and ablation scripts are publicly available.#footnote[
   https://github.com/bluethestyle/aws\_ple\_for\_financial
@@ -380,11 +400,31 @@ Note that the Consumption group mixes 5 binary tasks with
 
 = Results and Analysis
 
-All experiments use 1M synthetic customers, 1211 features (Phase 0, benchmark_v12, 17 groups),
-10 epochs, batch size 5632, learning rate 0.0005, AMP (FP16), cosine annealing
-with warm restarts ($T_0 = 10$). Uncertainty weighting is applied in all runs
-unless noted otherwise. Each configuration is run with 3 seeds; we report
-medians. Metrics are reported per task type: Avg AUC (binary), Avg F1-macro
+All experiments share the *benchmark_v12* synthetic generation schema:
+1M customers, 13 tasks (7 binary, 3 multiclass, 3 regression). Three
+version labels recur in this paper and are easily conflated, so we fix
+their referents here. *benchmark_v12* names the data *generation*
+schema. *Phase 0 v3/v4* names the *feature-engineering build* version
+(the 1211-feature / 17-group build described in Section 3). *v13/v14
+phase0* name successive *preprocessing revisions* applied when the
+benchmark moved to the SageMaker pipeline: v13 carries three defects
+(HMM state duplication, GMM $K = 20$ dead clusters, probability
+columns passed through the scaler), and v14 fixes them (HMM
+mode-split, GMM $K = 14$, probability columns excluded from scaling;
+1210 features).
+
+Two run families appear in the tables, and every caption is labelled
+with its source. *Local v12 runs* (Findings 1--3 and 5; RTX 4070,
+349 model-input features per the run artefacts) use batch size 5632,
+learning rate 0.0005, AMP (FP16), cosine annealing with warm restarts
+($T_0 = 10$), uncertainty weighting, at 10 or 20 epochs as noted per
+table. *v14 phase0 SageMaker runs* (Findings 4, 6, 7;
+ml.g4dn.2xlarge, fp32 DuckDB streaming) run 15 or 30 epochs as noted.
+Findings 8--13 are diagnostic analyses of local v12 checkpoints plus
+targeted SageMaker re-runs as noted; Finding 14 re-analyses the v14
+distillation round's fidelity reports. All runs reported here are
+single-seed (42); we make no cross-seed claims (see Limitations).
+Metrics are reported per task type: Avg AUC (binary), Avg F1-macro
 (multiclass), Avg MAE (regression), NDCG\@3 and Acc\@3 (ranking).
 
 == Finding 1: The Silent Uncertainty Weighting Bug <find1>
@@ -420,20 +460,22 @@ multiclass learning through sheer gradient volume.
 
 #figure(
   table(
-    columns: (auto, auto, auto, auto),
+    columns: (auto, auto),
     inset: 5pt,
-    align: (left, right, right, right),
+    align: (left, right),
     stroke: 0.5pt,
-    table.header([*Metric*], [*Buggy*], [*Fixed*], [*Δ*]),
-    [Avg AUC (binary)], [{{buggy_auc}}], [{{fixed_auc}}], [{{delta_auc}}],
-    [Avg F1-macro (multiclass)], [{{buggy_f1}}], [{{fixed_f1}}], [+0.031],
-    [NDCG\@3], [{{buggy_ndcg}}], [{{fixed_ndcg}}], [+0.018],
-    [Avg MAE (regression)], [{{buggy_mae}}], [{{fixed_mae}}], [{{delta_mae}}],
-    [Val Loss], [{{buggy_valloss}}], [{{fixed_valloss}}], [{{delta_valloss}}],
+    table.header([*Metric*], [*$Delta$ (fixed $-$ buggy)*]),
+    [Avg F1-macro (multiclass)], [+0.031],
+    [NDCG\@3], [+0.018],
   ),
-  caption: [Impact of uncertainty weighting bug fix (shared-bottom baseline).
-  F1-macro and NDCG\@3 improve substantially; binary AUC change is minimal
-  because binary tasks were not suppressed.],
+  caption: [Impact of the uncertainty-weighting bug fix (shared-bottom
+  baseline, early benchmark_v12 ablation round). Only the deltas of the
+  two affected metric families were retained in the project's
+  experiment record; the buggy configuration's run artefacts were not
+  preserved, so we do not reproduce absolute values. Binary AUC was
+  essentially unaffected --- binary tasks were not the suppressed type.
+  Both deltas exceed any architecture-level change measured in the
+  ablation study.],
 ) <tab:bugfix>
 
 *Lesson*: Uncertainty weighting implementations must be verified against the
@@ -446,8 +488,8 @@ loss balance that favors the majority task type.
 Existing literature suggests that sigmoid gating outperforms softmax
 in PLE/MoE architectures @sigmoid_moe2024.
 Our results show this holds only when tasks are homogeneous.
-With 13 heterogeneous tasks, softmax *consistently* outperforms sigmoid
-on ranking metrics:
+With 13 heterogeneous tasks, softmax outperforms sigmoid
+on the ranking metric:
 
 #figure(
   table(
@@ -456,14 +498,24 @@ on ranking metrics:
     align: (left, right, right, right, right, right),
     stroke: 0.5pt,
     table.header([*Variant*], [*Val Loss*], [*Avg AUC*], [*Avg F1m*], [*Avg MAE*], [*NDCG\@3*]),
-    [Shared Bottom], [{{sb_valloss}}], [{{sb_auc}}], [{{sb_f1}}], [{{sb_mae}}], [{{sb_ndcg}}],
-    [PLE Softmax], [{{soft_valloss}}], [{{soft_auc}}], [{{soft_f1}}], [{{soft_mae}}], [*{{soft_ndcg}}*],
-    [PLE Sigmoid], [{{sig_valloss}}], [{{sig_auc}}], [{{sig_f1}}], [{{sig_mae}}], [{{sig_ndcg}}],
-    [PLE Sigmoid + adaTT], [{{sigadatt_valloss}}], [{{sigadatt_auc}}], [{{sigadatt_f1}}], [{{sigadatt_mae}}], [{{sigadatt_ndcg}}],
+    [Shared Bottom], [14.641], [0.6691], [0.2025], [0.9594], [0.6849],
+    [PLE Softmax], [14.637], [0.6716], [*0.2026*], [*0.9567*], [*0.7002*],
+    [PLE Sigmoid], [*14.635*], [*0.6724*], [0.2021], [0.9605], [0.6943],
   ),
-  caption: [Gate type comparison on 13 heterogeneous tasks.
-  Softmax achieves the best NDCG\@3. Bold = best per column.],
+  caption: [Gate type comparison on 13 heterogeneous tasks
+  (benchmark_v12 local runs, 20 epochs $= 2 T_0$, seed 42, final
+  epoch). Bold = best per column. Softmax takes the multiclass and
+  ranking columns (F1-macro, NDCG\@3); sigmoid edges it on aggregate
+  AUC and val loss by margins several times smaller than the NDCG\@3
+  gap ($+0.0008$ AUC vs.\ $-0.0059$ NDCG\@3).],
 ) <tab:gatetype>
+
+A fourth variant stacking loss-level adaTT on the sigmoid gate is
+omitted from the 20-epoch table because its 20-epoch run did not
+complete; at the 10-epoch budget it is a null effect on aggregate AUC
+relative to plain sigmoid ($0.6728 arrow.r 0.6717$,
+$Delta = -0.0011$) --- the result Finding 7's nine-way comparison
+builds on.
 
 *Why softmax wins here*: In a softmax gate, each task's attention over experts
 sums to 1, creating *competitive allocation*. When a binary task claims
@@ -497,23 +549,25 @@ are *virtually identical* between shared-bottom and PLE-softmax:
     align: (left, right, right, right),
     stroke: 0.5pt,
     table.header([*Task*], [*Shared-Bottom*], [*PLE Softmax*], [*Δ*]),
-    [has\_nba (binary)], [{{sb_hasnba_uw}}], [{{ple_hasnba_uw}}], [{{delta_hasnba_uw}}],
+    [will\_acquire\_payments (binary)], [0.3981], [0.3974], [$-0.0007$],
     [nba\_primary (7-class)], [0.3353], [0.3354], [+0.0001],
     [next\_mcc (50-class)], [0.3360], [0.3361], [+0.0001],
-    [cross\_sell (regression)], [{{sb_cross_uw}}], [{{ple_cross_uw}}], [{{delta_cross_uw}}],
-    [churn\_signal (binary)], [{{sb_churn_uw}}], [{{ple_churn_uw}}], [{{delta_churn_uw}}],
+    [cross\_sell\_count (regression)], [0.6652], [0.6645], [$-0.0007$],
+    [churn\_signal (binary)], [0.3432], [0.3439], [+0.0007],
   ),
-  caption: [Learned uncertainty weights at epoch 10 (selected tasks).
-  Differences are at the 4th decimal place regardless of architecture.],
+  caption: [Learned uncertainty weights at epoch 10 (selected tasks,
+  benchmark_v12 local 10-epoch runs). Differences are at the 4th
+  decimal place regardless of architecture.],
 ) <tab:uw-convergence>
 
 This means uncertainty weighting performs *loss-scale normalization* ---
 mapping each task's loss to a comparable magnitude --- but does not provide
 *structural protection* against gradient interference.
 The structural protection comes from gating (Section 4.2):
-with identical uncertainty weights, softmax still achieves
-NDCG\@3 {{soft_ndcg}} vs.\ shared-bottom {{sb_ndcg}},
-a +{{delta_ndcg_gate}} improvement attributable purely to gate structure.
+with near-identical uncertainty weights, softmax still achieves
+NDCG\@3 0.7002 vs.\ shared-bottom 0.6849 on the 20-epoch comparison
+of @tab:gatetype, a +0.0153 improvement attributable purely to gate
+structure.
 
 *Implication*: Practitioners should not rely on uncertainty weighting alone
 to handle task-type conflicts. It balances scales but does not prevent
@@ -600,12 +654,16 @@ GTE forces shared representation learning across incompatible loss types:
     align: (left, right, right),
     stroke: 0.5pt,
     table.header([*Variant*], [*NDCG\@3*], [*Avg AUC*]),
-    [PLE Softmax], [{{soft_ndcg}}], [{{soft_auc}}],
-    [PLE Sigmoid + GTE], [{{siggte_ndcg}}], [{{siggte_auc}}],
-    [Δ], [{{delta_gte_ndcg}}], [{{delta_gte_auc}}],
+    [PLE Softmax], [0.7002], [0.6716],
+    [PLE Sigmoid + GTE], [0.6632], [0.6720],
+    [Δ], [$-0.0370$], [+0.0004],
   ),
-  caption: [GTE impact. NDCG\@3 drops substantially when GTE forces
-  mixed-type groups to share pre-gate representations.],
+  caption: [GTE impact (benchmark_v12 local runs, 20 epochs). NDCG\@3
+  drops substantially when GTE forces mixed-type groups to share
+  pre-gate representations, while aggregate AUC is untouched. The drop
+  is attributable to GTE rather than to the gate type: plain PLE
+  sigmoid scores NDCG\@3 0.6943 (@tab:gatetype), so GTE costs
+  $-0.0311$ even against its own gate-type baseline.],
 ) <tab:gte>
 
 The mechanism: GTE pools expert outputs at the group level *before*
@@ -821,9 +879,13 @@ $ "score"_"ckpt" = alpha dot.c "AvgAUC" + beta dot.c "NDCG@3" + gamma dot.c (1 -
 
 where $alpha, beta, gamma$ are set to weight task types equally
 (e.g., $alpha = beta = gamma = 1/3$) rather than proportional to task count.
-In our 13-task configuration, using this composite score selects epoch 10
-as the optimal checkpoint, matching the AUC peak --- not epoch 29, which
-minimizes val loss.
+On the v14 trajectory of @tab:loss-metric-decouple no single epoch is
+optimal for all three task types --- NDCG\@3 peaks at epoch 5, val
+loss bottoms at epoch 13, AUC peaks at epoch 15, and MAE keeps
+improving through epoch 20. A val-loss monitor would freeze epoch 13,
+sacrificing both the AUC peak two epochs later and the early ranking
+optimum; the type-weighted composite makes that trade-off explicit
+instead of hiding it inside the loss scale.
 
 *Guideline*: When regression tasks are present in a heterogeneous MTL system,
 (1) define a composite checkpoint metric across task types before training begins,
@@ -1385,7 +1447,8 @@ plus an inference-time side output.
 
 Inference: `expert._last_attribution` exposes a per-sample vector of
 length $"input_dim"$. The pipeline-side integration with the audit
-log (HMAC-signed persistence, SR 11-7 MRM) is Paper 2 v2 scope.
+log (HMAC-signed persistence, SR 11-7 MRM) is delivered in Paper 2
+v2 via `AuditLogger.log_attribution`.
 
 === MV Result (SageMaker teacher_full + CEH, 10 epochs, softmax gate)
 
@@ -1440,10 +1503,12 @@ CEH MV does *not* yet verify:
   (Section 4.9.3) showed a near-global collapse under the raw target
   and motivated the v2 iteration (Section 4.9.4), which resolved the
   collapse.
-- *Audit-log utility.* The per-sample vector is now available but
-  has not yet been routed into an HMAC-signed, append-only audit log
-  record that regulators can query. That integration is Paper 2 v2
-  scope.
+- *Audit-log utility.* The wiring itself has since been delivered in
+  Paper 2 v2 (`AuditLogger.log_attribution`, an HMAC-signed
+  hash-chained per-prediction record); what this paper does not
+  verify is whether the persisted attributions are *useful* to a
+  regulator --- that depends on the quality dimension evaluated
+  below.
 - *Downstream metric impact.* CEH's small AUC lift is $+0.0015$
   over post-patch softmax, within the noise band of the 9-way
   comparison. We do not claim it as a significant improvement.
@@ -1569,9 +1634,10 @@ high-variance groups that dominated the raw head.
   target. Quality is measured by the target-independent metrics
   in @tbl:ceh-v1-v2 (variance ratio, top-K overlap, stability).
 - Per-sample discrimination is necessary but not sufficient for
-  regulator-usable explanations. Human evaluation on sample cases,
-  alignment with domain expectations, and audit-log integration
-  remain outside this paper's scope.
+  regulator-usable explanations. Human evaluation on sample cases and
+  alignment with domain expectations remain outside this paper's
+  scope; audit-log integration is implemented in the companion
+  paper's v2 audit infrastructure.
 - We report v2 as a single-seed 10-epoch run on Santander. Cross-seed
   stability and cross-dataset reproduction are not verified here.
 
@@ -2040,12 +2106,191 @@ success is a specific sweet spot rather than a general recipe.
 Cost: one SageMaker job (\$0.13). Negative result treated as an
 honest closed branch of the target-design search space.
 
+== Finding 14: Behavioural-Similarity Floor in Cross-Architecture Distillation, and the Two-Tier Fidelity Gate <find14>
+
+The serving stack distils the 13-task PLE teacher into per-task
+LightGBM students --- a *cross-architecture* pair: a smooth
+mixture-of-experts teacher against a tree ensemble whose decision
+boundaries are axis-aligned step functions --- and validates each
+student against a fidelity gate before deployment. The v14
+distillation round (teacher = the regularised PLE-softmax variant of
+Finding 4) produced three successive generations of fidelity reports
+(v3 $arrow.r$ v4 $arrow.r$ v6 in the run artefacts), all scored on
+the *same* teacher and student prediction files: the students were
+never retrained between generations; only the gate's measurement
+semantics changed. The report triplet is therefore a small controlled
+dataset about the gate itself, and this section re-analyses it from
+the measurement side at zero additional training compute. The
+companion paper treats the governance side of the same episode ---
+audit-trail readability and operator-override risk --- in its
+discussion of fidelity-gate semantics; the two accounts are
+complementary, not duplicated.
+
+=== Three Gate Generations on Identical Predictions
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    align: (left, left, left, left),
+    stroke: 0.5pt,
+    inset: 5pt,
+    table.header([*Gate*], [*Scope*], [*cal\_gap semantics*], [*Verdict*]),
+    [v3], [10 tasks (incl.\ 3 fallback-routed)], [$|"ECE"_"teacher" - "ECE"_"student"|$], [0 / 10 pass],
+    [v4], [7 distilled tasks], [student ECE], [0 / 7 pass],
+    [v6], [7 distilled tasks], [student ECE], [Tier 1: 6 / 7 pass; Tier 2: 7 / 7 flagged],
+  ),
+  caption: [Three generations of the fidelity gate scored on identical
+  v14 teacher--student predictions. Per-task metric values agree
+  across the three reports to floating-point re-evaluation noise;
+  only scope, metric definition, and tier semantics differ. The
+  student fleet never changed --- the measurement did.],
+) <tab:fidelity-generations>
+
+Three defects were found and fixed in sequence
+(`core/training/distillation_validator.py`; commits `0d6dc34` and
+`d7cb38b` in the public repository):
+
++ *Scope.* The v3 gate scored every task that had a trained student,
+  including three tasks the serving fallback had explicitly routed
+  *away* from soft-label distillation because the teacher was
+  unreliable on them. The gate then penalised those students for not
+  matching the teacher --- exactly the divergence the routing was
+  designed to introduce. The starkest case is nba\_primary: the
+  fallback student scores F1-macro $0.983$ against ground truth
+  versus the teacher's $0.278$, and the v3 gate fails it for an
+  "f1\_macro\_gap" of $0.705$. The fix scopes the gate to the
+  `distill_tasks` set (the v4/v6 reports carry an explicit
+  `gate_scope: "distilled_tasks_only"` field).
+
++ *Calibration semantics.* v3 defined `calibration_gap` as
+  $|"ECE"("teacher") - "ECE"("student")|$, which fails a
+  well-calibrated student whenever the teacher itself is poorly
+  calibrated (typical for focal-loss training on imbalanced binary
+  tasks). Redefining it as the student's *own* ECE against
+  ground-truth labels collapses churn\_signal's value from $0.2452$
+  to $0.0045$ --- a $54 times$ change from a definition fix, with no
+  model change.
+
++ *Tier conflation.* After both fixes the v4 gate still passed
+  $0 / 7$: every operational metric cleared its threshold on every
+  binary task, but the gate required behavioural-similarity metrics
+  (agreement, ranking correlation) to clear simultaneously. The v6
+  gate separates the two families into a blocking operational tier
+  and an informational diagnostic tier (`informational_failures`,
+  aggregated as `tier2_violation_count`), and the verdict becomes
+  6 / 7.
+
+=== The Behavioural-Similarity Floor
+
+@tab:fidelity-floor reports the v6 per-task values for the six
+distilled binary tasks. The operational metrics clear their
+thresholds by a wide margin --- worst-case AUC gap $0.0125$ and
+worst-case student ECE $0.0114$ against thresholds of $0.05$ --- while
+the behavioural metrics sit in a narrow band below their thresholds
+on essentially every task: agreement $0.754$--$0.820$ against
+$0.85$, ranking correlation $0.870$--$0.913$ against $0.90$ (only
+two of six tasks clear it).
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    align: (left, right, right, right, right),
+    stroke: 0.5pt,
+    inset: 5pt,
+    table.header([*Task*], [*AUC gap*], [*Student ECE*], [*Agreement*], [*Rank corr.*]),
+    [churn\_signal], [0.0033], [0.0045], [0.8134], [0.8949],
+    [will\_acquire\_deposits], [0.0068], [0.0047], [0.7545], [0.8703],
+    [will\_acquire\_investments], [0.0016], [0.0038], [0.8186], [0.8895],
+    [will\_acquire\_accounts], [0.0125], [0.0114], [0.7999], [0.9014],
+    [will\_acquire\_lending], [0.0001], [0.0038], [0.8204], [0.8847],
+    [will\_acquire\_payments], [0.0116], [0.0076], [0.7973], [0.9135],
+    [(threshold)], [$<= 0.05$], [$<= 0.05$], [$>= 0.85$], [$>= 0.90$],
+  ),
+  caption: [Per-task fidelity metrics for the six distilled binary
+  tasks (v6 report; identical values in v3/v4). Operational metrics
+  (left pair) pass with $4 times$--$10 times$ headroom; behavioural
+  metrics (right pair) sit at a floor just below their thresholds,
+  uniformly across tasks. The uniformity across tasks and the
+  invariance across three measurement generations mark the floor as a
+  property of the PLE $arrow.r$ LightGBM architecture pair, not of
+  any individual student.],
+) <tab:fidelity-floor>
+
+The mechanism is the architecture pair itself: the student can match
+the teacher's global ranking (witness the near-zero AUC gaps) while
+disagreeing on individual point estimates, because a tree ensemble
+cannot interpolate the teacher's smooth decision surface. The floor
+is not a defect to be fixed by retraining --- three generations of
+re-measurement on identical predictions could not move it, and no
+student-side change would, short of changing the student family.
+
+The seventh distilled task, cross\_sell\_count (count regression), is
+the one remaining Tier-1 failure, and it exposes a residual semantics
+question in the regression branch. Its blocking metric is
+`rmse_gap` $= 0.3177 > 0.10$ --- but the gap is the *absolute
+difference* between teacher RMSE ($1.5245$) and student RMSE
+($1.2068$): the student is $0.32$ RMSE *better* than its teacher,
+and the gate blocks it for deviating. The regression branch still
+scores similarity-to-teacher rather than student-own quality ---
+the same conflation the calibration fix removed from the binary
+branch. We flag this as an open item rather than a verdict; a
+deviation bound has legitimate uses (a student that beats its
+teacher on aggregate RMSE may still have redistributed errors in
+ways the teacher's validation never exercised), but the asymmetry
+deserves an explicit decision rather than an inherited default.
+
+=== From an Always-Failing Gate to Two Tiers
+
+The control-design consequence is the point of this finding. A
+single-tier gate that requires operational and behavioural metrics
+to pass together is, for this architecture pair, a gate that *always
+fails* --- and an always-failing gate does not stay in force. The
+operational path around it (`skip_fidelity_gate=true`) disables the
+entire control, including the operational checks that were passing
+and are genuinely load-bearing. Relaxing the behavioural thresholds
+to the observed floor was rejected for the complementary reason: it
+erases the metric's remaining value as a drift signal. The adopted
+design separates verdicts by what each metric measures:
+
+- *Tier 1 (blocking, operational)*: is the production scorer broken?
+  AUC gap and student ECE (binary), F1-macro gap (multiclass),
+  MAE/RMSE gap (regression). Failure blocks deployment.
+- *Tier 2 (informational, diagnostic)*: how similar is the student
+  to the teacher? Agreement, ranking correlation, Jensen-Shannon
+  divergence, quartile agreement. Violations are recorded and
+  trended, never blocking --- but a sudden collapse (e.g.\ agreement
+  dropping below $0.5$) still surfaces as an anomaly in the
+  `tier2_violation_count` trend.
+
+=== Position in the Finding Lineage
+
+Finding 14 is the serving-side member of the silent-failure lineage
+that opened this paper. In Finding 1, a control was silently *inert*
+while training looked healthy --- the loss weights were ignored and
+every run converged plausibly. Here, a control was loudly *failing*
+while production quality was healthy. Both are failures of
+measurement semantics rather than of models, and both were invisible
+to aggregate dashboards: Finding 1 because nothing alarmed, Finding
+14 because everything alarmed. Finding 6's lesson recurs one level
+up the stack: just as a composite val-loss is an invalid checkpoint
+criterion when task types differ in metric semantics, a composite
+single-tier gate is an invalid deployment criterion when metric
+families differ in *control* semantics. And Finding 7's caution that
+aggregate AUC can mask per-task structure reappears at serving time
+as operational aggregates masking per-sample behavioural divergence.
+The division of labour with the companion paper is deliberate:
+Paper 2 documents what the gate episode means for governance ---
+audit-trail semantics, regulator readability, override risk --- while
+this section documents what it means for measurement: where the
+floor comes from, which metric definitions were wrong, and what a
+gate must separate to stay in force.
+
 = Discussion
 
 == Practical Guidelines Summary
 
-We distill the thirteen findings into eleven guidelines for practitioners,
-grouped by the three themes.
+We distill the fourteen findings into twelve guidelines for practitioners,
+grouped by the four themes.
 
 === Loss Dynamics and Gating (Findings 1--6)
 
@@ -2143,6 +2388,23 @@ grouped by the three themes.
   default teacher silently reduces the claim to a direct-feed
   observational probe.
 
+=== Serving-Side Distillation Control (Finding 14)
+
++ *Partition fidelity gates by metric semantics, and never leave an
+  always-failing gate in force.* Cross-architecture distillation
+  should be expected to show a behavioural-similarity floor
+  (teacher--student agreement, ranking correlation) beneath cleanly
+  passing operational quality (AUC gap, student calibration), because
+  the student family cannot interpolate the teacher's decision
+  surface. Blocking deployment on the similarity family guarantees
+  permanent failure and invites a blanket override that disables the
+  operational checks too. Block only on student-own quality against
+  ground truth; record similarity as a trended diagnostic. And audit
+  each gate metric's definition for the similarity-vs-quality
+  conflation: a gate that scores $|"teacher" - "student"|$ where the
+  teacher is not the quality standard will fail students for being
+  better than their teacher.
+
 == Limitations
 
 *Synthetic data*: All experiments use a synthetic benchmark with controlled
@@ -2182,13 +2444,26 @@ expert expectations or with alternative attribution methods
 (Integrated Gradients, DAG-path traversal). A human-evaluation pass
 is future work.
 
-*Remaining Axis-3 candidates (CTGR, CRCG, CCP)*: Findings 10--11
-establish the precondition for the three unexplored candidates ---
-$bold(W)$ is trainable --- but the candidates themselves are not yet
-evaluated. CG's v1$arrow.r$v2 pivot also introduces a concrete
-prediction (latent-based formulations should be evaluated alongside
-weight-based ones), which has not been tested on the remaining
-candidates.
+*Remaining Axis-3 candidates (CTGR, CRCG)*: Findings 10--11
+establish the precondition --- $bold(W)$ is trainable --- and CCP has
+since been evaluated on the amplified teacher (Finding 12). The two
+remaining candidates, CTGR and CRCG, are not yet evaluated. CG's
+v1$arrow.r$v2 pivot also introduces a concrete prediction
+(latent-based formulations should be evaluated alongside weight-based
+ones), which has not been tested on them.
+
+*Fidelity floor specificity (Finding 14)*: the behavioural-similarity
+floor (agreement $0.75$--$0.82$, ranking correlation $0.78$--$0.91$)
+is measured for one teacher--student pair (heterogeneous-expert PLE
+$arrow.r$ LightGBM) on one benchmark. The two-tier control principle
+generalises; the numeric floor does not.
+
+*Deterministic-task re-injection not yet measured*: the 13-task
+configuration descends from an 18-task draft whose deterministic
+tasks were removed as label-leakage risks. Whether re-injecting them
+would contaminate MTL training (gradient domination, gate
+distortion) is an open experimental question requiring a new
+training run; no claim is made here.
 
 *Scope boundary --- evidential uncertainty head*: Separate from the
 causal-expert reinterpretation thread above, the implementation ships
@@ -2214,9 +2489,10 @@ feature+expert ablation. *Paper 2* (serving and ops) covers knowledge
 distillation, recommendation reason generation, and regulatory
 compliance. The present paper focuses specifically on *loss dynamics
 and gating behavior* (Findings 1--6), *fusion augmentation trade-offs*
-(Finding 7), and *causal expert reinterpretation* (Findings 8--13)
-that emerged during the ablation study but warranted deeper analysis
-than Paper 1's scope allowed.
+(Finding 7), *causal expert reinterpretation* (Findings 8--13), and
+*serving-side distillation control* (Finding 14) that emerged during
+the ablation study but warranted deeper analysis than Paper 1's scope
+allowed.
 
 Findings 9--11 are directly consumed by Paper 2's v2 audit
 infrastructure: the CEH attribution vector feeds
@@ -2229,10 +2505,19 @@ structurally meaningful (Finding 11) are therefore not standalone
 curiosities in Paper 3 but prerequisites for the regulator-usable
 audit surface delivered in Paper 2 v2.
 
+Finding 14 has a companion-paper counterpart of a different kind:
+Paper 2's discussion of fidelity-gate semantics under
+cross-architecture distillation documents the governance consequences
+--- audit-trail readability, regulator-facing tier semantics,
+operator-override risk --- of the same defect-and-fix sequence whose
+measurement side is analysed in Section 4.14. The two accounts share
+the underlying artefacts (the three fidelity-report generations) but
+neither duplicates the other's analysis.
+
 = Conclusion
 
 Scaling multi-task learning from 2--4 homogeneous tasks to 13
-heterogeneous tasks surfaces three families of dynamics that
+heterogeneous tasks surfaces four families of dynamics that
 existing literature, evaluated primarily on homogeneous setups,
 does not address.
 
@@ -2241,8 +2526,9 @@ softmax vs.\ sigmoid --- depends on whether tasks share a loss
 type, not on architectural preference; uncertainty weighting
 normalizes scales but does not isolate gradients and converges
 identically across architectures; pre-gating mechanisms like GTE
-require type-homogeneous groups; training budgets must absorb cosine
-restart cycles before structural comparisons are meaningful; gate
+require type-homogeneous groups; shared-representation baselines
+overfit extended epoch budgets that gated variants absorb without
+regularisation; gate
 entropy analysis shows that extraction-layer gating specializes
 (entropy ratios $0.33$--$0.88$) while attention-level aggregation
 collapses to uniform averaging (ratio $1.00$); and composite val
@@ -2297,6 +2583,23 @@ paper, CEH + CG produce a regulator-usable per-prediction record
 that pairs *what* the model recommended (attribution) with
 *whether* that recommendation can be trusted (reliability).
 
+*Serving-side distillation control* (Finding 14): cross-architecture
+distillation of the 13-task teacher into per-task gradient-boosted
+students passes every operational quality check (AUC gap
+$<= 0.0125$, student calibration error $<= 0.0114$) while
+teacher--student behavioural similarity sits at a structural floor
+(agreement $0.75$--$0.82$, ranking correlation $0.78$--$0.91$) that
+three successive generations of gate semantics, scored on identical
+predictions, could not move --- because it is a property of the
+architecture pair, not of any student. A single-tier gate over both
+metric families fails permanently and invites operator bypass; the
+adopted two-tier design blocks deployment only on operational
+defects and downgrades similarity metrics to recorded diagnostics.
+The lesson closes the loop opened by Finding 1: there, a control was
+silently inert while training looked healthy; here, a control was
+loudly failing while production quality was healthy. Both are
+failures of measurement semantics, not of models.
+
 These findings are not novel algorithms but practical diagnostics
 and minimum-viable candidates on top of them. We hope they prevent
 other practitioners from re-discovering the same pitfalls when
@@ -2310,7 +2613,7 @@ additional seeds and datasets.
 
 *Seonkyu Jeong* (PM / Lead Architect / Data Scientist):
 Conceived the study, designed the ablation framework, identified all
-thirteen findings, wrote the manuscript. Led AI-augmented development
+fourteen findings, wrote the manuscript. Led AI-augmented development
 methodology.
 
 *Euncheol Sim*: Data pipeline, feature engineering, ablation execution.
