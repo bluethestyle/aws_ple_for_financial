@@ -66,6 +66,10 @@ class ReviewConfig:
     # pipeline.yaml::aws.region when the review block omits it.
     region: Optional[str] = None
     sla_hours: int = 24                    # how long a reviewer has
+    # in_memory 백엔드에서 consumer CLI 가 소비할 수 있도록 flush/load 가
+    # 사용할 로컬 JSON 경로 (PORT-08). None 이면 flush/load 는 no-op —
+    # 기존 순수 in-memory 동작 그대로.
+    local_store_path: Optional[str] = None
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.tier_1_sample_rate <= 1.0):
@@ -97,6 +101,8 @@ class ReviewConfig:
             )
         if "sla_hours" in data and data["sla_hours"] is not None:
             kwargs["sla_hours"] = int(data["sla_hours"])
+        if "local_store_path" in data and data["local_store_path"] is not None:
+            kwargs["local_store_path"] = str(data["local_store_path"])
         return cls(**kwargs)
 
 
@@ -154,6 +160,7 @@ class HumanReviewQueue:
             1: deque(), 2: deque(), 3: deque(),
         }
         self._lock = threading.RLock()
+        self._dynamo = None  # lazy table handle (queue_backend == "dynamodb")
 
     # ------------------------------------------------------------------
     # Decision: should we enqueue?
@@ -193,6 +200,7 @@ class HumanReviewQueue:
         with self._lock:
             self._items[item.review_id] = item
             self._pending_by_tier[item.tier].append(item.review_id)
+        self._persist_item(item)
         self._emit_audit("human_review:enqueue", item)
         logger.info(
             "Review enqueued: review_id=%s tier=%d user=%s rec=%s",
@@ -217,6 +225,7 @@ class HumanReviewQueue:
                     continue
                 item.state = ReviewState.IN_REVIEW
                 item.reviewer_id = reviewer_id
+                self._persist_item(item)
                 self._emit_audit("human_review:dequeue", item)
                 logger.info(
                     "Review dequeued: review_id=%s tier=%d reviewer=%s",
@@ -293,6 +302,116 @@ class HumanReviewQueue:
         }
 
     # ------------------------------------------------------------------
+    # Persistence (PORT-08 — consumer 진입점이 소비할 수 있도록 영속화)
+    # ------------------------------------------------------------------
+    #
+    # 온프렘 8f38dece 의 load_pending→결정→재flush 패턴의 AWS 등가.
+    # - queue_backend == "dynamodb": 상태 변화마다 put_item 즉시 영속화
+    #   (best-effort, 실패는 로그만 — 큐 동작 자체를 막지 않는다),
+    #   load_pending 은 pending/in_review 만 scan.
+    # - queue_backend == "in_memory" + local_store_path: flush/load 가
+    #   로컬 JSON 파일 사용 (로컬 개발/폐쇄 환경 consumer 용).
+    # - local_store_path 미설정 in_memory: flush/load 는 no-op (기존 동작).
+
+    def _dynamo_table(self):
+        if self._dynamo is None:
+            import boto3
+            self._dynamo = boto3.resource(
+                "dynamodb", region_name=self._cfg.region,
+            ).Table(self._cfg.dynamodb_table)
+        return self._dynamo
+
+    def _persist_item(self, item: ReviewItem) -> None:
+        """dynamodb 백엔드에서 상태 변화를 즉시 영속화 (best-effort)."""
+        if self._cfg.queue_backend != "dynamodb":
+            return
+        try:
+            self._dynamo_table().put_item(Item={
+                "review_id": item.review_id,
+                "state": item.state,
+                "tier": int(item.tier),
+                "doc": item.to_json(),
+            })
+        except Exception:
+            logger.exception(
+                "Review item persist failed: %s", item.review_id,
+            )
+
+    def flush(self) -> int:
+        """현재 큐의 모든 항목을 백엔드에 영속화. 반환: 기록 건수."""
+        with self._lock:
+            items = list(self._items.values())
+        if self._cfg.queue_backend == "dynamodb":
+            for item in items:
+                self._persist_item(item)
+            return len(items)
+        if self._cfg.local_store_path:
+            from pathlib import Path
+            path = Path(self._cfg.local_store_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(
+                    [i.to_dict() for i in items],
+                    ensure_ascii=False, indent=2, default=str,
+                ),
+                encoding="utf-8",
+            )
+            return len(items)
+        return 0
+
+    def load_pending(self) -> int:
+        """백엔드에서 미결(pending/in_review) 항목을 큐로 로드. 반환: 로드 건수.
+
+        이미 큐에 있는 review_id 는 덮어쓰지 않는다 (in-process 상태 우선).
+        """
+        open_states = (ReviewState.PENDING, ReviewState.IN_REVIEW)
+        records: List[Dict[str, Any]] = []
+        if self._cfg.queue_backend == "dynamodb":
+            from boto3.dynamodb.conditions import Attr
+            table = self._dynamo_table()
+            kwargs: Dict[str, Any] = {
+                "FilterExpression": Attr("state").is_in(list(open_states)),
+            }
+            while True:
+                resp = table.scan(**kwargs)
+                for rec in resp.get("Items", []):
+                    doc = rec.get("doc")
+                    if doc:
+                        records.append(json.loads(doc))
+                last_key = resp.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                kwargs["ExclusiveStartKey"] = last_key
+        elif self._cfg.local_store_path:
+            from pathlib import Path
+            path = Path(self._cfg.local_store_path)
+            if path.exists():
+                records = [
+                    r for r in json.loads(path.read_text(encoding="utf-8"))
+                    if r.get("state") in open_states
+                ]
+        else:
+            return 0
+
+        loaded = 0
+        with self._lock:
+            for rec in records:
+                try:
+                    item = ReviewItem(**rec)
+                except (TypeError, ValueError) as exc:
+                    logger.warning("Skip malformed review record: %s", exc)
+                    continue
+                if item.review_id in self._items:
+                    continue
+                self._items[item.review_id] = item
+                if item.state == ReviewState.PENDING:
+                    self._pending_by_tier[item.tier].append(item.review_id)
+                loaded += 1
+        if loaded:
+            logger.info("Loaded %d open review items from backend", loaded)
+        return loaded
+
+    # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
@@ -317,6 +436,7 @@ class HumanReviewQueue:
             item.reviewer_id = reviewer_id
             item.disposition_at = now
             item.disposition_reason = reason
+        self._persist_item(item)
         self._emit_audit(f"human_review:{state}", item)
         logger.info(
             "Review %s: review_id=%s reviewer=%s reason=%s",
