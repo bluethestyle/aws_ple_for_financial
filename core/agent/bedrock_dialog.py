@@ -285,11 +285,69 @@ class BedrockDialogSession:
             logger.warning("강제 합성 실패: %s", e)
         return "조사 완료(결론 생성 실패) — 도구 결과를 직접 확인하세요."
 
-    def investigate(self, finding: str) -> Dict[str, Any]:
+    def _collect_evidence(self) -> str:
+        """history 에서 실제 도구 호출·결과를 텍스트로 (할루시네이션 검증 대조용).
+
+        AWS DialogTurn 의 tool_results 항목은 {toolUseId, result} 형식이므로
+        같은 turn 의 tool_calls 에서 toolUseId → name 을 역참조한다.
+        """
+        lines = []
+        for t in self._history:
+            names = {
+                tc.get("toolUseId", ""): tc.get("name", "?")
+                for tc in (t.tool_calls or [])
+            }
+            for tr in (t.tool_results or []):
+                name = names.get(tr.get("toolUseId", ""), tr.get("name", "?"))
+                lines.append(f"- {name}: {str(tr.get('result'))[:250]}")
+        return "\n".join(lines)
+
+    def verify_grounding(self, conclusion: str) -> Dict[str, Any]:
+        """할루시네이션 더블체크 — 결론이 실제 도구 결과에 근거하는지 비판적 검증.
+
+        도구 없는 검증 프롬프트 1회로 결론을 history 의 toolResult 와 대조한다
+        (on-prem e7c12a36 sync). 도구를 안 썼으면 검증 불가(unverifiable).
+        → {checked, grounded, issues, note}.
+        """
+        import re
+        evidence = self._collect_evidence()
+        if not evidence.strip():
+            return {"checked": False, "note": "도구 미사용 — 데이터 대조 불가(검증 안됨)"}
+        prompt = (
+            "당신은 검증 담당자입니다. 아래 '결론'이 '실제 도구 결과'에만 근거하는지 비판적으로 검증하세요.\n"
+            "도구 결과에 없는 수치·사실을 지어냈거나(할루시네이션), 결과와 모순되는 주장이 있으면 지적하세요.\n\n"
+            f"[결론]\n{conclusion[:1500]}\n\n[실제 도구 결과]\n{evidence[:2000]}\n\n"
+            '한국어 JSON 하나로만: {"grounded": true/false, '
+            '"issues": ["근거없는/모순된 주장1", ...], "note": "한줄 평"}'
+        )
+        try:
+            response = self._call_bedrock(
+                [{"role": "user", "content": [{"text": prompt}]}],
+                {},  # 도구 없이 — 검증은 순수 텍스트 대조
+                system_override="사실 검증만 합니다. 지어내지 마세요.",
+            )
+            text = (self._extract_text(response) or "").strip()
+            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+            s, e = text.find("{"), text.rfind("}")
+            if s != -1 and e != -1:
+                obj = json.loads(text[s:e + 1])
+                return {
+                    "checked": True,
+                    "grounded": bool(obj.get("grounded", True)),
+                    "issues": obj.get("issues", []),
+                    "note": obj.get("note", ""),
+                }
+        except Exception as ex:
+            logger.warning("할루시네이션 검증 실패: %s", ex)
+        return {"checked": False, "note": "검증 호출 실패"}
+
+    def investigate(self, finding: str, verify: bool = False) -> Dict[str, Any]:
         """RED/HIGH 자동 조사·추론 (on-prem reasoning_agent sync).
 
         finding(문제 설명) → 도구사용 추론 루프(chat, 최대 5회)로 근본원인을
         조사하고 {reasoning, tool_calls, n_tool_calls} 를 반환한다.
+        verify=True 면 결론을 도구 결과와 대조 검증(할루시네이션 더블체크)해
+        grounding_check 를 첨부한다.
         """
         prompt = (
             f"다음 문제가 감지되었습니다. 도구로 직접 데이터를 확인하며 "
@@ -297,12 +355,15 @@ class BedrockDialogSession:
         )
         text = self.chat(prompt)
         tool_calls = [tc for t in self._history for tc in t.tool_calls]
-        return {
+        out = {
             "reasoning": text,
             "tool_calls": [{"name": tc.get("name")} for tc in tool_calls],
             "n_tool_calls": len(tool_calls),
             "_model_reasoned": True,
         }
+        if verify:
+            out["grounding_check"] = self.verify_grounding(text)
+        return out
 
     def _build_messages(self) -> List[Dict[str, Any]]:
         """Build Bedrock converse API messages from history."""
@@ -353,9 +414,10 @@ class BedrockDialogSession:
             return {}
         return {"tools": tools}
 
-    def triage(self, finding: str) -> Dict[str, Any]:
+    def triage(self, finding: str, verify: bool = False) -> Dict[str, Any]:
         """WARNING(경고) 트리아지 — 도구로 관련성·미래영향 확인 후 분류(on-prem sync).
-        IGNORE(무관→로그정리) / MONITOR(미미·관찰) / FIX_NOW(증가·누적→즉시수정)."""
+        IGNORE(무관→로그정리) / MONITOR(미미·관찰) / FIX_NOW(증가·누적→즉시수정).
+        verify=True 면 결론을 도구 결과와 대조(할루시네이션 더블체크)."""
         import re
         prompt = (
             f"다음은 경고(WARNING)입니다. 도구로 현재 파이프라인과의 관련성과 미래 영향 가능성을 "
@@ -368,7 +430,10 @@ class BedrockDialogSession:
         )
         text = self.chat(prompt)
         m = re.search(r"\[분류\]\s*(IGNORE|MONITOR|FIX_NOW)", text)
-        return {"reasoning": text, "triage": m.group(1) if m else "MONITOR"}
+        out = {"reasoning": text, "triage": m.group(1) if m else "MONITOR"}
+        if verify:
+            out["grounding_check"] = self.verify_grounding(text)
+        return out
 
     def _call_bedrock(self, messages: List[Dict], tool_config: Dict, system_override: Optional[str] = None) -> Dict:
         """Call Bedrock converse API."""

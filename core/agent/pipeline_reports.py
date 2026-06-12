@@ -1184,6 +1184,14 @@ def _llm_followup_enabled() -> bool:
     )
 
 
+def _llm_verify_enabled() -> bool:
+    """할루시네이션 더블체크 (PORT-03). 후속 조사 자체가 옵트인이므로 그 안에서는
+    기본 on (온프렘 OPS_HALLUCINATION_CHECK 등가) — 끄려면 env 를 off 로."""
+    return os.getenv("REPORTS_LLM_VERIFY_GROUNDING", "").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
 def _followup_mode(verdict: str) -> Optional[str]:
     """verdict → LLM 후속 모드. RED/HIGH → investigate, YELLOW/MEDIUM → triage."""
     v = (verdict or "").strip().upper()
@@ -1244,18 +1252,23 @@ def _attach_llm_followup(
     agent_type: str,
     region: Optional[str] = None,
     session_factory=None,
+    verify: Optional[bool] = None,
 ) -> Optional[str]:
     """verdict 분기로 LLM 후속 조사를 실행해 보고서 JSON 에 첨부한다.
 
     RED/HIGH → investigate(도구사용 근본원인 조사), YELLOW/MEDIUM → triage
     (IGNORE/MONITOR/FIX_NOW 분류). 결과는 보고서 JSON 의 ``llm_followup``
-    키에 기록된다. 실패는 swallow — 보고서 생성/업로드를 막지 않는다.
+    키에 기록된다. verify(기본 env, PORT-03) 가 켜져 있으면 결론을 도구
+    결과와 대조한 grounding_check 가 함께 기록된다. 실패는 swallow —
+    보고서 생성/업로드를 막지 않는다.
 
     Returns the executed mode ("investigate"/"triage") or ``None``.
     """
     mode = _followup_mode(verdict)
     if mode is None or registry is None or not finding.strip():
         return None
+    if verify is None:
+        verify = _llm_verify_enabled()
     try:
         if session_factory is None:
             from core.agent.bedrock_dialog import BedrockDialogSession
@@ -1267,8 +1280,8 @@ def _attach_llm_followup(
             focus_keys=focus_keys or None,
         )
         result = (
-            session.investigate(finding) if mode == "investigate"
-            else session.triage(finding)
+            session.investigate(finding, verify=verify) if mode == "investigate"
+            else session.triage(finding, verify=verify)
         )
         data = json.loads(report_path.read_text(encoding="utf-8"))
         data["llm_followup"] = {"mode": mode, "verdict": verdict, **result}

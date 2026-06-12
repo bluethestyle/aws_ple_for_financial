@@ -17,6 +17,7 @@ from core.agent.pipeline_reports import (
     _audit_focus_keys,
     _followup_mode,
     _llm_followup_enabled,
+    _llm_verify_enabled,
     _ops_finding_text,
     _ops_focus_keys,
 )
@@ -157,13 +158,19 @@ class _FakeSession:
                  focus_keys=None, **kwargs):
         self.focus_keys = focus_keys
 
-    def investigate(self, finding):
-        return {"reasoning": "근본원인: teacher 미달", "n_tool_calls": 2,
-                "tool_calls": [{"name": "read_distillation_fidelity"}],
-                "_model_reasoned": True}
+    def investigate(self, finding, verify=False):
+        out = {"reasoning": "근본원인: teacher 미달", "n_tool_calls": 2,
+               "tool_calls": [{"name": "read_distillation_fidelity"}],
+               "_model_reasoned": True}
+        if verify:
+            out["grounding_check"] = {"checked": True, "grounded": True}
+        return out
 
-    def triage(self, finding):
-        return {"reasoning": "관찰 권고", "triage": "MONITOR"}
+    def triage(self, finding, verify=False):
+        out = {"reasoning": "관찰 권고", "triage": "MONITOR"}
+        if verify:
+            out["grounding_check"] = {"checked": True, "grounded": True}
+        return out
 
 
 class TestAttachLlmFollowup:
@@ -239,3 +246,119 @@ class TestEnvGate:
             assert _llm_followup_enabled() is True
         monkeypatch.setenv("REPORTS_LLM_TRIAGE_ENABLED", "0")
         assert _llm_followup_enabled() is False
+
+    def test_verify_default_on_within_followup(self, monkeypatch):
+        # 후속 조사 자체가 옵트인이므로 그 안에서 grounding 검증은 기본 on.
+        monkeypatch.delenv("REPORTS_LLM_VERIFY_GROUNDING", raising=False)
+        assert _llm_verify_enabled() is True
+        for v in ("0", "false", "NO", "off"):
+            monkeypatch.setenv("REPORTS_LLM_VERIFY_GROUNDING", v)
+            assert _llm_verify_enabled() is False
+
+
+# ---------------------------------------------------------------------------
+# verify_grounding (PORT-03 — 할루시네이션 더블체크)
+# ---------------------------------------------------------------------------
+
+class TestVerifyGrounding:
+    def _session_with_evidence(self) -> BedrockDialogSession:
+        sess = BedrockDialogSession(registry=ToolRegistry(), agent_type="ops")
+        sess._history.append(DialogTurn(
+            role="assistant", content="",
+            tool_calls=[{"toolUseId": "t1", "name": "detect_drift", "input": {}}],
+            tool_results=[{"toolUseId": "t1", "result": {"psi": 0.31}}],
+        ))
+        return sess
+
+    def test_unverifiable_without_tool_use(self):
+        sess = BedrockDialogSession(registry=ToolRegistry(), agent_type="ops")
+        out = sess.verify_grounding("PSI가 0.5로 급증했습니다")
+        assert out["checked"] is False
+        assert "도구 미사용" in out["note"]
+
+    def test_collect_evidence_resolves_tool_name(self):
+        sess = self._session_with_evidence()
+        evidence = sess._collect_evidence()
+        assert "detect_drift" in evidence
+        assert "0.31" in evidence
+
+    def test_parses_grounded_false_with_code_fence(self, monkeypatch):
+        sess = self._session_with_evidence()
+        reply = (
+            "```json\n"
+            '{"grounded": false, "issues": ["PSI 0.5는 도구 결과(0.31)와 모순"], '
+            '"note": "수치 불일치"}\n'
+            "```"
+        )
+        captured = {}
+
+        def fake_call(messages, tool_config, system_override=None):
+            captured["tool_config"] = tool_config
+            captured["system"] = system_override
+            return _text_response(reply)
+
+        monkeypatch.setattr(sess, "_call_bedrock", fake_call)
+        out = sess.verify_grounding("PSI가 0.5로 급증했습니다")
+        assert out == {
+            "checked": True,
+            "grounded": False,
+            "issues": ["PSI 0.5는 도구 결과(0.31)와 모순"],
+            "note": "수치 불일치",
+        }
+        assert captured["tool_config"] == {}  # 검증 호출은 도구 없이
+        assert "검증" in captured["system"]
+
+    def test_unparseable_reply_returns_unchecked(self, monkeypatch):
+        sess = self._session_with_evidence()
+        monkeypatch.setattr(
+            sess, "_call_bedrock", lambda *a, **k: _text_response("JSON 아님"),
+        )
+        out = sess.verify_grounding("결론")
+        assert out["checked"] is False
+        assert "검증 호출 실패" in out["note"]
+
+    def test_investigate_verify_attaches_grounding_check(self, monkeypatch):
+        sess = self._session_with_evidence()
+        monkeypatch.setattr(sess, "chat", lambda prompt: "[원인] ...")
+        monkeypatch.setattr(
+            sess, "verify_grounding",
+            lambda text: {"checked": True, "grounded": True, "issues": [], "note": ""},
+        )
+        out = sess.investigate("CP2 RED", verify=True)
+        assert out["grounding_check"]["grounded"] is True
+        # verify=False 면 키 자체가 없어야 한다
+        assert "grounding_check" not in sess.investigate("CP2 RED")
+
+    def test_triage_verify_attaches_grounding_check(self, monkeypatch):
+        sess = self._session_with_evidence()
+        monkeypatch.setattr(sess, "chat", lambda prompt: "[분류] MONITOR")
+        monkeypatch.setattr(
+            sess, "verify_grounding",
+            lambda text: {"checked": True, "grounded": False, "issues": ["x"], "note": ""},
+        )
+        out = sess.triage("경고", verify=True)
+        assert out["triage"] == "MONITOR"
+        assert out["grounding_check"]["grounded"] is False
+
+    def test_followup_records_grounding_check_in_report(self, tmp_path):
+        p = tmp_path / "audit_report.json"
+        p.write_text(json.dumps({"risk_level": "HIGH"}), encoding="utf-8")
+        mode = _attach_llm_followup(
+            report_path=p, verdict="HIGH", finding="- 공정성 [HIGH] 위반",
+            focus_keys=["fairness"], registry=object(), agent_type="audit",
+            session_factory=_FakeSession, verify=True,
+        )
+        assert mode == "investigate"
+        data = json.loads(p.read_text(encoding="utf-8"))
+        assert data["llm_followup"]["grounding_check"]["checked"] is True
+
+    def test_followup_verify_off_omits_grounding_check(self, tmp_path):
+        p = tmp_path / "ops_report.json"
+        p.write_text(json.dumps({"status": "RED"}), encoding="utf-8")
+        _attach_llm_followup(
+            report_path=p, verdict="RED", finding="- CP2 [FAIL] x",
+            focus_keys=["CP2"], registry=object(), agent_type="ops",
+            session_factory=_FakeSession, verify=False,
+        )
+        data = json.loads(p.read_text(encoding="utf-8"))
+        assert "grounding_check" not in data["llm_followup"]
