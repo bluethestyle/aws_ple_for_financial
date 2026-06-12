@@ -194,14 +194,14 @@ class IntersectionalFairnessAnalyzer:
             if all(d >= self.di_threshold for d in r.single_attr_di.values())
         ]
 
+        worst = min((r for r in results), key=lambda r: r.di_value, default=None)
         return {
             "total_intersections_checked": len(results),
             "violations": len(violations),
             "hidden_violations": len(hidden),  # only visible at intersection level
-            "worst_intersection": min(
-                (r for r in results),
-                key=lambda r: r.di_value,
-                default=None,
+            # JSON 직렬화 가능하도록 dataclass 대신 dict 로 변환 (json.dump 호환)
+            "worst_intersection": (
+                {"subgroup": worst.subgroup, "di": worst.di_value} if worst else None
             ),
             "details": [
                 {

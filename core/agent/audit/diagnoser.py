@@ -99,8 +99,11 @@ class AuditDiagnoser:
 
     def _analyze_fairness(self, results: Dict) -> List[FocusArea]:
         areas = []
-        # Check for intersectional violations
-        violations = results.get("violations", [])
+        # IntersectionalFairnessAnalyzer.summary() 는 violations/hidden_violations 를
+        # 카운트(int)로 반환한다. len() 적용 금지 (int 에 len → TypeError).
+        violations = results.get("violations", 0)
+        if isinstance(violations, list):  # 다른 소스가 list 를 줄 수도 있어 방어적 처리
+            violations = len(violations)
         hidden = results.get("hidden_violations", 0)
 
         if hidden > 0:
@@ -115,8 +118,8 @@ class AuditDiagnoser:
             areas.append(FocusArea(
                 area="공정성",
                 priority="MEDIUM",
-                finding=f"공정성 위반 {len(violations)}건",
-                evidence={"violation_count": len(violations)},
+                finding=f"공정성 위반 {violations}건",
+                evidence={"violation_count": violations},
                 recommended_review="위반 보호속성 그룹별 추천 비율 상세 분석",
             ))
         return areas

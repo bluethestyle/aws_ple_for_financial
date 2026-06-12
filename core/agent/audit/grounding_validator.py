@@ -172,7 +172,9 @@ class GroundingValidator:
         # Jargon ratio score
         total_words = len(text.split())
         if total_words > 0:
-            jargon_count = sum(1 for p in self._jargon_patterns if p.search(text))
+            # 패턴 '종류' 가 아니라 실제 출현 '횟수' 를 세야 한다 (findall).
+            # search 는 패턴당 최대 1 → 같은 전문용어가 20회 나와도 1로 과소집계.
+            jargon_count = sum(len(p.findall(text)) for p in self._jargon_patterns)
             jargon_ratio = jargon_count / total_words
             jargon_score = max(0.0, 1.0 - jargon_ratio / self._max_jargon_ratio)
         else:
