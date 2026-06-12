@@ -71,9 +71,10 @@
   audit log, producing a regulator-usable per-decision record that
   satisfies GDPR Art.~22 meaningful-explanation and EU AI Act Art.~13
   transparency requirements --- the companion paper produces the
-  attribution vector and the coherence score as Paper 3 Findings 9
-  and 10--11; this paper routes both into the audit infrastructure.
-  We evaluate distillation quality (AUC gap $<$ 3.6 percentage points across 7 binary tasks, mean 2.6 pp),
+  attribution vector (its causal-attribution finding) and the
+  coherence score (its causal-guardrail findings); this paper routes
+  both into the audit infrastructure.
+  We evaluate distillation quality (v13 baseline: AUC gap $<$ 3.6 percentage points across 7 binary tasks, mean 2.6 pp; the v14 re-run after the fidelity-gate fixes of Section 10 reduces the mean gap to 0.58 pp),
   reason generation quality via automated compliance validation
   (L1 template coverage 100%, 13/13 tasks; compliance rules applied: suitability, consent, opt-out, profiling, disclosure),
   and Safety Gate reliability (5 PII patterns, 5 validation categories).
@@ -240,7 +241,7 @@ enabling independent improvement of each component.
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((1, 0), [*PLE Teacher* \ #text(size: 6pt)[8 Expert, 13 Task, 1211D] \ #text(size: 8pt)[GPU, weekly training]], width: 50mm, fill: teacher-fill, name: <teacher>),
+      node((1, 0), [*PLE Teacher* \ #text(size: 6pt)[7 Expert, 13 Task, 1211D] \ #text(size: 8pt)[GPU, weekly training]], width: 50mm, fill: teacher-fill, name: <teacher>),
 
       node((1, 1.2), [*Threshold Gate* \ #text(size: 8pt)[AUC $>$ 0.60 / F1 $>$ 2/K / R² $>$ 0.05] \ #text(size: 8pt)[routes: DISTILL / DIRECT / SKIP]], width: 65mm, fill: gate-fill, name: <gate>),
 
@@ -703,7 +704,7 @@ Implemented as `SelfChecker`, this agent validates the generated reason against:
 
 On failure: automatic fallback to template-based safe reason.
 All gate decisions are logged for audit trail.
-Upstream of the 3-agent pipeline, the constraint engine applies eligibility and suitability filters --- verifying customer context, usage patterns, and product-specific constraints --- so that no recommendation reaches the customer without passing a suitability check, as required by the Korean Financial Consumer Protection Act (금소법, KKFCPA) Article 19.
+Upstream of the 3-agent pipeline, the constraint engine applies eligibility and suitability filters --- verifying customer context, usage patterns, and product-specific constraints --- so that no recommendation reaches the customer without passing a suitability check, as required by the Korean Financial Consumer Protection Act (금소법, KFCPA) Article 17.
 
 === Serving Model Selection
 
@@ -890,7 +891,7 @@ ensuring that the AuditAgent's input is a tamper-evident, time-ordered record of
       [Agent dialog/consensus: Claude Sonnet (contextual reasoning, Ops/Audit agents included)],
       [Factuality judgment: Claude Haiku (low cost)],
       [Embeddings: Titan V2],
-      [On-prem: Exaone 3.5 (reasons) + Qwen 2.5 14B Q4 (consensus)],
+      [On-prem: Exaone 3.5 7.8B (reasons) + Qwen 2.5 7B (tool use) + Exaone 3.5 2.4B (consensus)],
     )],
     [Reports deposited to shared folder], [Alerts via Slack/email only on anomalies; human reviews at their own pace],
     [Agent outputs are audit artifacts], [Immutable, HMAC-signed; the report itself is evidence of monitoring],
@@ -912,7 +913,7 @@ can never degrade customer-facing service.
 Unlike serving agents, which require Korean-language fluency for customer-facing text, operational agents process structured JSON inputs and produce logical assessments --- natural language fluency is secondary to reasoning accuracy. Model assignment by deployment environment:
 
 #list(tight: true,
-  [*On-premises (air-gapped)*: Exaone 3.5 7.8B (Korean reason generation) + Qwen 2.5 14B Q4 (agent consensus). Sequential loading on RTX 4070 12GB VRAM.],
+  [*On-premises (air-gapped)*: Exaone 3.5 7.8B (Korean reason generation), Qwen 2.5 7B (tool-calling agent reasoning), Exaone 3.5 2.4B (interpretation and consensus), and bge-m3 (embeddings). Sequential loading on RTX 4070 12GB VRAM. An internal four-scenario benchmark selected the 7B model over the previously used Qwen 2.5 14B Q4 for the tool-use role: the smaller model completed all three tool-call scenarios that the quantised 14B failed --- a larger model is not automatically better at tool calling.],
   [*Cloud (AWS)*: per-task optimal models are assigned.
     #list(tight: true,
       [Claude Sonnet (cross-region inference profile) --- Korean L2a reason rewrite + self-critique (Exaone 3.5 for on-premises)],
@@ -953,6 +954,45 @@ as callable tools for the agents.
 Query tools can be called freely, while Action tools (incident creation, audit logging)
 require explicit approval, structurally enforcing the Query/Action boundary.
 
+Three hardening mechanisms sit between the agents and this tool surface.
+First, _focus-keyed dynamic tool routing_: rather than exposing all 38 tools on every call,
+the dialog layer selects the subset relevant to the current inspection focus from a routing
+table (`agent_tool_routing.yaml`, with a built-in fallback map when the file is absent),
+shrinking the prompt and reducing wrong-tool selection.
+
+Second, _signature-based parameter filtering_: before any tool executes, its arguments are
+filtered against the wrapped function's actual signature (`tool_registry.py::_filter_params`),
+so an LLM that hallucinates an extra argument degrades to a dropped parameter rather than a
+`TypeError` aborting the inspection mid-run.
+
+Third, _warning triage_: warning-level tool outputs are classified IGNORE / MONITOR / FIX_NOW
+before any narrative is generated, and a metric on a rising trend is escalated to FIX_NOW
+even while still below its alert threshold. This extends the SR 11-7 quality-triage principle
+applied at the distillation gate --- monitor outputs, isolate degradation early --- to the
+operational monitoring layer itself.
+
+== Verdict Layering and Agent Self-Verification
+
+Two design rules keep the LLM interpretation layer auditable.
+First, _verdicts belong to the rule engine_: every PASS/WARN/FAIL verdict is computed by
+deterministic, reproducible threshold rules with a full audit trail, and the LLM layer
+(plus the consensus mechanism described below) only interprets, prioritises, and narrates
+those verdicts. An auditor can replay any verdict without an LLM in the loop.
+
+Second, _self-verification before reporting_: a `verify_grounding` pass re-reads the dialog
+history and checks each factual claim in the draft conclusion against the actual tool results
+recorded there, returning a structured `{grounded, issues}` verdict, and a failed check
+downgrades the conclusion to a flagged draft for human review.
+The pass is implemented in both environments: enabled by default in the on-premises
+reference system, and available on the AWS agent dialog layer as a per-call opt-in flag
+(disabled by default).
+// 최종 정합 필요: AWS verify 기본값(opt-in)은 2026-06-12 시점 확인 — 동시 세션이 core/agent 수정 중이므로 게시 직전 재확인
+
+Log analysis follows the same economy of LLM use: log files are scanned incrementally
+(only lines appended since the last inspection), ERROR lines escalate to FIX_NOW
+deterministically with no LLM involvement, and only WARNING lines --- where severity is
+genuinely ambiguous --- are passed to the LLM for triage.
+
 == Environment-Adaptive Consensus Mechanism
 
 To structurally mitigate hallucination risk in LLM-based interpretation,
@@ -971,7 +1011,7 @@ Latency is ~5 seconds per checkpoint and cost is 3$times$ a single Sonnet call.
 
 === On-Premises: 2-Round Hybrid (Independent Vote → Sequential Deliberation)
 
-On-premises deployment uses Qwen 2.5 14B Q4 running on a single RTX 4070 (12GB VRAM).
+On-premises deployment runs consensus on Exaone 3.5 2.4B, with Qwen 2.5 7B handling tool-use reasoning, on a single RTX 4070 (12GB VRAM).
 At this parameter scale, a purely sequential deliberation (Delphi-style) exhibits
 _convergence bias_: later agents anchor to earlier opinions and minority dissent disappears.
 In operations and audit contexts, a missed signal is far more costly than a false alarm,
@@ -982,9 +1022,7 @@ so we split the process into two rounds:
   [*Round 2 (sequential deliberation, 2 agents)*: two additional agents read the full Round 1 output, strengthen the arguments for each position (majority and minority alike), and produce a final structured verdict. Round 2 improves argument quality without overwriting the minority view preserved from Round 1.],
 )
 
-For each checkpoint, Round 1 takes ~75 seconds (5 agents $times$ 15s each on 14B Q4)
-and Round 2 takes ~40 seconds; only items flagged WARN or FAIL by the rule engine
-enter consensus (typically 5--10 per inspection), yielding a total of ~45 minutes per inspection cycle.
+For each checkpoint, Round 1 runs its five votes sequentially under the single-GPU constraint and Round 2 adds two deliberation passes; only items flagged WARN or FAIL by the rule engine enter consensus (typically 5--10 per inspection). With the 2.4B consensus model, per-vote latency is well below the earlier 14B Q4 configuration (which required ~45 minutes per inspection cycle), keeping a full cycle comfortably within operational tolerance for a batch-only, post-DAG process.
 
 This hybrid design is chosen over pure Delphi for four reasons:
 (1) _minority preservation_ --- secured by Round 1 independence and structurally unmodifiable thereafter;
@@ -1015,7 +1053,7 @@ The core principle across both environments is *minority report preservation*.
 Novel problem types are often caught first by the dissenting perspective
 while the majority, anchored to familiar patterns, overlooks them.
 
-*Note on independence*: in the AWS variant, this pipeline invokes the *same* Sonnet model three times with different system prompts and sampling temperature variation. What this secures is *conditioned diversity*, not weight-level independence. Unanimity therefore indicates only that three conditioned perspectives converged to the same point; a shared training lineage can share the same bias, so we *treat unanimity as a weak signal*. High-risk checks (AV1 fairness, AV2 PII detection, etc.) escalate any minority dissent to human review regardless of the majority verdict. The on-prem variant uses a single Qwen model checkpoint as well, so the same caveat applies; Round 1 independence mitigates but does not eliminate the shared-lineage bias.
+*Note on independence*: in the AWS variant, this pipeline invokes the *same* Sonnet model three times with different system prompts and sampling temperature variation. What this secures is *conditioned diversity*, not weight-level independence. Unanimity therefore indicates only that three conditioned perspectives converged to the same point; a shared training lineage can share the same bias, so we *treat unanimity as a weak signal*. High-risk checks (AV1 fairness, AV2 PII detection, etc.) escalate any minority dissent to human review regardless of the majority verdict. The on-prem variant likewise runs all consensus votes on a single small-model checkpoint, so the same caveat applies; Round 1 independence mitigates but does not eliminate the shared-lineage bias.
 
 === Consensus Results from Production Test (AWS variant)
 
@@ -1051,7 +1089,7 @@ any FAIL vote yields FAIL verdict regardless of majority.
     [Fairness DI = 1.0], [2 PASS + 1 WARN], [WARN], [$alpha$ (conservative)],
     [KFCPA compliance], [3/3 PASS], [PASS], [none (unanimous)],
   ),
-  caption: [AuditAgent 3-agent consensus results. Grounding score 0.33 triggers FAIL (1 of 3 sampled tasks). Fairness DI = 1.0 is ideal but $alpha$ flags small-sample caveat. Financial Consumer Protection Act (금소법, KKFCPA) compliance: unanimous PASS, 5 rules, 0 violations.],
+  caption: [AuditAgent 3-agent consensus results. Grounding score 0.33 triggers FAIL (1 of 3 sampled tasks). Fairness DI = 1.0 is ideal but $alpha$ flags small-sample caveat. Financial Consumer Protection Act (금소법, KFCPA) compliance: unanimous PASS, 5 rules, 0 violations.],
 ) <tab:audit-consensus>
 
 == Diagnostic Case Store
@@ -1082,6 +1120,11 @@ accumulated per served request), diagnostic cases (OpsAgent inspection results),
 share the same LanceDB backend, achieving zero new dependencies. LanceDB's combined
 vector search + column filtering enables queries like "find similar customers as of date X"
 in a single call.
+Embedding model choice matters disproportionately for Korean text: in our evaluation,
+all-MiniLM embeddings collapsed Korean sentence pairs to cosine similarity #sym.approx 1.0
+regardless of content (no discriminative power), whereas bge-m3 separated similar pairs (0.76)
+from unrelated pairs (0.41). The on-premises deployment therefore standardises on bge-m3,
+with Titan Embeddings V2 serving the same role on AWS.
 
 *Adoption 2 --- Mathematical Decay (SuperLocalMemory)*:
 The diagnostic case knowledge base's similar case search now applies $exp(-"age"/tau)$ weighting
@@ -1116,21 +1159,21 @@ enabling operators to discuss the impact assessment interactively.
 
 #figure(placement: top, scope: "parent",
   table(
-    columns: (1fr, 1.2fr, 1fr),
+    columns: (1fr, 1.2fr, 1fr, auto),
     inset: 5pt,
     align: left,
     stroke: 0.5pt,
-    [*FSS Requirement*], [*System Component*], [*Verification*],
-    [Explainability], [Gate weights + 3-agent reason], [Per-recommendation audit log],
-    [Fairness], [Fairness monitor (DI/SPD/EOD)], [Weekly automated report],
-    [Model validation], [Champion-Challenger (offline + online)], [Pre-deployment metric gate + post-deployment traffic gate],
-    [Monitoring], [Drift detector (PSI)], [Continuous, 3-day trigger],
-    [Audit trail], [HMAC hash-chain logs], [Immutable, 7 audit tables],
-    [Fallback], [Template reason + kill switch], [Instant manual override],
-    [Model risk mgmt], [Offline `ModelCompetition` gate + `--force-promote` override], [Auto-promote on significance; audited decision on every registration],
-    [Customer suitability], [Constraint engine + eligibility filters], [Pre-recommendation suitability check],
+    [*FSS Requirement*], [*System Component*], [*Verification*], [*Status*],
+    [Explainability], [Gate weights + 3-agent reason], [Per-recommendation audit log], [Default],
+    [Fairness], [Fairness monitor (DI/SPD/EOD)], [Weekly automated report], [Default],
+    [Model validation], [Champion-Challenger (offline + online)], [Pre-deployment metric gate + post-deployment traffic gate], [Default],
+    [Monitoring], [Drift detector (PSI)], [Continuous, 3-day trigger], [Default],
+    [Audit trail], [HMAC hash-chain logs], [Immutable, 7 audit tables], [Default],
+    [Fallback], [Template reason + kill switch], [Instant manual override], [Default (template) / opt-in (kill switch)],
+    [Model risk mgmt], [Offline `ModelCompetition` gate + `--force-promote` override], [Significance-gated verdict + operator sign-off; audited decision on every registration], [Default],
+    [Customer suitability], [Constraint engine + eligibility filters], [Pre-recommendation suitability check], [Default],
   ),
-  caption: [Korean FSS guideline compliance mapping.],
+  caption: [Korean FSS guideline compliance mapping. The Status column distinguishes components active in the shipped default configuration (Default) from those requiring explicit activation (opt-in) --- a regulator reading this table should be able to tell what runs by default from what merely exists in the codebase.],
 ) <tab:fss-mapping>
 
 == EU AI Act Mapping
@@ -1139,18 +1182,18 @@ enabling operators to discuss the impact assessment interactively.
 
 #figure(placement: top, scope: "parent",
   table(
-    columns: (auto, 1fr, 1.5fr),
+    columns: (auto, 1fr, 1.5fr, auto),
     inset: 5pt,
     align: left,
     stroke: 0.5pt,
-    [*Article*], [*Requirement*], [*System Component*],
-    [Art. 13], [Transparency], [3-agent reason generation + feature attribution],
-    [Art. 14], [Human oversight], [Human-in-the-Loop review + kill switch],
-    [Art. 15], [Accuracy & robustness], [Ablation-validated degradation + drift monitoring],
-    [Art. 9], [Risk management], [MRM lifecycle: develop #sym.arrow validate #sym.arrow approve #sym.arrow monitor #sym.arrow retrain],
-    [GDPR Art. 22], [Right to opt-out], [Consent/opt-out audit table + manual override],
+    [*Article*], [*Requirement*], [*System Component*], [*Status*],
+    [Art. 13], [Transparency], [3-agent reason generation + feature attribution], [Default],
+    [Art. 14], [Human oversight], [Human-in-the-Loop review + kill switch], [Default (review) / opt-in (kill switch)],
+    [Art. 15], [Accuracy & robustness], [Ablation-validated degradation + drift monitoring], [Default],
+    [Art. 9], [Risk management], [MRM lifecycle: develop #sym.arrow validate #sym.arrow approve #sym.arrow monitor #sym.arrow retrain], [Default],
+    [GDPR Art. 22], [Right to opt-out], [Consent/opt-out audit table + manual override], [Default],
   ),
-  caption: [EU AI Act article-level compliance mapping.],
+  caption: [EU AI Act article-level compliance mapping. Status semantics as in @tab:fss-mapping.],
 ) <tab:euai-mapping>
 
 === Compliance Pipeline Implementation
@@ -1167,13 +1210,13 @@ The GDPR/KFCPA compliance obligations listed above are enforced through a pipeli
 
 - *`ComplianceAuditStore`*: logs every prediction with the executing task list, serving layers activated, elapsed time, and compliance check outcomes. The log is appended in real time and is the source of truth for audit trail integrity checks performed by the AuditAgent.
 
-All checks operate with graceful degradation: if the compliance service is temporarily unavailable, a warning is logged, the recommendation is restricted to pre-approved low-risk products only (check cards, demand deposits), and the incident is escalated for human review within the next monitoring cycle. This compensating control ensures that a transient infrastructure failure does not create a customer-facing outage while limiting exposure to products that do not require suitability assessment.
+All checks operate under one of two explicit failure postures. In the default fail-open path, if the compliance service is temporarily unavailable, the recommendation is restricted to pre-approved low-risk products only (check cards, demand deposits), the event is recorded at ERROR level with a structured marker (`[COMPLIANCE_DISABLED_UNCHECKED]`) designed to drive a CloudWatch metric-filter alert rather than a mere warning line, and the incident is escalated for human review within the next monitoring cycle. A fail-closed posture is additionally implemented as a configuration option (`compliance.hooks.strict`): when enabled, a hook-construction failure aborts the Lambda cold start, so no request is ever served unchecked; this is the recommended production posture. The shipped default remains `strict: false`, in which case the compensating control above --- restriction to products that do not require suitability assessment, plus alert-grade structured logging --- is what prevents a transient infrastructure failure from becoming either a customer-facing outage or a silent compliance bypass.
 
 === Extended Regulatory Modules (v2)
 
-The v2 revision of this paper includes an extended set of regulatory modules built on a unified `ComplianceStore` / `SLATracker` foundation. Each module is #text(stroke: 0pt)[pluggable]: `RecommendationService` accepts them as optional constructor injections and defaults to the pre-v1 behaviour when they are absent, so the extended compliance path can be activated per-environment without touching hot-path code.
+The v2 revision of this paper includes an extended set of regulatory modules built on a unified `ComplianceStore` / `SLATracker` foundation. Seven of these hooks (M1/M4/M5/M6/M9/M10/M12) are constructed by a single config-driven entry point, `build_compliance_hooks` (`core/serving/hook_builder.py`), which reads the `compliance.hooks` block of `pipeline.yaml` and returns the complete hook set; both serving entry points (the Lambda handler and the container app) invoke it at startup, so the extended compliance path is wired by default (`compliance.hooks.enabled: true`) rather than assembled by hand per deployment. Each module remains #text(stroke: 0pt)[pluggable]: `RecommendationService` still accepts the hooks as optional constructor injections and defaults to the pre-v1 behaviour when they are absent --- but this injection fallback is retained for test isolation and per-environment opt-out, not as the production wiring mechanism.
 
-- *User rights managers* (`core/compliance/rights/`). A three-class suite --- `OptOutManager`, `ProfilingWorkflow`, and `ExplanationSLATracker` --- covering Korean PIPA §37의2 (opt-out + explanation right), Credit Information Act §36의2 (profiling access / correction / deletion), and the statutory 30-day response deadline of PIPA Enforcement Decree §44의3(5) (the tracker enforces a stricter internal 10-day SLA). Every request is persisted as a `ComplianceRequest` with an automatic SLA deadline and every disposition emits a `SLA_BREACH` event when the deadline is missed.
+- *User rights managers* (`core/compliance/rights/`). A three-class suite --- `OptOutManager`, `ProfilingWorkflow`, and `ExplanationSLATracker` --- covering Korean PIPA §37의2 (opt-out + explanation right), Credit Information Act §36의2 (profiling access / correction / deletion / recomputation), and the statutory 30-day response deadline of PIPA Enforcement Decree §44의3(5) (the tracker enforces a stricter internal 10-day SLA). For §36의2 the suite additionally produces a structured `CREDIT_EXPLANATION` disclosure (`CreditExplanationElements`: whether an automated evaluation took place, its result, the principal criteria applied, and the feature #sym.arrow source lineage of the underlying base data), kept as a separate branch from the PIPA §37의2 general explanation because the two statutes enumerate different disclosure elements. Every request is persisted as a `ComplianceRequest` with an automatic SLA deadline and every disposition emits a `SLA_BREACH` event when the deadline is missed --- with the deployment caveat that the shipped default backend is `in_memory` (`pipeline.yaml`); "persisted" becomes durable, retention-grade storage only when the provisioned DynamoDB backend (IaC included) is enabled, which is what multi-year retention expectations such as AI Basic Act §35③ presuppose. The same code-exists-versus-actually-running distinction applies to the human review queue, whose shipped default store is likewise in-memory.
 
 - *Korean AI Basic Act FRIA* (`core/compliance/fria_assessment.py::KoreanFRIAAssessor`). Implements the 7-dimensional assessment enumerated in AI Basic Act Enforcement Decree §27 (data sensitivity, automation level, scope of impact, model complexity, external dependency, fairness risk, explainability gap) with a mandatory 5-year retention period (§35③). This is held as a *separate* class from the EU AI Act Article 9 evaluator to preserve legal-basis separation in audit reports.
 
@@ -1184,7 +1227,7 @@ The v2 revision of this paper includes an extended set of regulatory modules bui
 - *Promotion gate* (`core/evaluation/promotion_gate.py`). Wraps the FRIA + AI Risk evaluations as a post-check on `ModelCompetition`, called from `scripts/submit_pipeline.py::_decide_promotion` per CLAUDE.md §1.10 (single promotion entry point). UNACCEPTABLE FRIA grade or risk escalation to 'high' blocks promotion; the `GateVerdict` is recorded to the audit log. The gate composes three cooperating subsystems:
   - *Dimension score providers* (`core/compliance/dimension_scores.py`). An earliest-wins composite chain: `ManualScoreProvider` (operator overrides keyed by model_version), `MetricsDerivedScoreProvider` (seven `HEURISTIC_RULES` mapping metadata paths #sym.arrow dimension scores via `identity` / `one_minus` / `log10_ratio` transforms, clipped to $[0, 1]$), and a default 0.5 fallback. Each rule records its metadata path, transform, and whether fallback fired, yielding an auditable derivation trail.
   - *MetadataAggregator* (`core/compliance/metadata_aggregator.py`). Six built-in sources feed the metrics-derived provider: (i) feature lineage, (ii) fairness archive, (iii) human review queue depth, (iv) model registry, (v) LLM configuration slots, (vi) static overrides. Two of the sources (lineage YAML, fairness Parquet) are _archive-backed_, so metadata survives a fresh `submit_pipeline` process start rather than depending on an empty live runtime instance. Results are TTL-cached (default 300 s) to amortise repeated lookups across a single promotion decision.
-  - *Audit + tracker integration*. `GateVerdict.details` carries the metadata snapshot plus the per-dimension derivation trail (path, raw value, transform, fallback-used flag, final score). `AuditLogger.log_model_promotion(gate_details=...)` embeds this payload in the HMAC-signed, hash-chained record, and `_run_promotion_gate` simultaneously records every non-skip verdict as a `promotion_gate_verdict` artifact in `SageMakerComplianceTracker`. Tracker failures are swallowed --- a compliance-tracking outage never blocks a promotion decision, and the missing entry is detectable via the audit log alone.
+  - *Audit + tracker integration*. `GateVerdict.details` carries the metadata snapshot plus the per-dimension derivation trail (path, raw value, transform, fallback-used flag, final score). `AuditLogger.log_model_promotion(gate_details=...)` embeds this payload in the HMAC-signed, hash-chained record, and `_run_promotion_gate` simultaneously records every non-skip verdict as a `promotion_gate_verdict` artifact in `SageMakerComplianceTracker`. Tracker failures are swallowed --- a compliance-tracking outage never blocks a promotion decision, and the missing entry is detectable via the audit log alone. This best-effort posture applies to the tracker only: the audit log itself can be configured fail-closed via `AUDIT_FAIL_CLOSED`, so the two channels deliberately fail in opposite directions.
 
 The gate ships with `compliance.promotion_gate.enabled: true` in `pipeline.yaml` because the provider chain is now wired by default; prior releases kept it disabled to avoid the conservative-LIMITED collapse that occurs when every dimension falls back to 0.5. Operators who still want to disable it per-environment can flip the flag without removing the providers.
 
@@ -1214,7 +1257,7 @@ Nine additional safeguards were layered on top of the core compliance modules to
 
 - *Fairness metrics archive and PromotionGate wiring* (`core/monitoring/fairness_monitor.py`, `containers/lambda/fairness_evaluation.py`). The monitor appends every measurement to an in-memory history and, when `monitoring.fairness.archive_parquet_path` is configured, also to an S3 Parquet file that the governance reporter can query directly. `get_archive(attribute, limit)` supports drill-down dashboards without re-running the computation. Critically, the fairness Lambda now invokes `monitor.archive_metrics()` on every evaluation so the archive actually fills over time. This closes a prior gap where `MetadataAggregator.fairness_archive_parquet_path` pointed at an archive no producer was writing to, causing the PromotionGate `fairness_risk` dimension to silently collapse to its heuristic 0.5 fallback and the gate to converge to a conservative `LIMITED` verdict independent of the challenger. With the producer wired, `MetadataAggregator` now reads real fairness evidence and the gate verdict reflects true challenger behaviour.
 
-- *Drift persistence + markdown report* (`core/monitoring/drift_detector.py`). Each `detect_drift()` call optionally writes one row per feature to a Parquet archive, preserving PSI scores, severity labels, and the thresholds that were active at evaluation time. A companion `generate_markdown_report()` produces a human-readable summary suitable for the weekly governance bundle.
+- *Drift persistence + markdown report* (`core/monitoring/drift_detector.py`). Each `detect_drift()` call optionally writes one row per feature to a Parquet archive, preserving PSI scores, severity labels, and the thresholds that were active at evaluation time. A companion `generate_markdown_report()` produces a human-readable summary suitable for the weekly governance bundle. The archive writer is S3-aware (a dedicated `parquet_io` helper handles both local and `s3://` paths), and the drift #sym.arrow auto-retrain chain was re-verified end-to-end after fixing a bug in which a 2-D ndarray passed to the PSI check raised a swallowed `TypeError`, leaving the retrain trigger permanently `False`.
 
 - *Lineage catalog extensions* (`core/monitoring/lineage_tracker.py`). The lineage tracker now accepts runtime registrations (`register_feature_mapping`), loads YAML-defined catalogs (`load_mapping_from_yaml`), and returns coverage reports (`coverage_report`) that quantify how many of the current feature set have a source-table mapping. Required for AI Basic Act §34 (training-data provenance) when the feature count grows.
 
@@ -1281,7 +1324,8 @@ _LLM hardening — AI security checker_ (`core/security/ai_security_checker.py`)
 
 Combined with the Sprint 2 L2a Safety Gate (`core/recommendation/reason/l2a_safety_gate.py`), the LLM path now has four independent hardening layers --- sensitivity-based routing, rule-based safety gate, AI security checker (prompt + output), and the LLM generation marker --- each of which can veto independently and each of which is config-driven so a security ops team can extend the rule catalogue without a code change.
 
-`tests/test_phase3_could.py` (39 cases) covers T-Learner / X-Learner CATE recovery, qini plus top-K-percent uplift metrics on synthetic uplift data, every default security pattern, the provider-wrapping end-to-end flow, and custom refusal callback injection. Together with the Phase 1 and Phase 2 suites, plus the PromotionGate MetadataAggregator live-wiring tests and the post-normalization feature-group-range rebuild regression suite, the AWS-side regulatory, learning, and security stack is exercised by _620 tests (620 passing)_.
+`tests/test_phase3_could.py` (39 cases) covers T-Learner / X-Learner CATE recovery, qini plus top-K-percent uplift metrics on synthetic uplift data, every default security pattern, the provider-wrapping end-to-end flow, and custom refusal callback injection. Together with the Phase 1 and Phase 2 suites, plus the PromotionGate MetadataAggregator live-wiring tests and the post-normalization feature-group-range rebuild regression suite, the AWS-side regulatory, learning, and security stack is exercised by _736 tests (736 passing)_.
+// 최종 정합 필요: 736은 2026-06-12 실측 — 동시 세션이 테스트 추가 중이므로 V2 게시 직전 전체 suite 재실행으로 재확정
 
 == Korean AI Basic Act
 
@@ -1300,7 +1344,7 @@ suitable for regulatory submission.
 *low-risk products* such as check cards, deposit accounts, and demand deposits.
 Investment products (funds, stocks, bonds) and insurance products are
 *intentionally excluded* from the deployment scope, because the Korean
-Financial Consumer Protection Act Article 19 suitability principle,
+Financial Consumer Protection Act Article 17 suitability principle,
 EU MiFID II, US Reg BI, and similar frameworks in many jurisdictions
 restrict direct AI recommendations of such products or mandate human
 advisor oversight due to mis-selling risk.
@@ -1370,9 +1414,16 @@ explainable recommendations" becomes compatible with regulation.
 Regulatory bodies (Korean FSS, EU AI Act Art. 14) require human oversight.
 The system implements this at multiple levels:
 - *Reason sampling review*: Periodic human review of generated reasons.
-- *Model replacement approval*: Offline Champion-Challenger gate auto-promotes on statistically significant improvement; operator sign-off via `--force-promote` for bootstrap or rollback. Every decision is recorded to an HMAC-signed, hash-chained audit log.
+- *Model replacement approval*: The offline Champion-Challenger gate computes the promotion verdict; under the shipped `auto_promote: false` posture, promotion additionally requires explicit operator sign-off (`--force-promote`), so no model reaches production on statistical significance alone. Every decision is recorded to an HMAC-signed, hash-chained audit log.
 - *Incident escalation*: Automated anomaly detection triggers human investigation.
 - *Fairness review*: Periodic human audit of fairness metrics.
+
+The kill switch referenced in the mapping tables is implemented with fail-closed
+semantics: serving consults a dedicated DynamoDB table (`ple-kill-switch`, provisioned
+via IaC), and a read failure is treated as ACTIVE --- when the switch state cannot be
+established, the governed path halts rather than assuming permission. The on-premises
+counterpart is available as an opt-in injection, disabled by default and scoped to
+next-best-action recommendations only.
 
 === Monitoring Implementation
 
@@ -1409,8 +1460,8 @@ These artifacts constitute a verifiable data quality record
 that an external auditor can inspect without executing any code.
 
 Reproducibility is guaranteed by config-driven processing:
-the entire pipeline is controlled by two YAML configuration files
-(the pipeline configuration and the feature group configuration),
+the entire pipeline is controlled by a split-config of three YAML configuration files
+(the pipeline configuration, the feature group configuration, and the dataset-specific task/label configuration),
 so identical configs produce identical outputs given the same input data.
 No dataset-specific logic resides in executable code.
 
@@ -1425,7 +1476,7 @@ ensuring data governance violations are caught _before_ compute is consumed.
 
 Article 11 mandates technical documentation sufficient to assess compliance.
 Our system achieves this through config-as-documentation:
-the two YAML configuration files fully specify feature groups, generator parameters,
+the three YAML configuration files fully specify feature groups, generator parameters,
 normalization stages, task definitions, loss weights, and expert routing.
 A config snapshot is saved alongside every training run,
 and the evaluation metrics file captures the full training provenance
@@ -1559,6 +1610,32 @@ prove tampering. The hash-chain verifier (`verify_chain`) detects
 insertion, deletion, or modification of any intermediate record, so
 selective suppression of inconvenient decisions is detectable even
 by adversaries with write access to the storage medium.
+Strengthening this over v1, `verify_chain` now additionally
+re-verifies each entry's HMAC signature with a constant-time
+comparison: an adversary who rewrites a record and recomputes the
+downstream hash links still fails per-entry signature re-verification
+without possession of the signing key, closing the
+tamper-and-relink path that hash-chain checking alone leaves open.
+
+==== Signing-Key Governance
+
+A signature is only as trustworthy as the key behind it, so the v2
+audit stack treats key management as part of the audit design rather
+than a deployment detail. The logger refuses to start in `prod` or
+`staging` environments with the publicly known default key ---
+construction raises `AuditIntegrityError`
+(`core/monitoring/audit_logger.py`) --- eliminating the most common
+HMAC deployment failure: signing with a key the adversary can read in
+the repository. Production keys are injected from SSM Parameter Store
+(provisioned by `setup_aws.sh`) rather than stored in configuration
+files. When `AUDIT_FAIL_CLOSED` is set, a failed S3 write of an audit
+record propagates as an exception instead of being swallowed, so the
+system cannot unknowingly operate with auditing silently broken; and
+the audit bucket itself is provisioned with S3 Object Lock in
+COMPLIANCE mode via IaC, making the chain append-only even for
+credentialed administrators. The on-premises reference system enforces
+the same posture (default-key refusal, fail-closed write option),
+keeping the two environments symmetric.
 
 The integration is intentionally minimal: CEH exposes a public
 accessor (`get_last_attribution`) on the causal expert, the PLE
@@ -1572,7 +1649,7 @@ regulariser described in the companion paper.
 
 CEH answers "why did the model recommend this?"; the Causal
 Guardrail answers the adjacent question "can we trust this
-recommendation?". In the companion paper's Findings 10--11 we
+recommendation?". In the companion paper's causal-guardrail findings we
 established that a z-space Mahalanobis score on the causal expert's
 latent detects three synthetic OOD probe types at $100%$ TPR with
 $5%$ FPR --- a regulator-usable reliability signal at no training
@@ -1609,7 +1686,7 @@ satisfying both SR 11-7 expectations and EU AI Act Art. 9 risk management requir
 
 == Distillation Experiments
 
-Binary tasks achieved AUC gaps of 0.018--0.036 (mean 2.6 percentage points), with ranking correlation above 0.96 across all 7 tasks. The primary failure mode was calibration gap (0.08--0.10), addressed by post-hoc Platt scaling for probability-critical tasks. Two multiclass tasks (nba_primary, segment_prediction) fell below the 2× random teacher threshold and were routed to direct hard-label training; next_mcc (50-class) was routed to SKIP (Layer 3 rule engine). One regression task (mcc_diversity_trend) achieved an MAE gap of 0.025 via direct training. The other two (product_stability, cross_sell_count) were routed to SKIP due to near-zero teacher R².
+Binary tasks achieved AUC gaps of 0.018--0.036 (mean 2.6 percentage points), with ranking correlation above 0.96 across all 7 tasks. These figures are from the v13 run; the v14 re-run, after the two distillation fixes analysed in the Discussion, reduces the mean binary AUC gap to 0.58 pp, and the fidelity gate now reports its verdict in two tiers (Tier 1 blocking / operational, Tier 2 informational / architecture-inherent) as detailed there. The primary failure mode was calibration gap (0.08--0.10), addressed by post-hoc Platt scaling for probability-critical tasks. Two multiclass tasks (nba_primary, segment_prediction) fell below the 2× random teacher threshold and were routed to direct hard-label training; next_mcc (50-class) was routed to SKIP (Layer 3 rule engine). One regression task (mcc_diversity_trend) achieved an MAE gap of 0.025 via direct training. The other two (product_stability, cross_sell_count) were routed to SKIP due to near-zero teacher R².
 
 == Reason Generation Quality
 
@@ -1741,7 +1818,9 @@ and `ple-audit-distillation` holds 18 items,
 providing a verifiable history of serving decisions for regulatory inspection.
 
 The entire teacher training and distillation cycle runs on SageMaker Spot instances,
-with GPU (ml.g4dn.xlarge) for teacher training and CPU (ml.m5.2xlarge) for LGBM distillation.
+with GPU (ml.g4dn.xlarge) for teacher training and CPU (ml.m5.4xlarge) for LGBM distillation;
+distillation was moved up from ml.m5.2xlarge after the 13-task soft-label workload exceeded
+its memory, and a representative spot run completed in 62 minutes at \$0.30.
 Spot pricing reduces compute cost by approximately 70% versus on-demand;
 interruption risk is managed by automatic checkpointing and job resume.
 
@@ -1752,10 +1831,10 @@ _checklist compliance_, _audit trail integrity_, and _fairness metrics_.
 
 *Checklist compliance.*
 The system implements 14 regulatory requirements mapped from
-the Korean Financial Consumer Protection Act (금소법, KKFCPA) Articles 17--19,
+the Korean Financial Consumer Protection Act (금소법, KFCPA) Articles 17--19,
 EU AI Act Articles 13--14, and FSS AI Guidelines.
-Key items include: suitability assessment before recommendation (Art. 19),
-AI-generated content disclosure (Art. 17),
+Key items include: suitability assessment before recommendation (KFCPA Art. 17),
+AI-generated content disclosure (AI Basic Act §31),
 human oversight mechanism (EU AI Act Art. 14),
 and opt-out functionality.
 
@@ -1829,8 +1908,8 @@ GDPR Art.~22 gap.* Model-promotion records track *which* model is
 in production but do not answer the adjacent per-decision questions
 *why did the model recommend this* and *can we trust this
 recommendation*. Combining the Causal Explainability Head attribution
-(companion paper, Finding 9) with the Causal Guardrail coherence
-score (companion paper, Findings 10--11) and routing both through
+(the companion paper's causal-attribution finding) with the Causal Guardrail coherence
+score (its causal-guardrail findings) and routing both through
 the same HMAC-signed hash-chained `AuditLogger` produces a
 per-prediction record that reconstructs both questions forensically.
 Three layers of evidence per entry --- top-$K$ feature summary for
@@ -2031,8 +2110,8 @@ natural follow-up but not adopted here.
   drift (temporal shift, subgroup imbalance, adversarial) is expected
   to differ in structure and is not yet evaluated.
 - *Attribution meaningfulness not human-evaluated.* CEH v2 produces
-  per-sample attributions that discriminate across samples (Paper 3
-  Finding 9 post-hoc eval), but whether the top-$K$ features align
+  per-sample attributions that discriminate across samples (the
+  companion paper's post-hoc attribution evaluation), but whether the top-$K$ features align
   with domain-expert expectations or with alternative attribution
   methods (Integrated Gradients, DAG-path traversal) has not been
   assessed. A human-evaluation pass is planned.
@@ -2084,8 +2163,8 @@ Five key contributions define this work:
 + *Regulatory compliance embedded by design* --- Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act are explicitly mapped to system architecture components, with automated monitoring (drift, fairness, herding) and human-in-the-loop oversight at critical decision points.
 
 + *Per-prediction causal audit pair* --- the Causal Explainability
-  Head attribution (companion paper Finding 9) and the Causal
-  Guardrail coherence score (companion paper Findings 10--11) flow
+  Head attribution (the companion paper's causal-attribution finding) and the Causal
+  Guardrail coherence score (its causal-guardrail findings) flow
   into the same HMAC-signed hash-chained audit store via
   `log_attribution` and `log_guardrail`, producing a per-decision
   record that pairs *what* the model recommended with *whether* that
