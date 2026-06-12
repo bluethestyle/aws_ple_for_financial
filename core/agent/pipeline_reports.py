@@ -24,7 +24,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -1059,6 +1059,46 @@ _AUDIT_PERSPECTIVES = {
 }
 
 
+# _BedrockProvider 폴백 — pipeline.yaml 읽기 실패/미설정 시 종전 하드코딩
+# 값과 동일하게 동작한다 (2026-06-10 감사 P3: consensus provider config 주입).
+_CONSENSUS_FALLBACK_REGION = "ap-northeast-2"
+_CONSENSUS_FALLBACK_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
+
+
+def _consensus_bedrock_settings() -> Tuple[str, str]:
+    """pipeline.yaml 의 consensus provider (region, model_id) 해석.
+
+    :func:`_agent_dialog_model_id` 와 같은 키 경로 패턴의 consensus 판.
+    model_id 는 ``llm_provider.bedrock.models.agent_consensus.model_id``,
+    region 은 ``llm_provider.bedrock.region`` → ``aws.region`` (블록별
+    region 이 top-level 을 오버라이드하는 pipeline.yaml 관례) → env
+    (AWS_REGION / AWS_DEFAULT_REGION) 순. 읽기 실패/미설정 시 종전
+    하드코딩 값과 동일한 기본값으로 폴백한다 (현행 동작 유지).
+    """
+    region: Optional[str] = None
+    model_id: Optional[str] = None
+    try:
+        import yaml
+        path = Path(__file__).resolve().parents[2] / "configs" / "pipeline.yaml"
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        bedrock = (cfg.get("llm_provider") or {}).get("bedrock") or {}
+        spec = (bedrock.get("models") or {}).get("agent_consensus")
+        raw_model = spec.get("model_id") if isinstance(spec, dict) else None
+        model_id = str(raw_model) if raw_model else None
+        raw_region = bedrock.get("region") or (cfg.get("aws") or {}).get("region")
+        region = str(raw_region) if raw_region else None
+    except Exception:
+        logger.debug(
+            "agent_consensus 설정 읽기 실패 — env/기본값 폴백", exc_info=True,
+        )
+    if not region:
+        region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    return (
+        region or _CONSENSUS_FALLBACK_REGION,
+        model_id or _CONSENSUS_FALLBACK_MODEL_ID,
+    )
+
+
 def _build_sonnet_provider():
     """Bedrock Sonnet provider (lazy-imports boto3 + consensus)."""
     try:
@@ -1070,10 +1110,11 @@ def _build_sonnet_provider():
 
     class _BedrockProvider:
         def __init__(self) -> None:
+            region, model_id = _consensus_bedrock_settings()
             self._client = boto3.client(
-                "bedrock-runtime", region_name="ap-northeast-2",
+                "bedrock-runtime", region_name=region,
             )
-            self._model_id = "global.anthropic.claude-sonnet-4-6"
+            self._model_id = model_id
 
         def generate(self, prompt: str, max_tokens: int = 512,
                      temperature: float = 0.3, **_) -> str:
