@@ -69,6 +69,8 @@ class PipelineJobContext:
         promotion_gate_archive_glob: str = "",
         lineage_yaml_path: str = "",
         regulatory_status: Optional[Dict[str, Any]] = None,
+        log_groups: Optional[List[str]] = None,
+        log_marker_uri: str = "",
     ) -> None:
         self.region = region
         self.phase0_job_name = phase0_job_name
@@ -102,6 +104,22 @@ class PipelineJobContext:
         self.promotion_gate_archive_glob = promotion_gate_archive_glob
         self.lineage_yaml_path = lineage_yaml_path
         self.regulatory_status = regulatory_status
+        # CloudWatch 로그 분석(PORT-06). log_groups 미지정 시 Lambda 이름에서
+        # 파생 + SageMaker 표준 그룹. 마커는 s3://... 또는 로컬 경로.
+        self.log_groups = log_groups
+        self.log_marker_uri = log_marker_uri
+
+    def resolved_log_groups(self) -> List[str]:
+        """분석 대상 로그그룹 — 명시 설정이 없으면 ctx 의 Lambda 이름에서 파생."""
+        if self.log_groups:
+            return list(self.log_groups)
+        groups = [
+            f"/aws/lambda/{self.predict_lambda}",
+            f"/aws/lambda/{self.l2a_lambda}",
+            "/aws/sagemaker/TrainingJobs",
+            "/aws/sagemaker/ProcessingJobs",
+        ]
+        return groups
 
 
 # ---------------------------------------------------------------------------
@@ -1192,6 +1210,17 @@ def _llm_verify_enabled() -> bool:
     )
 
 
+def _log_analysis_enabled() -> bool:
+    """CloudWatch 로그 증분 분석 (PORT-06) — env 옵트인 (기본 off).
+
+    LLM triage 까지 켜려면 REPORTS_LLM_TRIAGE_ENABLED 도 함께 켜야 한다.
+    이 플래그만 켜면 룰 분류 (ERROR→FIX_NOW, WARNING→MONITOR, LLM 호출 0).
+    """
+    return os.getenv("REPORTS_LOG_ANALYSIS_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def _followup_mode(verdict: str) -> Optional[str]:
     """verdict → LLM 후속 모드. RED/HIGH → investigate, YELLOW/MEDIUM → triage."""
     v = (verdict or "").strip().upper()
@@ -1543,6 +1572,53 @@ def run_pipeline_reports(
                 agent_type="audit",
                 region=followup_region,
             )
+
+    # ---- CloudWatch 로그 증분 분석 (opt-in, on-prem sync PORT-06) --------
+    # [지난 스캔 ~ 지금] 윈도우의 WARNING/ERROR 를 추출해 ops 보고서에 첨부.
+    # ERROR=자동 FIX_NOW(+investigate), WARNING 만 LLM triage. LLM 사용은
+    # REPORTS_LLM_TRIAGE_ENABLED 가 함께 켜진 경우에만 — 아니면 룰 분류.
+    if _log_analysis_enabled() and aws_context is not None and ops_path.exists():
+        try:
+            from core.agent.ops.cloudwatch_log_analyzer import (
+                CloudWatchLogAnalyzer,
+            )
+            agent_builder = None
+            if _llm_followup_enabled() and ops_llm_registry is not None:
+                from core.agent.bedrock_dialog import BedrockDialogSession
+
+                def agent_builder(_registry=ops_llm_registry):
+                    return BedrockDialogSession(
+                        registry=_registry,
+                        agent_type="ops",
+                        region=aws_context.region,
+                    )
+
+            marker = aws_context.log_marker_uri or str(
+                art_path.parent / "log_scan_marker.txt"
+            )
+            analyzer = CloudWatchLogAnalyzer(
+                log_groups=aws_context.resolved_log_groups(),
+                marker_uri=marker,
+                region=aws_context.region,
+                agent_builder=agent_builder,
+            )
+            log_result = analyzer.analyze()
+            data = json.loads(ops_path.read_text(encoding="utf-8"))
+            data["log_analysis"] = log_result
+            ops_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+            logger.info(
+                "Log analysis attached: groups=%d, warnings=%d, errors=%d, "
+                "fix_now=%s",
+                log_result.get("n_log_groups", 0),
+                log_result.get("n_warnings", 0),
+                log_result.get("n_errors", 0),
+                log_result.get("n_fix_now", 0),
+            )
+        except Exception:
+            logger.exception("CloudWatch log analysis failed (non-fatal)")
 
     # ---- S3 upload ----------------------------------------------------
     ops_s3: Optional[str] = None

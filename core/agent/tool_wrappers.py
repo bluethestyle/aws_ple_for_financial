@@ -474,6 +474,58 @@ def query_cloudwatch_metrics(namespace: str = "PLE/ABTest", metric_names: Option
         return {"error": str(e)}
 
 
+def query_cloudwatch_logs(
+    log_group: str = "",
+    pattern: str = "?WARNING ?WARN ?ERROR ?CRITICAL ?FATAL ?Traceback",
+    hours: int = 24,
+    max_events: int = 50,
+    **kwargs,
+) -> Dict[str, Any]:
+    """CloudWatch Logs filter_log_events 래핑 — 에이전트가 로그를 직접 조회 (PORT-06).
+
+    investigate/triage 중인 에이전트가 ERROR/WARNING 원문과 주변 맥락을
+    확인할 때 사용. 온프렘 query_local_metrics 의 로그 조회 등가물.
+    """
+    if not log_group:
+        return {"error": "log_group is required"}
+    try:
+        from datetime import datetime, timedelta, timezone
+        import boto3
+        client = boto3.client("logs", region_name=kwargs.get("region"))
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=int(hours))
+        events: List[Dict[str, Any]] = []
+        req: Dict[str, Any] = {
+            "logGroupName": log_group,
+            "startTime": int(start.timestamp() * 1000),
+            "endTime": int(end.timestamp() * 1000),
+        }
+        if pattern:
+            req["filterPattern"] = pattern
+        while True:
+            resp = client.filter_log_events(**req)
+            for ev in resp.get("events", []):
+                events.append({
+                    "timestamp": ev.get("timestamp"),
+                    "stream": ev.get("logStreamName", ""),
+                    "message": (ev.get("message") or "").strip()[:300],
+                })
+                if len(events) >= int(max_events):
+                    break
+            token = resp.get("nextToken")
+            if not token or len(events) >= int(max_events):
+                break
+            req["nextToken"] = token
+        return {
+            "log_group": log_group,
+            "window_hours": int(hours),
+            "n_events": len(events),
+            "events": events,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def get_consecutive_drift_days(monitoring_dir: str = "outputs/monitoring", **kwargs) -> Dict[str, Any]:
     """Get consecutive critical drift days."""
     try:
@@ -625,6 +677,7 @@ def register_all_tools(registry) -> int:
         "read_checklist_config": read_checklist_config,
         "read_git_diff": read_git_diff,
         "query_cloudwatch_metrics": query_cloudwatch_metrics,
+        "query_cloudwatch_logs": query_cloudwatch_logs,
         # Category 2: Monitoring Query
         "detect_drift": detect_drift,
         "get_consecutive_drift_days": get_consecutive_drift_days,
