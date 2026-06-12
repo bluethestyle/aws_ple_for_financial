@@ -70,11 +70,11 @@
   Guardrail coherence score) in a shared HMAC-signed hash-chained
   audit log, producing a regulator-usable per-decision record that
   satisfies GDPR Art.~22 meaningful-explanation and EU AI Act Art.~13
-  transparency requirements --- the companion paper produces the
-  attribution vector (its causal-attribution finding) and the
-  coherence score (its causal-guardrail findings); this paper routes
-  both into the audit infrastructure.
-  We evaluate distillation quality (v13 baseline: AUC gap $<$ 3.6 percentage points across 7 binary tasks, mean 2.6 pp; the v14 re-run after the fidelity-gate fixes of Section 10 reduces the mean gap to 0.58 pp),
+  transparency requirements --- the companion loss-dynamics paper
+  produces the attribution vector (its causal-attribution finding)
+  and the coherence score (its causal-guardrail findings); this
+  paper routes both into the audit infrastructure.
+  We evaluate distillation quality (v13 baseline: AUC gap $<$ 3.6 percentage points across 7 binary tasks, mean 2.6 pp; the v14 re-run after the fidelity-gate fixes analysed in the Discussion (Section 8) reduces the mean gap to 0.58 pp),
   reason generation quality via automated compliance validation
   (L1 template coverage 100%, 13/13 tasks; compliance rules applied: suitability, consent, opt-out, profiling, disclosure),
   and Safety Gate reliability (5 PII patterns, 5 validation categories).
@@ -113,7 +113,7 @@ Existing explanation approaches are insufficient:
 
 We propose a full-chain solution from prediction to persuasion:
 
-+ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 1211 features; see companion paper for architecture and ablation) is distilled into per-task LGBM students via adaptive threshold gating that routes each task to DISTILL (soft labels), DIRECT (hard labels), or SKIP (rule engine) based on teacher quality assessment. This enables CPU-only serving while a three-layer fallback guarantees service continuity under any model failure scenario.
++ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 1211 features --- 1210 after the v14 preprocessing revision; see companion paper for architecture and ablation) is distilled into per-task LGBM students via adaptive threshold gating that routes each task to DISTILL (soft labels), DIRECT (hard labels), or SKIP (rule engine) based on teacher quality assessment. This enables CPU-only serving while a three-layer fallback guarantees service continuity under any model failure scenario.
 
 + *Multi-Agent Reason Generation*: Three specialized LLM agents collaborate in a pipeline --- Feature Selector chooses explanation-worthy features, Reason Generator produces natural-language narratives, and Safety Gate validates regulatory compliance.
 
@@ -694,7 +694,7 @@ Implemented as `SelfChecker`, this agent validates the generated reason against:
     stroke: 0.5pt,
     [*Check Category*], [*Criteria*],
     [Hallucination], [No claims about facts not in feature data],
-    [Regulatory], [No violation of Protection Act, Article 19],
+    [Regulatory], [No violation of KFCPA §19 (duty of explanation --- no false or exaggerated explanation)],
     [Appropriateness], [No unsuitable product recommendations for customer profile],
     [Tone], [Professional financial advisory language],
     [Factual], [Numerical claims match actual feature values],
@@ -948,14 +948,14 @@ and AuditAgent handles 25 items grouped under 5 audit viewpoints.
 
 == Tool Calling Architecture
 
-38 tools (29 Query + 9 Action) are defined via JSON Schema,
+39 tools (30 Query + 9 Action) are defined via JSON Schema,
 wrapping existing monitoring components (drift detector, fairness monitor, self-check layer, etc.)
 as callable tools for the agents.
 Query tools can be called freely, while Action tools (incident creation, audit logging)
 require explicit approval, structurally enforcing the Query/Action boundary.
 
 Three hardening mechanisms sit between the agents and this tool surface.
-First, _focus-keyed dynamic tool routing_: rather than exposing all 38 tools on every call,
+First, _focus-keyed dynamic tool routing_: rather than exposing all 39 tools on every call,
 the dialog layer selects the subset relevant to the current inspection focus from a routing
 table (`agent_tool_routing.yaml`, with a built-in fallback map when the file is absent),
 shrinking the prompt and reducing wrong-tool selection.
@@ -984,9 +984,9 @@ history and checks each factual claim in the draft conclusion against the actual
 recorded there, returning a structured `{grounded, issues}` verdict, and a failed check
 downgrades the conclusion to a flagged draft for human review.
 The pass is implemented in both environments: enabled by default in the on-premises
-reference system, and available on the AWS agent dialog layer as a per-call opt-in flag
-(disabled by default).
-// 최종 정합 필요: AWS verify 기본값(opt-in)은 2026-06-12 시점 확인 — 동시 세션이 core/agent 수정 중이므로 게시 직전 재확인
+reference system, and on AWS exposed as a per-call flag on the dialog layer (off by
+default at the API level); the production report path enables it by default whenever
+the opt-in LLM follow-up wiring is active.
 
 Log analysis follows the same economy of LLM use: log files are scanned incrementally
 (only lines appended since the last inspection), ERROR lines escalate to FIX_NOW
@@ -1324,8 +1324,7 @@ _LLM hardening — AI security checker_ (`core/security/ai_security_checker.py`)
 
 Combined with the Sprint 2 L2a Safety Gate (`core/recommendation/reason/l2a_safety_gate.py`), the LLM path now has four independent hardening layers --- sensitivity-based routing, rule-based safety gate, AI security checker (prompt + output), and the LLM generation marker --- each of which can veto independently and each of which is config-driven so a security ops team can extend the rule catalogue without a code change.
 
-`tests/test_phase3_could.py` (39 cases) covers T-Learner / X-Learner CATE recovery, qini plus top-K-percent uplift metrics on synthetic uplift data, every default security pattern, the provider-wrapping end-to-end flow, and custom refusal callback injection. Together with the Phase 1 and Phase 2 suites, plus the PromotionGate MetadataAggregator live-wiring tests and the post-normalization feature-group-range rebuild regression suite, the AWS-side regulatory, learning, and security stack is exercised by _736 tests (736 passing)_.
-// 최종 정합 필요: 736은 2026-06-12 실측 — 동시 세션이 테스트 추가 중이므로 V2 게시 직전 전체 suite 재실행으로 재확정
+`tests/test_phase3_could.py` (39 cases) covers T-Learner / X-Learner CATE recovery, qini plus top-K-percent uplift metrics on synthetic uplift data, every default security pattern, the provider-wrapping end-to-end flow, and custom refusal callback injection. Together with the Phase 1 and Phase 2 suites, plus the PromotionGate MetadataAggregator live-wiring tests and the post-normalization feature-group-range rebuild regression suite, the AWS-side regulatory, learning, and security stack is exercised by _785 tests (785 passing)_.
 
 == Korean AI Basic Act
 
@@ -1590,8 +1589,8 @@ reconstruct the feature attributions that drove that specific
 prediction, unaltered, from a tamper-evident record.
 
 The Causal Explainability Head (CEH) introduced in the companion
-paper produces a per-prediction attribution vector on every
-inference. `AuditLogger` exposes `log_attribution(model_id,
+loss-dynamics paper (Paper 3) produces a per-prediction attribution
+vector on every inference. `AuditLogger` exposes `log_attribution(model_id,
 sample_id, top_features, attribution_hash, input_dim)`, which records
 for each prediction: (i) the top-$K$ most influential features with
 their signed weights (a compact summary for human review), (ii) a
@@ -1642,14 +1641,14 @@ accessor (`get_last_attribution`) on the causal expert, the PLE
 model surfaces it via `get_ceh_attribution`, and the serving path
 pairs each prediction with one `log_attribution` event. No model
 surgery; the attribution vector is a by-product of the training-time
-regulariser described in the companion paper.
+regulariser described in the companion loss-dynamics paper.
 
 === Causal Guardrail Audit (CG Integration)
 <cg-audit>
 
 CEH answers "why did the model recommend this?"; the Causal
 Guardrail answers the adjacent question "can we trust this
-recommendation?". In the companion paper's causal-guardrail findings we
+recommendation?". In the companion loss-dynamics paper's causal-guardrail findings we
 established that a z-space Mahalanobis score on the causal expert's
 latent detects three synthetic OOD probe types at $100%$ TPR with
 $5%$ FPR --- a regulator-usable reliability signal at no training
@@ -1908,7 +1907,7 @@ GDPR Art.~22 gap.* Model-promotion records track *which* model is
 in production but do not answer the adjacent per-decision questions
 *why did the model recommend this* and *can we trust this
 recommendation*. Combining the Causal Explainability Head attribution
-(the companion paper's causal-attribution finding) with the Causal Guardrail coherence
+(the companion loss-dynamics paper's causal-attribution finding) with the Causal Guardrail coherence
 score (its causal-guardrail findings) and routing both through
 the same HMAC-signed hash-chained `AuditLogger` produces a
 per-prediction record that reconstructs both questions forensically.
@@ -2075,14 +2074,18 @@ tiers, distinguished by what the metric measures:
   `tier2_violation_count`. They do *not* affect the report's
   `status` or the gate's pass/fail tally.
 
-Under this split, v14 v4 binary tasks report Tier 1 = $7/7$ pass
-and Tier 2 = $7/7$ violations (architecture floor), making the
+Under this split, the seven distilled tasks of the v14 v4 run
+report Tier 1 = $6/7$ pass and Tier 2 = $7/7$ violations
+(architecture floor); the single Tier 1 residual is
+`cross_sell_count`'s `rmse_gap`, whose semantics are analysed in
+the companion loss-dynamics paper's Finding 14. The split makes the
 operational verdict unambiguous while still surfacing the
 cross-architecture signal for monitoring. A regulator reviewing
 the audit log can therefore distinguish "is this student broken?"
-(Tier 1, today's verdict: no) from "how similar is this student
-to the teacher?" (Tier 2, today's verdict: as expected for the
-PLE $arrow$ LGBM pair). Future cross-architecture runs report
+(Tier 1, today's verdict: no for six of the seven tasks, with the
+`cross_sell_count` regression gap as the one open item) from "how
+similar is this student to the teacher?" (Tier 2, today's verdict:
+as expected for the PLE $arrow$ LGBM pair). Future cross-architecture runs report
 their own Tier 2 trajectory; a sudden agreement collapse (e.g., to
 $< 0.5$) still surfaces as an anomaly via the
 `tier2_violation_count` trend, even though it never had the power
@@ -2111,7 +2114,7 @@ natural follow-up but not adopted here.
   to differ in structure and is not yet evaluated.
 - *Attribution meaningfulness not human-evaluated.* CEH v2 produces
   per-sample attributions that discriminate across samples (the
-  companion paper's post-hoc attribution evaluation), but whether the top-$K$ features align
+  companion loss-dynamics paper's post-hoc attribution evaluation), but whether the top-$K$ features align
   with domain-expert expectations or with alternative attribution
   methods (Integrated Gradients, DAG-path traversal) has not been
   assessed. A human-evaluation pass is planned.
@@ -2130,7 +2133,7 @@ natural follow-up but not adopted here.
   + `log_guardrail` events, closing the gap identified in the
   limitation above.
 - *Extension to remaining Axis-3 candidates* (CTGR / CRCG / CCP from
-  the companion paper) once their MV work lands, plus a primary-task-
+  the companion loss-dynamics paper) once their MV work lands, plus a primary-task-
   gradient CEH variant that aligns attribution with specific task
   logits rather than the causal-encoder's aggregate output.
 
@@ -2163,7 +2166,7 @@ Five key contributions define this work:
 + *Regulatory compliance embedded by design* --- Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act are explicitly mapped to system architecture components, with automated monitoring (drift, fairness, herding) and human-in-the-loop oversight at critical decision points.
 
 + *Per-prediction causal audit pair* --- the Causal Explainability
-  Head attribution (the companion paper's causal-attribution finding) and the Causal
+  Head attribution (the companion loss-dynamics paper's causal-attribution finding) and the Causal
   Guardrail coherence score (its causal-guardrail findings) flow
   into the same HMAC-signed hash-chained audit store via
   `log_attribution` and `log_guardrail`, producing a per-decision
