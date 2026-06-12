@@ -1109,7 +1109,7 @@ The ablation validates whether each expert provides a distinct "why" for differe
 confirming that heterogeneous experts are not merely a performance trick
 but a structural requirement for multi-faceted persuasion.
 
-- *Data*: 1M customers, 1211 features (Phase 0 over the v12 generation schema, 17 groups; preprocessing revision per table caption), 13 tasks.
+- *Data*: 1M customers, 1211 features (1210 after the v14 preprocessing revision; Phase 0 over the v12 generation schema, 17 groups; preprocessing revision per table caption), 13 tasks.
 - *Hardware*: NVIDIA RTX 4070 (12GB VRAM, 64GB RAM) local.
 - *Training*: 10 epochs, batch 5632, lr 0.0005, AMP (FP16), warmup 3 epochs (cosine annealing), no early stopping. adaTT scenarios use warmup=3 epochs, grad\_interval=10. GradSurgery scenarios use warmup=2 epochs, conflict\_threshold=0.0.#footnote[Reproducibility note: scheduler and optimizer hyperparameters resolve with a fixed three-tier precedence --- explicit hyperparameter arguments override YAML configuration, which overrides library defaults --- so the values reported here are the values actually applied.]
 - *Loss weighting*: Uncertainty weighting (Kendall et al.) with per-task loss weights applied on top of learned precision --- matching the on-premise reference formula.
@@ -1309,7 +1309,8 @@ The ranking has three diagnostic implications.
 
 == Epoch-Budget Sensitivity (RQ4 follow-up)
 
-The local 10-epoch joint ablation (@tab:joint-ablation) suggested an
+The local 10-epoch runs (the Local 10ep column of
+@tab:epoch-budget) suggested an
 unexpected ordering: shared\_bottom (Avg AUC 0.8139) outperformed PLE
 softmax (0.7980) on aggregate AUC, contradicting the v13 prototype's
 PLE-favoured narrative.  Three competing hypotheses were considered:
@@ -1720,7 +1721,7 @@ via knowledge distillation to LGBM (detailed in companion paper).
 On the v14 phase0 benchmark the distillation stage itself also completes end-to-end
 on a CPU instance (m5.4xlarge, 62 minutes, \$0.30 on Spot),
 with the distilled students tracking the teacher at a mean AUC gap of 0.58pp
-(down from 2.5pp at v13) --- GPU dependence is confined to teacher training.
+(down from a 2.6pp mean at v13) --- GPU dependence is confined to teacher training.
 
 *Operational simplicity.*
 The config-driven design (a split-config of three YAML files controls the entire pipeline)
@@ -1839,10 +1840,13 @@ with reliability (CG).
 *Paper 3* reports empirical findings from scaling PLE to 13
 heterogeneous tasks --- loss dynamics and gate selection behaviour
 (Findings 1--6), a 9-way comparison of fusion augmentations that
-identifies two non-additive positive recipes (Finding 7), and a
+identifies two non-additive positive recipes (Finding 7), a
 causal expert reinterpretation arc from dead-parameter diagnosis
-through CEH attribution and CG guardrail to W-amplification
-(Findings 8--11) whose outputs feed Paper 2's audit surface.
+through CEH attribution, CG guardrail, and W-amplification to
+counterfactual probing and a negative-result CEH variant
+(Findings 8--13) whose outputs feed Paper 2's audit surface, and a
+measurement analysis of the cross-architecture distillation
+fidelity gate (Finding 14).
 
 // ============================================================
 // ============================================================
