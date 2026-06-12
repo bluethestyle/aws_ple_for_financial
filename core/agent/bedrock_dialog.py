@@ -214,6 +214,9 @@ class BedrockDialogSession:
             if not tool_uses:
                 # Pure text response
                 text = self._extract_text(response)
+                if not text.strip():
+                    # 도구 호출 후 결론이 빈 응답으로 누락 → 강제 합성 (on-prem sync)
+                    text = self._synthesize()
                 self._history.append(DialogTurn(role="assistant", content=text))
 
                 # Save this turn for future recall
@@ -251,8 +254,55 @@ class BedrockDialogSession:
             # Add tool results to messages and continue
             messages = self._build_messages()
 
-        # If we hit max iterations, return what we have
-        return "도구 호출 반복 한도에 도달했습니다. 결과를 종합해주세요."
+        # 반복 한도 도달 → 지금까지의 도구 결과로 강제 결론 (on-prem sync)
+        text = self._synthesize()
+        self._history.append(DialogTurn(role="assistant", content=text))
+        return text
+
+    def _synthesize(self) -> str:
+        """도구 호출 후 결론이 비거나 반복 한도에 닿으면 강제 종합.
+
+        도구 없이(빈 toolConfig) Bedrock 1회 호출로 [원인][근거][권고]
+        텍스트를 생성한다. 실패 시 고정 문구 폴백 (on-prem _synthesize 등가).
+        """
+        instruction = (
+            "지금까지 도구로 확인한 결과를 종합해 [원인], [근거], [권고] "
+            "세 항목으로 한국어 결론만 작성하세요. 도구는 더 호출하지 마세요."
+        )
+        try:
+            messages = self._build_messages()
+            # converse 는 역할 교대를 요구 — 마지막이 user(toolResult 포함)면
+            # 새 user 메시지 대신 기존 content 에 지시 블록을 병합한다.
+            if messages and messages[-1]["role"] == "user":
+                messages[-1]["content"].append({"text": instruction})
+            else:
+                messages.append({"role": "user", "content": [{"text": instruction}]})
+            response = self._call_bedrock(messages, {})  # tools 없이 → 반드시 텍스트
+            text = self._extract_text(response)
+            if text.strip():
+                return text
+        except Exception as e:
+            logger.warning("강제 합성 실패: %s", e)
+        return "조사 완료(결론 생성 실패) — 도구 결과를 직접 확인하세요."
+
+    def investigate(self, finding: str) -> Dict[str, Any]:
+        """RED/HIGH 자동 조사·추론 (on-prem reasoning_agent sync).
+
+        finding(문제 설명) → 도구사용 추론 루프(chat, 최대 5회)로 근본원인을
+        조사하고 {reasoning, tool_calls, n_tool_calls} 를 반환한다.
+        """
+        prompt = (
+            f"다음 문제가 감지되었습니다. 도구로 직접 데이터를 확인하며 "
+            f"근본원인을 조사·추론하세요.\n\n[문제]\n{finding}"
+        )
+        text = self.chat(prompt)
+        tool_calls = [tc for t in self._history for tc in t.tool_calls]
+        return {
+            "reasoning": text,
+            "tool_calls": [{"name": tc.get("name")} for tc in tool_calls],
+            "n_tool_calls": len(tool_calls),
+            "_model_reasoned": True,
+        }
 
     def _build_messages(self) -> List[Dict[str, Any]]:
         """Build Bedrock converse API messages from history."""

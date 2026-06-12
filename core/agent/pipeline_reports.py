@@ -1164,6 +1164,128 @@ class PipelineReportArtifacts:
         }
 
 
+# ---------------------------------------------------------------------------
+# LLM triage/investigation follow-up (opt-in, on-prem sync PORT-04)
+# ---------------------------------------------------------------------------
+
+# 감사 focus_area 명칭(한국어) → tool routing focus key. 부분 문자열 매칭.
+_AUDIT_AREA_FOCUS_MAP = {
+    "공정성": "fairness",
+    "집중도": "herding",
+    "규제": "regulatory",
+    "계보": "lineage",
+}
+
+
+def _llm_followup_enabled() -> bool:
+    """Bedrock 비용이 드는 LLM 후속 조사는 env 옵트인 (기본 off)."""
+    return os.getenv("REPORTS_LLM_TRIAGE_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _followup_mode(verdict: str) -> Optional[str]:
+    """verdict → LLM 후속 모드. RED/HIGH → investigate, YELLOW/MEDIUM → triage."""
+    v = (verdict or "").strip().upper()
+    if v in ("RED", "HIGH", "CRITICAL"):
+        return "investigate"
+    if v in ("YELLOW", "MEDIUM"):
+        return "triage"
+    return None
+
+
+def _ops_finding_text(attention: List[Dict[str, Any]]) -> str:
+    lines = []
+    for item in attention:
+        line = (
+            f"- {item.get('checkpoint', '?')} [{item.get('severity', '')}] "
+            f"{item.get('finding', '')}"
+        )
+        if item.get("likely_cause"):
+            line += f" (추정 원인: {item['likely_cause']})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _ops_focus_keys(attention: List[Dict[str, Any]]) -> List[str]:
+    """attention 항목의 checkpoint 필드("CP2" 또는 "CP1, CP3")에서 CP 키 추출."""
+    import re
+    keys: List[str] = []
+    for item in attention:
+        for token in re.findall(r"CP\d+", str(item.get("checkpoint", ""))):
+            if token not in keys:
+                keys.append(token)
+    return keys
+
+
+def _audit_finding_text(focus_areas: List[Dict[str, Any]]) -> str:
+    return "\n".join(
+        f"- {fa.get('area', '?')} [{fa.get('priority', '')}] {fa.get('finding', '')}"
+        for fa in focus_areas
+    )
+
+
+def _audit_focus_keys(focus_areas: List[Dict[str, Any]]) -> List[str]:
+    keys: List[str] = []
+    for fa in focus_areas:
+        area = str(fa.get("area", ""))
+        for needle, key in _AUDIT_AREA_FOCUS_MAP.items():
+            if needle in area and key not in keys:
+                keys.append(key)
+    return keys
+
+
+def _attach_llm_followup(
+    report_path: Path,
+    verdict: str,
+    finding: str,
+    focus_keys: Optional[List[str]],
+    registry,
+    agent_type: str,
+    region: Optional[str] = None,
+    session_factory=None,
+) -> Optional[str]:
+    """verdict 분기로 LLM 후속 조사를 실행해 보고서 JSON 에 첨부한다.
+
+    RED/HIGH → investigate(도구사용 근본원인 조사), YELLOW/MEDIUM → triage
+    (IGNORE/MONITOR/FIX_NOW 분류). 결과는 보고서 JSON 의 ``llm_followup``
+    키에 기록된다. 실패는 swallow — 보고서 생성/업로드를 막지 않는다.
+
+    Returns the executed mode ("investigate"/"triage") or ``None``.
+    """
+    mode = _followup_mode(verdict)
+    if mode is None or registry is None or not finding.strip():
+        return None
+    try:
+        if session_factory is None:
+            from core.agent.bedrock_dialog import BedrockDialogSession
+            session_factory = BedrockDialogSession
+        session = session_factory(
+            registry=registry,
+            agent_type=agent_type,
+            region=region,
+            focus_keys=focus_keys or None,
+        )
+        result = (
+            session.investigate(finding) if mode == "investigate"
+            else session.triage(finding)
+        )
+        data = json.loads(report_path.read_text(encoding="utf-8"))
+        data["llm_followup"] = {"mode": mode, "verdict": verdict, **result}
+        report_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        logger.info(
+            "LLM follow-up (%s, focus=%s) attached to %s",
+            mode, focus_keys, report_path.name,
+        )
+        return mode
+    except Exception:
+        logger.exception("LLM follow-up failed (non-fatal)")
+        return None
+
+
 def run_pipeline_reports(
     version: str,
     artifacts_dir: str,
@@ -1236,6 +1358,12 @@ def run_pipeline_reports(
     except Exception:
         logger.exception("LanceDB stores unavailable (non-fatal)")
 
+    # LLM 후속 조사(옵트인)용 핸들 — 각 try 블록 안에서 채워진다.
+    ops_llm_registry = None
+    audit_llm_registry = None
+    ops_attention: List[Dict[str, Any]] = []
+    audit_focus: List[Dict[str, Any]] = []
+
     # ---- Ops ----------------------------------------------------------
     try:
         from core.agent.ops.collector import OpsCollector
@@ -1279,6 +1407,8 @@ def run_pipeline_reports(
         ops_report = reporter.generate(checkpoints, diagnoses, period="daily")
         ops_report.save(str(ops_path))
         ops_status = ops_report.status
+        ops_llm_registry = registry
+        ops_attention = ops_report.attention_required
         logger.info(
             "Ops report: status=%s, attention=%d → %s",
             ops_status, len(ops_report.attention_required), ops_path,
@@ -1300,6 +1430,7 @@ def run_pipeline_reports(
         # the ToolRegistry itself (CLAUDE.md §1.11 compliance trail).
         if aws_context is not None:
             audit_registry = _build_audit_registry(aws_context)
+            audit_llm_registry = audit_registry
             fairness_results = audit_registry.call("read_fairness_summary") or {}
             promotion_verdicts = (
                 audit_registry.call("read_recent_promotion_verdicts") or {}
@@ -1363,6 +1494,7 @@ def run_pipeline_reports(
         )
         audit_report.save(str(audit_path))
         audit_risk = audit_report.risk_level
+        audit_focus = audit_report.focus_areas
         logger.info(
             "Audit report: risk=%s, focus_areas=%d, tier1_validated=%d → %s",
             audit_risk, len(audit_report.focus_areas),
@@ -1371,6 +1503,33 @@ def run_pipeline_reports(
         )
     except Exception:
         logger.exception("AuditReporter failed (non-fatal)")
+
+    # ---- LLM follow-up (opt-in, on-prem sync PORT-04) ------------------
+    # RED/HIGH → investigate(근본원인 조사), YELLOW/MEDIUM → triage 분류.
+    # Bedrock 호출 비용이 들므로 REPORTS_LLM_TRIAGE_ENABLED=1 일 때만.
+    # S3 업로드 전에 수행해 첨부 결과가 업로드본에도 포함되도록 한다.
+    if _llm_followup_enabled():
+        followup_region = aws_context.region if aws_context is not None else None
+        if ops_path.exists():
+            _attach_llm_followup(
+                report_path=ops_path,
+                verdict=ops_status,
+                finding=_ops_finding_text(ops_attention),
+                focus_keys=_ops_focus_keys(ops_attention),
+                registry=ops_llm_registry,
+                agent_type="ops",
+                region=followup_region,
+            )
+        if audit_path.exists():
+            _attach_llm_followup(
+                report_path=audit_path,
+                verdict=audit_risk,
+                finding=_audit_finding_text(audit_focus),
+                focus_keys=_audit_focus_keys(audit_focus),
+                registry=audit_llm_registry,
+                agent_type="audit",
+                region=followup_region,
+            )
 
     # ---- S3 upload ----------------------------------------------------
     ops_s3: Optional[str] = None
