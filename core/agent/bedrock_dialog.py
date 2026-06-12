@@ -422,15 +422,28 @@ class BedrockDialogSession:
         prompt = (
             f"다음은 경고(WARNING)입니다. 도구로 현재 파이프라인과의 관련성과 미래 영향 가능성을 "
             f"직접 확인한 뒤 분류하세요.\n\n[경고]\n{finding}\n\n"
-            "- IGNORE: 현재 파이프라인과 무관 → 추후 워닝 로그 정리 권장\n"
-            "- MONITOR: 현재 미미하고 악화 징후도 없음 → 관찰만\n"
-            "- FIX_NOW: 증가/누적 추세이거나 방치시 추후 큰 영향 가능 → 즉시 수정 신호\n"
-            "  (증가추세/누적 신호가 있으면 임계값 미만이어도 FIX_NOW 적극 고려)\n"
+            "심각도 판단 요소 (금융 AIOps — 해당시 심각도 상향, on-prem c3df4317 sync):\n"
+            "  - 규제/컴플라이언스(EU AI Act, SR 11-7, 금소법 §17) 관련 → FIX_NOW 적극 고려\n"
+            "  - 고객에게 직접 노출되는 산출물(추천, 추천사유) 품질/신선도 영향 → 상향\n"
+            "  - 데이터 무결성, PII 노출, 피처 누수(leakage) 가능성 → 상향\n"
+            "  - 모델 성능 저하(품질지표 하락, 분포 드리프트) 신호 → 상향\n"
+            "  - 증가/누적/점진적 악화 추세 → 지금 임계값 미만이어도 FIX_NOW 적극 고려\n"
+            "다음 중 하나로 분류하고 근거를 제시하세요:\n"
+            "- IGNORE: 현재 파이프라인과 무관 + 위 요소 해당 없음 → 추후 워닝 로그 정리 권장\n"
+            "- MONITOR: 현재 미미하고 당장 영향 없으며 악화 징후, 위 요소 없음 → 관찰만\n"
+            "- FIX_NOW: 위 심각도 요소 해당 또는 증가/누적 추세로 추후 큰 영향 가능 → 즉시 수정 신호\n"
             "조사 후 마지막 줄에 '[분류] IGNORE|MONITOR|FIX_NOW' 형식으로 결론을 쓰고 [근거][권고]도 작성하세요."
         )
         text = self.chat(prompt)
         m = re.search(r"\[분류\]\s*(IGNORE|MONITOR|FIX_NOW)", text)
-        out = {"reasoning": text, "triage": m.group(1) if m else "MONITOR"}
+        tool_calls = [tc for t in self._history for tc in t.tool_calls]
+        out = {
+            "reasoning": text,
+            "triage": m.group(1) if m else "MONITOR",  # 파싱 실패시 보수적으로 관찰
+            "tool_calls": [{"name": tc.get("name")} for tc in tool_calls],
+            "n_tool_calls": len(tool_calls),
+            "_model_reasoned": True,
+        }
         if verify:
             out["grounding_check"] = self.verify_grounding(text)
         return out

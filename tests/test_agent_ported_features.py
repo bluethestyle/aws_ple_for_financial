@@ -127,3 +127,37 @@ class TestTriage:
     def test_defaults_to_monitor_when_unparseable(self, monkeypatch):
         sess = self._session(monkeypatch, "결론 형식이 없는 응답")
         assert sess.triage("애매한 경고")["triage"] == "MONITOR"
+
+    def test_prompt_contains_financial_severity_factors(self, monkeypatch):
+        """PORT-05: 금융 AIOps 심각도 4요소 (on-prem c3df4317, AWS 규제 어휘)."""
+        sess = BedrockDialogSession(registry=ToolRegistry(), agent_type="ops")
+        captured = {}
+
+        def fake_chat(prompt):
+            captured["prompt"] = prompt
+            return "[분류] MONITOR"
+
+        monkeypatch.setattr(sess, "chat", fake_chat)
+        sess.triage("PSI 경고")
+        prompt = captured["prompt"]
+        # 4요소: 규제(AWS 어휘), 고객 노출 산출물, 데이터 무결성/PII/누수, 성능 저하
+        for needle in (
+            "EU AI Act", "SR 11-7", "금소법 §17",
+            "고객에게 직접 노출", "PII", "누수", "성능 저하", "드리프트",
+        ):
+            assert needle in prompt, f"심각도 요소 누락: {needle}"
+
+    def test_returns_tool_call_trace(self, monkeypatch):
+        """PORT-05: triage 도 investigate 처럼 도구 호출 추적을 반환."""
+        from core.agent.bedrock_dialog import DialogTurn
+
+        sess = self._session(monkeypatch, "[분류] FIX_NOW")
+        sess._history.append(DialogTurn(
+            role="assistant", content="",
+            tool_calls=[{"toolUseId": "t1", "name": "detect_drift", "input": {}}],
+            tool_results=[{"toolUseId": "t1", "result": {"psi": 0.3}}],
+        ))
+        out = sess.triage("드리프트 경고")
+        assert out["tool_calls"] == [{"name": "detect_drift"}]
+        assert out["n_tool_calls"] == 1
+        assert out["_model_reasoned"] is True
