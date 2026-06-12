@@ -141,7 +141,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Heterogeneous Shared Expert Basket with Structural Collapse Guarantee*: We replace PLE's homogeneous MLP experts with seven architecturally distinct experts (DeepFM, Temporal Ensemble, HGCN, PersLay, Causal, LightGCN, Optimal Transport). Unlike prior "heterogeneous" MoE work that varies expert _size_ @mowst2024 or _modality_ @jamba2024, we vary the fundamental _inductive bias_, providing a structural guarantee against expert collapse --- a persistent failure mode in homogeneous MoE/PLE deployments @home2024.
 
-+ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via expert routing declarations at the feature group level), not the full 1211D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 32D--977D), reducing model parameters substantially (V1 baseline at 349D schema: 2.70M measured; V2 1211D parameter count to be reported at V2 re-measurement following the lag-tensor / multihot generator additions) while strengthening each expert's specialization.
++ *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via expert routing declarations at the feature group level), not the full 1211D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 32D--977D), reducing model parameters substantially (V1 baseline at 349D schema: 2.70M measured; V2 1211D schema: 0.97M across the seven routed shared experts vs.~2.96M for the same basket with routing disabled, measured) while strengthening each expert's specialization.
 
 + *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), Customized Gate Control (CGC) gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
 
@@ -151,7 +151,7 @@ increasingly demand this shift toward structurally transparent explanations
 
 + *Gate Type Analysis for Heterogeneous MTL*: We demonstrate that softmax gating outperforms sigmoid in 13-task heterogeneous settings (7 binary + 3 multiclass + 3 regression), reversing the conventional preference from homogeneous-task literature @tang2020 @sigmoid_moe2024. The reversal is attributed to softmax's protective isolation of minority-type tasks from majority-type gradient corruption.
 
-+ *Loss-Level vs.~Gradient-Level Transfer*: Our loss-level inter-task transfer mechanism (a TAG @fifty2021tag + GradNorm @chen2018gradnorm hybrid, retained under the internal "adaTT" label but distinct from the representation-level adaTT of @li2023 --- see Section 4.5) has a null effect at 13-task scale after correcting five implementation bugs: the AUC change with adaTT vs.~without is $-$0.001, within single-seed measurement noise. An earlier draft reported $-$0.019, attributed at the time to algorithmic instability; the corrected measurements locate the cause in the implementation rather than in the loss-level mechanism per se (see Section 5.4 table caption). We additionally experiment with GradSurgery (gradient-level projection between 3 task-type groups), which also shows no gain and incurs VRAM overhead from the retained computation graph; GradSurgery is not adopted for production either.
++ *Loss-Level vs.~Gradient-Level Transfer*: Our loss-level inter-task transfer mechanism (a TAG @fifty2021tag + GradNorm @chen2018gradnorm hybrid, retained under the internal "adaTT" label but distinct from the representation-level adaTT of @li2023 --- see @task-grouping) has a null effect at 13-task scale after correcting five implementation bugs: the AUC change with adaTT vs.~without is $-$0.001, within single-seed measurement noise. An earlier draft reported $-$0.019, attributed at the time to algorithmic instability; the corrected measurements locate the cause in the implementation rather than in the loss-level mechanism per se (see Section 5.4 table caption). We additionally experiment with GradSurgery (gradient-level projection between 3 task-type groups), which also shows no gain and incurs VRAM overhead from the retained computation graph; GradSurgery is not adopted for production either.
 
 + *Uncertainty Weighting Correction*: We identify and fix a subtle implementation gap where per-task loss weights were silently ignored under uncertainty weighting --- yielding the single largest performance improvement ($+$0.018 NDCG\@3, $+$0.031 F1-macro), larger than any architectural change.
 
@@ -170,7 +170,7 @@ The progression from Shared-Bottom @caruana1997 to MMoE @ma2018 to PLE @tang2020
 increasing sophistication in managing negative transfer between tasks.
 MMoE introduced per-task gating over a shared expert pool, while PLE further separated
 shared and task-specific experts with a progressive extraction structure.
-AdaTT @li2023 extended this with adaptive inter-task transfer at the *representation level* (per-task fusion over expert outputs via learned gating). Gradient-based task-affinity methods such as Task Affinity Groupings @fifty2021tag and adaptive loss balancing @chen2018gradnorm are a parallel line of work that modulates *loss scalars* using per-task gradient statistics rather than mixing representations; our implementation (Section 4.5) follows this second line and should not be confused with the representation-level mechanism of @li2023, despite our retention of the "adaTT" label for continuity.
+AdaTT @li2023 extended this with adaptive inter-task transfer at the *representation level* (per-task fusion over expert outputs via learned gating). Gradient-based task-affinity methods such as Task Affinity Groupings @fifty2021tag and adaptive loss balancing @chen2018gradnorm are a parallel line of work that modulates *loss scalars* using per-task gradient statistics rather than mixing representations; our implementation (@task-grouping) follows this second line and should not be confused with the representation-level mechanism of @li2023, despite our retention of the "adaTT" label for continuity.
 
 Other notable MTL architectures include ESMM @ma2018esmm (entire-space modeling for conversion rate),
 STAR @sheng2021star (star topology for multi-domain CTR),
@@ -374,7 +374,7 @@ the team adapted its methodology at every level:
   [*AI-augmented development* using Claude (Anthropic), Gemini (Google), and Cursor, with each team member leading a parallel team of AI agents;],
   [*Parameter-efficient architecture design* where structural inductive biases replace the brute-force capacity of large MLPs;],
   [*Knowledge distillation* to LGBM for GPU-free CPU inference on AWS Lambda;],
-  [*Config-driven pipeline* requiring only two YAML files to control the entire system, enabling operation by a minimal team.],
+  [*Config-driven pipeline* requiring only a split-config of three YAML files to control the entire system, enabling operation by a minimal team.],
 )
 
 Early exploration considered a Black-Litterman-inspired approach,
@@ -434,7 +434,7 @@ Four principles guide the architecture:
   so CGC gate weights are directly interpretable without post-hoc methods.
 + *Expert Contribution Diagnostics*: The heterogeneous design enables per-expert contribution analysis --- identifying which inductive biases are beneficial vs.\ harmful in a given data regime. Homogeneous experts would show uniform, uninformative degradation.
 + *Flexible Extensibility*: New features, tasks, or experts are added via YAML configuration,
-  not code changes. The system has been extended from 4 to 13 tasks without architectural modification.
+  not code changes. The system has been extended from 4 to 13 tasks without architectural modification.#footnote[The flexibility runs in both directions: in the operational deployment, one task whose label coverage fell below the viability threshold was removed by config-level label-viability gating, leaving 15 tasks in production --- likewise a configuration change, not a code change.]
 + *Unified Manageability*: The entire pipeline (feature engineering → training → distillation → serving → monitoring)
   is controlled by a split-config of three YAML files (`pipeline.yaml` + `feature_groups.yaml` + `configs/datasets/{name}.yaml`),
   reducing operational overhead for teams with limited ML engineering resources.
@@ -666,8 +666,12 @@ For example, HGCN embeds the MCC merchant category hierarchy in 27 hyperbolic di
 achieving in $O(d)$ parameters what Euclidean embeddings require $O(2^d)$ dimensions to represent
 without distortion @chami2019.
 
-The total parameter count across all seven shared experts is *2.70M* at the V1 349-feature schema (measured); V2 with the 1211-feature schema (lag tensor 800D + rolling stats 20D + multihot 24D+31D) will be reported at re-measurement,
-by replacing broad shared inputs with expert-specific subsets via FeatureRouter.
+The total parameter count across all seven shared experts is *2.70M* at the V1 349-feature schema (measured).
+At the V2 1211-feature schema (lag tensor 800D + rolling stats 20D + multihot 24D+31D),
+the seven routed shared experts total *0.97M*, against 2.96M for the same basket with routing disabled
+(every expert receiving the full 1211D input) --- a 67\% reduction
+from replacing broad shared inputs with expert-specific subsets via FeatureRouter
+(instantiated and measured at the per-expert dimensions of @tab:feature-router).
 The diversity of learned representations is fundamentally richer
 despite the smaller parameter budget.
 
@@ -811,7 +815,7 @@ that each extract a structurally different signal from the same underlying data 
 
 #text(size: 8.5pt, fill: gray)[_Note_: Phase 0 v3/v4 produces 1211 total features across 17 groups (up from 349 in earlier versions).
     FeatureRouter routes feature subsets to each shared expert (per-expert dims: DeepFM 977D, Temporal 116D,
-    HGCN 58D, PersLay 32D, Causal 129D, LightGCN 955D, OT 95D); model parameters: 2.70M (V1, 349D schema, measured); V2 1211D figure pending re-measurement.
+    HGCN 58D, PersLay 32D, Causal 129D, LightGCN 955D, OT 95D); model parameters across the seven shared experts: 2.70M (V1, 349D schema, measured); V2 1211D: 0.97M routed vs.~2.96M unrouted (measured).
     Expert routing is built from `feature_groups.yaml` `target_experts` declarations (group-level),
     ensuring each expert receives only its designated feature groups.]
 
@@ -849,6 +853,7 @@ The scientific frameworks ground the model's internal reasoning;
 the customer receives business language.
 
 == Financial DNA Task Grouping
+<task-grouping>
 
 We organize 13 prediction tasks into four groups based on financial customer DNA.
 Each task group corresponds to one DNA axis (@tab:dna-axis);
@@ -872,7 +877,7 @@ Our inter-task transfer mechanism differs from the original adaTT @li2023 on *tw
 In other words, what we call "adaTT" throughout this paper is not a re-implementation of @li2023, but a *TAG + GradNorm hybrid for heterogeneous-expert PLE*. We retain the "adaTT" shorthand for continuity with prior internal documentation; readers familiar with @li2023 should treat the two mechanisms as distinct. The base task losses $cal(L)_i$ are further weighted by learned uncertainty @kendall2018, and imbalanced binary tasks (e.g., churn_signal) use focal loss @lin2017focal with task-specific $alpha$ and $gamma$.
 
 This departure from @li2023 was motivated by two heterogeneous-expert considerations:
-(1) representation-level transfer requires matching hidden dimensions across experts whose native outputs differ in shape and semantics (on-prem H-GCN produces 128D, the remainder 64D), making cross-expert fusion architecturally cumbersome;
+(1) representation-level transfer requires matching hidden dimensions across experts whose native outputs differ in shape and semantics (on-prem H-GCN produces 128D, the remainder 64D#footnote[In the on-prem deployment the H-GCN module was later converted to an embedding-only component --- 128D embeddings consumed without a per-task prediction head; the dimensional-heterogeneity argument applies unchanged.]), making cross-expert fusion architecturally cumbersome;
 (2) loss-level transfer is architecturally orthogonal to the PLE layer and can be toggled without modifying the expert routing; gradient-cosine affinity is additionally interpretable ("tasks that help each other move gradients in the same direction"), which matters for regulated MRM documentation.
 
 _Note._ After correcting five implementation bugs in the on-prem port (gradient-extraction frequency, adaTT config loader, `freeze_epoch` wiring, uncertainty-weighting ordering, and `warmup_epochs` default), our ablation (Section 5.4) shows that this loss-level variant has a *null effect* at the 13-task scale: AUC changes by only $-$0.001 with adaTT vs.~without, well within single-seed measurement noise. An earlier draft reported a $-$0.019 AUC degradation; that result turned out to be driven by the five implementation bugs rather than by any intrinsic scalability problem of loss-level transfer. We preserve this note for transparency about the investigative process: it is easy for a paper to publish an "algorithmic finding" that is in fact an implementation artefact, and we believe reporting the correction is more useful than retrofitting a cleaner narrative. GradSurgery (Section 5.4) was tested as a gradient-level alternative but likewise shows no gain over the PLE-only baseline and is not adopted.
@@ -987,6 +992,7 @@ The split keeps cross-dataset settings in `pipeline.yaml` while letting a new da
 Adding a new task or expert requires only configuration changes.
 
 == Data Processing
+<data-processing>
 
 Following the principle of _pandas-free_ data engineering for scalability,
 the pipeline uses a tiered backend strategy:
@@ -1002,10 +1008,11 @@ cuDF accelerates generator fitting (GMM, HMM, Mamba) on GPU,
 reducing Phase 0 feature engineering from ~30 minutes (pandas) to ~8 minutes.
 
 == Data Leakage Prevention
+<leakage-prevention>
 
 Data leakage is a pervasive risk in multi-stage pipelines
 where features and labels are processed in separate stages.
-We implement three structural safeguards:
+We implement five structural safeguards:
 
 + *Generator label exclusion*: Feature generators (GMM, model-derived, etc.)
   automatically exclude all label columns from their input.
@@ -1021,6 +1028,20 @@ We implement three structural safeguards:
 + *LeakageValidator*: A pre-training check computes Pearson correlation
   between every feature and every label (on a 50K subsample for efficiency).
   Correlations above 0.95 trigger a warning and investigation.
++ *Forward-transition label criterion*: The fifth safeguard addresses a leakage class that none of the above can catch ---
+  _label-definition-internal leakage_, where the label is itself a function of data inside the feature window
+  (e.g.~a churn label defined as a snapshot of "no transactions in the past 90 days,"
+  computed over the same months the features describe).
+  Because the leak lives in the label definition rather than in the data flow,
+  no temporal split, gap, or correlation screen blocks it.
+  The formal criterion is that the label observation window must open strictly _after_ the feature cutoff
+  (a _forward transition_); a corollary is that immature target months ---
+  those whose label window has not yet closed --- must be explicitly rejected rather than silently filled,
+  a maturity constraint that follows from correct label design rather than from any pipeline defect.
+  The benchmark's task reduction (18 $arrow.r$ 13) by removal of deterministic label transformations
+  (@tab:dna-axis) is the synthetic-data manifestation of the same class,
+  and the criterion was independently found to matter on operational data,
+  where snapshot-defined labels pass every split-based check.
 
 // ============================================================
 = Experiments
@@ -1050,11 +1071,11 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
     [Hard], [will_acquire\_\*], [0.03], [0.72], [0.50--0.56],
     [V.Hard], [next_mcc, top_mcc_shift], [0.02], [0.78], [0.50--0.51],
   ),
-  caption: [Variance budget per label tier (benchmark v4 per-tier allocation). XGB AUC ceiling validates difficulty control. The final benchmark version (v12) reported throughout this paper uses a unified global allocation (obs\_frac=0.15, lat\_frac=0.35, noise\_frac=0.50) with 3rd--5th order multiplicative label interactions, producing meaningful class distributions across all 13 tasks (described in the paragraph below).],
+  caption: [Variance budget per label tier (benchmark v4 per-tier allocation). XGB AUC ceiling validates difficulty control. The final generation schema (v12), shared by all results in this paper, uses a unified global allocation (obs\_frac=0.15, lat\_frac=0.35, noise\_frac=0.50) with 3rd--5th order multiplicative label interactions, producing meaningful class distributions across all 13 tasks (described in the paragraph below).],
 ) <tab:variance-budget>
 
-The benchmark underwent several iterations (v2 through v12; see Appendix F for version history).
-The final version, v12 (reported here), introduces Financial DNA axis-aligned situation variables --- each customer receives
+The benchmark underwent several iterations (v2 through v14; see Appendix F for version history).
+The final generation schema, v12, introduces Financial DNA axis-aligned situation variables --- each customer receives
 an independent situation per DNA axis (engagement: steady/surging/declining/volatile;
 lifecycle: stable/growing/consolidating/transitioning;
 value: stable/ascending/descending/shock;
@@ -1064,6 +1085,16 @@ MCC distribution shifts, product acquisition rates) without altering static demo
 creating signals recoverable only through Phase 0 generators (Mamba, TDA, HGCN, GMM).
 Label interactions use 3rd--5th order continuous multiplicative terms with obs_frac=0.15,
 producing meaningful class distributions for all 13 tasks.
+
+_Version terminology._ v12 froze the data _generation_ schema; later revisions did not change how the benchmark data is generated.
+v13 and v14 are _phase0 preprocessing_ revisions applied to v12-generated data:
+v13 is the first such revision, and v14 additionally introduces HMM mode-split fitting,
+a GMM component reduction to $K=14$ (removing dead clusters),
+and the exclusion of probability-valued columns from standard scaling.
+Result tables are therefore labelled with the preprocessing revision on which they were measured
+(e.g.~"v14 phase0" in @tab:joint-ablation, @tab:degradation, and @tab:epoch-budget;
+the structure ablation of @tab:structure-ablation predates the v14 fixes),
+while "v12" elsewhere refers to the generation schema common to all of them.
 
 Label signals combine linear observable features (obs_frac=0.15) with latent components (lat_frac=0.35)
 recoverable through behavioral sequence patterns.
@@ -1078,9 +1109,9 @@ The ablation validates whether each expert provides a distinct "why" for differe
 confirming that heterogeneous experts are not merely a performance trick
 but a structural requirement for multi-faceted persuasion.
 
-- *Data*: 1M customers, 1211 features (Phase 0 from benchmark\_v12, 17 groups), 13 tasks.
+- *Data*: 1M customers, 1211 features (Phase 0 over the v12 generation schema, 17 groups; preprocessing revision per table caption), 13 tasks.
 - *Hardware*: NVIDIA RTX 4070 (12GB VRAM, 64GB RAM) local.
-- *Training*: 10 epochs, batch 5632, lr 0.0005, AMP (FP16), warmup 3 epochs (cosine annealing), no early stopping. adaTT scenarios use warmup=3 epochs, grad\_interval=10. GradSurgery scenarios use warmup=2 epochs, conflict\_threshold=0.0.
+- *Training*: 10 epochs, batch 5632, lr 0.0005, AMP (FP16), warmup 3 epochs (cosine annealing), no early stopping. adaTT scenarios use warmup=3 epochs, grad\_interval=10. GradSurgery scenarios use warmup=2 epochs, conflict\_threshold=0.0.#footnote[Reproducibility note: scheduler and optimizer hyperparameters resolve with a fixed three-tier precedence --- explicit hyperparameter arguments override YAML configuration, which overrides library defaults --- so the values reported here are the values actually applied.]
 - *Loss weighting*: Uncertainty weighting (Kendall et al.) with per-task loss weights applied on top of learned precision --- matching the on-premise reference formula.
 - *Metrics*: Selected to match each task's production semantics.
   Binary classification uses AUC (threshold-independent and imbalance-robust).
@@ -1153,7 +1184,7 @@ Removing the Causal expert costs $-$0.0338 AUC (Full $arrow.r$ Full$-$Causal: 0.
 the largest top-down degradation among all six experts.
 The ranking of removal impact (Causal $-$0.034 $>$ LightGCN $-$0.029 $>$ Temporal $-$0.028 $>$ TDA $-$0.028 $>$ OT $-$0.026 $>$ HGCN $-$0.024)
 identifies Causal/LightGCN as the most essential and HGCN as the most redundant for aggregate AUC ---
-a different ordering from the on-prem prototype's LightGCN-dominant narrative,
+a different ordering from the earlier on-prem prototype run's LightGCN-dominant narrative,
 attributable to the v14 phase0 fixes that exposed valid causal DAG signal previously masked
 by HMM mode collapse and probability-column scaling artefacts.
 
@@ -1230,7 +1261,7 @@ After correcting the five porting bugs listed in the table caption,
 adding adaTT changes AUC by only $-$0.001 (sigmoid+adaTT 0.6717 vs.~sigmoid-alone 0.6728; softmax+adaTT 0.6722 vs.~softmax-alone 0.6730) and does not shift any other metric beyond single-seed measurement noise.
 The pre-correction $-$0.019 AUC drop reported in an earlier draft is now attributed to these implementation bugs rather than to an algorithmic property of loss-level transfer, which was the previously hypothesised cause.
 Our loss-level gradient-cosine variant therefore neither helps nor meaningfully hurts at 13-task scale: the auxiliary loss weighting produces transfer signal that is *indistinguishable from zero* relative to PLE-only baselines.
-This should not be generalised as a negative result for representation-level adaTT @li2023, which we do not evaluate; that mechanism learns fusion weights end-to-end on expert activations rather than from gradient cosine statistics and is a distinct algorithm (see Section 4.5). A direct comparison is deferred to follow-up work.
+This should not be generalised as a negative result for representation-level adaTT @li2023, which we do not evaluate; that mechanism learns fusion weights end-to-end on expert activations rather than from gradient cosine statistics and is a distinct algorithm (see @task-grouping). A direct comparison is deferred to follow-up work.
 
 *Finding 3: Correcting uncertainty weighting yields larger gains than architecture changes.*
 The single largest performance improvement (+0.018 NDCG\@3, +0.031 F1-macro)
@@ -1264,13 +1295,13 @@ Results are summarized in @tab:degradation.
     [−OT],       [0.7935], [+0.0265],   [Sinkhorn alignment helpful],
     [−HGCN],     [0.7965], [+0.0235],   [least essential but still positive],
   ),
-  caption: [Expert contribution analysis on Santander v14 phase0: ΔAUC relative to full 7-expert model (AUC = 0.8200). Every expert contributes positively (ΔAUC $>$ 0); none is dispensable. Range 0.024–0.034 is more than an order of magnitude larger than the on-prem prototype's $|$ΔAUC$|<$0.001 noise floor, attributable to v14 fixes (HMM mode-split, GMM K=14, probability scaler-excluded) that exposed real expert differentiation.],
+  caption: [Expert contribution analysis on Santander v14 phase0: ΔAUC relative to full 7-expert model (AUC = 0.8200). Every expert contributes positively (ΔAUC $>$ 0); none is dispensable. Range 0.024–0.034 is more than an order of magnitude larger than the earlier on-prem prototype run's $|$ΔAUC$|<$0.001 noise floor, attributable to v14 fixes (HMM mode-split, GMM K=14, probability scaler-excluded) that exposed real expert differentiation.],
 ) <tab:degradation>
 
 All six ΔAUC values are positive ($+$0.024 to $+$0.034), confirming that _every_ heterogeneous expert provides beneficial signal at the 7-expert pool size.
 The ranking has three diagnostic implications.
 
-*Diagnostic 1: Causal and LightGCN dominate.* Causal ($+$0.034) and LightGCN ($+$0.029) together account for $\sim$50\% of the ensemble's improvement margin over DeepFM-only. The Causal expert's NOTEARS DAG over MCC categories captures sequential causation (e.g.,~grocery $\to$ gas $\to$ restaurant patterns) that DeepFM's pairwise factorization cannot represent; LightGCN's bipartite user--MCC graph encodes collaborative similarity invisible to per-row featurization. The on-prem prototype reported a LightGCN-dominant ranking with magnitudes $<$0.001; the v14 ranking inverts the dominant expert (Causal $>$ LightGCN) because the v14 phase0 fixes corrected three signal-masking artefacts: (1) HMM journey/lifecycle mode collapse that fed redundant inputs to Temporal expert, (2) GMM K=20 with 7 dead clusters that fed near-zero probability columns to Causal/OT, and (3) probability columns z-scored to $\pm$1.7 instead of stayed in $[0,1]$ for downstream gate weighting.
+*Diagnostic 1: Causal and LightGCN dominate.* Causal ($+$0.034) and LightGCN ($+$0.029) together account for $\sim$50\% of the ensemble's improvement margin over DeepFM-only. The Causal expert's NOTEARS DAG over MCC categories captures sequential causation (e.g.,~grocery $\to$ gas $\to$ restaurant patterns) that DeepFM's pairwise factorization cannot represent; LightGCN's bipartite user--MCC graph encodes collaborative similarity invisible to per-row featurization. The earlier on-prem prototype run reported a LightGCN-dominant ranking with magnitudes $<$0.001; the v14 ranking inverts the dominant expert (Causal $>$ LightGCN) because the v14 phase0 fixes corrected three signal-masking artefacts: (1) HMM journey/lifecycle mode collapse that fed redundant inputs to Temporal expert, (2) GMM K=20 with 7 dead clusters that fed near-zero probability columns to Causal/OT, and (3) probability columns z-scored to $\pm$1.7 instead of stayed in $[0,1]$ for downstream gate weighting.
 
 *Diagnostic 2: HGCN is least essential but still beneficial.* HGCN's $+$0.0235 ΔAUC is the smallest, suggesting product-hierarchy encoding contributes less aggregate signal than MCC-level graph or causal structure. This is consistent with Santander's flat product taxonomy (~24 leaf SKUs, 2-level hierarchy) limiting HGCN's hyperbolic curvature advantage. The same expert is expected to dominate on production data with a 4–5 level product tree.
 
@@ -1288,7 +1319,7 @@ PLE-favoured narrative.  Three competing hypotheses were considered:
 A SageMaker re-run of four core scenarios (shared\_bottom, PLE-softmax,
 PLE-full = sigmoid+CGC+GTE+LT+HMM-projectors, PLE-full+adaTT) at both
 10 and 15 epochs on ml.g4dn.2xlarge --- identical hardware, identical
-fp32 DuckDB-streaming pipeline (Section 3.4 memory budget) ---
+fp32 DuckDB-streaming pipeline (@data-processing memory budget) ---
 yields @tab:epoch-budget.  The matched 10-epoch column on g4dn.2xlarge
 isolates the epoch-budget effect from any precision-path drift between
 the local fp64 pq.read\_table baseline and the SageMaker fp32 pipeline.
@@ -1596,7 +1627,15 @@ matters far more than pushing it higher.
 The heterogeneous expert design directly supports this _defensive_ posture:
 expert contribution diagnostics (ablation reveals which inductive biases are beneficial vs.\ harmful per data regime),
 drift detection triggering automatic retraining,
-and the champion-challenger gate (offline `ModelCompetition` significance test with a fidelity safety floor and an operator `--force-promote` override, every decision written to an HMAC-signed audit chain) that governs whether a newly trained model may replace the current production champion.
+and the champion-challenger gate (offline `ModelCompetition` significance test with a two-tier fidelity gate --- Tier 1 blocking on operational metrics scoped to the distilled tasks, including the student's own ground-truth calibration error; Tier 2 reporting cross-architecture teacher--student diagnostics without blocking --- plus an operator `--force-promote` override, every decision written to an HMAC-signed audit chain) that governs whether a newly trained model may replace the current production champion.#footnote[The two-tier split responds to a structural property of cross-architecture distillation: PLE→LGBM teacher--student agreement plateaus at roughly 0.75--0.82, so a single blocking gate that includes cross-architecture fidelity fails every candidate and trains operators to reach for the override, defeating the control. Promotion thresholds themselves are unchanged. See the companion Paper 2 Discussion "Fidelity Gate Semantics under Cross-Architecture Distillation."]
+The audit chain itself is tamper-evident beyond signature checking:
+verification re-computes every entry's HMAC in constant time
+(so wholesale re-chaining after an edit is detected, not just broken links),
+well-known development keys are rejected outright in production and staging environments,
+and the persisted log is provisioned with WORM object-lock storage.
+Compliance hooks along the serving path are wired in by default;
+the stricter fail-closed enforcement --- refusing to serve when the kill-switch state
+or audit trail is unavailable --- ships as an opt-in configuration recommended for production.
 The architecture prioritizes _not getting worse_ over _getting better_ ---
 a perspective that aligns with financial regulators' emphasis
 on model risk management and operational resilience.
@@ -1652,7 +1691,7 @@ a cautionary lesson for MTL practitioners.
 
 A particularly instructive failure: a configuration bug that disabled PLE
 collapsed the 7-expert basket into a single MLP,
-making all ablation scenarios in that early run produce identical AUC (0.913).#footnote[The 0.913 AUC reflects an earlier benchmark version (v4) with a different scenario count and data distribution; the final configuration (v12) reports 23 scenarios with AUC in the 0.67 range.]
+making all ablation scenarios in that early run produce identical AUC (0.913).#footnote[The 0.913 AUC reflects an earlier benchmark version (v4) with a different scenario count and data distribution; the final benchmark (v12 generation schema with v13/v14 phase0 preprocessing) reports 23 scenarios with AUC in the 0.67--0.82 range depending on preprocessing revision.]
 This was only discovered through systematic result comparison ---
 reinforcing the principle that ablation results must be verified
 against expected variation before drawing conclusions.
@@ -1678,9 +1717,13 @@ architecture provides an alternative: GPU Spot instances (60--70\% discount)
 are provisioned on-demand for training and released immediately after,
 while serving runs on CPU-only Lambda functions
 via knowledge distillation to LGBM (detailed in companion paper).
+On the v14 phase0 benchmark the distillation stage itself also completes end-to-end
+on a CPU instance (m5.4xlarge, 62 minutes, \$0.30 on Spot),
+with the distilled students tracking the teacher at a mean AUC gap of 0.58pp
+(down from 2.5pp at v13) --- GPU dependence is confined to teacher training.
 
 *Operational simplicity.*
-The config-driven design (two YAML files control the entire pipeline)
+The config-driven design (a split-config of three YAML files controls the entire pipeline)
 enables teams with 1--2 ML engineers to operate the system.
 Adding a new product category, task, or feature group requires
 only configuration changes, not code modifications.
@@ -1702,6 +1745,9 @@ real data where temporal patterns, graph structures, and causal pathways
 carry genuinely different signals may amplify PLE's advantage over shared-bottom.
 Validation on proprietary financial data is planned for a subsequent version
 but is not included here due to regulatory data access constraints.
+That validation will target labels defined under the forward-transition criterion of @leakage-prevention
+(label windows opening strictly after the feature cutoff),
+so that reported operational gains cannot be inflated by label-definition-internal leakage.
 
 *adaTT evaluation at limited epoch budget.*
 The corrected adaTT implementation's null effect may be partly attributable to the 10-epoch training budget:
@@ -1783,12 +1829,13 @@ of minority-type tasks (multiclass) from majority-type gradients (binary).
 
 The architecture, benchmark data, and ablation framework are released as open source.#footnote[https://github.com/bluethestyle/aws\_ple\_for\_financial]
 Two companion papers address the remaining scope.
-*Paper 2* covers the downstream serving pipeline: knowledge
-distillation @hinton2015 to LGBM @ke2017lightgbm, multi-agent
-recommendation reason generation, regulatory compliance mapping for
-Korean FSS and EU AI Act requirements, and an HMAC-signed hash-chained
-per-prediction audit surface that pairs attribution (CEH) with
-reliability (CG).
+*Paper 2*#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19622052")] covers the downstream serving pipeline: knowledge
+distillation @hinton2015 to LGBM @ke2017lightgbm, the two-tier
+fidelity gate semantics under cross-architecture distillation,
+multi-agent recommendation reason generation, regulatory compliance
+mapping for Korean FSS and EU AI Act requirements, and an HMAC-signed
+hash-chained per-prediction audit surface that pairs attribution (CEH)
+with reliability (CG).
 *Paper 3* reports empirical findings from scaling PLE to 13
 heterogeneous tasks --- loss dynamics and gate selection behaviour
 (Findings 1--6), a 9-way comparison of fusion augmentations that
@@ -1929,12 +1976,14 @@ The compartmental dynamics are identical; only the variable names change.
 
 #heading(numbering: none, level: 3)[F. Benchmark Version History]
 
-The benchmark underwent four major iterations before converging on v12:
+The benchmark generation schema underwent four major iterations before converging on v12; two phase0 preprocessing revisions (v13, v14) followed on top of the frozen schema:
 
 - *v2*: Uniform-random MCC codes and fixed transaction amounts across personas, producing near-random labels for MCC-dependent tasks.
 - *v3*: Persona-weighted MCC distributions (4--5× boost) with temporal stickiness (30%), persona-dependent transaction amounts, and quantile-based spend\_level boundaries. Improved MCC task signal but still yielded near-uniform label distributions for acquisition tasks.
 - *v4*: Sharpened persona MCC preferences (8--12× boost), increased temporal stickiness to 60%, raised per-product acquisition rates (8--12%), and widened top\_mcc\_shift detection window to 30 transactions.
-- *v12* (reported): Financial DNA axis-aligned situation variables, 3rd--5th order continuous multiplicative label interactions with obs\_frac=0.15, producing meaningful class distributions for all 13 tasks.
+- *v12* (final generation schema): Financial DNA axis-aligned situation variables, 3rd--5th order continuous multiplicative label interactions with obs\_frac=0.15, producing meaningful class distributions for all 13 tasks. The generation schema is frozen here; v13 and v14 below modify preprocessing only.
+- *v13* (phase0 preprocessing): first preprocessing revision over the frozen v12 schema; basis of the structure ablation (@tab:structure-ablation).
+- *v14* (phase0 preprocessing): HMM mode-split fitting, GMM $K=14$ dead-cluster removal, probability columns excluded from standard scaling, plus a streaming-memory refactor for SageMaker 1M-row training; basis of @tab:joint-ablation, @tab:degradation, and @tab:epoch-budget.
 
 // ============================================================
 // References
