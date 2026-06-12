@@ -132,13 +132,19 @@
 
 ## 4. 모니터링 + 컴플라이언스 + 감사 레이어
 
-### 4.1 AWS-Only (3개)
+### 4.1 AWS-Only (2개) — 2026-06-12 정정
 
 | 컴포넌트 | AWS 위치 | 핵심 가치 |
 |---|---|---|
 | **AuditLogger WORM 저장** | `core/monitoring/audit_logger.py` + S3 Object Lock (GOVERNANCE/COMPLIANCE, 2555일) | **불변 감사 기록** — 물리 변조 방지 |
 | **log_attribution + log_guardrail** | 동 (Paper 2 v2) | per-prediction attribution_hash + coherence_score 저장. forensic replay 지원 |
-| **OpsAgent / AuditAgent + Bedrock Dialog** | `core/agent/` | 자연어 기반 감사 쿼리 — "regulator queryability" |
+
+> **정정 (2026-06-12)**: "OpsAgent / AuditAgent + Bedrock Dialog" 는 더 이상
+> AWS-Only 가 아니다. 온프렘이 2026-06-05~09 (81981767, 7bedef70, e7c12a36,
+> d74f012c 등) 에 에이전트 시스템 전체를 이식·확장했고, 오히려 온프렘 개선분
+> (investigate, verify_grounding, 금융 triage 기준, healthcheck, 로그 분석기)
+> 을 AWS 가 역이식하는 흐름이 됐다 — `docs/onprem_to_aws_import_plan.md` 참조.
+> §4.3 으로 이동.
 
 ### 4.2 온프렘-Only (AWS 역수입 강력 권장)
 
@@ -160,12 +166,15 @@
 |---|---|---|---|
 | **Champion-Challenger 오프라인** | paired t-test + paired bootstrap(2000회), `auto_promote=True` 기본 | DuckDB 레지스트리, `auto_promote=False` 강제 (EU Art.14), Counterfactual IPS/SNIPS | **온프렘 우위** (인적 감독 + 관측편향 보정) |
 | **AuditLogger 해시체인 검증** | `verify_chain` + `verify_chain_from_s3` 원격 검증 | `verify_chain` 로컬만 | AWS 우위 |
+| **Ops/Audit 에이전트 시스템** (2026-06-12 추가) | `core/agent/` — Bedrock converse, CloudWatch/SageMaker 도구, submit_pipeline Step 5 배선 | `src/core/agent/` — Ollama OpenAI 호환, 로컬 파일 도구, Airflow DAG 배선 | **기능 동등 수렴 중** — 순수 버그/추론 개선은 온프렘 → AWS 역이식 (`onprem_to_aws_import_plan.md`), 인프라 바인딩만 의도적 차이 |
 
-### 4.4 핵심 리스크 (온프렘에서)
+### 4.4 핵심 리스크 (온프렘에서) — 2026-06-12 정정
 
 - **AuditLogger 로컬 파일시스템만**: 물리 서버 접근자가 변조 가능. **WORM 저장소 추가 시급** (MinIO Object Lock 등)
 - **log_attribution / log_guardrail 없음**: Paper 2 v2 의 CEH/CG 감사 통합 미반영
-- **OpsAgent / AuditAgent 없음**: 감사인이 SQL/코드 직접 실행 필요
+- ~~**OpsAgent / AuditAgent 없음**~~ → **해소 (2026-06-05~09)**: 온프렘이 에이전트
+  시스템을 이식·확장 완료 (reasoning_agent, audit 구동기, consensus, healthcheck).
+  현재는 역방향 — 온프렘 개선분의 AWS 역이식이 진행 항목이다.
 
 ---
 

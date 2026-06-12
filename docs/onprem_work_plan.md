@@ -315,11 +315,11 @@ Paper 3 Finding 7 의 9-way fusion 비교에서 나온 기법들. 온프렘 `src
 | **FeatureRouter** | `core/model/ple/feature_router.py` | ❌ 없음 (ple_cluster_adatt.py 안에서 직접 처리?) | 온프렘 라우팅 경로 확인 필요 — CEH/CG accessor 가 찾는 `_idx_causal` 가 있는지 |
 | **GradSurgery (PCGrad)** | `core/model/ple/grad_surgery.py` | ❌ 없음 (task_correlation_analysis.py 는 별도) | 메모리상 "미채택" 결정이라 필수 아님 |
 
-### 10.4 차이가 의도적 (이식 불필요)
+### 10.4 차이가 의도적 (이식 불필요) — 2026-06-12 정정
 
 | 영역 | AWS | 온프렘 | 비고 |
 |---|---|---|---|
-| **Agent framework** | `core/agent/` (OpsAgent, AuditAgent, bedrock_dialog, case_store, consensus) | `src/grounding/` (agentic_reason_orchestrator, l2a_rewrite_engine) | 온프렘은 service-oriented 다른 구조 |
+| **Agent framework** | `core/agent/` (OpsAgent, AuditAgent, bedrock_dialog, case_store, consensus) | ~~`src/grounding/` 다른 구조~~ → **`src/core/agent/` 로 AWS 등가 이식 완료 (2026-06-05~09)** | **정정: "이식 불필요" 판정 폐기.** 온프렘이 에이전트 시스템을 이식·확장했고, 온프렘 개선분(investigate, verify_grounding, 금융 triage, healthcheck, 로그 분석기)을 AWS 가 역이식하는 양방향 sync 트랙이 됐다 — `docs/onprem_to_aws_import_plan.md` 참조. LLM 런타임(Bedrock vs Ollama)과 배선(Step 5 vs Airflow)만 의도적 차이 |
 | **Compliance module** | `core/compliance/` (ai_opt_out, consent_manager, profiling_rights, regulatory_checker) | 대부분 `src/recommendation/` 아래 (ai_decision_opt_out, marketing_consent, profiling_rights_manager) | 기능 동등, 구조 차이 |
 | **Orchestration** | SageMaker 순차 | Airflow DAGs | AWS vs 온프렘 의도적 분리 (CLAUDE.md 명시) |
 | **Data store** | S3 Parquet | DuckDB + files | 동일 |
@@ -338,7 +338,7 @@ Paper 3 Finding 7 의 9-way fusion 비교에서 나온 기법들. 온프렘 `src
 
 | 컴포넌트 | 온프렘 위치 | AWS 역수입 가치 |
 |---|---|---|
-| Human review queue + kill switch | `src/recommendation/human_review_queue.py`, `kill_switch.py` | AWS 는 compliance 로직만 있고 큐/스위치 미구현. Paper 2 운영 스토리 보강 가능 |
+| Human review queue + kill switch | `src/recommendation/human_review_queue.py`, `kill_switch.py` | ~~AWS 미구현~~ → **역수입 완료**: `core/serving/review/human_review_queue.py` (3-tier 큐 + DynamoDB/로컬 영속화) + `scripts/hitl_review_consumer.py` (PORT-08, 2026-06-12) + kill_switch (Sprint 3) |
 | Explanation SLA tracker | `src/recommendation/explanation_sla_tracker.py` | AWS Paper 2 에 없는 운영 지표 (설명 생성 SLA) |
 | EU AI Act mapper (운영 관점) | `src/monitoring/eu_ai_act_mapper.py`, `fria_evaluator.py` | AWS 는 Paper 2 에 eu_ai_act 매핑 있으나 코드 레벨은 온프렘이 더 상세 |
 | 다학제 피처 모듈 (graph/timeseries/domain_features) | `src/graph/`, `src/timeseries/`, `src/domain_features/` | AWS 는 expert 내부에서만 처리; 온프렘은 별도 모듈화 |
