@@ -19,6 +19,9 @@
 
 ## 1. 상태 보드
 
+카운팅 규칙: 후보 15건 = P1 버그 3건 개별 계상 + PORT 13건 − PORT-09(트랙 내
+문서작업이라 제외). PORT-14 는 결번 — V2 publish 절차 항목으로 paper 트랙에 흡수.
+
 | ID | 항목 | 우선순위 | 근거 (온프렘 커밋) | 상태 | AWS 커밋 |
 |---|---|---|---|---|---|
 | P1-버그×3 | diagnoser len(int) / intersectional dataclass 직렬화 / jargon findall | P1 | 8f006186 | ✅ 완료 | bf28627 |
@@ -38,6 +41,10 @@
 
 상태 갱신 규칙: 항목 완료 시 이 표의 상태/커밋 칼럼만 갱신한다. 세부 구현 설명은
 각 커밋 메시지가 단일 진실 공급원.
+
+보류 (표 외 추적): quality_gate `version_diff` producer 배선 — 데이터 적재 단계에서
+`DatasetRegistry.diff()` 결과를 `QualityGate.evaluate(version_diff=...)` 로 공급하는
+작업은 미구현 (PORT-13 잔여 — 소비 측 게이트만 배선됨).
 
 ## 2. 핵심 배선 구조 (Phase 2 결과)
 

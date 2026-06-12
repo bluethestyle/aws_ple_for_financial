@@ -576,6 +576,29 @@ def _get_case_store(**kwargs):
     return DiagnosticCaseStore(store_path=store_path)
 
 
+def _titan_embed_model_id() -> str:
+    """임베딩 model id — AGENT_EMBED_MODEL_ID env > pipeline.yaml
+    ``llm_provider.bedrock.embedding.model_id`` > 현행 기본값 순.
+    (model id 하드코딩 제거 — config-driven, 2026-06-12)"""
+    import os
+    env_id = os.getenv("AGENT_EMBED_MODEL_ID", "").strip()
+    if env_id:
+        return env_id
+    try:
+        import yaml
+        path = Path(__file__).resolve().parents[2] / "configs" / "pipeline.yaml"
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        model_id = (
+            ((cfg.get("llm_provider") or {}).get("bedrock") or {})
+            .get("embedding") or {}
+        ).get("model_id")
+        if model_id:
+            return str(model_id)
+    except Exception:
+        logger.debug("pipeline.yaml embedding model_id 읽기 실패 — 기본값 사용", exc_info=True)
+    return "amazon.titan-embed-text-v2:0"
+
+
 def _embed_finding_titan(finding: str) -> "np.ndarray":
     """Bedrock Titan Embed Text v2 임베딩 (1024D, 다국어) — 온프렘 bge-m3 등가.
 
@@ -584,7 +607,7 @@ def _embed_finding_titan(finding: str) -> "np.ndarray":
     import os
     import numpy as np
     import boto3
-    model_id = os.getenv("AGENT_EMBED_MODEL_ID", "amazon.titan-embed-text-v2:0")
+    model_id = _titan_embed_model_id()
     client = boto3.client(
         "bedrock-runtime", region_name=os.getenv("AGENT_EMBED_REGION") or None,
     )

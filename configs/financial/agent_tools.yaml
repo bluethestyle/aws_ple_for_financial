@@ -381,7 +381,10 @@ tools:
   - name: detect_herding
     description: "허딩(herding) 현상 탐지 — 상위 N% 고객의 점수 집중도와 NBA 추천 다양성 지수(Shannon entropy) 계산"
     category: query
-    agents: [ops]
+    # audit: 감사 followup 의 '집중도' focus(pipeline_reports._AUDIT_AREA_FOCUS_MAP
+    # → herding) 가 이 도구를 라우팅한다 — ops 전용이면 agents 필터에서 탈락해
+    # silent no-op (2026-06-12 수정).
+    agents: [ops, audit]
     parameters:
       type: object
       properties:
@@ -408,7 +411,8 @@ tools:
   - name: detect_task_herding
     description: "태스크별 허딩 탐지 — 멀티태스크 모델에서 특정 태스크 점수가 다른 태스크와 과도하게 상관된 허딩 패턴 감지"
     category: query
-    agents: [ops]
+    # detect_herding 과 동일 사유로 audit 포함 (herding focus 의 호출자가 audit).
+    agents: [ops, audit]
     parameters:
       type: object
       properties:

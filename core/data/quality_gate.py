@@ -200,7 +200,7 @@ class QualityGate:
         reference_df : pandas.DataFrame or pyarrow.Table, optional
             Reference dataset for drift detection.
         version_diff : dict, optional
-            :meth:`DatasetRegistry.compare_versions` 결과 (PORT-13 배선).
+            :meth:`DatasetRegistry.diff` 결과 (PORT-13 배선).
             ``schema_changed=True`` 면 WARN check 로 게이트 verdict 에 반영.
 
         Returns

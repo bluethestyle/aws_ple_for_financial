@@ -11,7 +11,7 @@
 - ✅ **Phase 2 Should 15/15 완료** — S1~S15 전체 완료.
 - ✅ **Phase 3 Could 4/5 완료** — C1, C3, C4, C5. C2는 Won't (AWS SageMaker 네이티브).
 - ✅ **Phase 0 schema audit + Mamba precompute (2026-04-26~28)** — Phase 0 invariant 위반 6종 차단 + Mamba GPU precompute 를 별도 SageMaker 잡 (custom ECR) 으로 분리. 상세 §8.
-- 누적 테스트: **771/771 PASS** (2026-06-12 실측 — 에이전트 sync 트랙 Phase 1~3 신규 테스트 + 동시 진행 트랙 반영. 종전 639 표기는 2026-06-10 시점 수치). 하드코딩: 2026-06-10 감사 시 `core/agent/pipeline_reports.py` `_BedrockProvider`에 `ap-northeast-2`/model_id 잔존 확인 → config 주입으로 정리 예정(P3).
+- 누적 테스트: **785/785 PASS** (2026-06-12 정합 감사 후 실측 — 에이전트 sync 트랙 Phase 1~4 신규 테스트 + 동시 진행 트랙 반영. 종전 639/771 표기는 각각 2026-06-10/06-12 중간 시점 수치). 하드코딩: agent_dialog 경로(`_attach_llm_followup`)와 Titan embedding model id 는 2026-06-12 config 주입 완료, `_BedrockProvider`(consensus provider)의 `ap-northeast-2`/model_id 잔존 → config 주입으로 정리 예정(P3).
 - **에이전트 sync 트랙 신설 (2026-06-12)**: 온프렘 5/7 이후 89커밋 전수 분석으로 이식 후보 15건 도출 → P1 순수 버그 3건 + P2 8건 완료 (investigate/verify_grounding/금융 triage/healthcheck/HITL consumer/CloudWatch 로그 분석기 + verdict 분기 배선으로 기존 dead code 해소). 상태 보드와 제외 근거는 `docs/onprem_to_aws_import_plan.md` 가 단일 진실 공급원.
 - **§1.7 Group Range Rebuild (commit ec8587b, 2026-04-21)**: 3-stage 정규화가 `_log` 접미사 컬럼을 append 한 뒤 `feature_group_ranges` 를 stale 상태로 남겨 FeatureRouter 가 잘못된 컬럼을 슬라이싱하던 silent bug 를 차단. `core/pipeline/runner.py` 에 longest-contiguous-block 헬퍼 추가 + 14 regression 테스트.
 - **Tracking Backend Flip (commit 9426162, 2026-04-21)**: `configs/pipeline.yaml::compliance.tracking.backend` 를 `in_memory → sagemaker` 전환. IAM 도달성 사전 검증 완료 (계정 795833413857, training-job 역할이 Experiments 권한 보유).

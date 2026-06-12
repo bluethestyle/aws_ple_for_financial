@@ -467,6 +467,11 @@ llm_provider:
       model_id: global.anthropic.claude-haiku-4-5-20251001-v1:0
       max_tokens: 500
       temperature: 0.2
+    # Embedding model — case store finding 임베딩 (tool_wrappers._embed_finding_titan,
+    # AGENT_EMBED_BACKEND=titan 옵트인). AGENT_EMBED_MODEL_ID env 가 이 값을 오버라이드.
+    # models(per-agent dialog slot) 와 달리 임베딩 전용이라 별도 키로 둔다.
+    embedding:
+      model_id: amazon.titan-embed-text-v2:0
 
 # ---------------------------------------------------------------------------
 # Reason Generation — 3-agent pipeline (FactExtractor → TemplateEngine → SelfChecker)

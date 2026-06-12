@@ -1272,6 +1272,28 @@ def _audit_focus_keys(focus_areas: List[Dict[str, Any]]) -> List[str]:
     return keys
 
 
+def _agent_dialog_model_id() -> Optional[str]:
+    """pipeline.yaml ``llm_provider.bedrock.models.agent_dialog.model_id``.
+
+    scripts/agent_healthcheck.py::_configured_model_ids 와 같은 키 경로의
+    단일 항목 판. 읽기 실패/미설정 시 None — BedrockDialogSession 의
+    클래스 기본 model_id 를 그대로 쓴다 (현행 폴백 유지).
+    """
+    try:
+        import yaml
+        path = Path(__file__).resolve().parents[2] / "configs" / "pipeline.yaml"
+        cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        spec = (
+            (((cfg.get("llm_provider") or {}).get("bedrock") or {})
+             .get("models") or {})
+        ).get("agent_dialog")
+        model_id = spec.get("model_id") if isinstance(spec, dict) else None
+        return str(model_id) if model_id else None
+    except Exception:
+        logger.debug("agent_dialog model_id 읽기 실패 — 세션 기본값 사용", exc_info=True)
+        return None
+
+
 def _attach_llm_followup(
     report_path: Path,
     verdict: str,
@@ -1302,11 +1324,18 @@ def _attach_llm_followup(
         if session_factory is None:
             from core.agent.bedrock_dialog import BedrockDialogSession
             session_factory = BedrockDialogSession
+        # pipeline.yaml llm_provider.bedrock.models.agent_dialog 가 있으면 전달
+        # — 미설정/읽기 실패 시 kwargs 생략으로 세션 클래스 기본값 폴백.
+        session_kwargs: Dict[str, Any] = {}
+        model_id = _agent_dialog_model_id()
+        if model_id:
+            session_kwargs["model_id"] = model_id
         session = session_factory(
             registry=registry,
             agent_type=agent_type,
             region=region,
             focus_keys=focus_keys or None,
+            **session_kwargs,
         )
         result = (
             session.investigate(finding, verify=verify) if mode == "investigate"
@@ -1586,11 +1615,17 @@ def run_pipeline_reports(
             if _llm_followup_enabled() and ops_llm_registry is not None:
                 from core.agent.bedrock_dialog import BedrockDialogSession
 
+                _dialog_kwargs: Dict[str, Any] = {}
+                _dialog_model_id = _agent_dialog_model_id()
+                if _dialog_model_id:
+                    _dialog_kwargs["model_id"] = _dialog_model_id
+
                 def agent_builder(_registry=ops_llm_registry):
                     return BedrockDialogSession(
                         registry=_registry,
                         agent_type="ops",
                         region=aws_context.region,
+                        **_dialog_kwargs,
                     )
 
             marker = aws_context.log_marker_uri or str(

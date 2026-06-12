@@ -1,5 +1,5 @@
 """PORT-02 regression tests — agent_tool_routing.yaml must only reference
-tools that actually exist in agent_tools.yaml (38-tool schema).
+tools that actually exist in agent_tools.yaml (39-tool schema).
 
 Background: CP5 (check_served_artifact) and CP6 (read_recommendation_output)
 were on-prem tool names with 0 matches in the AWS schema, so focus_keys
@@ -82,10 +82,35 @@ class TestFocusExposure:
     def test_every_focus_key_adds_at_least_one_tool(self):
         # 각 focus 가 common 대비 최소 1개 도구를 추가로 노출해야
         # "이름 불일치 → silent no-op" 회귀를 막는다.
+        # + agents 축: 라우팅을 통과해도 _build_tool_config 가
+        #   get_bedrock_tools(agent=...) 와 교집합을 취하므로, focus 를 실제
+        #   호출하는 agent_type 의 schema agents 에 도구가 없으면 같은
+        #   silent no-op 이 된다 (audit+herding 회귀, 2026-06-12).
+        from core.agent.pipeline_reports import _AUDIT_AREA_FOCUS_MAP
+        from core.agent.tool_registry import ToolRegistry
+
+        registry = ToolRegistry(
+            config_path=str(_REPO / "configs" / "financial" / "agent_tools.yaml")
+        )
+        # 프로덕션 호출자: CP* 는 ops followup(_ops_focus_keys),
+        # fairness/herding/regulatory/lineage 는 audit followup.
+        audit_focuses = set(_AUDIT_AREA_FOCUS_MAP.values())
         for agent_type in ("ops", "audit"):
             common = set(_ROUTING["common"].get(agent_type, []))
+            agent_tools = {
+                t["toolSpec"]["name"]
+                for t in registry.get_bedrock_tools(agent=agent_type)
+            }
             for focus in _ROUTING["tool_map"]:
                 out = set(_select_tools(agent_type, [focus]))
                 assert out - common, (
                     f"focus={focus} ({agent_type}) 가 common 외 도구를 노출하지 않음"
+                )
+                caller = "audit" if focus in audit_focuses else "ops"
+                if agent_type != caller:
+                    continue  # 해당 focus 를 그 agent 로 호출하는 경로는 없음
+                exposed = (out & agent_tools) - common
+                assert exposed, (
+                    f"focus={focus} 의 라우팅 도구가 agent={caller} 의 agents "
+                    f"필터(get_bedrock_tools)에서 전부 탈락 — silent no-op"
                 )
