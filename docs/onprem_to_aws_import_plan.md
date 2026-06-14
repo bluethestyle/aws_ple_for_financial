@@ -58,6 +58,7 @@ run_pipeline_reports (scripts/submit_pipeline.py Step 5)
  │       → 보고서 JSON llm_followup 키
  ├─ [REPORTS_LOG_ANALYSIS_ENABLED=1] CloudWatch 로그 증분 분석 ← PORT-06
  │    ERROR=자동 FIX_NOW+investigate, WARNING만 LLM triage
+ │    [REPORTS_LLM_VERIFY_GROUNDING≠off] investigate 결과 grounding_check ← PORT-03
  │    → 보고서 JSON log_analysis 키
  └─ S3 업로드 (첨부 결과 포함)
 ```
