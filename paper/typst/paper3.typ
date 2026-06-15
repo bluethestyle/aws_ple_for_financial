@@ -38,7 +38,8 @@
   #v(0.3em)
 
   #text(size: 9pt, style: "italic")[
-    #super[1]Independent Research
+    #super[1]Independent Research \
+    Corresponding author: Seonkyu Jeong (ORCID: #link("https://orcid.org/0009-0005-3291-9112")[0009-0005-3291-9112])
   ]
 
   #v(1em)
@@ -115,7 +116,7 @@ This work sits between two companion papers that share the same
 13-task benchmark, the same 7-expert PLE backbone, and the same v14
 phase0 data pipeline.
 Paper 1 (Heterogeneous Expert PLE: An Explainable Multi-Task
-Architecture for Financial Product Recommendation) presents the
+Architecture for Financial Product Recommendation)#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19621884")[10.5281/zenodo.19621884]] presents the
 architecture and a system-level summary of the principal ablation
 findings; the present paper *extends Paper 1's summary* with (a) full
 hypothesis discrimination across A--E (signal cleaning, epoch
@@ -130,7 +131,7 @@ governance counterpart --- audit-trail semantics and operator-override
 risk --- is treated in Paper 2's discussion of fidelity-gate
 semantics.
 Paper 2 (From Prediction to Persuasion: Agentic Recommendation Reason
-Generation for Regulatory-Compliant Financial AI) takes the outputs
+Generation for Regulatory-Compliant Financial AI)#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19622052")[10.5281/zenodo.19622052]] takes the outputs
 of two of our findings --- the per-sample feature-attribution vector
 produced by the Causal Explainability Head (Finding 9) and the
 per-prediction reliability score produced by the Causal Guardrail
