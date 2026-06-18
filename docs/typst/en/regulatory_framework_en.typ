@@ -1550,7 +1550,7 @@ A quarterly full check is automatically executed via the 36-item regulatory comp
 
 All regulatory compliance components documented herein (FairnessMonitor, HerdingDetector, ComplianceChecker, AuditLogger, etc.) are wrapped as tools in the AuditAgent's 48-item checklist for automated inspection.
 
-A 3-agent consensus mechanism (Sonnet×3 independent voting) structurally mitigates hallucination, and minority reports preserve dissenting opinions. Diagnostic history accumulates in a LanceDB case store, serving as "continuous improvement evidence" for regulatory audits.
+A 3-agent consensus mechanism (Sonnet×3 independent voting) structurally mitigates hallucination, and minority reports preserve dissenting opinions. The verdict rule is a deliberate fail-safe: a single FAIL vote escalates to FAIL while PASS requires unanimity, reflecting that in operations and audit a missed risk signal is treated as costlier than a false alarm; and because every dissenting opinion is retained, an auditor can always trace why a minority view was or was not escalated. Diagnostic history accumulates in a LanceDB case store, serving as "continuous improvement evidence" for regulatory audits.
 
 Core design principle: *"AI analyzes, humans decide"* --- agents recommend only; final decisions are made by operators. This is designed to align with EU AI Act Art.14 (human oversight), Korean FSS AI guidelines (human intervention), and AI Basic Act (kill switch).
 

@@ -2,8 +2,24 @@
 Consensus Arbiter — Multi-Agent Independent Voting (AWS)
 ==========================================================
 
-Runs 3 independent Sonnet sessions in parallel to classify
-diagnostic results with structural hallucination mitigation.
+Runs 3 independent Sonnet sessions to classify diagnostic results
+with structural hallucination mitigation.
+
+Note: ``parallel=True`` (ThreadPoolExecutor) is the module default, but
+the production wiring in ``core/agent/pipeline_reports.py`` overrides it
+to sequential (``parallel=False``) and swaps the default alpha/beta/gamma
+perspectives for stakeholder panels (Ops: SRE/MLOps/Biz; Audit:
+Regulator/Risk/AuditTrail). Diversity comes from those perspectives,
+not from temperature variation.
+
+The asymmetric quorum in ``_classify`` is a *biased-noise code*: FAIL
+escalates on a single vote while PASS requires unanimity, justified by
+the false-PASS >> false-FAIL cost ratio. The viability of 3 votes in a
+single round rests on Sonnet sitting below the QEC error threshold;
+downgrading the model may require more voters / a deliberation round
+(cf. the on-prem 2-Round Hybrid). See
+``docs/design/13_consensus_qec_framing.md`` for the QEC framing, the
+cost-ratio justification, and the AWS<->on-prem consensus comparison.
 
 Classification:
     - Consensus (3/3): all agree → confirmed
