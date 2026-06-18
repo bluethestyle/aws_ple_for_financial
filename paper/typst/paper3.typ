@@ -57,10 +57,12 @@
   --- 7 binary, 3 multiclass, 3 regression ---
   in a financial product recommendation system with 7 structurally distinct experts
   and 1M synthetic customers.
-  Fourteen findings organize into four themes.
+  Fourteen findings organize around one thread --- *what silently
+  fails when MTL is pushed past the homogeneous-task regime, and the
+  measurement discipline needed to catch it* --- across four themes.
   *Loss dynamics and gating* (Findings 1--6): an uncertainty-weighting implementation bug silently suppresses minority-type tasks (+0.018 NDCG\@3 when fixed); softmax gating outperforms sigmoid for heterogeneous task mixes, *reversing* the homogeneous-setting advantage; learned uncertainty weights converge identically across architectures; shared-bottom baselines overfit extended epoch budgets that gated PLE variants absorb without regularisation; GroupTaskExpert pre-gating degrades multiclass performance in mixed-type groups; gate entropy analysis shows extraction-layer specialization (entropy ratios 0.33--0.88) while attention-level aggregation collapses to uniform averaging (ratio 1.00), and composite val-loss is an unreliable checkpoint signal once regression tasks are present.
   *Fusion augmentation trade-offs* (Finding 7): a 9-way comparison isolates two positive recipes on disjoint axes --- output-space boosting with gradient isolation (BRP-detached, hard-task rescue) and inverse-gate auxiliary supervision (NEAS, aggregate-AUC gain) --- that do *not* compose additively.
-  *Causal expert reinterpretation* (Findings 8--13): the causal expert's adjacency matrix $bold(W)$ collapses to zero in every trained checkpoint examined, rendering its forward equivalent to a plain MLP; a two-part patch (NOTEARS reconstruction loss + initialisation rescale) restores DAG learning at zero task-metric cost; routing the functional DAG into consumable outputs yields a Causal Explainability Head (CEH, per-sample attribution, Pearl Rung 1) and a Causal Guardrail (CG, z-space-Mahalanobis OOD detection at 100% TPR / 5% FPR on three synthetic probes); W-amplification via init $0.1 arrow 0.3$ + $lambda_"recon" 0.5 arrow 2.0$ grows the adjacency matrix $14 times$ in Frobenius norm with zero primary-task cost, establishing that the "decorative DAG" is a training-choice artefact, not an architectural constraint; and a counterfactual probe (CCP, Pearl Rung 3) shows that at baseline W scale the DAG carries $0.16%$ of the counterfactual effect but at the amplified scale the mediation ratio rises to $32%$ at median and $61%$ at the 95th percentile, establishing that Pearl's Rung 3 is viable on top of the amplified teacher; and a CEH v3 variant replacing the causal-encoder-output target with a specific task-logit gradient target is an honest negative result --- the head re-collapses to a global importance pattern despite training signal, showing that target design for attribution is more sensitive than the v1$arrow$v2 pivot suggested.
+  *Causal expert reinterpretation* (Findings 8--13): the causal expert's adjacency matrix $bold(W)$ collapses to zero in every trained checkpoint examined, rendering its forward equivalent to a plain MLP; a two-part patch (NOTEARS reconstruction loss + initialisation rescale) restores DAG learning at zero task-metric cost; routing the functional DAG into consumable outputs yields a Causal Explainability Head (CEH, per-sample attribution, Pearl Rung 1) and a Causal Guardrail (CG, z-space-Mahalanobis OOD detection at 100% TPR / 5% FPR on three synthetic probes); W-amplification via init $0.1 arrow 0.3$ + $lambda_"recon" 0.5 arrow 2.0$ grows the adjacency matrix $14 times$ in Frobenius norm with zero primary-task cost, establishing that the "decorative DAG" is a training-choice artefact, not an architectural constraint; and a counterfactual probe (CCP, Pearl Rung 3) shows that at baseline W scale the DAG carries $0.16%$ of the counterfactual effect but at the amplified scale the mediation ratio rises to $32%$ at median and $61%$ at the 95th percentile --- a preliminary signal, which we flag as future work rather than a validated result, that Pearl's Rung 3 may be viable on the amplified teacher; and a CEH v3 variant replacing the causal-encoder-output target with a specific task-logit gradient target is an honest negative result --- the head re-collapses to a global importance pattern despite training signal, showing that target design for attribution is more sensitive than the v1$arrow$v2 pivot suggested.
   *Serving-side distillation control* (Finding 14): distilling the 13-task teacher into per-task gradient-boosted students passes operational gates (AUC gap $<= 0.0125$, student calibration error $<= 0.0114$) while behavioural similarity shows a structural floor (teacher--student agreement $0.75$--$0.82$, ranking correlation $0.78$--$0.91$ across all seven distilled tasks) that is invariant across three generations of gate semantics scored on identical predictions; a single-tier gate over both metric families therefore always fails --- and an always-failing gate invites bypass --- so the control splits into a blocking operational tier and an informational behavioural-diagnostic tier.
   We distill these observations into practical guidelines for
   practitioners scaling MTL beyond the homogeneous-task regime.
@@ -114,14 +116,16 @@ homogeneous-task regime.
 *Position relative to companion papers.*
 This work sits between two companion papers that share the same
 13-task benchmark, the same 7-expert PLE backbone, and the same v14
-phase0 data pipeline.
+phase0 data pipeline. Its own thread is narrow and deliberate: *what
+silently fails when MTL is pushed past the homogeneous-task regime, and
+the measurement discipline that catches it.*
 Paper 1 (Heterogeneous Expert PLE: An Explainable Multi-Task
 Architecture for Financial Product Recommendation)#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19621884")[10.5281/zenodo.19621884]] presents the
 architecture and a system-level summary of the principal ablation
-findings; the present paper *extends Paper 1's summary* with (a) full
+findings; the present paper is the *detailed empirical companion* to that summary, reporting (a) full
 hypothesis discrimination across A--E (signal cleaning, epoch
 budget, ensemble, gate overfitting, regularisation) and per-task v14
-numbers across all 13 tasks (Findings 1--6), (b) a 9-way fusion-
+numbers across all 13 tasks (Findings 1--6) --- where these coincide with Paper 1 we cite its figures rather than re-deriving them --- (b) a 9-way fusion-
 mechanism comparison that isolates the design space of "what kinds of
 fusion-augmentation work on top of CGC" (Finding 7), (c) a
 causal expert reinterpretation arc that has no counterpart in
@@ -131,20 +135,21 @@ governance counterpart --- audit-trail semantics and operator-override
 risk --- is treated in Paper 2's discussion of fidelity-gate
 semantics.
 Paper 2 (From Prediction to Persuasion: Agentic Recommendation Reason
-Generation for Regulatory-Compliant Financial AI)#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19622052")[10.5281/zenodo.19622052]] takes the outputs
-of two of our findings --- the per-sample feature-attribution vector
-produced by the Causal Explainability Head (Finding 9) and the
-per-prediction reliability score produced by the Causal Guardrail
-(Findings 10--11) --- and routes both into a single HMAC-signed
-hash-chained per-prediction audit log that satisfies GDPR Art.~22
-meaningful-explanation and EU AI Act Art.~13 transparency
-requirements. The handshake is concrete: this paper produces the
-attribution vector and the coherence score; Paper 2 wires both into
-the audit log and exposes them through the recommendation reason
-generation pipeline. The W-amplification result of Finding 11
-specifically motivates the audit log's reliability column: at
-baseline W scale CG would discriminate poorly, so Paper 2's audit
-surface is only viable on top of an amplified-W teacher.
+Generation for Regulatory-Compliant Financial AI)#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19622052")[10.5281/zenodo.19622052]] is
+self-contained: its GDPR Art.~22 / EU AI Act Art.~13 argument is
+carried by the distilled student's SHAP attributions, a three-agent
+reason pipeline, and an HMAC-signed hash-chained audit log, and does
+not depend on any output of this paper. Two of our findings can,
+however, be offered to that audit log as an *optional forensic
+enhancement* --- the per-sample feature-attribution vector produced by
+the Causal Explainability Head (Finding 9) and the per-prediction
+reliability score produced by the Causal Guardrail (Findings 10--11),
+which Paper 2 can route into `log_attribution` / `log_guardrail`
+records. We are explicit that this is an enhancement, not a dependency:
+the per-prediction causal audit runs on the PLE teacher rather than the
+served student, so wiring it into production traffic --- and the
+W-amplification (Finding 11) that would sharpen the reliability signal
+--- is future work, not a delivered capability.
 
 Our contributions:
 
@@ -243,8 +248,9 @@ Our contributions:
   directly: under $"do"(z_j = v)$ interventions the amplified DAG
   carries a median of $32%$ and a 95th percentile of $61%$ of the
   counterfactual effect, versus $0.16%$ on the baseline teacher ---
-  a $200 times$ jump that establishes Rung 3 viability *only* on top
-  of the amplified teacher. On baseline checkpoints the DAG is
+  a $200 times$ jump that we read as a *preliminary viability signal*
+  for Rung 3 on the amplified teacher, reported as future work rather
+  than a validated result. On baseline checkpoints the DAG is
   numerically incapable of supporting Rung 3 claims (Section 4.12).
 
 - A CEH v3 variant (Finding 13, *honest negative result*) that
@@ -1436,7 +1442,10 @@ per-feature attribution vector on top of the causal expert. The
 motivation is explicit: now that Finding 8 gives the expert a real
 DAG, the DAG needs to leave the expert's internals and reach a
 consumer. CEH is the shortest path from "DAG exists" to "DAG has a
-per-prediction output that an audit log can persist."
+per-prediction output that an audit log can persist." The consuming
+audit log lives in the companion serving paper (Paper 2); we treat CEH
+here as producing that paper's *optional forensic enhancement*, not a
+capability Paper 2 depends on.
 
 === Design
 
@@ -1919,7 +1928,7 @@ CRCG / CCP is therefore:
   latent version as the baseline to beat rather than assuming the
   W-based version is preferable.
 
-== Finding 12: Counterfactual Probe (CCP) --- Pearl Rung 3 Viability <find12>
+== Finding 12: Counterfactual Probe (CCP) --- Pearl Rung 3 Viability (Preliminary) <find12>
 
 The causal expert's original motivation --- "A causes B" explanations
 rather than "A correlates with B" @pearl2009causality --- requires
@@ -1928,6 +1937,12 @@ access to Pearl's Rung 3 of the causal hierarchy: counterfactuals,
 Finding 9 (CEH attribution) sits on Rung 1 (observation). Finding 10
 (CG) is off-ladder (safety monitoring). CCP, in contrast, directly
 tests whether the learned DAG mediates counterfactual queries.
+
+_This finding is a preliminary, single-seed post-hoc probe on the
+synthetic benchmark. We report it as a viability signal and a direction
+for future work, not as a validated Rung-3 result --- the numbers below
+quantify what the amplified DAG carries, not a claim that the system
+delivers counterfactual explanations in production._
 
 === Formulation
 
@@ -1974,9 +1989,10 @@ yields:
   W scale, mediation is $0.16%$ of the total counterfactual effect
   --- the DAG carries essentially nothing, matching the decorative-
   DAG observation from Findings 10--11. With W amplified, mediation
-  rises to $32%$ at median and $61%$ at the 95th percentile, establishing
-  that the learned DAG can serve counterfactual queries when
-  trained under Finding 11's amplification recipe.],
+  rises to $32%$ at median and $61%$ at the 95th percentile, indicating
+  that the learned DAG *may* serve counterfactual queries when
+  trained under Finding 11's amplification recipe --- a preliminary
+  signal flagged as future work, not a validated result.],
 )<tbl:ccp-mediation>
 
 === Interpretation
@@ -1991,8 +2007,9 @@ DAG at median; the direct effect still dominates, as partial
 mediation predicts from Pearl's theory, but Rung 3 is no longer
 blocked.
 
-Finding 12 therefore completes the Pearl-ladder picture for the
-causal expert under this project's Axis-3 candidates:
+Finding 12 therefore sketches the Pearl-ladder picture for the
+causal expert under this project's Axis-3 candidates (Rung 2 remains
+unevaluated):
 
 - Rung 1 (observation / association): CEH attribution (Finding 9).
 - Off-ladder (safety): CG coherence (Findings 10--11).
@@ -2493,28 +2510,45 @@ to prevent the reader from conflating its role with CG's.
 
 == Relationship to Companion Papers
 
-This paper complements two companion papers from the same project:
-*Paper 1* (architecture and ablation) establishes the heterogeneous
-expert PLE design and validates expert specialization via joint
-feature+expert ablation. *Paper 2* (serving and ops) covers knowledge
-distillation, recommendation reason generation, and regulatory
-compliance. The present paper focuses specifically on *loss dynamics
-and gating behavior* (Findings 1--6), *fusion augmentation trade-offs*
-(Finding 7), *causal expert reinterpretation* (Findings 8--13), and
-*serving-side distillation control* (Finding 14) that emerged during
-the ablation study but warranted deeper analysis than Paper 1's scope
-allowed.
+This paper complements two companion papers from the same project, and
+its own contribution is best read as a single thread rather than as a
+catalogue. *Paper 1* (architecture and ablation) establishes the
+heterogeneous-expert PLE design and validates expert specialization via
+joint feature+expert ablation; the loss-dynamics and gating results we
+report in detail (Findings 1--6) are the full empirical account of the
+ablation that Paper 1 summarises, and where the two coincide we cite
+Paper 1's figures rather than re-deriving them. *Paper 2* (serving,
+reason generation, and regulatory compliance) is self-contained: its
+audit trail is satisfied by the distilled student's SHAP attributions,
+the three-agent reason pipeline, and an HMAC-signed hash chain, and its
+GDPR Art.~22 / EU AI Act Art.~13 argument does not depend on any output
+of this paper.
 
-Findings 9--11 are directly consumed by Paper 2's v2 audit
-infrastructure: the CEH attribution vector feeds
-`AuditLogger.log_attribution`, and the CG z-space coherence score
-feeds `AuditLogger.log_guardrail`, producing a complete
-HMAC-signed hash-chained per-prediction record (explanation +
-reliability). The training-time machinery that makes the DAG
-learnable (Finding 8) and the amplification knobs that make $bold(W)$
-structurally meaningful (Finding 11) are therefore not standalone
-curiosities in Paper 3 but prerequisites for the regulator-usable
-audit surface delivered in Paper 2 v2.
+Against that backdrop, the thread this paper owns is *what silently
+fails when multi-task learning scales past the homogeneous-task regime,
+and the measurement discipline needed to catch it.* The silent-failure
+lineage runs from an uncertainty-weighting control that is inert while
+training looks healthy (Finding 1), through gate-entropy and checkpoint
+pathologies that a composite validation loss hides (Finding 6), to a
+causal expert whose learnable adjacency matrix silently optimises to
+zero (Finding 8), to a distillation fidelity gate that fails
+permanently while production quality is healthy (Finding 14). Each is a
+failure of measurement semantics rather than of a model, and each is
+invisible to the metric a practitioner would naturally watch.
+
+Two Axis-3 outputs built on the now-functional DAG --- the CEH
+per-sample attribution vector (Finding 9) and the CG z-space coherence
+score (Findings 10--11) --- can be routed into Paper 2's audit
+infrastructure (`AuditLogger.log_attribution` /
+`AuditLogger.log_guardrail`) as an *optional forensic enhancement*. We
+are deliberate about the framing: this is an enhancement, not a
+prerequisite. Paper 2's regulatory argument stands without it, and the
+per-prediction causal audit currently runs on the PLE teacher rather
+than the served student, so emitting these records for production
+traffic is future work. The counterfactual-probe direction (Finding
+12) --- testing Pearl Rung 3 on the W-amplified teacher --- is likewise
+left to future work and is reported here only as a viability signal,
+not a validated result.
 
 Finding 14 has a companion-paper counterpart of a different kind:
 Paper 2's discussion of fidelity-gate semantics under
@@ -2568,31 +2602,32 @@ guidance is per-objective.
 *Causal expert reinterpretation* (Findings 8--13): the causal
 expert's adjacency matrix $bold(W)$ collapsed to zero in every
 trained checkpoint we examined, rendering the expert equivalent to
-a plain MLP. A two-part patch (NOTEARS reconstruction loss +
-initialisation rescale) restores DAG learning at zero primary-task
-cost, but the DAG is initially "decorative" --- structurally valid
-and not routed into prediction. We report two Axis-3 candidates that
-route the functional DAG into consumable per-prediction outputs:
-a Causal Explainability Head (CEH) producing a per-sample attribution
-vector, and a Causal Guardrail (CG) producing a reliability flag.
-CEH's first formulation collapsed to a global importance pattern;
-a minimum-intervention "demeaned target" variant restored per-sample
-discrimination. CG's first formulation failed at chance-level
-discrimination; a z-space Mahalanobis formulation hit $100%$ TPR
-at $5%$ FPR on three synthetic OOD probes. A W-amplification
-experiment then established that the decorative DAG is a
-training-choice artefact, not an architectural constraint ---
-init $0.1 arrow.r 0.3$ and $lambda_"recon" 0.5 arrow.r 2.0$ grows
-$||bold(W)||_F$ 14-fold at zero task cost.
-Building on the amplified teacher, a counterfactual probe (CCP)
-measures that the learned DAG carries a median of $32%$ and a 95th
-percentile of $61%$ of the counterfactual effect under $"do"(z_j = v)$
-interventions, versus $0.16%$ on the baseline teacher --- establishing
-Pearl Rung 3 viability at zero additional SageMaker spend. Combined with the
-HMAC-signed hash-chained audit trail described in the companion
-paper, CEH + CG produce a regulator-usable per-prediction record
-that pairs *what* the model recommended (attribution) with
-*whether* that recommendation can be trusted (reliability).
+a plain MLP --- the same silent-failure pattern as Finding 1, one
+level down in the architecture. A two-part patch (NOTEARS
+reconstruction loss + initialisation rescale) restores DAG learning at
+zero primary-task cost, though the recovered DAG is initially
+"decorative" --- structurally valid and not routed into prediction. On
+top of the now-functional DAG we build two Axis-3 outputs: a Causal
+Explainability Head (CEH) producing a per-sample attribution vector
+(Finding 9 --- a first formulation collapsed to a global importance
+pattern, a minimum-intervention "demeaned target" variant restored
+per-sample discrimination) and a Causal Guardrail (CG) producing a
+reliability flag (Findings 10--11 --- a W-reconstruction formulation
+failed at chance-level discrimination, a z-space Mahalanobis
+formulation reached $100%$ TPR at $5%$ FPR on three synthetic OOD
+probes). A W-amplification experiment establishes that the decorative
+DAG is a training-choice artefact, not an architectural constraint ---
+init $0.1 arrow.r 0.3$ and $lambda_"recon" 0.5 arrow.r 2.0$ grow
+$||bold(W)||_F$ 14-fold at zero task cost. These two outputs are
+offered to the companion serving paper's audit infrastructure as an
+*optional forensic enhancement* rather than a load-bearing dependency:
+Paper 2's regulatory argument is complete without them. A
+counterfactual probe on the amplified teacher (Finding 12) returns a
+preliminary Pearl-Rung-3 viability signal --- a median $32%$ mediated
+counterfactual effect under $"do"(z_j = v)$ interventions versus
+$0.16%$ on the baseline teacher --- which we report as motivation for
+future work rather than as a validated result, since it rests on a
+single post-hoc analysis of synthetic interventions.
 
 *Serving-side distillation control* (Finding 14): cross-architecture
 distillation of the 13-task teacher into per-task gradient-boosted

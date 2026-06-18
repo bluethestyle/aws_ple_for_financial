@@ -65,15 +65,18 @@
   for small teams without dedicated MLOps staff;
   (4) regulatory compliance by design, with built-in drift monitoring, fairness auditing,
   and governance reporting aligned to Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act;
-  (5) a *per-prediction causal audit surface* that pairs explanation
-  (Causal Explainability Head attribution) with reliability (Causal
-  Guardrail coherence score) in a shared HMAC-signed hash-chained
-  audit log, producing a regulator-usable per-decision record that
-  satisfies GDPR Art.~22 meaningful-explanation and EU AI Act Art.~13
-  transparency requirements --- the companion loss-dynamics paper
-  produces the attribution vector (its causal-attribution finding)
-  and the coherence score (its causal-guardrail findings); this
-  paper routes both into the audit infrastructure.
+  (5) an *optional per-prediction causal audit surface* that augments
+  the compliance path above by pairing explanation (Causal
+  Explainability Head attribution) with reliability (Causal Guardrail
+  coherence score) in the shared HMAC-signed hash-chained audit log ---
+  the companion loss-dynamics paper produces the attribution vector
+  (its causal-attribution finding) and the coherence score (its
+  causal-guardrail findings), which this paper can route into the audit
+  infrastructure as a forensic enhancement. This surface is an addition
+  to, not a precondition for, the Art.~13 / Art.~22 compliance carried
+  by the reason-generation pipeline and SHAP-based audit log; the
+  per-prediction causal audit currently runs on the PLE teacher, so
+  wiring it into the served path is future work.
   We evaluate distillation quality (v13 baseline: AUC gap $<$ 3.6 percentage points across 7 binary tasks, mean 2.6 pp; the v14 re-run after the fidelity-gate fixes analysed in the Discussion (Section 8) reduces the mean gap to 0.58 pp),
   reason generation quality via automated compliance validation
   (L1 template coverage 100%, 13/13 tasks; compliance rules applied: suitability, consent, opt-out, profiling, disclosure),
@@ -133,15 +136,18 @@ We propose a full-chain solution from prediction to persuasion:
 
 + *Regulatory Compliance Architecture*: Explicit mapping of system components to Korean FSS guidelines, EU AI Act articles, and the Korean AI Basic Act.
 
-+ *Per-Prediction Causal Audit Pair*: An HMAC-signed, hash-chained
-  audit record per decision that pairs *what* the model recommended
-  (CEH attribution: top-$K$ influential features plus full-vector
-  SHA256) with *whether* it should be trusted (CG coherence score and
-  threshold). Both flow through the same `AuditLogger` infrastructure
-  (`log_attribution`, `log_guardrail`), and the hash-chain verifier
-  detects tampering or selective deletion of either record class.
-  Produces the concrete per-decision audit evidence that Art.~13
-  transparency and GDPR Art.~22 meaningful-explanation call for.
++ *Per-Prediction Causal Audit Pair (optional enhancement)*: An
+  HMAC-signed, hash-chained audit record per decision that pairs *what*
+  the model recommended (CEH attribution: top-$K$ influential features
+  plus full-vector SHA256) with *whether* it should be trusted (CG
+  coherence score and threshold). Both flow through the same
+  `AuditLogger` infrastructure (`log_attribution`, `log_guardrail`),
+  and the hash-chain verifier detects tampering or selective deletion
+  of either record class. This pair *augments* the Art.~13 / Art.~22
+  evidence already produced by the reason-generation pipeline and
+  SHAP-based audit log rather than being required for it; it currently
+  runs on the PLE teacher, so emitting it for served (distilled-student)
+  traffic is future work.
 
 + *Human Evaluation Protocol*: A systematic protocol designed for post-deployment expert evaluation, with automated compliance validation reported in this paper as an interim measure.
 
@@ -1000,6 +1006,23 @@ the consensus mechanism is _adapted to the deployment environment_
 because model capability differs fundamentally between the cloud and on-premises settings.
 A single consensus design cannot serve both: cloud-scale models can afford independent parallel voting,
 whereas smaller on-premises models require structural safeguards against conformity bias.
+
+_Design rationale (quantum-error-correction framing)._ This environment
+split is not ad hoc but follows, by analogy, the *threshold theorem* of
+quantum error correction. Reading each model's vote as a noisy physical
+measurement, redundancy reduces the logical error rate only while the
+per-vote error stays below a threshold: a cloud-scale model (Sonnet)
+sits well below it, so three independent votes suffice, whereas a small
+on-premises model sits near it and needs both more voters and a second
+deliberation round --- the analogue of code concatenation. The
+asymmetric verdict rule (FAIL on a single vote, PASS only on unanimity)
+is, in the same lens, a *biased-noise code*: protection is concentrated
+on the costlier error direction, justified by the operational cost ratio
+in which a missed signal (false PASS) far outweighs a false alarm (false
+FAIL). Minority-report preservation, in turn, corresponds to deferring
+measurement of the dissenting branch until human review. The full
+framing, the cost-ratio justification, and the AWS-vs-on-premises
+comparison are documented in `docs/design/13_consensus_qec_framing.md`.
 
 === AWS: Independent Parallel Voting (Jury Model)
 
@@ -1902,8 +1925,12 @@ at the next retraining cycle,
 creating a closed feedback loop between distillation quality
 and teacher development priorities.
 
-*Finding 5: Per-prediction causal audit pair closes the Art.~13 /
-GDPR Art.~22 gap.* Model-promotion records track *which* model is
+*Finding 5: A per-prediction causal audit pair adds per-decision
+forensic depth to the Art.~13 / GDPR Art.~22 trail.* This pair is an
+optional enhancement --- the Art.~13 / Art.~22 obligations are already
+met by the reason-generation pipeline and SHAP-based audit log, and
+the pair currently runs on the PLE teacher, so serving-path emission
+is future work. Model-promotion records track *which* model is
 in production but do not answer the adjacent per-decision questions
 *why did the model recommend this* and *can we trust this
 recommendation*. Combining the Causal Explainability Head attribution
@@ -2165,15 +2192,17 @@ Five key contributions define this work:
 
 + *Regulatory compliance embedded by design* --- Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act are explicitly mapped to system architecture components, with automated monitoring (drift, fairness, herding) and human-in-the-loop oversight at critical decision points.
 
-+ *Per-prediction causal audit pair* --- the Causal Explainability
-  Head attribution (the companion loss-dynamics paper's causal-attribution finding) and the Causal
-  Guardrail coherence score (its causal-guardrail findings) flow
-  into the same HMAC-signed hash-chained audit store via
-  `log_attribution` and `log_guardrail`, producing a per-decision
-  record that pairs *what* the model recommended with *whether* that
-  recommendation can be trusted. Satisfies GDPR Art.~22 meaningful-
-  explanation and EU AI Act Art.~13 transparency obligations with
-  cryptographic tamper-evidence.
++ *Per-prediction causal audit pair (optional enhancement)* --- the
+  Causal Explainability Head attribution (the companion loss-dynamics
+  paper's causal-attribution finding) and the Causal Guardrail
+  coherence score (its causal-guardrail findings) flow into the same
+  HMAC-signed hash-chained audit store via `log_attribution` and
+  `log_guardrail`, producing a per-decision record that pairs *what*
+  the model recommended with *whether* that recommendation can be
+  trusted. This augments --- rather than carries --- the GDPR Art.~22
+  and EU AI Act Art.~13 obligations met by the reason-generation
+  pipeline and SHAP-based audit log; it currently runs on the PLE
+  teacher, so production wiring is future work.
 
 The fundamental insight is that features serve a dual role in financial AI:
 they contribute to prediction _and_ to the explanation vocabulary

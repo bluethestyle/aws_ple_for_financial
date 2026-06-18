@@ -1835,8 +1835,9 @@ distillation @hinton2015 to LGBM @ke2017lightgbm, the two-tier
 fidelity gate semantics under cross-architecture distillation,
 multi-agent recommendation reason generation, regulatory compliance
 mapping for Korean FSS and EU AI Act requirements, and an HMAC-signed
-hash-chained per-prediction audit surface that pairs attribution (CEH)
-with reliability (CG).
+hash-chained per-prediction audit surface, optionally enriched by a
+causal attribution (CEH) / reliability (CG) pair from the companion
+loss-dynamics paper.
 *Paper 3* reports empirical findings from scaling PLE to 13
 heterogeneous tasks --- loss dynamics and gate selection behaviour
 (Findings 1--6), a 9-way comparison of fusion augmentations that
@@ -1844,7 +1845,7 @@ identifies two non-additive positive recipes (Finding 7), a
 causal expert reinterpretation arc from dead-parameter diagnosis
 through CEH attribution, CG guardrail, and W-amplification to
 counterfactual probing and a negative-result CEH variant
-(Findings 8--13) whose outputs feed Paper 2's audit surface, and a
+(Findings 8--13) whose outputs can optionally enrich Paper 2's audit surface, and a
 measurement analysis of the cross-architecture distillation
 fidelity gate (Finding 14).
 
