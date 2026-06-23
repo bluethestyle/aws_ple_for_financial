@@ -3597,6 +3597,30 @@ class PipelineRunner:
             ig_path = analysis_dir / "ig_attributions.json"
             with open(ig_path, "w") as f:
                 json.dump(ig_results, f, indent=2, default=str)
+
+            # #14: emit a serving-friendly, name-keyed top-feature map so the
+            # serving path surfaces model-faithful IG attribution instead of
+            # the Layer-3 rule proxy. Best-effort: never break Stage 8.5.
+            try:
+                from core.serving.ig_artifacts import (
+                    build_serving_ig_top_features,
+                )
+
+                feature_names = (
+                    getattr(model, "feature_names", None)
+                    or getattr(self, "feature_columns", None)
+                )
+                serving_ig = build_serving_ig_top_features(
+                    ig_results,
+                    feature_names=feature_names,
+                    top_n=ig_cfg.get("serving_top_n", 10),
+                )
+                with open(analysis_dir / "ig_top_features.json", "w") as f:
+                    json.dump(serving_ig, f, indent=2)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[Analysis] serving IG top-features export failed: %s", e
+                )
         except Exception as e:
             logger.warning("[Analysis] IG analysis failed: %s", e)
             analysis["ig_attributions"] = {"error": str(e)}

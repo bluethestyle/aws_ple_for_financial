@@ -156,7 +156,7 @@ adatt_sp:
 # ---------------------------------------------------------------------------
 residual_recovery:
   enabled: false                    # toggle via HP override
-  method: "complement"              # complement | orthogonal | dualgate (future)
+  method: "complement"              # complement | orthogonal (OCP) | dualgate (future)
   weight_init: 0.5                  # learnable residual weight initial value
 
 # ---------------------------------------------------------------------------
@@ -725,6 +725,14 @@ aws:
 #   금소법 §17 (적합성)
 # ---------------------------------------------------------------------------
 compliance:
+  # Master switch for the legacy serving compliance modules: consent /
+  # contactability (금소법), AI decision opt-out (AI기본법 §31 / GDPR Art.22),
+  # regulatory suitability (금소법 §17), profiling rights. When true the
+  # serving entrypoints build and inject these gates into RecommendationService.
+  # Distinct from `hooks.enabled` below (Sprint 1~4 hook builder). Both ON.
+  # NOTE: absence of this key must NOT silently disable the controls — the
+  # entrypoints fall back to `hooks.enabled` when it is missing.
+  enabled: true
   # Sprint 1~4 regulatory serving hooks (M1 review queue, M4 opt-out,
   # M5 profiling, M6 explanation SLA, M9 AI-risk, M10 item universe,
   # M12 LLM marker). Wired into both serving entrypoints via

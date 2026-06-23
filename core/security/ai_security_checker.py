@@ -49,7 +49,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 # Known prompt-injection / jailbreak patterns. Public catalogue; operators
-# should extend via pipeline.yaml::security.ai_checker.
+# should extend via pipeline.yaml::compliance.ai_security.
 DEFAULT_PROMPT_INJECTION_PATTERNS: List[str] = [
     r"(?i)ignore\s+(all\s+)?previous\s+instructions",
     r"(?i)disregard\s+(all\s+)?above",

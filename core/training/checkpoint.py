@@ -167,6 +167,16 @@ class CheckpointManager:
             payload["config"] = config
 
         torch.save(payload, path)
+        # Emit a SHA-256 sidecar so downstream loads can verify artifact
+        # integrity (⑦ 보안성, supply-chain tamper). Best-effort: never let
+        # integrity bookkeeping break a checkpoint save.
+        try:
+            from core.security.artifact_integrity import write_sidecar
+            write_sidecar(path)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Failed to write checksum sidecar for %s", path, exc_info=True
+            )
         logger.info(f"Checkpoint saved: {path} (epoch={epoch}, step={global_step})")
 
         self._saved_checkpoints.append(path)

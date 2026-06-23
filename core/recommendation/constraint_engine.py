@@ -330,6 +330,9 @@ class SuitabilityFilter(AbstractFilter):
 
         if risk_level is None:
             # No risk profile on the item: pass-through (other filters apply).
+            # NB: §17 fail-closed is enforced on the *customer* side — a
+            # missing customer_risk_tolerance blocks under require_assessment
+            # below; an unrated item is not itself a suitability violation.
             return FilterResult(
                 passed=True, filter_name="suitability",
                 details={"reason": "no_item_risk_level"},

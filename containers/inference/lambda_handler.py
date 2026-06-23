@@ -139,7 +139,11 @@ def _get_service():
 
     # ---- Compliance module (config-driven, all components non-blocking) ----
     compliance_cfg = config_dict.get("compliance", {})
-    compliance_enabled = compliance_cfg.get("enabled", False)
+    # Fall back to hooks.enabled when the master `enabled` key is absent so a
+    # missing key never silently disables consent / §17 / opt-out (fail-open).
+    compliance_enabled = compliance_cfg.get(
+        "enabled", compliance_cfg.get("hooks", {}).get("enabled", False)
+    )
 
     consent_manager = None
     ai_opt_out = None
@@ -270,6 +274,15 @@ def _get_service():
                 "compliance modules only", exc_info=True,
             )
 
+    # #14: load model-faithful IG top-features from the model bundle (when the
+    # training run exported them) so serving surfaces real attribution instead
+    # of the Layer-3 rule proxy. Non-fatal: missing artifact → proxy fallback.
+    try:
+        from core.serving.ig_artifacts import load_ig_attributions
+        _ig_attributions = load_ig_attributions(model_dir)
+    except Exception:  # noqa: BLE001
+        _ig_attributions = None
+
     _service = RecommendationService(
         model=model,
         feature_store=feature_store,
@@ -282,6 +295,7 @@ def _get_service():
         regulatory_checker=regulatory_checker,
         ai_opt_out=ai_opt_out,
         compliance_audit_store=compliance_audit_store,
+        ig_attributions=_ig_attributions,
         **compliance_hooks,
     )
 

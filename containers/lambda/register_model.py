@@ -235,7 +235,19 @@ def _extract_teacher(s3, teacher_uri, tmp_dir):
         extract_dir.mkdir(exist_ok=True)
 
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
-            tar.extractall(str(extract_dir))
+            # ⑦ 보안성: reject path-traversal members before extracting an
+            # untrusted S3 tarball (classic tar-escape RCE / overwrite).
+            dest_abs = os.path.abspath(str(extract_dir))
+            for member in tar.getmembers():
+                target = os.path.abspath(os.path.join(dest_abs, member.name))
+                if target != dest_abs and not target.startswith(dest_abs + os.sep):
+                    raise ValueError(
+                        f"unsafe tar member path (path traversal): {member.name}"
+                    )
+            try:
+                tar.extractall(dest_abs, filter="data")
+            except TypeError:  # filter kwarg unavailable (<3.12)
+                tar.extractall(dest_abs)
 
         # Load torch artifacts
         model_path = extract_dir / "model.pth"

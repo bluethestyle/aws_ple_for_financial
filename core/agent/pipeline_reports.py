@@ -860,26 +860,31 @@ def _build_audit_registry(ctx: "PipelineJobContext"):
         override = getattr(ctx, "regulatory_status", None)
         if override:
             return dict(override)
-        # Default demo scheme: FRIA pending counts as one critical
-        # failure (EU AI Act Art. 9 / domestic AI기본법 §35), EU AI Act
-        # "partial" is a soft failure that lowers pass_rate but does
-        # not trip the HIGH priority focus area.
-        critical = 1  # FRIA pending
-        soft = 1      # EU AI Act partial
-        total_regs = 3
+        # No real ComplianceRegistry result was supplied to this report
+        # context. Do NOT fabricate a finding (this previously returned
+        # FRIA=pending / critical=1 / pass_rate=0.33) — that misrepresents an
+        # *uncomputed* status as a real regulatory failure. Report
+        # 'not_assessed' honestly: zero fabricated critical failures and a
+        # neutral pass_rate so the diagnoser raises no false alarm, while the
+        # status strings make the absence of an assessment explicit. To get a
+        # real status, pass ctx.regulatory_status from ComplianceRegistry.
         return {
-            "critical_failures": critical,
-            "pass_rate": round(1.0 - (critical + soft) / total_regs, 4),
+            "critical_failures": 0,
+            "pass_rate": 1.0,
+            "status": "not_assessed",
             "by_regulation": {
-                "fria": "pending",
-                "eu_ai_act": "partial",
-                "domestic": "compliant",
+                "fria": "not_assessed",
+                "eu_ai_act": "not_assessed",
+                "domestic": "not_assessed",
             },
-            # Passthrough fields for the reporter's regulatory_summary
-            "domestic_status": "compliant",
-            "eu_ai_act_status": "partial",
-            "eu_ai_act_risk_category": "limited",
-            "fria_status": "pending",
+            "domestic_status": "not_assessed",
+            "eu_ai_act_status": "not_assessed",
+            "eu_ai_act_risk_category": "unknown",
+            "fria_status": "not_assessed",
+            "note": (
+                "No ComplianceRegistry result was provided to this report; "
+                "regulatory status is unassessed (not a compliance finding)."
+            ),
         }
 
     # Lineage — read the lineage YAML that the aggregator already

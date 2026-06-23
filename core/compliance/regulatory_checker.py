@@ -659,79 +659,115 @@ class RegulatoryComplianceChecker:
     def _check_aia_004_bias(self):
         """AIA-004: Bias / fairness monitoring must be in place.
 
-        Beyond checking the config flag, also verifies that the
-        FairnessMonitor has actually been executed by querying the
-        audit store for recent fairness evaluation records.
+        Beyond checking the config flag, this verifies that the
+        FairnessMonitor has actually produced evaluation records by
+        querying the audit store. Absence of evidence — or an audit
+        store query failure — fails *closed*: a critical control must
+        never pass on the config flag alone.
         """
         enabled = self._config.get("bias_monitoring_enabled", False)
         if not enabled:
             return False, "Bias monitoring is not enabled in config.", {}
 
-        # Verify actual execution: check audit store for recent fairness events
         details: Dict[str, Any] = {"config_enabled": True}
+        if self._store is None:
+            return (
+                False,
+                "Bias monitoring is enabled but evidence cannot be verified "
+                "(no audit store configured).",
+                details,
+            )
+
         try:
-            if self._audit_store is not None:
-                from datetime import timedelta
-                cutoff = (
-                    datetime.now(timezone.utc) - timedelta(days=30)
-                ).isoformat()
-                events = self._audit_store.query_events(
-                    "incident", "fairness_violation", cutoff,
-                )
-                # Also check for successful evaluations (no violations)
-                # by looking for governance report fairness summaries
-                details["recent_fairness_events"] = len(events) if events else 0
-                details["last_checked"] = cutoff
-
-                # If we have a governance report with fairness_summary,
-                # the monitor has actually run
-                gov_events = self._audit_store.query_events(
-                    "embedding", "fairness_evaluation", cutoff,
-                )
-                has_run = (
-                    (events is not None and len(events) >= 0)
-                    or (gov_events is not None and len(gov_events) > 0)
-                )
-                if not has_run:
-                    return (
-                        False,
-                        "Bias monitoring is enabled but FairnessMonitor "
-                        "has not produced any evaluation records in the "
-                        "last 30 days. Run fairness evaluation.",
-                        details,
-                    )
-
-        except Exception as e:
+            from datetime import timedelta
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            violation_events = self._store.query_events(
+                "incident", "fairness_violation", cutoff,
+            ) or []
+            eval_events = self._store.query_events(
+                "embedding", "fairness_evaluation", cutoff,
+            ) or []
+            details["recent_fairness_violations"] = len(violation_events)
+            details["recent_fairness_evaluations"] = len(eval_events)
+            details["last_checked"] = cutoff
+        except Exception as e:  # defensive: query failure must not pass
             details["audit_check_error"] = str(e)
-            logger.debug("AIA-004: audit store query failed: %s", e)
+            logger.warning("AIA-004: audit store query failed: %s", e)
+            return (
+                False,
+                "Bias monitoring is enabled but evidence is unavailable "
+                "(audit store query failed). Failing closed.",
+                details,
+            )
 
-        return True, "Bias monitoring is enabled and has recent evaluations.", details
+        # Require actual evidence that the FairnessMonitor has run.
+        if len(eval_events) == 0:
+            return (
+                False,
+                "Bias monitoring is enabled but FairnessMonitor has not "
+                "produced any evaluation records in the last 30 days. "
+                "Run fairness evaluation.",
+                details,
+            )
+
+        return (
+            True,
+            "Bias monitoring is enabled and has recent evaluation evidence.",
+            details,
+        )
 
     def _check_aia_005_performance(self):
         """AIA-005: Model performance monitoring must be active.
 
-        Checks both the config flag and whether prediction logs exist
-        in the monitoring table (evidence of actual serving + tracking).
+        Verifies the config flag *and* that recent model-evaluation
+        records exist in the audit store. Missing evidence or an audit
+        query failure fails closed.
         """
         enabled = self._config.get("performance_monitoring_enabled", False)
         if not enabled:
             return False, "Model performance monitoring is not enabled in config.", {}
 
         details: Dict[str, Any] = {"config_enabled": True}
-        try:
-            if self._audit_store is not None:
-                from datetime import timedelta
-                cutoff = (
-                    datetime.now(timezone.utc) - timedelta(days=7)
-                ).isoformat()
-                events = self._audit_store.query_events(
-                    "distillation", "model_evaluation", cutoff,
-                )
-                details["recent_evaluation_events"] = len(events) if events else 0
-        except Exception as e:
-            details["audit_check_error"] = str(e)
+        if self._store is None:
+            return (
+                False,
+                "Model performance monitoring is enabled but evidence cannot "
+                "be verified (no audit store configured).",
+                details,
+            )
 
-        return True, "Model performance monitoring is active.", details
+        try:
+            from datetime import timedelta
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            events = self._store.query_events(
+                "distillation", "model_evaluation", cutoff,
+            ) or []
+            details["recent_evaluation_events"] = len(events)
+            details["last_checked"] = cutoff
+        except Exception as e:  # defensive: query failure must not pass
+            details["audit_check_error"] = str(e)
+            logger.warning("AIA-005: audit store query failed: %s", e)
+            return (
+                False,
+                "Model performance monitoring is enabled but evidence is "
+                "unavailable (audit store query failed). Failing closed.",
+                details,
+            )
+
+        if len(events) == 0:
+            return (
+                False,
+                "Model performance monitoring is enabled but no recent model "
+                "evaluation records were found in the last 7 days.",
+                details,
+            )
+
+        return (
+            True,
+            "Model performance monitoring is active with recent evaluation "
+            "evidence.",
+            details,
+        )
 
     def _check_aia_006_registry(self):
         """AIA-006: Model registry and versioning must be enabled."""

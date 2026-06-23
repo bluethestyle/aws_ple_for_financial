@@ -434,9 +434,9 @@ Mapping the current response status of the PLE-based financial AI recommendation
   [6. Good Faith\
   (AI RMF R-4)],
   [AI disclosure centralized management + per-segment notification separation\
-  Conflict of interest prevention (auto-penalty when high-fee products exceed 40%)\
-  Opt-out registration/withdrawal/confirmation full lifecycle management],
-  [●],
+  Conflict-of-interest prevention not implemented (high-fee penalty etc. planned)\
+  Opt-out lifecycle management (module implemented; serving wiring needed)],
+  [○],
 
   [7. Security\
   (AI RMF R-5)],
@@ -483,7 +483,7 @@ Mapping the current response status of the PLE-based financial AI recommendation
   [R-1], [Risk classification per AI service], [Self-assessment of high-impact AI applicability complete; formal classification system needed], [○],
   [R-2], [Legality assessment], [Eligibility auto-verification + de-identification + retention compliance], [●],
   [R-3], [Reliability assessment], [Champion-Challenger + drift detection + fairness auto-measurement], [●],
-  [R-4], [Good faith assessment], [5 protected attributes DI/SPD/EOD + conflict prevention + Parquet archiving], [●],
+  [R-4], [Good faith assessment], [5 protected attributes DI/SPD/EOD implemented (serving/log wiring needed) + Parquet archiving; conflict-of-interest prevention not implemented (planned)], [○],
   [R-5], [Security assessment], [Local AI + SHA-256 encryption + prompt injection defense + integrity verification], [●],
   [R-6], [Residual risk assessment], [FD-TVS risk penalty auto-block; Risk Appetite documentation needed], [○],
 )

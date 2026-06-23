@@ -220,14 +220,33 @@ class FairnessMonitor:
 
         DI = P(recommended | unprivileged) / P(recommended | privileged)
 
-        Returns 0.0 when the privileged group has zero positive rate.
+        Returns a neutral ``1.0`` (parity — *not* a violation) when either
+        group has no members: absence of data must not be reported as maximal
+        unfairness (the silent-failure that polluted the promotion gate with a
+        false DI=0.0). ``0.0`` is returned only when the privileged group has
+        members but a genuine 0%% positive rate.
         """
+        priv_members = [
+            r for r in recommendations if r.get(attribute) == privileged_group
+        ]
+        unpriv_members = [
+            r for r in recommendations if r.get(attribute) == unprivileged_group
+        ]
+        if not priv_members or not unpriv_members:
+            logger.info(
+                "[DI] insufficient data for attribute '%s' "
+                "(privileged_n=%d, unprivileged_n=%d); returning neutral DI=1.0",
+                attribute, len(priv_members), len(unpriv_members),
+            )
+            return 1.0
+
         priv_rate = self._positive_rate(recommendations, attribute, privileged_group)
         unpriv_rate = self._positive_rate(recommendations, attribute, unprivileged_group)
 
         if priv_rate == 0.0:
             logger.warning(
-                "[DI] Privileged group '%s' has 0%% positive rate; returning DI=0.0",
+                "[DI] Privileged group '%s' has members but a 0%% positive "
+                "rate; returning DI=0.0",
                 privileged_group,
             )
             return 0.0

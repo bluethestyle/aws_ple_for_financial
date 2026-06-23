@@ -248,6 +248,7 @@ class RecommendationService:
         review_queue: Optional[Any] = None,               # M1
         item_universe_loader: Optional[Any] = None,       # M10
         marker_applier: Optional[Any] = None,             # M12
+        ig_attributions: Optional[Dict[str, Any]] = None,  # #14 model-faithful IG
     ) -> None:
         from .feature_store import AbstractFeatureStore
 
@@ -289,6 +290,11 @@ class RecommendationService:
         self._review_queue = review_queue
         self._item_universe_loader = item_universe_loader
         self._marker_applier = marker_applier
+        # #14: model-faithful Integrated-Gradients attributions produced at
+        # training time (run_full Stage 8.5). When present, serving surfaces
+        # these instead of the Layer-3 rule proxy and records the source
+        # honestly in metadata['attribution_source'].
+        self._ig_attributions = ig_attributions
 
         # --- 3-layer fallback components (all optional) ---
         # When fallback_router is None the service behaves exactly as before
@@ -592,6 +598,15 @@ class RecommendationService:
             metadata["fallback_layers"] = dict(layer_counts)
             metadata["layer_used_per_task"] = layer_used_map
 
+            # FallbackRouter Layer 4 = human fallback. Record which tasks were
+            # routed to a human so _triage_for_review enqueues them into the
+            # HumanReviewQueue even when the caller set no agent_tier — this is
+            # the missing producer that left the HITL channel silent in prod
+            # (AGENTS.md §1.17: the caller of a Layer 4 verdict must enqueue).
+            human_fallback_tasks = [t for t, lyr in routing.items() if lyr == 4]
+            if human_fallback_tasks:
+                metadata["human_fallback_tasks"] = human_fallback_tasks
+
         # ---- 6c. Calibration ----
         # Apply per-task Platt / isotonic calibrator when available.
         # Calibration is applied silently — caller sees the same response shape.
@@ -634,21 +649,11 @@ class RecommendationService:
                         normalised[task_name] = strategy_default
 
         # ---- 7. Optional pipeline (scoring + reasons) ----
-        # Inject contributing_features from Layer 3 rules into context
-        # so RecommendationPipeline can use them as ig_top_features
-        # for reason generation (bypasses Agent 1 / IG computation).
-        layer3_features = metadata.get("contributing_features", {})
-        if layer3_features:
-            # Merge all Layer 3 task features into a single list for the pipeline
-            all_cf = []
-            for task_cf in layer3_features.values():
-                all_cf.extend(task_cf)
-            # Deduplicate by feature name, keep highest value
-            seen = {}
-            for name, value in all_cf:
-                if name not in seen or value > seen[name]:
-                    seen[name] = value
-            ctx["ig_top_features"] = sorted(seen.items(), key=lambda x: -x[1])
+        # Resolve the attribution surfaced to reason generation: prefer the
+        # model-faithful IG artifact (run_full Stage 8.5) over the Layer-3
+        # rule proxy, and record the source honestly so a proxy is never
+        # mislabelled as true IG.
+        self._resolve_attribution(normalised, metadata, ctx)
 
         # ---- 7a. Dynamic item universe (Sprint 3 M10) ----
         # Injects the current eligible campaign + product set so the pipeline
@@ -1060,6 +1065,11 @@ class RecommendationService:
             tier = int(ctx.get("agent_tier", 0))
         except (TypeError, ValueError):
             tier = 0
+        # A FallbackRouter Layer 4 verdict (human fallback) forces tier-3
+        # review regardless of the caller-supplied agent_tier, so degraded
+        # predictions never bypass human review.
+        if metadata.get("human_fallback_tasks"):
+            tier = max(tier, 3)
         if tier not in (1, 2, 3):
             return
         try:
@@ -1087,6 +1097,65 @@ class RecommendationService:
                 "HumanReviewQueue triage failed for user_id=%s",
                 user_id, exc_info=True,
             )
+
+    def _resolve_attribution(
+        self,
+        normalised: Dict[str, Any],
+        metadata: Dict[str, Any],
+        ctx: Dict[str, Any],
+    ) -> None:
+        """Populate ``ctx['ig_top_features']`` for reason generation.
+
+        Prefers the model-faithful Integrated-Gradients attributions produced
+        at training time (run_full Stage 8.5) when supplied; otherwise falls
+        back to the Layer-3 rule proxy. The chosen source is recorded in
+        ``metadata['attribution_source']`` (``"ig"`` vs ``"rule_layer3_proxy"``)
+        so downstream never mistakes a proxy for true model attribution.
+        """
+        if self._ig_attributions:
+            ig_feats = self._select_ig_top_features(self._ig_attributions, normalised)
+            if ig_feats:
+                ctx["ig_top_features"] = ig_feats
+                metadata["attribution_source"] = "ig"
+                return
+
+        layer3_features = metadata.get("contributing_features", {})
+        if layer3_features:
+            all_cf = []
+            for task_cf in layer3_features.values():
+                all_cf.extend(task_cf)
+            seen: Dict[str, float] = {}
+            for name, value in all_cf:
+                if name not in seen or value > seen[name]:
+                    seen[name] = value
+            ctx["ig_top_features"] = sorted(seen.items(), key=lambda x: -x[1])
+            metadata["attribution_source"] = "rule_layer3_proxy"
+
+    @staticmethod
+    def _select_ig_top_features(
+        ig_attr: Any,
+        normalised: Optional[Dict[str, Any]] = None,
+    ) -> List[tuple]:
+        """Flatten model-faithful IG attributions into a ranked (name, value) list.
+
+        Accepts either a flat list of ``(name, value)`` pairs or a per-task
+        dict ``{task_name: [(name, value), ...]}``. For the dict form only the
+        tasks actually predicted in this request are merged (highest value per
+        feature wins).
+        """
+        if isinstance(ig_attr, dict):
+            merged: Dict[str, float] = {}
+            for task_name, feats in ig_attr.items():
+                if normalised and task_name not in normalised:
+                    continue
+                for entry in (feats or []):
+                    name, value = entry[0], float(entry[1])
+                    if name not in merged or value > merged[name]:
+                        merged[name] = value
+            return sorted(merged.items(), key=lambda x: -x[1])
+        if isinstance(ig_attr, (list, tuple)):
+            return [(e[0], float(e[1])) for e in ig_attr]
+        return []
 
     def _apply_llm_marker_to_recommendations(
         self, recommendations: List[Dict[str, Any]],

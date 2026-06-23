@@ -379,14 +379,34 @@ class RuleBasedRecommender:
         if required_grade == 0:
             return result  # no suitability constraint for this task
 
-        # Try to find customer risk grade from feature prefixes
-        customer_grade = _safe_int(
-            _first_prefixed(features, "risk_grade"),
-            default=_safe_int(
-                _first_prefixed(features, "suitability_grade"), default=99
-            ),
-        )
+        # Resolve the customer's risk/suitability grade from feature prefixes.
+        # Absence of any assessment must fail *closed* (금소법 §17): an
+        # unassessed customer cannot receive a risk-graded product. The old
+        # default of 99 silently passed every recommendation (fail-open).
+        raw_grade = _first_prefixed(features, "risk_grade")
+        if raw_grade is None:
+            raw_grade = _first_prefixed(features, "suitability_grade")
+        if raw_grade is None:
+            logger.info(
+                "Suitability unassessed (no risk_grade/suitability_grade) "
+                "for task=%s required=%d → blocking",
+                task_name, required_grade,
+            )
+            return {
+                "prediction": 0,
+                "confidence": 1.0,
+                "reason": (
+                    "투자 성향 평가 정보가 없어 해당 상품 추천이 제한됩니다 "
+                    "(금소법 제17조 적합성 미평가)."
+                ),
+                "rule_name": "suitability_unassessed",
+                "contributing_features": [],
+                "layer": 3,
+            }
 
+        # An unparseable grade (e.g. a credit-category string) also fails
+        # closed via default=0 → blocks when a grade is required.
+        customer_grade = _safe_int(raw_grade, default=0)
         if customer_grade < required_grade:
             logger.debug(
                 "Suitability block: task=%s customer_grade=%d required=%d",

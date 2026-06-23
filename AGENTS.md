@@ -108,6 +108,7 @@
 - **Security finding 은 swallow 금지**. `SecurityVerdict.should_block=True` 인 경우 반드시 safe refusal 반환. 로그 경고만 남기고 통과시키지 말 것 (감사 사고).
 - **Rule 카탈로그 는 config-driven 확장**한다. 새 공격 패턴은 `pipeline.yaml::compliance.ai_security.prompt_injection_patterns` / `output_leak_patterns` 에 추가. 코드 패치 없이 운영팀이 바로 반영 가능해야 함.
 - **`wrap_provider` 는 drop-in replacement**. 기존 `provider.generate(prompt)` 경로를 그대로 쓰면서 안전성만 강화된다. `on_prompt_block` / `on_output_block` 콜백으로 도메인 별 refusal 문구 커스터마이즈 가능.
+- **배선 지점은 `LLMProviderFactory.create` 단일 경로**. `compliance.ai_security.enabled: true` 일 때 팩토리가 생성한 provider 를 `wrap_provider` 로 감싸 반환하므로, reason/self-checker/orchestrator 등 모든 소비처가 자동으로 보안 점검을 거친다. 플래그가 꺼져 있거나(`enabled: false`) LLM 경로가 없는 서빙(예: 순수 LGBM `containers/lambda/predict.py`)에는 적용되지 않는다.
 
 ### 1.4 실험 전 검증 (Pre-flight Check)
 - SageMaker Job 제출 전에 반드시 다음을 확인한다:

@@ -516,4 +516,23 @@ class LLMProviderFactory:
             )
 
         logger.info("Creating LLM provider: backend=%s", backend)
-        return cls._backends[backend](backend_config)
+        provider = cls._backends[backend](backend_config)
+
+        # AI-specific security hardening (AGENTS.md §1.17): when enabled,
+        # wrap the provider so every generate() runs prompt-injection /
+        # output-leak checks and returns a safe refusal on block. Config
+        # lives at ``compliance.ai_security``. Disabled by default → no-op.
+        sec_cfg = (config.get("compliance", {}) or {}).get("ai_security")
+        if sec_cfg and sec_cfg.get("enabled", False):
+            from core.security.ai_security_checker import (
+                AISecurityChecker,
+                AISecurityConfig,
+                wrap_provider,
+            )
+
+            checker = AISecurityChecker(AISecurityConfig.from_dict(sec_cfg))
+            provider = wrap_provider(provider, checker)
+            logger.info(
+                "LLM provider '%s' wrapped with AISecurityChecker", backend
+            )
+        return provider

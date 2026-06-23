@@ -254,6 +254,77 @@ class TestReviewTriage:
         )
         assert meta == {}
 
+    def test_layer4_human_fallback_forces_tier3_enqueue(self):
+        # A FallbackRouter Layer 4 verdict must enqueue a tier-3 review even
+        # when the caller set no agent_tier — the wiring that previously left
+        # the HITL channel silent in production.
+        q = HumanReviewQueue(seed=0)
+        service = _make_service(review_queue=q)
+        recs = [{"recommendation_id": "rec_1", "product_id": "p1"}]
+        meta: Dict[str, Any] = {"human_fallback_tasks": ["churn_signal"]}
+        service._triage_for_review("u1", recs, {}, meta)
+        assert "review_id" in meta
+        assert meta["review_tier"] == 3
+
+    def test_no_signal_no_enqueue_without_tier(self):
+        q = HumanReviewQueue(seed=0)
+        service = _make_service(review_queue=q)
+        recs = [{"recommendation_id": "rec_1"}]
+        meta: Dict[str, Any] = {}
+        service._triage_for_review("u1", recs, {}, meta)
+        assert "review_id" not in meta
+
+
+# ---------------------------------------------------------------------------
+# Explainability attribution resolution (#14)
+# ---------------------------------------------------------------------------
+
+class TestAttributionResolution:
+    def test_select_ig_dict_merges_only_predicted_tasks(self):
+        svc = _make_service()
+        ig = {
+            "task_a": [("income", 0.4), ("age", 0.2)],
+            "task_b": [("income", 0.9), ("region", 0.1)],  # not predicted → ignored
+        }
+        feats = svc._select_ig_top_features(ig, normalised={"task_a": 1})
+        assert feats == [("income", 0.4), ("age", 0.2)]
+
+    def test_select_ig_list_form(self):
+        svc = _make_service()
+        feats = svc._select_ig_top_features([("x", 1.0), ("y", 2.0)])
+        assert ("x", 1.0) in feats and ("y", 2.0) in feats
+
+    def test_resolve_prefers_model_faithful_ig(self):
+        # When real IG attributions are supplied they win over the rule proxy,
+        # and the source is recorded as model-faithful.
+        ig = {"task_a": [("income", 0.7), ("dsr", 0.3)]}
+        svc = _make_service(ig_attributions=ig)
+        ctx: Dict[str, Any] = {}
+        meta: Dict[str, Any] = {
+            "contributing_features": {"task_a": [("rule_feat", 0.9)]}
+        }
+        svc._resolve_attribution({"task_a": 1}, meta, ctx)
+        assert meta["attribution_source"] == "ig"
+        assert ctx["ig_top_features"][0][0] == "income"  # not the rule proxy
+
+    def test_resolve_falls_back_to_proxy_flagged_honestly(self):
+        svc = _make_service()  # no ig_attributions
+        ctx: Dict[str, Any] = {}
+        meta: Dict[str, Any] = {
+            "contributing_features": {"task_a": [("rule_feat", 0.9)]}
+        }
+        svc._resolve_attribution({"task_a": 1}, meta, ctx)
+        assert meta["attribution_source"] == "rule_layer3_proxy"
+        assert ctx["ig_top_features"] == [("rule_feat", 0.9)]
+
+    def test_resolve_no_attribution_sets_nothing(self):
+        svc = _make_service()
+        ctx: Dict[str, Any] = {}
+        meta: Dict[str, Any] = {}
+        svc._resolve_attribution({"task_a": 1}, meta, ctx)
+        assert "ig_top_features" not in ctx
+        assert "attribution_source" not in meta
+
 
 # ---------------------------------------------------------------------------
 # LLM marker application (M12)
