@@ -153,7 +153,7 @@
 | **FRIA (Fundamental Rights Impact Assessment)** | `src/monitoring/fria_evaluator.py` | AI기본법 §35②③ (국가기관 강화), 시행령 §27, 5년 보존 |
 | **EU AI Act Annex IV 12-항목 기술문서 매핑** | `src/monitoring/eu_ai_act_mapper.py` | Art.11 기술문서 요건, Art.43 내부 적합성 평가 시뮬 |
 | **36-항목 Compliance Registry** | `src/monitoring/regulatory_compliance_checker.py` | A-group 18 + GAP 18, 금감원 현장 검사 대응 |
-| **AI Risk Classifier (금감원 6-차원)** | `src/monitoring/ai_risk_classifier.py` | 금감원 AI RMF — 데이터민감도/자동화수준/영향범위/모델복잡도/외부의존도/공정성 |
+| **AI Risk Classifier (가이드라인 위험평가 6-차원)** | `src/monitoring/ai_risk_classifier.py` | AI RMF(금융분야 AI 위험관리 프레임워크) — 데이터민감도/자동화수준/영향범위/모델복잡도/외부의존도/공정성 |
 | **Data Lineage 722D ↔ 64 Tables 매핑** | `src/monitoring/data_lineage_tracker.py` | AI기본법 §34 학습데이터 출처 + 가명처리 추적 |
 | **MLflow + DVC Compliance Integration** | `src/monitoring/compliance_mlflow_logger.py`, `compliance_dvc_tracker.py` | 규제 산출물 버전관리 + 메트릭 시계열 |
 | **ComplianceAuditStore** (DuckDB Parquet 중앙 보관) | `src/monitoring/compliance_audit_store.py` | regulator queryability via SQL |

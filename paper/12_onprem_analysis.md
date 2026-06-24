@@ -194,7 +194,7 @@ An agentic grounding pipeline for explainability:
 Extensive compliance modules aligned with Korean financial regulations:
 - `ai_decision_opt_out.py` — 개인정보보호법 제37조의2 (automated decision refusal rights)
 - `kill_switch.py` — 3-level emergency shutdown (GLOBAL/PER_TASK/PER_CLUSTER)
-- `conflict_of_interest_detector.py` — Fee/margin bias detection (금감원 7대 원칙 ⑥)
+- `conflict_of_interest_detector.py` — Fee/margin bias detection (FSC Financial-Sector AI Guideline 7 principles, #6 good-faith)
 - `human_fallback_router.py` — Human review escalation
 - `marketing_consent.py` — Marketing consent filtering
 - `explanation_sla_tracker.py` — Explanation request SLA tracking
@@ -288,4 +288,4 @@ The project explicitly abandoned PLE's original soft gating mechanism (GatingNet
 The actual adaTT implementation operates at the loss level, not the representation level. This is emphasized in multiple places: "실제 구현: Loss-level Adaptive Transfer (representation-level이 아닌 loss-level에서 태스크 간 전이)".
 
 ### 6.8 Scale of the Regulatory Compliance Effort
-The on-prem project has dedicated compliance modules for Korean financial AI regulations (금감원 7대 원칙, 금소법, 개인정보보호법, AI 기본법), including per-task regulatory risk mapping, a kill switch with 3 granularity levels, and automated decision opt-out processing. This represents significant engineering effort beyond the model itself.
+The on-prem project has dedicated compliance modules for Korean financial AI regulations (FSC Financial-Sector AI Guideline 7 principles, 금소법, 개인정보보호법, AI 기본법), including per-task regulatory risk mapping, a kill switch with 3 granularity levels, and automated decision opt-out processing. This represents significant engineering effort beyond the model itself.

@@ -39,7 +39,7 @@
 1. **LGBM gain importance Knowledge Distillation**: LGBM Student의 gain importance 기반 피처 선택 → 서빙 모델 정렬 + 설명력 보존
 2. **Feature Business Reverse-Mapping**: 모든 피처에 비즈니스 맥락 역매핑 (interpretation_registry)
 3. **3-Agent Reason Generation Pipeline**: 피처 선별 → 사유 생성 → 안전성 검증 역할 분리
-4. **Regulatory Compliance by Design**: 금감원 가이드라인 + EU AI Act 요건을 파이프라인에 내장
+4. **Regulatory Compliance by Design**: 금융위 「금융분야 인공지능 가이드라인」 7대 원칙 + EU AI Act 요건에 정합하도록 파이프라인 설계
 5. **Human Evaluation Protocol**: 추천사유 품질의 체계적 평가 방법론
 
 ---
@@ -56,15 +56,16 @@
 - 금융 도메인 특화 설명 생성
 
 ### 2.3 Responsible AI in Finance
-- 금감원 AI 가이드라인 (2021) + 모형 리스크 관리 지침
+- 금융위 「금융분야 인공지능 가이드라인」(2021/2022/2023 통합·개정, 2026.6.22 시행) 7대 원칙 + 동반 「금융분야 AI 위험관리 프레임워크(AI RMF)」
 - EU AI Act (2024) Article 13 투명성
-- 한국 AI 기본법 (2024.12)
+- 한국 AI 기본법 (2024.12 제정, 2026.1 시행)
 - FAccT/AIES 관련 연구
 
 ### 2.4 LLM Safety & Grounding
 - 할루시네이션 방지
 - RAG / grounding 기법
 - Safety gate / content filtering
+- 금융위 가이드라인 §3 보조수단성은 프런티어 AI 거버넌스 사례로 Anthropic Claude의 미토스(Mythos) 시스템 카드를 인용한다(가이드라인이 인용한 사실). 본 시스템이 추천사유 생성에 Claude를 Human-in-the-Loop 통제 하에 활용하는 맥락과 연결
 
 ---
 
@@ -122,9 +123,10 @@
 
 ### 4.4 Safety Gate Design
 - 위험성 점검: 부적절한 투자 권유 (적합성 원칙 위반)
-- 규제 위반 점검: 금소법, 금융상품판매법
+- 규제 위반 점검: 금소법 §17 적합성/§19 설명의무, 신용정보법 §36의2 자동화평가 설명 (금융위 가이드라인 §2 합법성에 정합)
 - 할루시네이션 점검: 없는 사실 언급, 수치 왜곡
 - 통과 시 → 서빙, 불통과 시 → 템플릿 기반 안전 사유로 폴백
+- 고위험 결정 시 Override·긴급정지(Kill switch)는 가이드라인 §3 보조수단성이 요구하는 통제에 대응 — 단, 현재 배선 상태(기본 배선/opt-in) 확인 후 정합 톤으로 한정 표기 (충족 단정 금지)
 - [Table 4: Safety Gate 검증 항목 × 판단 기준]
 
 ### 4.5 Caching & Performance
@@ -136,9 +138,9 @@
 
 ## 5. Regulatory Compliance (~2 pages)
 
-### 5.1 금감원 가이드라인 매핑
+### 5.1 금융위 「금융분야 인공지능 가이드라인」(7대 원칙) 매핑
 - 설명 가능성, 공정성, 모형 검증, 모니터링, 감사 추적
-- [Table 5: 금감원 요건 × 시스템 대응 상세]
+- [Table 5: 금융위 가이드라인 요건 × 시스템 대응 상세]
 
 ### 5.2 EU AI Act 매핑
 - Article 13 투명성, Article 14 인간 감독, Article 15 정확성/견고성
@@ -150,10 +152,10 @@
 
 ### 5.4 Monitoring & Governance
 - 드리프트 감시 (PSI)
-- 공정성 모니터링 (DI/SPD/EOD)
+- 공정성 모니터링 (DI/SPD/EOD — 금융위 가이드라인 §4.4가 제시하는 NIST Parity 계열 공정성 지표에 대응하는 구현. 동일 명칭은 아님)
 - 쏠림 탐지 (HHI/Gini/Entropy)
 - 거버넌스 보고서 자동 생성
-- Human-in-the-Loop 원칙
+- Human-in-the-Loop 원칙 (금융위 가이드라인 §3 보조수단성: 고위험 AI는 임직원 최종책임 + Override·긴급정지 권고에 정합. 일반 본문은 권고 수준이며 자율 적용)
 - [Figure 5: 모니터링/거버넌스 아키텍처]
 
 ---
@@ -229,7 +231,7 @@
 | Tab 2 | 결과 | 증류 AUC drop (태스크별) | 3.3 |
 | Tab 3 | 예시 | 피처 역매핑 (10개) | 4.1 |
 | Tab 4 | 기준 | Safety Gate 검증 항목 | 4.4 |
-| Tab 5 | 매핑 | 금감원 요건 × 대응 | 5.1 |
+| Tab 5 | 매핑 | 금융위 가이드라인 요건 × 대응 | 5.1 |
 | Tab 6 | 매핑 | EU AI Act × 대응 | 5.2 |
 | Tab 7 | 결과 | 증류 teacher/student AUC | 6.1 |
 | Tab 8 | 결과 | Human evaluation | 6.2 |

@@ -426,7 +426,7 @@ The distilled LGBM is not accepted unconditionally. Acceptance requires meeting 
   [Regression (LTV)], [RMSE $<$ baseline mean predictor], [Discard student; use global mean],
 )
 
-This prevents deploying a distilled model that is worse than naive baselines, satisfying FSS AI RMF C-1 (pre-launch risk mitigation).
+This prevents deploying a distilled model that is worse than naive baselines, aligning with the guideline's Governance principle §1.4 (pre-launch risk-mitigation verification).
 
 == Calibration: Platt Scaling
 

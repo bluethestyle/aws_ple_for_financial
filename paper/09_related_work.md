@@ -226,16 +226,16 @@ The EU AI Act (effective 2024, fully applicable by 2026) classifies credit scori
 
 ### 9.7.2 Korean Financial AI Guidelines
 
-Korea's Financial Services Commission (FSC) issued AI guidelines for the financial sector (2021, updated 2024), emphasizing seven principles including transparency, fairness, and accountability. The Financial Supervisory Service (FSS) established the "Financial AI Counsel" in March 2024 with the Korea Credit Information Service and Financial Security Institute. Korea's AI Basic Act (passed December 2024, effective January 2026) provides a comprehensive national framework.
+Korea's Financial Services Commission (FSC) consolidated its three prior guidelines (2021 operation, 2022 development and use, 2023 security) into the unified Financial Sector AI Guidelines, effective June 22, 2026. It sets out seven principles: governance, legality, supplementary-means (human primacy), reliability, financial stability, good faith, and security, accompanied by a companion AI Risk Management Framework. While the FSC owns the guideline principles and its companion framework, the Financial Supervisory Service (FSS) performs supervision and inspection; the FSS established the "Financial AI Counsel" in March 2024 with the Korea Credit Information Service and Financial Security Institute. Korea's AI Basic Act (passed December 2024, effective January 2026) provides a comprehensive national framework.
 
-- Financial Services Commission (Korea), "Financial Sector AI Guidelines," 2024.
+- Financial Services Commission (Korea), "Financial Sector AI Guidelines (consolidated and revised)," effective June 22, 2026.
 - National Assembly of Korea, "Act on the Development of Artificial Intelligence and Establishment of Trust," December 2024.
 
 ### 9.7.3 XAI for Financial Compliance
 
 The CFA Institute and regulatory bodies increasingly require that AI-driven financial recommendations provide explanations interpretable by both compliance officers and end customers. Current approaches rely on post-hoc SHAP/LIME, which face documented issues of instability and feature-dependence violations in financial data.
 
-**Gap filled by our work:** Our inherent explainability via expert gate weights satisfies both EU AI Act transparency requirements and Korean FSS guidelines without relying on post-hoc approximations. The recommendation reason generation pipeline transforms gate weights into natural-language explanations (e.g., "Recommended based on your 6-month spending trend [temporal expert] and similar customers' portfolios [collaborative expert]").
+**Gap filled by our work:** Our inherent explainability via expert gate weights aligns with the global-explanation requirement of the Korean FSC Financial Sector AI Guidelines (§4.4, which calls for XAI at or above SHAP level where legally required) and EU AI Act transparency, complemented by IG-based local attribution, without relying on post-hoc approximations. The recommendation reason generation pipeline transforms gate weights into natural-language explanations (e.g., "Recommended based on your 6-month spending trend [temporal expert] and similar customers' portfolios [collaborative expert]").
 
 ---
 
@@ -284,7 +284,7 @@ Recent comparative studies (2024-2025) evaluate SDV's Gaussian Copula, CTGAN, an
 | Explainability | Post-hoc SHAP/LIME | Inherent via expert gate weights |
 | Feature Engineering | Standard tabular features | Multi-disciplinary (topology, hyperbolic geometry, causal, OT) |
 | Deployment | GPU endpoint or batch | Knowledge distillation to LGBM + serverless Lambda |
-| Regulatory | Ad-hoc compliance | Built-in FSS/EU AI Act alignment with reason generation |
+| Regulatory | Ad-hoc compliance | Built-in FSC Guideline / EU AI Act alignment with reason generation |
 | Benchmarking | Fixed datasets | Gaussian Copula + variance budget for controllable difficulty |
 | Financial Domain | Single-task or simple MTL | 13-task multi-product recommendation with temporal modeling |
 

@@ -98,6 +98,12 @@ Financial regulations mandate distinct prediction targets:
 suitability assessment, fairness monitoring across protected attributes,
 churn early-warning, and product-level acquisition propensity
 each require a separate supervised signal.
+In particular, the Korean FSC Financial Sector AI Guidelines
+@koreafsc2024, in force since 22 June 2026, recommend global and local
+explainability (reliability principle, §4.4) and fairness monitoring
+across protected attributes, grounding these distinct prediction targets
+in an enacted norm (the guideline is self-applied and does not mandate
+any specific task configuration).
 Meanwhile, limited infrastructure --- a single desktop GPU (12GB VRAM)
 and a 3-person team --- precludes maintaining separate models per task.
 The result is a regime that large-scale CTR teams have no reason to enter
@@ -1579,7 +1585,9 @@ flat for a thin MLP to be forced into per-sample discrimination.
   primary prediction or the DAG itself.
 - Rules out: the current target design (grad $times$ input of
   causal-encoder output sum) is *not* sufficient to produce a
-  regulator-usable per-sample explanation. Additional Axis-3 candidates
+  regulator-usable per-sample (local) explanation --- a candidate for the
+  local explainability recommended in FSC AI Guideline §4.4. Additional
+  Axis-3 candidates
   that depend on per-sample attribution quality (CRCG in particular)
   should not be evaluated against this baseline without target refinement.
 
@@ -1687,8 +1695,13 @@ this recommendation?" --- a per-prediction reliability signal
 that routes suspicious inputs to a fallback or to human review
 rather than silently passing them through. SR 11-7 "known
 limitations" reporting and EU AI Act Art. 9 risk-management both
-require a runtime mechanism for this; the natural hook on the
-causal expert is its DAG structure.
+require a runtime mechanism for this. The Korean FSC Financial Sector
+AI Guidelines @koreafsc2024 (in force June 2026) likewise call for an
+ex-post emergency stop (financial-stability principle, §5.2) and
+human-in-the-loop review for high-risk decisions (auxiliary-means
+principle, §3); CG is a design candidate for such a per-prediction
+fallback signal, with production wiring left as future work. The natural
+hook on the causal expert is its DAG structure.
 
 === MV Formulation v1 (W-Reconstruction) Fails
 

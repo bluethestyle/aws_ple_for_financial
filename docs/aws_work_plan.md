@@ -58,8 +58,8 @@ AWS 로 이식할 때는 **AWS 의 config-중심 / 모듈화 패턴** 에 맞게
 | **M5** | Profiling Rights Workflow | ✅ 완료 | `core/compliance/rights/profiling.py` | 신정법 §36의2 |
 | **M6** | Explanation SLA Tracker (내부 10일/법정 30일) | ✅ 완료 | `core/compliance/rights/explanation_sla.py` | 개보법 §37의2 / 시행령 §44의3⑤ (30일) |
 | **M7** | Korean FRIA Assessor (7-차원) | ✅ 완료 | `core/compliance/fria_assessment.py` | AI기본법 §35 + 시행령 §27 |
-| **M8** | 36-항목 Compliance Registry | ✅ 완료 | `core/compliance/compliance_registry.py` | 금감원 AI RMF + 개보법 + 신정법 |
-| **M9** | AI Risk Classifier (6-차원) | ✅ 완료 | `core/compliance/ai_risk_classifier.py` | 금감원 AI RMF |
+| **M8** | 36-항목 Compliance Registry | ✅ 완료 | `core/compliance/compliance_registry.py` | AI RMF(금융분야 AI 위험관리 프레임워크) + 개보법 + 신정법 |
+| **M9** | AI Risk Classifier (6-차원) | ✅ 완료 | `core/compliance/ai_risk_classifier.py` | AI RMF(금융분야 AI 위험관리 프레임워크) |
 | **M10** | Dynamic Item Universe Loader | ✅ 완료 | `core/recommendation/universe/dynamic_loader.py` | 캠페인 라이프사이클 |
 | **M11** | Audit Archive 확장 (5 컬럼) | ✅ 완료 | `core/recommendation/audit_archiver.py` (확장) | 민원 대응 재현성 |
 | **M12** | LLM Generation Marker | ✅ 완료 | `core/recommendation/reason/marker_applier.py` | AI기본법 §31·§34 |

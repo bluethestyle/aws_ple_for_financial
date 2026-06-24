@@ -25,7 +25,7 @@
 | **What** | 13-task multi-task recommendation for check card products |
 | **How** | 7 structurally different AI experts, each seeing the customer through a different lens |
 | **Why it matters** | Expert gate weights *are* the explanation -- "35% spending trend + 28% product fit" |
-| **Regulation** | Korean FSS AI RMF, EU AI Act, Korean AI Basic Act compliance built-in |
+| **Regulation** | Aligned with Korea's FSC Financial-Sector AI Guideline (effective 2026-06-22, 7 principles), EU AI Act, and AI Basic Act |
 | **Serving** | Distilled to LGBM, runs on Lambda -- no GPU server needed |
 | **Scale** | 1M customers, 1211 features (17 groups), 5-agent architecture (3 serving + 2 ops/audit) |
 | **Team** | Built by 3 people with AI-augmented development (Claude Code) |

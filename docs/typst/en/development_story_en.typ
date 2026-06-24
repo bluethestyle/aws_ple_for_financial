@@ -1206,7 +1206,7 @@ Analysis across 23 ablation scenarios (14 joint feature+expert + 9 structure cro
 
 == On-Premises Operational Results
 
-The on-prem system achieved 85% compliance with the FSS AI RMF (11 full + 9 partial out of 24 items), with remaining gaps being organizational decisions rather than technical implementations. 12 regulatory compliance modules were implemented: AI notification, right to refuse, human reprocessing, fairness monitoring, conflict-of-interest prevention, herding detection, prompt injection defense, safety documentation, model cards, audit trail, consent management, and quality monitoring.
+The on-prem system self-assessed coverage of 85% of the Financial-Sector AI Risk Management Framework (AI RMF) 24 items (11 full + 9 partial), with remaining gaps being organizational decisions rather than technical implementations. 12 regulatory compliance modules were implemented: AI notification, right to refuse, human reprocessing, fairness monitoring, conflict-of-interest prevention, herding detection, prompt injection defense, safety documentation, model cards, audit trail, consent management, and quality monitoring.
 
 == Evaluation Metric Framework
 

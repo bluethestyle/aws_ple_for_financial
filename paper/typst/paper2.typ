@@ -51,7 +51,7 @@
   first and foremost because persuasion requires narrative, not probability:
   a customer who asks "Why was this card recommended to me?" needs a reason they can accept,
   not a score they must trust.
-  Regulators (Korean FSS, EU AI Act) are one important audience for such explanations,
+  Regulators (Korean FSC, EU AI Act) are one important audience for such explanations,
   but the primary driver is the human act of persuasion itself.
   We present a multi-stage pipeline that bridges the gap between model prediction and human persuasion:
   (1) adaptive knowledge distillation from a heterogeneous-expert PLE teacher to per-task LGBM students,
@@ -64,7 +64,7 @@
   and compliance reports in natural language, enabling regulation-compliant MLOps
   for small teams without dedicated MLOps staff;
   (4) regulatory compliance by design, with built-in drift monitoring, fairness auditing,
-  and governance reporting aligned to Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act;
+  and governance reporting aligned to the Korean FSC Financial Sector AI Guidelines, the EU AI Act, and the Korean AI Basic Act;
   (5) an *optional per-prediction causal audit surface* that augments
   the compliance path above by pairing explanation (Causal
   Explainability Head attribution) with reliability (Causal Guardrail
@@ -134,7 +134,7 @@ We propose a full-chain solution from prediction to persuasion:
 
 + *5-Agent Architecture (3 Serving + 2 Ops)*: Beyond the 3 serving agents, two operational agents (OpsAgent, AuditAgent) interpret monitoring and compliance outputs in natural language, enabling small-team MLOps without dedicated MLOps staff.
 
-+ *Regulatory Compliance Architecture*: Explicit mapping of system components to Korean FSS guidelines, EU AI Act articles, and the Korean AI Basic Act.
++ *Regulatory Compliance Architecture*: Explicit mapping of system components to the Korean FSC AI guidelines (Financial Sector AI Guidelines), EU AI Act articles, and the Korean AI Basic Act.
 
 + *Per-Prediction Causal Audit Pair (optional enhancement)*: An
   HMAC-signed, hash-chained audit record per decision that pairs *what*
@@ -191,8 +191,10 @@ and all outputs are audit-logged.
 
 == Responsible AI in Finance
 
-Korean FSS published AI guidelines (2021) @koreafsc2024 and model risk management directives
-requiring explainability, fairness monitoring, and audit trails.
+The Korean Financial Services Commission (FSC) consolidated its earlier AI guidelines
+(2021 operation, 2022 development/use, 2023 security) into the unified Financial Sector AI Guidelines
+@koreafsc2024, effective June 22, 2026, which together with model risk management directives
+require explainability, fairness monitoring, and audit trails.
 The EU AI Act @euaiact2024 classifies financial credit/recommendation as high-risk AI,
 mandating transparency (Art. 13), human oversight (Art. 14), and accuracy (Art. 15).
 The EBA @eba2025ml calls for "interpretable" models in internal risk assessments.
@@ -720,7 +722,7 @@ Customer-facing recommendation reasons require natural, professional Korean text
   [*On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.],
   [*Cloud (AWS)*: L2a rewriting uses Bedrock Claude Sonnet --- natural Korean generation with Bedrock-native availability (no Marketplace onboarding required). L2b self-critique also uses Claude Sonnet (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku. Ops/Audit agents use Claude Sonnet. All invocations use cross-region inference profiles (`us.anthropic.*`).],
 )
-Bedrock ensures that input/output data is never transmitted to model providers (Anthropic) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet. Cross-region inference profiles (e.g., `us.anthropic.*`) route requests to the geographically optimal endpoint while Bedrock guarantees that _customer data in the API payload_ is processed within the caller's contracted data boundary and is not persisted by the provider. Financial customer identifiers (account numbers, resident IDs) are stripped by `PIIEncryptor` before any data enters the LLM prompt, so the prompt contains only anonymized behavioral features. This layered approach --- PII stripping at the application boundary plus Bedrock's provider-side data isolation --- is designed to support the data governance requirements of Korean FSS AI guidelines and the Personal Information Protection Act.
+Bedrock ensures that input/output data is never transmitted to model providers (Anthropic) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet. Cross-region inference profiles (e.g., `us.anthropic.*`) route requests to the geographically optimal endpoint while Bedrock guarantees that _customer data in the API payload_ is processed within the caller's contracted data boundary and is not persisted by the provider. Financial customer identifiers (account numbers, resident IDs) are stripped by `PIIEncryptor` before any data enters the LLM prompt, so the prompt contains only anonymized behavioral features. This layered approach --- PII stripping at the application boundary plus Bedrock's provider-side data isolation --- is designed to support the data governance requirements of the Korean FSC AI guidelines (Financial Sector AI Guidelines, §7 security) and the Personal Information Protection Act.
 
 The LLM backend is config-driven, allowing the deployment environment (Bedrock, local open-source, or mock) to be switched without code changes.
 
@@ -877,7 +879,7 @@ opt-out statistics, governance checklist status.
 *Triggers*: fairness monitoring DAG completion, quarterly governance cycle.
 
 The AuditAgent converts quantitative fairness metrics into regulatory language,
-explicitly referencing the applicable regulation (FSS guideline number, EU AI Act article)
+explicitly referencing the applicable regulation (FSC AI-guideline section number, EU AI Act article)
 so that the human reviewer can act without cross-referencing documentation.
 `AuditLogger` records training and distillation completion events as immutable audit entries,
 ensuring that the AuditAgent's input is a tamper-evident, time-ordered record of pipeline activity.
@@ -1176,9 +1178,9 @@ enabling operators to discuss the impact assessment interactively.
 = Regulatory Compliance
 <compliance>
 
-== Korean FSS Guidelines Mapping
+== Korean FSC AI Guidelines Mapping
 
-@tab:fss-mapping maps the key requirements of Korean FSS AI guidelines to the corresponding system components and verification methods.
+@tab:fss-mapping maps the key requirements of the Korean FSC Financial Sector AI Guidelines to the corresponding system components and verification methods.
 
 #figure(placement: top, scope: "parent",
   table(
@@ -1186,17 +1188,17 @@ enabling operators to discuss the impact assessment interactively.
     inset: 5pt,
     align: left,
     stroke: 0.5pt,
-    [*FSS Requirement*], [*System Component*], [*Verification*], [*Status*],
-    [Explainability], [Gate weights + 3-agent reason], [Per-recommendation audit log], [Default],
-    [Fairness], [Fairness monitor (DI/SPD/EOD)], [Weekly automated report], [Default],
+    [*FSC Guideline Requirement*], [*System Component*], [*Verification*], [*Status*],
+    [Explainability#footnote[Maps to the FSC guideline's reliability principle (§4.4), which distinguishes _global_ and _local_ explanation. The system produces both: global feature importance (LGBM gain) and per-prediction local attribution (SHAP). For decisions that carry a legal explanation duty, §4.4 expects XAI at "SHAP-level or above" --- a bar the SHAP path meets; this expectation applies to legally-mandated explanations rather than to every explanation surfaced.]], [Gate weights + 3-agent reason], [Per-recommendation audit log], [Default],
+    [Fairness], [Fairness monitor (DI/SPD/EOD)#footnote[DI/SPD/EOD are implemented as the operational correspondent of the FSC guideline's Parity-family fairness metrics (Equal/Proportional/FPR/FNR Parity, NIST-aligned), rather than the exact named metrics.]], [Weekly automated report], [Default],
     [Model validation], [Champion-Challenger (offline + online)], [Pre-deployment metric gate + post-deployment traffic gate], [Default],
     [Monitoring], [Drift detector (PSI)], [Continuous, 3-day trigger], [Default],
     [Audit trail], [HMAC hash-chain logs], [Immutable, 7 audit tables], [Default],
-    [Fallback], [Template reason + kill switch], [Instant manual override], [Default (template) / opt-in (kill switch)],
+    [Fallback#footnote[The three-layer fallback (with its backup-model path) corresponds to the FSC guideline's financial-stability principle (§5.2), which calls for a backup/alternative model plus a post-hoc emergency stop; the kill switch corresponds to the auxiliary-means principle (§3), which makes an override and emergency stop mandatory for high-risk AI. The kill switch ships opt-in by default, so for high-risk products where §3 makes it mandatory the production posture must enable it; the table records this honestly rather than implying default coverage.]], [Template reason + kill switch], [Instant manual override], [Default (template) / opt-in (kill switch)],
     [Model risk mgmt], [Offline `ModelCompetition` gate + `--force-promote` override], [Significance-gated verdict + operator sign-off; audited decision on every registration], [Default],
     [Customer suitability], [Constraint engine + eligibility filters], [Pre-recommendation suitability check], [Default],
   ),
-  caption: [Korean FSS guideline compliance mapping. The Status column distinguishes components active in the shipped default configuration (Default) from those requiring explicit activation (opt-in) --- a regulator reading this table should be able to tell what runs by default from what merely exists in the codebase.],
+  caption: [Korean FSC AI guideline compliance mapping. The Status column distinguishes components active in the shipped default configuration (Default) from those requiring explicit activation (opt-in) --- a regulator reading this table should be able to tell what runs by default from what merely exists in the codebase.],
 ) <tab:fss-mapping>
 
 == EU AI Act Mapping
@@ -1243,7 +1245,7 @@ The v2 revision of this paper includes an extended set of regulatory modules bui
 
 - *Korean AI Basic Act FRIA* (`core/compliance/fria_assessment.py::KoreanFRIAAssessor`). Implements the 7-dimensional assessment enumerated in AI Basic Act Enforcement Decree §27 (data sensitivity, automation level, scope of impact, model complexity, external dependency, fairness risk, explainability gap) with a mandatory 5-year retention period (§35③). This is held as a *separate* class from the EU AI Act Article 9 evaluator to preserve legal-basis separation in audit reports.
 
-- *금감원 AI RMF classifier* (`core/compliance/ai_risk_classifier.py`). Six-dimensional weighted risk grade (high / medium / low) with explicit detection of grade escalation between successive model versions; an escalation to 'high' requires additional operator approval via the promotion gate.
+- *AI RMF risk classifier* (`core/compliance/ai_risk_classifier.py`). Six-dimensional weighted risk grade (high / medium / low) with explicit detection of grade escalation between successive model versions; an escalation to 'high' requires additional operator approval via the promotion gate.
 
 - *36-item compliance registry* (`core/compliance/compliance_registry.py`). A-group (18 implemented items) plus GAP-group (18 identified gaps, each linked to a concrete Sprint deliverable). Item checks are declarative (`module_exists` / `file_exists` / `config_key` / `custom_check`) so quarterly compliance reports can be regenerated automatically from the live code state.
 
@@ -1347,6 +1349,8 @@ _LLM hardening — AI security checker_ (`core/security/ai_security_checker.py`)
 
 Combined with the Sprint 2 L2a Safety Gate (`core/recommendation/reason/l2a_safety_gate.py`), the LLM path now has four independent hardening layers --- sensitivity-based routing, rule-based safety gate, AI security checker (prompt + output), and the LLM generation marker --- each of which can veto independently and each of which is config-driven so a security ops team can extend the rule catalogue without a code change.
 
+This external-provider input/output validation layer aligns with the FSC guideline's security principle (§7.4), which calls for verification of external models and data across the supply chain; the artifact-integrity stack (HMAC hash-chain logs, S3 Object Lock) covered in @ceh-audit similarly supports §7.4's integrity expectations, and the Bedrock provider-side isolation with cross-region inference profiles maps onto §5.3 (third-party/CSP IT-risk, with CSP safety assessment under the Electronic Financial Supervisory Regulation §29). These are framed as alignment with the in-force guideline, not as certification: prompt/output and key-integrity checks cover part of, not the entire, supply-chain verification §7.4 envisions.
+
 `tests/test_phase3_could.py` (39 cases) covers T-Learner / X-Learner CATE recovery, qini plus top-K-percent uplift metrics on synthetic uplift data, every default security pattern, the provider-wrapping end-to-end flow, and custom refusal callback injection. Together with the Phase 1 and Phase 2 suites, plus the PromotionGate MetadataAggregator live-wiring tests and the post-normalization feature-group-range rebuild regression suite, the AWS-side regulatory, learning, and security stack is exercised by _785 tests (785 passing)_.
 
 == Korean AI Basic Act
@@ -1359,6 +1363,13 @@ Our system's existing compliance architecture (drift monitoring, fairness auditi
 audit trails, and human-in-the-loop review) aligns with the Act's requirements,
 with the governance reporting module generating documentation
 suitable for regulatory submission.
+In the financial sector these obligations are operationalised through the FSC
+Financial Sector AI Guidelines (effective June 22, 2026), whose legality
+principle cross-references the AI Basic Act and whose reliability (§4.4),
+financial-stability (§5.2), and security (§7) principles reinforce the same
+architecture --- so the AI Basic Act and the now-in-force sector guideline,
+which took effect within months of each other, converge on a single set of
+controls rather than imposing divergent ones.
 
 === Deployment Scope Restriction
 
@@ -1433,7 +1444,9 @@ explainable recommendations" becomes compatible with regulation.
 
 === Human-in-the-Loop
 
-Regulatory bodies (Korean FSS, EU AI Act Art. 14) require human oversight.
+The FSC guideline's auxiliary-means principle (§3) makes human oversight
+mandatory for high-risk AI --- final responsibility rests with staff rather
+than the model --- and EU AI Act Art. 14 imposes the parallel requirement.#footnote[The FSC guideline illustrates this auxiliary-means principle with a frontier-AI misbehavior example drawn from Anthropic's Claude system card (the "Mythos" episode) @koreafsc2024. This paper's serving path itself invokes Claude (via Bedrock) only under the human-in-the-loop controls described here, consistent with that example's lesson that frontier models remain assistive tools subject to human oversight.]
 The system implements this at multiple levels:
 - *Reason sampling review*: Periodic human review of generated reasons.
 - *Model replacement approval*: The offline Champion-Challenger gate computes the promotion verdict; under the shipped `auto_promote: false` posture, promotion additionally requires explicit operator sign-off (`--force-promote`), so no model reaches production on statistical significance alone. Every decision is recorded to an HMAC-signed, hash-chained audit log.
@@ -1453,7 +1466,7 @@ The monitoring layer is composed of three purpose-built modules that feed the go
 
 - *`DriftDetector`*: computes Population Stability Index (PSI) per feature between successive distillation runs. Feature-level PSI complements the existing prediction-level drift signal, enabling early detection of input distribution shifts before they degrade model performance.
 
-- *`FairnessMonitor`*: evaluates demographic bias across protected attributes (age group, gender, income tier) in batch serving predictions. Outputs disparate impact (DI), statistical parity difference (SPD), and equalized odds difference (EOD) per task, providing the per-segment audit trail required by EU AI Act Art. 10(2)(f).
+- *`FairnessMonitor`*: evaluates demographic bias across protected attributes (age group, gender, income tier) in batch serving predictions. Outputs disparate impact (DI), statistical parity difference (SPD), and equalized odds difference (EOD) per task, providing the per-segment audit trail required by EU AI Act Art. 10(2)(f) and supporting the fairness-monitoring expectation of the FSC guideline's reliability principle (§4.4) --- with DI/SPD/EOD serving as the operational correspondent of that principle's Parity-family metrics, as noted for the compliance-mapping table.
 
 - *`GovernanceReportGenerator`*: produces a per-distillation-cycle governance report consolidating drift status, fairness findings, audit trail integrity, and checklist compliance. Reports are saved to S3 with HMAC signatures, forming the documentation corpus for regulatory submission.
 
@@ -1854,7 +1867,7 @@ _checklist compliance_, _audit trail integrity_, and _fairness metrics_.
 *Checklist compliance.*
 The system implements 14 regulatory requirements mapped from
 the Korean Financial Consumer Protection Act (금소법, KFCPA) Articles 17--19,
-EU AI Act Articles 13--14, and FSS AI Guidelines.
+EU AI Act Articles 13--14, and the FSC AI Guidelines (Financial Sector AI Guidelines).
 Key items include: suitability assessment before recommendation (KFCPA Art. 17),
 AI-generated content disclosure (AI Basic Act §31),
 human oversight mechanism (EU AI Act Art. 14),
@@ -2172,7 +2185,7 @@ No real customer data is included in this version. Validation on production data
 The production system design targets low-risk check card products only;
 investment and insurance product recommendations are explicitly excluded
 from the deployment scope (Section 6.3.1).
-The system is designed to comply with Korean FSS AI guidelines,
+The system is designed to align with the Korean FSC Financial Sector AI Guidelines (effective 2026-06-22),
 the EU AI Act, and the Korean AI Basic Act,
 with automated fairness monitoring across 5 protected attributes.
 
@@ -2190,7 +2203,7 @@ Five key contributions define this work:
 
 + *Two operational agents* (OpsAgent and AuditAgent) interpret monitoring and compliance outputs in natural language, eliminating dashboard fatigue and enabling regulation-compliant MLOps for small teams without dedicated MLOps staff --- extending the architecture to a 5-agent system (3 serving + 2 ops).
 
-+ *Regulatory compliance embedded by design* --- Korean FSS guidelines, the EU AI Act, and the Korean AI Basic Act are explicitly mapped to system architecture components, with automated monitoring (drift, fairness, herding) and human-in-the-loop oversight at critical decision points.
++ *Regulatory compliance embedded by design* --- the Korean FSC Financial Sector AI Guidelines, the EU AI Act, and the Korean AI Basic Act are explicitly mapped to system architecture components, with automated monitoring (drift, fairness, herding) and human-in-the-loop oversight at critical decision points.
 
 + *Per-prediction causal audit pair (optional enhancement)* --- the
   Causal Explainability Head attribution (the companion loss-dynamics

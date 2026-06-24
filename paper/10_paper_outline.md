@@ -11,7 +11,7 @@
 - 문제: 금융 추천은 성능뿐 아니라 설명 가능성/규제 준수가 필수. 기존 모델은 사후적 설명(SHAP/LIME)에 의존.
 - 제안: 이종 전문가 PLE+adaTT — 7가지 다른 inductive bias를 가진 expert를 shared basket에 배치. gate weight 자체가 비즈니스 해석 가능한 설명을 생성.
 - 방법: 다학제 피처(위상수학, 쌍곡기하학, 경제학 등) + 금융 DNA 기반 태스크 그룹 + LGBM 증류 + 추천사유 생성
-- 결과: 23개 ablation 시나리오(14 joint + 9 structure)에서 각 expert/feature group의 독립적 기여 증명. graceful degradation 확인. 금감원/EU AI Act 요건 충족.
+- 결과: 23개 ablation 시나리오(14 joint + 9 structure)에서 각 expert/feature group의 독립적 기여 증명. graceful degradation 확인. 금융위 「금융분야 인공지능 가이드라인」(2026.6.22 시행) 및 EU AI Act의 설명가능성 원칙에 정합.
 - 의의: 학습→증류→서빙→설명까지 end-to-end 파이프라인. 소규모 팀(3명)+AI 에이전트로 구축.
 
 ---
@@ -42,7 +42,7 @@
 3. **Multi-disciplinary Feature Engineering**: 위상수학/쌍곡기하학/경제학/인과추론 등 9개 학문 분야의 피처
 4. **Financial DNA Task Grouping**: 4축(engagement/lifecycle/value/consumption) 태스크 그룹 + adaTT 차등 전이
 5. **End-to-end Pipeline**: 학습→증류→서버리스 서빙→추천사유 생성, 단일 config 관리
-6. **Regulatory Compliance**: 금감원 가이드라인 + EU AI Act 요건의 명시적 아키텍처 매핑
+6. **Regulatory Compliance**: 금융위 「금융분야 인공지능 가이드라인」(7대 원칙) + EU AI Act 요건의 명시적 아키텍처 매핑
 7. **Reproducible Benchmark**: Gaussian Copula + latent variable 기반 합성 데이터 (variance budget으로 난이도 통제)
 
 ---
@@ -64,7 +64,7 @@
 
 ### 2.4 Financial Recommendation Systems
 - 은행/카드사 추천 시스템 사례
-- 규제 환경 (금감원, EU AI Act)
+- 규제 환경 (금융위 「금융분야 인공지능 가이드라인」, 금감원 감독, EU AI Act)
 
 ### 2.5 Individual Expert Technologies
 - TDA, Hyperbolic GCN, Mamba, LNN, Causal Inference 등
@@ -238,7 +238,7 @@
 | Fig 9 | Bar chart | Graceful degradation curve | 5.6 |
 | Tab 1 | 매핑 | 학문 분야 × Generator × Expert × 해석 | 3.3 |
 | Tab 2 | 매핑 | 태스크 그룹 × 태스크 × 설명 | 3.5 |
-| Tab 3 | 매핑 | 규제 요건 × 아키텍처 대응 | 4.4 |
+| Tab 3 | 매핑 | 규제 요건(금융위 가이드라인 7대 원칙, EU AI Act) × 아키텍처 대응(운영/배선미완 구분) | 4.4 |
 | Tab 4 | 설정 | 레이블별 variance budget + AUC ceiling | 5.1 |
 | Tab 5 | 결과 | Feature ablation AUC | 5.3 |
 | Tab 6 | 결과 | Expert ablation AUC | 5.4 |

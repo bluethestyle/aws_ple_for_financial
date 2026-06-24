@@ -1,7 +1,10 @@
 // ─────────────────────────────────────────────────────────
-//  AI Recommendation System Regulatory Compliance Overview
-//  Executive Summary for Financial Supervisory Review
-//  AWS PLE for Financial · 2026. 04.
+//  AI Recommendation System — Regulatory Alignment Overview
+//  Executive Summary — FSC Financial-Sector AI Guideline (effective 2026-06-22) 7 principles
+//  AWS PLE for Financial · 2026. 06. (v2.0)
+//  Nature: architecture-alignment summary of an Independent Research reference
+//          (not a compliance attestation); claims use 3 states:
+//          ● operational / ◐ implemented, not wired / ○ absent
 // ─────────────────────────────────────────────────────────
 
 // ── Color Palette (Anthropic Design System) ──
@@ -115,7 +118,7 @@
 }
 
 #let status-tag(label) = {
-  let color = if label == "Implemented" { rgb("#16A34A") } else if label == "Designed" { rgb("#D97706") } else { anthropic-muted }
+  let color = if label == "operational" { rgb("#16A34A") } else if label == "partially-wired" { rgb("#D97706") } else { anthropic-muted }
   box(
     fill: color.lighten(85%),
     stroke: 0.5pt + color.lighten(40%),
@@ -123,6 +126,11 @@
     radius: 3pt,
   )[#text(fill: color, weight: "bold", size: 8pt)[#label]]
 }
+
+// 3-state honest-evaluation badges
+#let s-live = text(fill: rgb("#16A34A"), weight: "bold")[●]
+#let s-part = text(fill: rgb("#D97706"), weight: "bold")[◐]
+#let s-gap = text(fill: anthropic-muted, weight: "bold")[○]
 
 // ═══════════════════════════════════════════════════════════
 //  Cover Page
@@ -141,11 +149,11 @@
     #v(0.5cm)
 
     #text(size: 24pt, fill: anthropic-text, weight: "bold")[
-      AI Recommendation System#linebreak()Regulatory Compliance Overview
+      AI Recommendation System#linebreak()Regulatory Alignment Overview
     ]
     #v(0.3cm)
     #text(size: 14pt, fill: anthropic-muted)[
-      Executive Summary for Financial Supervisory Review
+      Independent Research reference --- architecture alignment with the FSC AI Guideline (effective 2026-06-22) 7 principles (3-state honest)
     ]
     #v(0.6cm)
     #line(length: 30%, stroke: 0.5pt + anthropic-rule)
@@ -156,11 +164,11 @@
       text(fill: anthropic-muted, size: 9.5pt)[Classification],
       text(size: 9.5pt, fill: anthropic-text, weight: "bold")[Executive Summary],
       text(fill: anthropic-muted, size: 9.5pt)[Date],
-      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[April 2026],
+      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[June 2026 (reflecting the guideline's entry into force)],
       text(fill: anthropic-muted, size: 9.5pt)[Version],
-      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[v1.0],
+      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[v2.0],
       text(fill: anthropic-muted, size: 9.5pt)[Detailed Reference],
-      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[Regulatory Compliance Framework Technical Reference v1.0],
+      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[Regulatory Compliance Framework Technical Reference v2.0],
     )
   ]
 
@@ -173,7 +181,7 @@
       inset: (left: 8pt, right: 8pt, top: 6pt, bottom: 6pt),
     )[
       #text(fill: anthropic-text, size: 9.5pt)[
-        *This document is an executive summary designed to be read in 3--5 minutes.* For implementation details, code-level architecture, and clause-by-clause mappings, please refer to the separate 'Regulatory Compliance Framework Technical Reference.'
+        *This is a 3--5 minute summary.* It summarizes the architecture alignment of the PLE-based recommendation *reference system* (Independent Research) with the FSC Financial-Sector AI Guideline (effective 2026-06-22) 7 principles. *It is not a compliance attestation*; implementation status is distinguished honestly in three states --- #s-live operational / #s-part implemented, not yet wired / #s-gap absent. For implementation details, code-level architecture, and clause-by-clause mappings, please refer to the 'Regulatory Compliance Framework Technical Reference.'
       ]
     ]
   ]
@@ -200,69 +208,64 @@ This is an AI system for Korea Post Financial check card product recommendations
 #table(
   columns: (0.8fr, 1.2fr, 1.5fr, 0.55fr),
   align: (center, left, left, center),
-  [Regulation], [Key Requirements], [Response Components], [Status],
+  [Regulation], [Key Requirements], [Implementation artifacts / wiring state], [Status],
 
-  [*FSS AI RMF*\
-  (Jan 2026)],
-  [Governance framework (G-1~G-6)\
-  Risk assessment (R-1~R-6)\
-  Risk control (C-1~C-6)],
-  [3-tier governance framework\
-  36-item auto-check registry\
-  3-level kill switch + incident management],
-  [#status-tag("Implemented")],
-
-  [*FSC Integrated\ AI Guidelines*\
-  (7 Principles)],
-  [Governance, legality, subsidiarity\
-  reliability, financial stability,\ good faith, security],
-  [All 7 principles mapped to system\
-  Formal committee establishment\ requires organizational decision],
-  [#status-tag("Implemented")],
+  [*Financial-Sector\ AI Guideline*\
+  (eff. 2026-06-22,\ 7 principles)],
+  [Governance, legality, auxiliary nature\
+  reliability, financial stability, good faith, security\
+  + risk-assessment system (low/medium/high)],
+  [Training performance metrics, promotion human gate, PII hash are #s-live\
+  Risk assessment, fairness, explanation, kill switch, HITL are #s-part (depend on deployment wiring)\
+  Governance bodies, conflict-of-interest mechanisms are #s-gap (organizational/unimplemented)],
+  [#status-tag("partially-wired")],
 
   [*Korea AI\ Basic Act*\
-  (Eff. Jan 22, 2026)],
-  [AI usage disclosure (Art. 31)\
-  High-impact AI governance (Art. 33--34)\
+  (eff. 2026-01-22)],
+  [Prior notification of AI use (Art. 31)\
+  High-impact AI duties (Art. 34)\
   Impact assessment (Art. 35)],
-  [AI disclosure auto-included in all outputs\
-  Proactively built to high-impact AI level\
-  Impact assessment org. setup needed],
-  [#status-tag("Implemented")],
+  [AI disclosure module, `KoreanFRIAAssessor` (7-dim)\
+  Proactively designed to high-impact AI level\
+  Periodic impact assessment is an organizational process],
+  [#status-tag("partially-wired")],
 
   [*EU AI Act*\
-  (High-risk: Dec 2027)],
+  (High-risk: 2027.12)],
   [Transparency/information (Art. 13)\
   Human oversight (Art. 14)\
   Accuracy/robustness/security (Art. 15)],
-  [Auto-generated model cards + reason text\
-  Kill switch + human re-processing routing\
+  [Model cards + reason text, `AnnexIVMapper`\
+  Promotion human gate (auto\_promote=false)\
   Drift detection + prompt injection defense],
-  [#status-tag("Implemented")],
+  [#status-tag("partially-wired")],
 
   [*Personal Information\ Protection Act*\
-  (PIPA)],
+  (automated-decision refusal)],
   [Right to refuse automated decisions (Art. 37-2)\
   Pseudonymized data (Art. 28-2)\
-  Right to erasure],
-  [Full opt-out lifecycle management\
-  SHA-256 de-identification + domain salt\
-  30-day PII retention + encrypted deletion],
-  [#status-tag("Implemented")],
+  Right to erasure (Art. 17)],
+  [Opt-out hook wired into serving (#s-live)\
+  SHA-256 one-way hash + per-domain salt\
+  30-day PII retention + encrypted-deletion policy],
+  [#status-tag("operational")],
 
-  [*Financial Consumer\ Protection Act*],
-  [Suitability principle (Art. 17)\
-  Appropriateness principle (Art. 18)\
-  Duty to explain (Art. 19)],
-  [Automated eligibility/appropriateness checks\
-  Feature reverse-mapping + NL reason generation],
-  [#status-tag("Implemented")],
+  [*Financial Consumer\ Protection Act,*\
+  Credit Information Act],
+  [Suitability principle (FCPA §17)\
+  Duty to explain (FCPA §19)\
+  Automated-evaluation explanation (CIA §36-2)],
+  [Suitability filter (fail-closed when not assessed)\
+  Feature reverse-mapping + reason generation\
+  §36-2 explanation elements structured (depends on deployment wiring)],
+  [#status-tag("partially-wired")],
 )
 ]
 
 #align(right)[
   #text(size: 8pt, fill: txt-sub)[
-    #status-tag("Implemented") System implementation complete #h(8pt) #status-tag("Designed") Design complete, organizational decision required
+    #status-tag("operational") operational #h(6pt) #status-tag("partially-wired") implemented, not wired #h(6pt) #status-tag("absent") absent / organizational decision\
+    #h(1fr) (since multiple controls are mixed within one regulation row, the row tag is the representative state; see the middle column for the mixed #s-live #s-part #s-gap detail)
   ]
 ]
 
@@ -274,7 +277,7 @@ This is an AI system for Korea Post Financial check card product recommendations
 
 = Model Risk Management (MRM) Lifecycle
 
-A 5-stage model lifecycle integrating SR 11-7 (US Fed/OCC), NIST AI RMF, and FSS AI RMF is in operation.
+A 5-stage model lifecycle is designed, integrating SR 11-7 (US Fed/OCC), NIST AI RMF, and the Financial-Sector AI Risk Management Framework (AI RMF) delegated by the guideline.
 
 #v(0.3cm)
 
@@ -363,9 +366,13 @@ A 5-stage model lifecycle integrating SR 11-7 (US Fed/OCC), NIST AI RMF, and FSS
 
 = Key Safeguards Summary
 
+#card(title: "Before reading --- status notation in this section", accent: anthropic-accent)[
+  #text(size: 9pt)[The safeguards below are controls whose *modules and logic are implemented*. Because this system has no production deployment and uses no production data, many are in an *implemented-but-not-yet-wired (#s-part)* state, and only some run as *operational (#s-live)* on the training/ingestion path. Phrases like "daily measurement" or "enforced on every prediction" express the *intended behavior once wired*, not an assertion of current operational effect.]
+]
+
 == Fairness Monitoring
 
-Three fairness metrics are *measured daily and automatically* across *5 protected attributes* (age group, gender, region type, income quintile, lifecycle stage).
+Three fairness metrics (DI/SPD/EOD, corresponding to the guideline's Parity metrics) are *implemented to measure daily* across *5 protected attributes* (age group, gender, region type, income quintile, lifecycle stage) --- #s-part, active once the prediction log loads protected attributes and outcome labels and is wired into serving.
 
 #text(size: 9pt)[
 #table(
@@ -406,7 +413,7 @@ Granular shutdown is available at three scopes: GLOBAL (all) / PER\_TASK (per ta
 
 == Compliance Module
 
-Four dedicated compliance components enforce regulatory obligations at every prediction:
+Four dedicated compliance components are designed to enforce regulatory obligations before a prediction is served (#s-part --- applied to every prediction once the deployment serving path is unified and wired to `RecommendationService`/`lambda_handler`):
 
 #text(size: 9pt)[
 #set par(justify: false)
@@ -432,7 +439,7 @@ Four dedicated compliance components enforce regulatory obligations at every pre
   align: (center, center),
   [Right], [System Response],
   [Opt-out (refuse AI decisions)], [Immediate switch to human alternative path; full registration/withdrawal/confirmation lifecycle (AIOptOut)],
-  [Request explanation], [Feature reverse-mapping + natural language recommendation reasons; SLA within 10 days],
+  [Request explanation], [Feature reverse-mapping + natural language recommendation reasons; internal SLA reply within 10 days (statutory 30 days, Enforcement Decree §44-3(5))],
   [File objection], [Automatic routing to agents by 7 reason types; P1 (1h) / P2 (4h) / P3 (24h) SLA],
   [Right to erasure], [30-day PII retention policy; encrypted deletion; S3 Lifecycle auto-applied],
 )
@@ -455,7 +462,7 @@ For implementation details on each item, please refer to the corresponding secti
   align: (center, center, center),
   [This Document], [Technical Reference Section], [Section],
   [System Overview], [Financial AI Regulatory Environment Overview], [Ch. 1],
-  [Compliance Matrix -- FSS], [FSS Guidelines Mapping -- 7 Principles and System Response], [Ch. 2],
+  [Compliance Matrix -- guideline], [7-Principle Mapping -- Guideline Check-Items and System Response], [Ch. 2],
   [Compliance Matrix -- EU], [EU AI Act Article Mapping\ (Art. 13/14/15, GDPR Art. 22)], [Ch. 3],
   [Compliance Matrix -- AI Basic Act], [Korea AI Basic Act High-Impact AI Classification], [Ch. 4],
   [Key Safeguards\ (Fairness / Drift / Audit / Kill Switch)], [Compliance Architecture (3-Layer Structure Details)], [Ch. 5],
@@ -468,7 +475,7 @@ For implementation details on each item, please refer to the corresponding secti
 #v(0.5em)
 
 #card(title: "Governance Reporting Framework", accent: anthropic-accent)[
-  Governance reports are automatically generated on a monthly/quarterly basis. They comprise *9 sections*: fairness summary, drift summary, incident status, model change history, kill switch history, recommendation quality, risk trends, audit store summary, and executive summary. A 36-item regulatory compliance registry enables full automated checks on a quarterly cycle.
+  Monthly/quarterly governance reports are *implemented to be auto-generated* (#s-part --- operates once real-data supply and schedule wiring are in place). They comprise *9 sections*: fairness summary, drift summary, incident status, model change history, kill switch history, recommendation quality, risk trends, audit store summary, and executive summary. A 36-item regulatory compliance registry is designed to run a full quarterly check.
 ]
 
 // ============================================================

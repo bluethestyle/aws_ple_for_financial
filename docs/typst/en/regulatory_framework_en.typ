@@ -1,6 +1,10 @@
 // ─────────────────────────────────────────────────────────
 //  Financial AI Recommendation System — Regulatory Compliance Framework (English)
-//  AWS PLE for Financial · 2026. 04.
+//  AWS PLE for Financial · 2026. 06. (v2.0)
+//  Basis: FSC Financial-Sector AI Guideline (effective 2026-06-22) — 7 principles
+//  Nature: Architecture-alignment self-check of an Independent Research reference
+//          (not a compliance attestation — claims use 3 states:
+//           ● operational / ◐ implemented, not wired / ○ absent)
 // ─────────────────────────────────────────────────────────
 
 // ── Color Palette (Anthropic Design System) ──
@@ -153,7 +157,7 @@
     ]
     #v(0.3cm)
     #text(size: 14pt, fill: anthropic-muted)[
-      Korea AI Basic Act, EU AI Act, FSS AI RMF Compliance#linebreak()Architecture Design Document
+      FSC Financial-Sector AI Guideline (effective 2026-06-22) 7-principle alignment#linebreak()Korea AI Basic Act · EU AI Act mapping · compliance architecture design
     ]
     #v(0.6cm)
     #line(length: 30%, stroke: 0.5pt + anthropic-rule)
@@ -164,11 +168,11 @@
       text(fill: anthropic-muted, size: 9.5pt)[Document Type],
       text(size: 9.5pt, fill: anthropic-text, weight: "bold")[Technical Document],
       text(fill: anthropic-muted, size: 9.5pt)[Date],
-      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[April 2026],
+      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[June 2026 (revised to reflect the guideline's entry into force)],
       text(fill: anthropic-muted, size: 9.5pt)[Version],
-      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[v1.0],
+      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[v2.0],
       text(fill: anthropic-muted, size: 9.5pt)[Applicable Regulations],
-      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[Korea AI Basic Act (Act No. 20676), EU AI Act, GDPR],
+      text(size: 9.5pt, fill: anthropic-text, weight: "bold")[FSC Financial-Sector AI Guideline (effective 2026-06-22), Korea AI Basic Act (Act No. 20676), EU AI Act, GDPR],
     )
   ]
 
@@ -181,7 +185,7 @@
       inset: (left: 14pt, right: 14pt, top: 10pt, bottom: 10pt),
     )[
       #text(fill: anthropic-text, size: 9.5pt)[
-        *Executive Summary* --- This document systematically maps the domestic and international regulatory requirements that the financial AI recommendation system (PLE-based) must comply with, and defines system-level response architectures for each requirement.\ It covers the Korea AI Basic Act (effective 2026.1.22), the Financial Services Commission (FSC) Integrated AI Guidelines 7 Principles, the Financial Supervisory Service (FSS) AI RMF, EU AI Act (Art. 13/14/15), and GDPR Art. 22, including end-to-end compliance architecture spanning audit trails, fairness monitoring, drift surveillance, herding detection, kill switches, opt-out, Human-in-the-Loop, and automated governance report generation.
+        *Executive Summary* --- This document maps, *at the architecture level*, how the PLE-based financial AI recommendation *reference system* (Independent Research) is designed and implemented against the FSC Financial-Sector AI Guideline (effective 2026-06-22) 7 principles and adjacent regulation. It covers the guideline's 7 principles (governance, legality, auxiliary nature, reliability, financial stability, good faith, security), the Korea AI Basic Act (effective 2026.1.22), EU AI Act (Art. 13/14/15), and GDPR Art. 22, including audit trails, fairness monitoring, drift surveillance, herding detection, kill switches, opt-out, Human-in-the-Loop, and automated governance report generation.\ *Nature* --- This is not a compliance attestation for an operating financial institution. The system has no production deployment and uses no production data, so the implementation status of each mapping is distinguished honestly in three states --- *● operational / ◐ implemented, not yet wired / ○ absent* --- with no over-claiming.
       ]
     ]
   ]
@@ -255,79 +259,81 @@ The AI Basic Act defines high-impact AI as *"artificial intelligence that signif
   AI used in *loan assessment and credit scoring* explicitly qualifies as high-impact AI under the law. Even if a financial AI recommendation system does not directly perform lending operations, AI applications in *product recommendation, suitability assessment, and customer classification* may be designated as high-impact AI through future Enforcement Decree amendments or FSC guidelines. Therefore, proactively building a governance framework *at the level of high-impact AI* is a rational strategy.
 ]
 
-== FSC Integrated AI Guidelines --- 7 Principles
+== FSC Financial-Sector AI Guideline --- 7 Principles (effective 2026-06-22)
 
-The Financial Services Commission published the *"Revised Financial AI Guidelines"* in alignment with the AI Basic Act. Scheduled for *Q2 2026 implementation* as self-regulatory standards per financial sector, they are organized around 7 principles.
+The Financial Services Commission *put into force* the *"Financial-Sector AI Guideline"* on *June 22, 2026*, consolidating and revising three predecessor guidelines (Financial-Sector AI Operating Guideline 2021, AI Development & Use Handbook 2022, AI Security Guideline 2023). Reflecting the rise of frontier and generative AI and the entry into force of the AI Basic Act, it is *self-applied* rather than legally mandated (each institution autonomously decides the scope and depth of application according to its resources, business characteristics, and service risk) and is *updated annually* after gathering financial-sector input. The covered "financial companies, etc." include banks, insurers, card companies, and investment firms, and *explicitly include postal financial services (postal banking/insurance)*; fintechs and other non-financial companies are also covered when their AI use affects financial transactions.
 
 #grid(
   columns: (1fr, 1fr),
   gutter: 8pt,
   card(title: none, accent: navy)[
     #text(fill: navy, weight: "bold")[1. Governance]
-    Role and responsibility sharing among executives including CEO\
-    AI risk management organization *independently separated* from planning/development
+    Decision-making body (e.g., AI ethics committee) + *independent dedicated risk-management organization*\
+    AI internal rules/manuals, comprehensive risk-assessment system
 \
 \
     #text(fill: navy, weight: "bold")[2. Legality]
-    Compliance with AI Basic Act, Personal Information Protection Act, Credit Information Act
+    Prior review of applicable laws, periodic review and currency of internal rules\
+    Compliance verified down to outsourced/external models and extraterritorial regulation
 \
 \
     #text(fill: navy, weight: "bold")[3. Auxiliary Nature]
-    AI is a decision-support tool,\
-    Financial institution bears final responsibility even for external models
+    Final decision and accountability rest with staff (HITL)\
+    For high-risk AI, kill switch and override are *mandatory*
 \
 \
     #text(fill: navy, weight: "bold")[4. Reliability]
-    Model performance and bias management, explainability (XAI) assurance
+    Model performance, data quality, and fairness checks\
+    Explainability (global and local; *at SHAP level or above* where legally required)
   ],
   card(title: none, accent: blue)[
     #text(fill: blue, weight: "bold")[5. Financial Stability]
-    Third-party dependency, market herding risk assessment\
-    Report to financial authorities on incidents
+    Market herding (correlation) and third-party IT risk assessment\
+    Backup model + post-hoc-intervention kill switch safeguards
 \
 \
     #text(fill: blue, weight: "bold")[6. Good Faith]
-    #text(tracking: -0.15em)[*All customer-facing AI services* require prior notification (broader than AI Basic Act)]\
-    Conflict of interest prevention, fairness criteria establishment and evaluation
+    Conflict-of-interest prevention (curbing affiliate/high-fee product steering)\
+    Consumer protection, prior notification of AI use
 \
 \
     #text(fill: blue, weight: "bold")[7. Security]
-    Data poisoning, model poisoning, prompt injection, etc.\
-    AI-specific threat response framework
+    AI-specific threats (data/model poisoning, prompt injection)\
+    External model/data verification, compensating controls when network-separation is relaxed
 \
 \
-    #text(fill: txt-sub, size: 8.5pt)[Source: Financial Services Commission press release (2025.12)]
+    #text(fill: txt-sub, size: 8.5pt)[Source: FSC Financial-Sector AI Guideline (effective 2026-06-22)]
   ],
 )
 
-== FSS AI Risk Management Framework (AI RMF)
+== Risk-Assessment System and the AI Risk Management Framework (AI RMF)
 
-The Financial Supervisory Service introduced the *"Financial AI Risk Management Framework (AI RMF)"* in January 2026. Currently, *118 financial institutions operate 653 AI services*, but approximately *85% lack AI ethics principles and risk management standards*.
+The guideline's governance principle (§1.3) requires, for each AI service, a comprehensive risk-assessment system of *risk identification/measurement -> mitigation -> residual-risk evaluation -> risk-grade rating*, and delegates the detail of that standard procedure to the companion document *"Financial-Sector AI Risk Management Framework (AI RMF)."* Risk grades are classified in three tiers --- *low / medium / high* --- while specific score thresholds and component weights are presented as *examples* to be set according to each company's risk appetite.
 
-#card(title: "AI RMF --- 3 Domains", accent: teal)[
+#card(title: "Risk-assessment system --- Governance §1.3 (scores/weights are guideline examples)", accent: teal)[
   #grid(
-    columns: (1fr, 1fr, 1fr),
-    gutter: 8pt,
-    align: center,
+    columns: (1fr, 1fr),
+    gutter: 10pt,
     [
-      *1. Governance*\
-      Establish AI decision-making body and dedicated organization\
-      Develop risk management regulations\
-      *Independently separated* from planning/development
+      *Risk-grade bands (example)*\
+      risk score \< 25 -> low (relaxed controls)\
+      25 \~ 50 -> medium (baseline control/management)\
+      50 and above -> high (additional control/management)\
+      75 and above -> decision-making body re-reviews whether to launch
     ],
     [
-      *2. Risk Assessment*\
-      Risk identification/measurement -> mitigation\ -> residual risk\
-      *High/Medium/Low* 3-tier classification\
-      Quantitative assessment of legality, reliability, good faith, security
-    ],
-    [
-      *3. Risk Control*\
-      Pre-launch risk mitigation verification\
-      Operational-phase monitoring standards\
-      Re-classification on risk changes
+      *Component weights (example)*\
+      legality 20% · reliability 30%\
+      good faith 30% · security 30%\
+      \
+      If risk mitigation is not performed, residual risk is assessed at 100%\
+      Under the AI Basic Act, *high-impact AI* is automatically classified as *high-risk AI* with reinforced controls
     ],
   )
+]
+
+#card(title: "Implementation alignment --- honest caveat", accent: red-acc)[
+  This system's `AIRiskClassifier` (a 6-dimension weighted-sum risk-grade computation) and the offline promotion gate are an implementation corresponding to this risk-assessment system. However, they currently run *only at offline promotion time* rather than as continuous serving-time evaluation, and the grade-history store defaults to volatile (in-memory), so the "mitigation -> residual risk" tracking artifact is incomplete (◐ implemented, operationally not wired).
 ]
 
 == Comparison with EU AI Act
@@ -349,7 +355,7 @@ The Financial Supervisory Service introduced the *"Financial AI Risk Management 
 ]
 
 #card(title: "Comparison Implications", accent: red-acc)[
-  Korea's AI Basic Act has penalties *thousands of times lower* than the EU and relies more on self-regulation, but this is a *soft-landing strategy for the initial implementation period*. The FSC Integrated Guidelines have a broader scope than the AI Basic Act, requiring *prior notification for all customer-facing AI services*. Regulatory intensity is expected to gradually increase through future Enforcement Decree amendments and FSC detailed regulations, making *proactive preparation* advantageous.
+  Korea's AI Basic Act has penalties *thousands of times lower* than the EU and relies more on self-regulation, but this is a *soft-landing strategy for the initial implementation period*. The Financial-Sector AI Guideline has a broader scope than the AI Basic Act (covering fintechs and other non-financial companies) and, under its good-faith principle, requires *prior notification of AI use in customer-facing services* such as AI-driven product recommendation and advice. Through future annual updates and detailed FSC rule-making, the level of application is expected to be progressively specified, making *proactive preparation* advantageous.
 ]
 
 == Global Regulatory Trends Summary
@@ -379,132 +385,89 @@ Global regulation of financial AI is converging in three directions.
 #pagebreak()
 
 // ═══════════════════════════════════════════════════════════
-//  2. FSS Guidelines Mapping
+//  2. 7-Principle Mapping
 // ═══════════════════════════════════════════════════════════
 
-= FSS Guidelines Mapping --- 7 Principles and System Response
+= 7-Principle Mapping --- Guideline Check-Items and System Response
 
-Mapping the current response status of the PLE-based financial AI recommendation system against the FSC Integrated AI Guidelines 7 Principles and FSS AI RMF requirements.
+For the core check-items of the Financial-Sector AI Guideline's 7 principles, we map the implementation artifacts of the PLE-based recommendation *reference system* and their *operational wiring state*. The evaluation criterion is "operational effect" --- even when a module exists, if it is not invoked on the actual deployment path it is classified as ◐. (Per-item caveats match the outreach/05_fsc_supplementary self-check material.)
 
-== Per-Principle Response Matrix
+== Per-Principle Response Matrix (3-state honest evaluation)
 
 #text(size: 8.5pt)[
 #set par(justify: false)
 #table(
-  columns: (0.8fr, 1.5fr, 0.3fr),
-  align: (center, left, center),
-  [7 Principles], [System Response], [Level],
+  columns: (0.62fr, 1.45fr, 1.55fr, 0.4fr),
+  align: (left, left, left, center),
+  [Principle], [Guideline core check-items], [System implementation artifacts], [Status],
 
-  [1. Governance\
-  (AI RMF G-1\~G-6)],
-  [3-tier governance framework design complete\
-  (Decision Committee -> Operations Team -> Internal Audit)\
-  Monthly/quarterly governance report auto-generation\
-  36-item regulatory compliance registry auto-check],
-  [○],
+  [*① Governance*],
+  [Decision-making body, independent dedicated risk-management org, AI internal rules, comprehensive risk-assessment system (low/medium/high)],
+  [Risk-grade classifier (6-dim weighted sum), offline promotion gate, governance report generator],
+  [◐ ○],
 
-  [2. Legality\
-  (AI RMF R-2)],
-  [Eligibility/suitability auto-verification (Financial Consumer Protection Act Art. 17/18)\
-  PII de-identification (SHA-256 + domain-specific salt)\
-  Credit Information Act retention compliance (5 years)],
-  [●],
+  [*② Legality*],
+  [Prior review and currency of applicable laws, compliance for outsourced models and extraterritorial regulation],
+  [36-item law-to-function mapping catalog (AI Basic Act, PIPA, Financial Consumer Protection Act, Credit Information Act §36-2, EU AI Act, SR 11-7), regulatory auto-checker (fail-closed when evidence is absent)],
+  [◐ ○],
 
-  [3. Auxiliary Nature\
-  (AI RMF C-4)],
-  [Human oversight + Kill Switch 3-tier emergency shutdown\
-  Human reprocessing routing (P1/P2/P3 SLA)\
-  Right to refuse AI automated decisions + alternative pathway],
-  [●],
+  [*③ Auxiliary Nature*],
+  [Final accountability with staff (HITL), differentiated human intervention, kill switch/override mandatory for high-risk],
+  [Offline promotion human gate (auto\_promote=false + HMAC audit), human review queue (per tier), human fallback router],
+  [● ◐ ○],
 
-  [4. Reliability\
-  (AI RMF R-3, C-2\~C-3)],
-  [Champion-Challenger automatic model competition\
-  PSI-based drift detection + 3-consecutive-day retraining trigger\
-  IG-based per-feature attribution + natural language recommendation rationale],
-  [●],
+  [*④ Reliability*],
+  [Model performance, data quality, fairness (Parity); explainability (global/local, at SHAP level or above where legally required)],
+  [Training performance metrics (AUC/F1/MAE), distillation data-quality gate, fairness monitor (DI/SPD/EOD), attribution (CEH·IG) and OOD detection],
+  [● ◐],
 
-  [5. Financial Stability\
-  (AI RMF R-3\~R-4)],
-  [HHI/Gini/Entropy herding detection\
-  DI/SPD/EOD fairness 3-metric auto-measurement\
-  5 protected attributes (age, gender, region, income, lifecycle)],
-  [●],
+  [*⑤ Financial Stability*],
+  [Market herding (correlation) impact assessment, backup model + post-hoc kill switch, third-party IT risk],
+  [Block of unattended offline auto-promotion, kill switch (global/per-task/per-cluster), drift (PSI) and concentration metrics, incident reporter],
+  [● ◐ ○],
 
-  [6. Good Faith\
-  (AI RMF R-4)],
-  [AI disclosure centralized management + per-segment notification separation\
-  Conflict-of-interest prevention not implemented (high-fee penalty etc. planned)\
-  Opt-out lifecycle management (module implemented; serving wiring needed)],
-  [○],
+  [*⑥ Good Faith*],
+  [Conflict-of-interest prevention and oversight mechanisms, financial-consumer protection],
+  [Suitability filter (Financial Consumer Protection Act §17, fail-closed when not assessed), contact protection (nighttime/DNC consent)],
+  [◐ ○],
 
-  [7. Security\
-  (AI RMF R-5)],
-  [Prompt injection defense 8 patterns (4 Korean + 4 English)\
-  Model integrity SHA-256 hash verification\
-  HMAC + hash chain audit log immutability],
-  [●],
+  [*⑦ Security*],
+  [AI-specific threats and attack detection, asset protection, external model/data verification],
+  [Inbound PII one-way hash (SHA256+salt), AI security checker (prompt injection), external artifact integrity verification (sha256 sidecar, safe load)],
+  [● ◐],
 )
 ]
 
 #align(right)[
   #text(size: 8pt, fill: txt-sub)[
-    ● Met  ○ Partially met (organizational decision needed)
+    ● operational (code path confirmed)  #h(6pt) ◐ implemented, operationally not wired  #h(6pt) ○ absent / organizational-process domain
   ]
 ]
 
-== AI RMF Domain-Level Detailed Mapping
+#v(2pt)
+#text(size: 8.2pt, fill: txt-sub)[Note: where several states are shown for one principle, it means that operational, not-wired, and absent are mixed across its check-items (e.g., ③ Auxiliary Nature --- the offline promotion human gate is ●, the HITL queue is ◐, staff training is ○). This evaluation reflects the 2026-06 code audit and the guideline-alignment fixes (10 fail-open/wiring gaps).]
 
-=== Domain 1: Governance (G-1 ~ G-6)
+== Controls with Confirmed Operational Effect (●)
 
-#text(size: 8.5pt)[
-#set par(justify: false)
-#table(
-  columns: (0.2fr, 1.0fr, 1.6fr, 0.25fr),
-  align: (center, left, left, center),
-  [No.], [RMF Requirement], [Current Response Status], [Level],
-  [G-1], [Establish AI top decision-making body], [3-tier governance framework designed; formal committee establishment needed], [△],
-  [G-2], [Independent AI risk management org], [Operations team handles both dev and ops; independent function separation needed], [△],
-  [G-3], [Establish AI risk management regulations], [FD-TVS, drift detection logic exists; internal regulation documentation needed], [○],
-  [G-4], [Establish and publish AI ethics principles], [Not yet established --- enterprise AI ethics document needed], [△],
-  [G-5], [High-impact AI pre-approval process], [Pre-launch approval process formalization needed], [△],
-  [G-6], [Periodic AI utilization reporting], [Monthly report auto-generation complete; reporting line formalization needed], [○],
-)
-]
+Only controls whose actual execution is confirmed by a code path.
 
-=== Domain 2: Risk Assessment (R-1 ~ R-6)
+- *Training-time performance metrics* (④ Reliability) --- inlined into the SageMaker training container body, executed on every training run. Aggregated separately by task type (binary AUC, multiclass F1-macro, regression MAE/RMSE).
+- *Block-on-failure distillation data-quality gate* (④ Reliability) --- on the distillation path, sub-threshold quality actually halts the pipeline (raises an exception). Limited to the distillation path, not the main training path.
+- *Block of unattended offline auto-promotion* (③·⑤) --- `auto_promote=false` is enforced, so nothing is promoted without an operator's explicit approval (signature). Every promotion decision is recorded with its reason and trigger in an HMAC audit log. _Honest caveat_ --- the automated deployment orchestration (Step Functions) path is currently *bypassed* into auto-promotion, a known gap requiring the two paths to be reconciled.
+- *Inbound PII one-way hash* (⑦ Security) --- on the data-ingestion path, a SHA256(salt+value) one-way hash is actually invoked. _Caveat_ --- there is a fail-open point that proceeds with an empty salt when none is injected, so a deploy-time gate confirming the secret is present is needed.
+- *Prediction-log integrity and right to refuse automated decisions* (⑤·②) --- a prediction-log HMAC hash chain plus an opt-out hook for automated-decision refusal (PIPA §37-2 / GDPR Art. 22 by analogy) are wired into serving.
 
-#text(size: 8.5pt)[
-#set par(justify: false)
-#table(
-  columns: (0.2fr, 0.8fr, 1.6fr, 0.25fr),
-  align: (center, left, left, center),
-  [No.], [RMF Requirement], [Current Response Status], [Level],
-  [R-1], [Risk classification per AI service], [Self-assessment of high-impact AI applicability complete; formal classification system needed], [○],
-  [R-2], [Legality assessment], [Eligibility auto-verification + de-identification + retention compliance], [●],
-  [R-3], [Reliability assessment], [Champion-Challenger + drift detection + fairness auto-measurement], [●],
-  [R-4], [Good faith assessment], [5 protected attributes DI/SPD/EOD implemented (serving/log wiring needed) + Parquet archiving; conflict-of-interest prevention not implemented (planned)], [○],
-  [R-5], [Security assessment], [Local AI + SHA-256 encryption + prompt injection defense + integrity verification], [●],
-  [R-6], [Residual risk assessment], [FD-TVS risk penalty auto-block; Risk Appetite documentation needed], [○],
-)
-]
+== Implemented-but-Not-Wired (◐) and Absent (○)
 
-=== Domain 3: Risk Control (C-1 ~ C-6)
+Items whose modules and logic are complete but whose serving, data-pipeline, or schedule wiring is incomplete (◐), and items not evidenced in code or in the organizational-process domain (○).
 
-#text(size: 8.5pt)[
-#set par(justify: false)
-#table(
-  columns: (0.2fr, 0.8fr, 1.6fr, 0.25fr),
-  align: (center, left, left, center),
-  [No.], [RMF Requirement], [Current Response Status], [Level],
-  [C-1], [Pre-launch risk mitigation verification], [Eligibility rules + fatigue filtering + A/B testing framework], [●],
-  [C-2], [Operational monitoring standards], [Drift auto-detection + performance dashboard + anomaly alerts], [●],
-  [C-3], [Periodic model evaluation/retraining], [Weekly/monthly auto-retraining + Champion-Challenger + MLflow versioning], [●],
-  [C-4], [Human oversight framework], [Kill Switch 3-tier + human reprocessing routing + opt-out], [●],
-  [C-5], [Emergency shutdown mechanism], [GLOBAL/PER_TASK/PER_CLUSTER 3-tier kill switch], [●],
-  [C-6], [Audit trail assurance], [HMAC hash chain + S3 Object Lock + 7 audit tables], [●],
-)
-]
+- *Comprehensive risk-assessment system, regulatory auto-checker, governance report* (①·②, ◐) --- risk-grade computation (6-dim weighted sum), regulatory checker (hardened to fail-closed when evidence is absent), report generator are implemented. But serving entry points are unwired and the grade-history store defaults to volatile (in-memory).
+- *Fairness and explainability* (④, ◐) --- DI/SPD/EOD (corresponding to the guideline's Parity metrics), an intersectional protected-attribute analyzer, and per-prediction attribution (CEH), integrated gradients (IG), and z-space Mahalanobis OOD are implemented. Serving-surface exposure of the IG artifact is complete down to the consumer wiring; the producer/loader remains. But the prediction log does not load protected attributes or outcome labels, so the evaluation data is empty.
+- *Kill switch, drift/concentration, human review queue, suitability/contact protection* (③·⑤·⑥, ◐) --- the 3-tier kill switch, PSI drift, concentration metrics, and HITL queue/fallback router are complete. But the deployment serving path (handler migration) and the unattended schedule (default DISABLED) wiring are incomplete. Financial Consumer Protection Act §17 suitability is inverted to fail-closed so unassessed customers are blocked (effective blocking depends on serving-context injection).
+- *External model/data integrity verification* (⑦, ◐) --- sha256 sidecar, verifying load, and safe tar extraction (traversal blocked) are newly added. Wired into checkpoint save and the register lambda; a blanket `weights_only=True` switchover remains staged. (Directly tied to the guideline security principle §7.4 external model/data verification.)
+- *Governance bodies, internal rules, staff training* (①·③, ○) --- the AI ethics committee, independent dedicated risk-management org, operating internal rules and business manuals, and staff AI-risk training are organizational-process matters not evidenceable in code.
+- *Conflict-of-interest prevention and oversight mechanisms* (⑥, ○) --- conflict-of-interest controls such as fee/incentive alignment checks and affiliate/house-product bias guards are absent from the code (concentration metrics are not a conflict-of-interest control).
+- *Third-party IT risk governance* (⑤, ○) --- dedicated procedures for vendor SLAs, cloud single-dependency alternative paths, and model-provider concentration-risk assessment are absent.
 
 #pagebreak()
 
@@ -614,7 +577,7 @@ Under current law, financial product recommendation systems are *not subject to 
   [Customer classification/segmentation interpreted as rights evaluation], [Low-Medium], [Similar structure to investment suitability assessment],
   [Business expansion to insurance product recommendations], [High], [Insurance pricing is EU high-risk and domestic high-impact in both frameworks],
   [Discriminatory benefits based on churn prediction], [Medium], [Directly linked to fairness issues],
-  [FSC guidelines separately regulating recommendation AI], [Medium-High], [Must monitor trends after integrated guidelines take effect],
+  [Guideline annual update separately regulating recommendation AI], [Medium], [The in-force guideline only cites loan assessment as a high-impact example; separate rules for recommendation AI are unspecified --- watch the annual-update trajectory],
 )
 
 #card(title: "Response Strategy", accent: navy)[
@@ -628,24 +591,24 @@ Under current law, financial product recommendation systems are *not subject to 
 #table(
   columns: (0.9fr, 0.4fr, 1.7fr, 0.3fr),
   align: (center, center, left, center),
-  [Requirement], [Basis], [Current Response], [Level],
-  [Prior notification of AI use], [Art. 31], [AI disclosure centralized management, per-segment notification separation\
-  Automatically included in all recommendation outputs], [●],
-  [Labeling of AI-generated content], [Art. 31], [AI generation label auto-applied to recommendation rationale text], [●],
-  [Risk management measures implementation], [Art. 32], [FD-TVS + Kill Switch (3-tier) + eligibility/suitability verification\
-  + drift detection], [●],
-  [High-impact AI applicability check], [Art. 33], [Scenario-based applicability analysis complete], [●],
-  [Risk management and user protection], [Art. 34], [Safety/trust document + model card auto-generation\
-  3-stage recommendation rationale pipeline], [●],
-  [Impact assessment execution], [Art. 35], [System documentation complete; periodic execution process needs organizational establishment], [○],
-  [Right to refuse automated decisions], [PIPA\ Art. 37-2], [Opt-out + 3-tier human reprocessing routing], [●],
-  [Governance framework establishment], [7 Principles], [3-tier framework designed; formal committee establishment needed], [○],
+  [Requirement], [Basis], [Implementation artifact / wiring state], [Status],
+  [Prior notification of AI use], [Art. 31], [AI disclosure module, per-segment notification separation\
+  (serving wiring depends on handler migration)], [◐],
+  [Labeling of AI-generated content], [Art. 31], [AI-generation labeling logic in recommendation rationale text], [◐],
+  [Risk management measures implementation], [Art. 32], [Kill Switch (3-tier) + eligibility/suitability verification\
+  + drift detection (modules complete, deployment wiring incomplete)], [◐],
+  [High-impact AI applicability check], [Art. 33], [Self-analysis of per-scenario applicability (document)], [◐],
+  [Risk management and user protection], [Art. 34], [Safety/trust document + model card generation\
+  3-stage recommendation rationale pipeline], [◐],
+  [Impact assessment execution], [Art. 35], [`KoreanFRIAAssessor` (7-dimension) implemented; periodic-execution process needs organizational establishment], [◐],
+  [Right to refuse automated decisions], [PIPA\ Art. 37-2], [Opt-out hook wired into serving + human reprocessing routing], [●],
+  [Governance framework establishment], [7 Principles], [3-tier framework designed; formal committee establishment is an organizational decision], [○],
 )
 ]
 
 #align(right)[
   #text(size: 8pt, fill: txt-sub)[
-    ● Met  ○ Partially met  △ Insufficient
+    ● operational  ◐ implemented, operationally not wired  ○ absent / organizational decision
   ]
 ]
 
@@ -659,10 +622,10 @@ Under current law, financial product recommendation systems are *not subject to 
     [Date], [Event],
     [2025. 01. 21], [AI Basic Act promulgation],
     [2025. 08], [AI Basic Act Enforcement Decree pre-announcement],
-    [2025. 12. 22], [FSC Integrated AI Guidelines (draft) release],
-    [2026. 01. 15], [FSS AI RMF introduction],
+    [2025. 12. 22], [FSC AI Council --- guideline draft released for comment],
     [*2026. 01. 22*], [*AI Basic Act effective*],
-    [2026 Q1], [Integrated Guidelines and AI RMF finalized and effective],
+    [*2026. 06. 22*], [*Financial-Sector AI Guideline effective* (with companion AI RMF and security handbook)],
+    [Annual], [Guideline update (gathering financial-sector input)],
     [2027. 01 (est.)], [AI Basic Act fines enforcement begins],
     [2027. 12], [EU AI Act high-risk AI provisions fully applicable],
   )
@@ -740,7 +703,7 @@ The regulatory compliance infrastructure is organized in 3 layers.
 
 == 3-Layer Fallback as Regulatory Assurance
 
-The 3-layer fallback architecture ensures that service never completely stops --- a critical regulatory requirement under FSS AI RMF C-5 (emergency shutdown with fallback).
+The 3-layer fallback architecture ensures that service never completely stops --- corresponding to the core requirement of the guideline's financial-stability principle §5.2 (use of a backup model + a post-hoc-intervention kill switch).
 
 #table(
   columns: (auto, 1fr, 1fr),
@@ -997,7 +960,7 @@ The most critical regulatory issue when leveraging LLMs in financial AI systems 
   [*Regulation*], [*Requirement*], [*Bedrock Compliance*],
   [PIPA (Korea)], [Third-party provision vs. delegated processing], [Bedrock constitutes delegated processing within AWS infrastructure. Data is not transmitted to model providers, thus not third-party provision.],
   [PIPA (Korea)], [Cross-border transfer restriction], [In-region processing in ap-northeast-2. No cross-border transfer occurs.],
-  [Korean FSS AI Guidelines], [Data governance], [CloudTrail audit logs + VPC isolation + transit encryption enable complete data flow tracking.],
+  [Financial-Sector AI Guideline], [Data governance], [CloudTrail audit logs + VPC isolation + transit encryption enable complete data flow tracking.],
   [EU AI Act Art.10], [Data governance], [No-training-use guarantee. Inference data processing location documented.],
   [AI Basic Act (Korea)], [High-impact AI data management], [HMAC audit logs and CloudTrail dual-recording prove data processing history.],
 )
@@ -1130,7 +1093,7 @@ On-premises lacks conversational agent capabilities but offers structurally perf
 
 == Model Risk Management (MRM) Framework
 
-Full-lifecycle model governance aligned with *SR 11-7* (Federal Reserve/OCC), *EBA ML Guidelines*, and *NIST AI RMF 1.0*.
+Full-lifecycle model governance aligned with *SR 11-7* (Federal Reserve/OCC), *EBA ML Guidelines*, *NIST AI RMF 1.0*, and the *Financial-Sector AI RMF (delegated by the guideline)*.
 
 === MRM Lifecycle
 
@@ -1151,7 +1114,7 @@ Full-lifecycle model governance aligned with *SR 11-7* (Federal Reserve/OCC), *E
     node((4,0), [*5. Retrain* \ or Retire], fill: rgb("#d6e6f0"), width: 30mm),
     edge((4,0), (0,0), "->", bend: -30deg, label: [cycle], label-side: center),
   ),
-  caption: [MRM lifecycle: 5-stage cycle aligned with SR 11-7, NIST AI RMF, and FSS AI RMF. Stage 3 (Approve) is always manual.],
+  caption: [MRM lifecycle: 5-stage cycle aligned with SR 11-7, NIST AI RMF, and the Financial-Sector AI RMF. Stage 3 (Approve) is always manual.],
 )
 
 #card(title: "Development → Validation → Approval → Monitoring → Retrain / Retire", accent: navy)[
@@ -1267,7 +1230,7 @@ The serving agents (L1 Rule / L2a Retrieval / L2b Generation) reside on the real
 
 #card(title: "Prompt example", accent: red-acc)[
   #text(size: 9pt)[
-  "Compare the following fairness metrics against FSS thresholds (DI$>=0.8$, |SPD|$<=0.1$, |EOD|$<=0.1$). Report (1) violations (protected attribute, task, metric value), (2) severity (P1/P2/P3), (3) recommended actions."
+  "Compare the following fairness metrics against internal fairness thresholds (DI$>=0.8$, |SPD|$<=0.1$, |EOD|$<=0.1$ — mapping to the guideline's Reliability-principle Parity metrics). Report (1) violations (protected attribute, task, metric value), (2) severity (P1/P2/P3), (3) recommended actions."
   ]
 ]
 
@@ -1332,7 +1295,7 @@ The serving agents (L1 Rule / L2a Retrieval / L2b Generation) reside on the real
 
 = Human-in-the-Loop Design
 
-The FSS ultimately requires *human-involved decision-making*. EU AI Act Art. 14 also mandates the same principle. Even when everything is automated, final review is performed by humans.
+The Financial-Sector AI Guideline (Auxiliary-Tool principle) requires that *final decisions and accountability rest with staff*. EU AI Act Art. 14 also mandates the same principle. Even when everything is automated, final review is performed by humans.
 
 == Design Principle
 
@@ -1514,10 +1477,12 @@ A quarterly full check is automatically executed via the 36-item regulatory comp
   [], [Art. 33 (high-impact AI governance)], [36-item registry + governance report],
   [], [Art. 34 (risk management records)], [Audit log immutability + 7 audit tables],
   [*Financial Consumer\ Protection Act*], [Art. 19 (explanation duty)], [Feature reverse mapping + per-task interpretation],
-  [*FSS AI RMF*], [(1) Legality], [36-item auto-check],
-  [], [(2) Safety/Trust], [Kill switch + incident reporting],
-  [], [(4) Reliability], [Drift surveillance + auto-retraining],
-  [], [(5) Financial Stability], [Fairness DI/SPD/EOD + herding detection],
+  [*Financial-Sector AI\ Guideline\ 7 principles*], [① Governance], [Risk-assessment system + governance report (◐)],
+  [], [② Legality], [36-item law-to-function mapping + regulatory auto-checker (◐)],
+  [], [③ Auxiliary Nature], [Offline promotion human gate (●) + HITL queue (◐)],
+  [], [④ Reliability], [Training performance metrics (●) + fairness/explainability (◐)],
+  [], [⑤ Financial Stability], [Kill switch + drift (PSI) + concentration metrics (◐)],
+  [], [⑦ Security], [PII hash (●) + external model/data integrity verification (◐)],
   [*GDPR*], [Art. 17 (right to erasure)], [30-day PII retention + encrypted deletion],
   [], [Art. 22 (automated refusal)], [opt_out_audit table],
   [], [Art. 35 (DPIA)], [PIA gap analysis items],
@@ -1540,7 +1505,7 @@ A quarterly full check is automatically executed via the 36-item regulatory comp
     width: 90%,
   )[
     #text(fill: txt-sub, size: 8.5pt)[
-      This document was prepared as of April 2026 and may be updated in accordance with the finalization of the AI Basic Act Enforcement Decree and FSC Integrated AI Guidelines. It is recommended to update this document and report to the AI Risk Management Committee when regulatory changes occur.
+      This document was revised in June 2026 against the FSC Financial-Sector AI Guideline (effective 2026-06-22). The guideline is updated annually after gathering financial-sector input, and this document's content may also be updated as the companion documents (Financial-Sector AI Risk Management Framework, AI security handbook) and the AI Basic Act subordinate legislation evolve. This material is not a compliance attestation but an architecture-alignment self-check of an Independent Research reference, with implementation status distinguished honestly in three states: ● operational / ◐ implemented, not wired / ○ absent.
     ]
   ]
 ]
@@ -1552,7 +1517,7 @@ All regulatory compliance components documented herein (FairnessMonitor, Herding
 
 A 3-agent consensus mechanism (Sonnet×3 independent voting) structurally mitigates hallucination, and minority reports preserve dissenting opinions. The verdict rule is a deliberate fail-safe: a single FAIL vote escalates to FAIL while PASS requires unanimity, reflecting that in operations and audit a missed risk signal is treated as costlier than a false alarm; and because every dissenting opinion is retained, an auditor can always trace why a minority view was or was not escalated. Diagnostic history accumulates in a LanceDB case store, serving as "continuous improvement evidence" for regulatory audits.
 
-Core design principle: *"AI analyzes, humans decide"* --- agents recommend only; final decisions are made by operators. This is designed to align with EU AI Act Art.14 (human oversight), Korean FSS AI guidelines (human intervention), and AI Basic Act (kill switch).
+Core design principle: *"AI analyzes, humans decide"* --- agents recommend only; final decisions are made by operators. This is designed to align with EU AI Act Art.14 (human oversight), the Financial-Sector AI Guideline's Auxiliary-Tool principle (human intervention), and AI Basic Act (kill switch).
 
 Detailed design: Design Document 11 (`docs/design/11_ops_audit_agent.typ`)
 
@@ -1580,5 +1545,5 @@ LanceDB filters.
   [Query API], [`snapshot_at()`, `get_timeline()`, `expire_fact()`],
 )
 
-This is designed to align with EU AI Act Art.12 (record-keeping), Korean FSS AI guidelines
+This is designed to align with EU AI Act Art.12 (record-keeping), the Financial-Sector AI Guideline
 (audit trail), and AI Basic Act temporal evidence requirements via a single store.

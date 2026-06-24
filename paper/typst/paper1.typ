@@ -93,7 +93,7 @@
 
 Financial product recommendation differs fundamentally from e-commerce or content recommendation.
 The primary deliverable is not a probability score but a _reason that the customer can accept_.
-Three audiences must be persuaded: customers ("Why this product for me?" --- trust leads to conversion), relationship managers ("Why recommend this to this customer?" --- sales justification), and regulators @koreafsc2024 @euaiact2024 ("Why was this decision made?" --- compliance obligation). Korea's AI Basic Act @koreaaiact2024 further classifies financial recommendation as potentially high-impact AI.
+Three audiences must be persuaded: customers ("Why this product for me?" --- trust leads to conversion), relationship managers ("Why recommend this to this customer?" --- sales justification), and regulators (Korea's FSC Financial-Sector AI Guideline @koreafsc2024, EU AI Act @euaiact2024) ("Why was this decision made?" --- compliance obligation). Korea's AI Basic Act @koreaaiact2024 further classifies financial recommendation as potentially high-impact AI.
 
 Existing approaches fall short on this persuasion requirement.
 Single-task models cannot jointly predict churn, product affinity, and customer lifetime value @caruana1997.
@@ -133,8 +133,8 @@ Pearl's _Ladder of Causation_ @pearl2018book distinguishes three levels:
 association, intervention, and counterfactuals.
 Most recommendation systems operate at level 1 (association);
 our architecture operates primarily at level 1 (association), with the Causal expert approaching level 2 (intervention) for tasks where its gate weight is dominant.
-Regulatory frameworks --- the EU AI Act, Korea's FSS guidelines and AI Basic Act ---
-increasingly demand this shift toward structurally transparent explanations
+Regulatory frameworks --- the EU AI Act, Korea's FSC Financial-Sector AI Guideline (in force June 2026) and AI Basic Act ---
+demand this shift toward structurally transparent explanations
 (detailed regulatory analysis in Section 2.4).
 
 == Contributions
@@ -269,8 +269,12 @@ However, none of these systems address regulatory explainability requirements.
 
 The EU AI Act @euaiact2024 classifies financial recommendation as high-risk AI,
 mandating transparency (Art. 13), human oversight (Art. 14), and robustness (Art. 15).
-Korea's FSS guidelines @koreafsc2024 and AI Basic Act @koreaaiact2024
+Korea's FSC Financial-Sector AI Guideline @koreafsc2024 (in force June 2026) and AI Basic Act @koreaaiact2024
 impose similar requirements.
+In particular, the guideline's Reliability principle (§4.4) distinguishes global and local explanation and,
+where a legal duty to explain applies, recommends XAI at the SHAP level or above ---
+which our inherent explainability addresses by producing both gate-weight-based global explanations
+and per-prediction local explanations.
 Current approaches rely on post-hoc SHAP/LIME for regulatory compliance,
 which has documented limitations in financial contexts @salih2023.
 
@@ -365,13 +369,13 @@ The constraints were formidable:
 no dedicated ML infrastructure budget,
 a single desktop-grade GPU (NVIDIA RTX 4070, 12GB VRAM) as the only training hardware,
 no GPU inference servers for deployment,
-and strict regulatory requirements (Korean FSS AI guidelines, EU AI Act).
+and strict regulatory requirements (Korea's FSC Financial-Sector AI Guideline, EU AI Act).
 
 Rather than treating these constraints as limitations,
 the team adapted its methodology at every level:
 
 #list(tight: true,
-  [*AI-augmented development* using Claude (Anthropic), Gemini (Google), and Cursor, with each team member leading a parallel team of AI agents;],
+  [*AI-augmented development* using Claude (Anthropic), Gemini (Google), and Cursor, with each team member leading a parallel team of AI agents;#footnote[The guideline's Auxiliary-means principle (§3) cites Anthropic's Claude Mythos system card as a frontier-AI governance example @koreafsc2024. This note adds context for the tool-use fact and is not a compliance claim.]],
   [*Parameter-efficient architecture design* where structural inductive biases replace the brute-force capacity of large MLPs;],
   [*Knowledge distillation* to LGBM for GPU-free CPU inference on AWS Lambda;],
   [*Config-driven pipeline* requiring only a split-config of three YAML files to control the entire system, enabling operation by a minimal team.],
@@ -723,7 +727,7 @@ and the gate selects the best one.
 With heterogeneous experts, this competition is harmful:
 each expert provides unique, non-redundant information
 (temporal $eq.not$ hierarchical $eq.not$ topological),
-and suppressing one means losing irreplaceable signal.
+and suppressing one means losing irreplaceable signal.#footnote[An a-posteriori canonical-correlation analysis of the trained shared experts supports this premise empirically: the mean pairwise canonical correlation across the 21 expert pairs is 0.20, with most pairs in the LOW band and PersLay and Optimal-Transport near-orthogonal to every other expert. The heterogeneous experts thus occupy largely distinct representation subspaces rather than redundant ones (baseline gate, single seed, benchmark data).]
 Recent theoretical work @sigmoid_moe2024 proves that sigmoid gating achieves
 higher sample efficiency by eliminating inter-expert competition.
 
@@ -1640,6 +1644,10 @@ or audit trail is unavailable --- ships as an opt-in configuration recommended f
 The architecture prioritizes _not getting worse_ over _getting better_ ---
 a perspective that aligns with financial regulators' emphasis
 on model risk management and operational resilience.
+Specifically, the kill-switch and fail-closed enforcement correspond to the FSC guideline's
+Auxiliary-means principle (§3, emergency stop for high-risk AI) and
+Financial-stability principle (§5.2, backup model plus post-hoc emergency stop) @koreafsc2024;
+as noted above, the fail-closed enforcement is currently opt-in, with default wiring a planned follow-up.
 
 *Feature engineering philosophy.*
 A deeper lesson from this work is that _what to observe_ matters more than _how to model_.
@@ -1834,7 +1842,7 @@ Two companion papers address the remaining scope.
 distillation @hinton2015 to LGBM @ke2017lightgbm, the two-tier
 fidelity gate semantics under cross-architecture distillation,
 multi-agent recommendation reason generation, regulatory compliance
-mapping for Korean FSS and EU AI Act requirements, and an HMAC-signed
+mapping for Korea's FSC Financial-Sector AI Guideline and EU AI Act requirements, and an HMAC-signed
 hash-chained per-prediction audit surface, optionally enriched by a
 causal attribution (CEH) / reliability (CG) pair from the companion
 loss-dynamics paper.
