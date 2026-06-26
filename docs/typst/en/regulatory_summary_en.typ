@@ -195,7 +195,7 @@
 
 = System Overview
 
-This is an AI system for Korea Post Financial check card product recommendations, built on a *heterogeneous-expert PLE (Progressive Layered Extraction)* multi-task learning architecture. It analyzes customer transaction history, demographics, and product holdings to simultaneously perform *13 prediction tasks* (click, purchase, churn, CLV, etc.). The trained deep learning model is *distilled* into LGBM (LightGBM) and served in real-time on AWS Lambda serverless infrastructure via a *3-layer fallback* (distilled LGBM → direct PLE → rule-based engine), ensuring the service never stops even under kill-switch activation. This architecture enables millisecond-level responses without GPU, achieving both model transparency and operational cost efficiency.
+This is an AI system for Korea Post Financial check card product recommendations, built on a *heterogeneous-expert PLE (Progressive Layered Extraction)* multi-task learning architecture. It analyzes customer transaction history, demographics, and product holdings to simultaneously perform *12 prediction tasks* (churn signal, product stability, NBA, cross-sell, etc.). The trained deep learning model is *distilled* into LGBM (LightGBM) and served in real-time on AWS Lambda serverless infrastructure via a *3-layer fallback* (distilled LGBM → direct PLE → rule-based engine), ensuring the service never stops even under kill-switch activation. This architecture enables millisecond-level responses without GPU, achieving both model transparency and operational cost efficiency.
 
 // ═══════════════════════════════════════════════════════════
 //  2. Regulatory Compliance Matrix

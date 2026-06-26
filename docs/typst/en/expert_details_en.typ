@@ -81,7 +81,7 @@
   - Per-expert mathematical background, input feature subset, uniform 64D output, financial-domain application.
   - FeatureRouter: each expert receives a subset declared by `target_experts` in `feature_groups.yaml` (deepfm=977D, temporal=116D, hgcn=58D, perslay=32D, causal=129D, lightgcn=955D, ot=95D, mlp=57D).
   - Task basket: 1 MLP expert (total 7 shared + 1 task).
-  - adaTT active on 13 tasks; GradSurgery was tested but not adopted (no gain + VRAM overhead).
+  - adaTT active on 12 tasks; GradSurgery was tested but not adopted (no gain + VRAM overhead).
 ]
 
 #v(1em)
@@ -668,7 +668,7 @@ Example: "Premium cardholders have high travel insurance adoption" may be due to
 confounder --- the card does not _cause_ insurance adoption.
 
 A/B testing is the gold standard but does not scale
-(13 tasks $times$ $N$ strategies = infeasible), is slow (weeks), and provides only
+(12 tasks $times$ $N$ strategies = infeasible), is slow (weeks), and provides only
 population-level ATE.
 
 == Alternative Comparison

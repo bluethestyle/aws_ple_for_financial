@@ -169,7 +169,7 @@
 )[
   #text(weight: "bold", fill: anthropic-accent)[Design vs. Implementation Note.]
   This document is written against the full-bank design (734D).
-  The current Santander benchmark implementation uses 1205D input (17 feature groups, 2026-04-28). Causal expert: 129D; OT expert: 95D. Refer to `outputs/phase0/feature_schema.json` for the current routing indices.
+  The current Santander benchmark implementation uses 1211D input (17 feature groups, 2026-04-28). Causal expert: 129D; OT expert: 95D. Refer to `outputs/phase0/feature_schema.json` for the current routing indices.
 ]
 
 #v(0.5em)

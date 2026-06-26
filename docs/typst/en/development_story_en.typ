@@ -172,7 +172,7 @@
     ]
     #v(0.5cm)
     #text(size: 9pt, fill: anthropic-muted)[
-      This document records the journey of building a 13-task, 7-expert\
+      This document records the journey of building a 12-task, 7-expert\
       PLE+adaTT recommendation system — without infrastructure budget,\
       using a single desktop GPU and a team of AI agents.
     ]
@@ -257,7 +257,7 @@ The on-prem system was not a prototype but a production-scale system: 80+ Airflo
 
 == Project Objective
 
-The existing financial product recommendation system was based on ALS (Alternating Least Squares) collaborative filtering. The goal was to replace it with a multi-task deep learning recommendation system built on PLE (Progressive Layered Extraction) + adaTT (Adaptive Task Transfer) architecture. The system processes 13 tasks through 7 expert networks, explicitly modeling inter-task relationships.
+The existing financial product recommendation system was based on ALS (Alternating Least Squares) collaborative filtering. The goal was to replace it with a multi-task deep learning recommendation system built on PLE (Progressive Layered Extraction) + adaTT (Adaptive Task Transfer) architecture. The system processes 12 tasks through 7 expert networks, explicitly modeling inter-task relationships.
 
 == Architecture Decision Journey
 
@@ -492,7 +492,7 @@ The initial Paper 2 design stored all 349-dimensional raw feature vectors × 1M 
 
 The blunt self-challenge --- "why are you storing every customer in Lance?" --- forced the diagnosis into focus. LanceDB's value is in *accumulating outcome-bearing cases over time* --- not in mirroring population-wide feature state as a snapshot. The correct unit is "one recommendation case = one inference log entry."
 
-The redesign had three parts. First, a `recommendation_cases` table is written after each Lambda invocation: user_id, timestamp, 13 task probabilities, L1 reasons, FDTVS scores. Second, DiagnosticCaseStore and TemporalFactStore were consolidated onto the same LanceDB instance, introducing no new database dependency. Third, the raw feature matrix dump was removed --- it can always be recomputed from the source parquet on demand.
+The redesign had three parts. First, a `recommendation_cases` table is written after each Lambda invocation: user_id, timestamp, 12 task probabilities, L1 reasons, FDTVS scores. Second, DiagnosticCaseStore and TemporalFactStore were consolidated onto the same LanceDB instance, introducing no new database dependency. Third, the raw feature matrix dump was removed --- it can always be recomputed from the source parquet on demand.
 
 Lesson: the right question when adopting a vector DB is *"what do we accumulate over time?"*, not *"what current state do we mirror?"* The first pattern leaves useful traces for audit and A/B analysis; the second produces a bloated cache of data that already lives elsewhere.
 
@@ -1172,7 +1172,7 @@ The core philosophy of the PLE architecture — Mixture of Experts — was appli
       #text(size: 11pt, fill: anthropic-text, weight: "bold")[Recommendation System]
       #v(4pt)
       #text(size: 10pt, fill: anthropic-text)[
-        • 13-task multi-task learning \
+        • 12-task multi-task learning \
         • 7-expert PLE network \
         • adaTT adaptive inter-task transfer \
         • Uncertainty weighting (Kendall et al.) \

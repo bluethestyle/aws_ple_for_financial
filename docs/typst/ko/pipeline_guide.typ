@@ -91,7 +91,7 @@
   #line(length: 30%, stroke: 0.5pt + anthropic-rule)
   #v(0.3cm)
 
-  #text(size: 11pt, fill: anthropic-text)[941K Users × 13 Tasks × 7 Shared Experts]
+  #text(size: 11pt, fill: anthropic-text)[941K Users × 12 Tasks × 7 Shared Experts]
   #v(0.5em)
   #text(size: 10pt, fill: anthropic-muted)[대상: ML 엔지니어 (운영자)]
   #v(1cm)
@@ -367,7 +367,7 @@ PLE 2-Phase Training:
   - 7 shared experts: deepfm, temporal_ensemble, hgcn, perslay,
                       causal, lightgcn, optimal_transport
   - 1 task expert: mlp (태스크별)
-  - 13 tasks (4 groups): binary 7 / multiclass 3 / regression 3  (18→13: deterministic-leakage 태스크 5개 제거)
+  - 12 tasks (4 groups): binary 7 / multiclass 2 / regression 3  (18→13: deterministic-leakage 태스크 5개 제거 → 13→12: segment_prediction 제거 2026-05-01)
   - Uncertainty weighting (Kendall et al.)
   - AMP (Mixed Precision) 필수 활성화
 ```
@@ -507,7 +507,7 @@ ablation 대상 feature group (총 17개; Santander v2 2026-04-28 기준):
 --removed-experts "hgcn,perslay"
 
 # 태스크 수 조절
---num-active-tasks 4  # 4/8/11/13
+--num-active-tasks 4  # 4/8/11/12
 
 # 구조 변형
 --disable-adatt          # adaTT 비활성화
@@ -549,7 +549,7 @@ ablation:
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
     spacing: (12pt, 18pt),
-    node((0,0), [PLE Teacher \ (GPU, 13 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
+    node((0,0), [PLE Teacher \ (GPU, 12 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
     edge((0,0), (0,1), "->", label: [Forward pass — soft labels (temperature=5.0) \ S3에 저장], label-side: right),
     node((0,1), [LGBM Students (CPU, per-task) \ loss = 0.3 × hard\_loss + 0.7 × soft\_loss \ num\_leaves: 127, n\_estimators: 500 \ Per-task fidelity validation (AUC gap < threshold)], fill: rgb("#e8f5e9"), width: 72mm),
     edge((0,1), (0,2), "->"),
@@ -726,14 +726,14 @@ config = build_config(
 
 ```yaml
 tasks:
-  - name: has_nba          # 태스크 이름 (고유)
+  - name: churn_signal     # 태스크 이름 (고유); 총 12개 태스크: binary 7, multiclass 2, regression 3
     type: binary           # binary | multiclass | regression
     loss: focal            # focal | ce | huber
     loss_params:
-      alpha: 0.90          # focal alpha (positive rate 반영)
+      alpha: 0.85          # focal alpha (positive rate 반영)
       gamma: 2.0
-    loss_weight: 2.5       # Uncertainty weighting 초기 가중치
-    label_col: has_nba     # 레이블 컬럼명
+    loss_weight: 2.0       # Uncertainty weighting 초기 가중치
+    label_col: churn_signal  # 레이블 컬럼명
 ```
 
 === training 섹션
@@ -852,7 +852,7 @@ grad_surgery:
     binary: [churn_signal, will_acquire_deposits, will_acquire_investments,
              will_acquire_accounts, will_acquire_lending, will_acquire_payments,
              top_mcc_shift]
-    multiclass: [nba_primary, segment_prediction, next_mcc]
+    multiclass: [nba_primary, next_mcc]
     regression: [product_stability, cross_sell_count, mcc_diversity_trend]
 ```
 

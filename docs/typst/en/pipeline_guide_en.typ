@@ -91,7 +91,7 @@
   #line(length: 30%, stroke: 0.5pt + anthropic-rule)
   #v(0.3cm)
 
-  #text(size: 11pt, fill: anthropic-text)[941K Users x 13 Tasks x 7 Shared Experts]
+  #text(size: 11pt, fill: anthropic-text)[941K Users x 12 Tasks x 7 Shared Experts]
   #v(0.5em)
   #text(size: 10pt, fill: anthropic-muted)[Target: ML Engineers (Operators)]
   #v(1cm)
@@ -344,7 +344,7 @@ Key components:
   - 7 shared experts: deepfm, temporal_ensemble, hgcn, perslay,
                       causal, lightgcn, optimal_transport
   - 1 task expert: mlp (per task)
-  - 13 tasks (4 tiers): 7 binary / 3 multiclass / 3 regression  (18→13: 5 deterministic-leakage tasks removed)
+  - 12 tasks (4 tiers): 7 binary / 2 multiclass / 3 regression  (18→13: 5 deterministic-leakage tasks removed → 13→12: segment_prediction removed 2026-05-01)
   - Uncertainty weighting (Kendall et al.)
   - AMP (Mixed Precision) must be enabled
 ```
@@ -484,7 +484,7 @@ Available feature groups for ablation (17 total; 2026-04-28 Santander v2):
 --removed-experts "hgcn,perslay"
 
 # Adjust task count
---num-active-tasks 4  # 4/8/11/13
+--num-active-tasks 4  # 4/8/11/12
 
 # Structural variants
 --disable-adatt          # Disable adaTT
@@ -526,7 +526,7 @@ ablation:
     edge-stroke: 0.7pt + luma(80),
     node-corner-radius: 3pt,
     spacing: (12pt, 18pt),
-    node((0,0), [PLE Teacher \ (GPU, 13 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
+    node((0,0), [PLE Teacher \ (GPU, 12 tasks)], fill: rgb("#d6e6f0"), width: 52mm),
     edge((0,0), (0,1), "->", label: [Forward pass — soft labels (temperature=5.0) \ Store in S3], label-side: right),
     node((0,1), [LGBM Students (CPU, per-task) \ loss = 0.3 × hard\_loss + 0.7 × soft\_loss \ num\_leaves: 127, n\_estimators: 500 \ Per-task fidelity validation (AUC gap < threshold)], fill: rgb("#e8f5e9"), width: 72mm),
     edge((0,1), (0,2), "->"),
@@ -700,7 +700,7 @@ config = build_config(
 
 ```yaml
 tasks:
-  - name: churn_signal     # Task name (unique); 13 tasks total: 7 binary, 3 multiclass, 3 regression
+  - name: churn_signal     # Task name (unique); 12 tasks total: 7 binary, 2 multiclass, 3 regression
     type: binary           # binary | multiclass | regression
     loss: focal            # focal | ce | huber
     loss_params:
@@ -826,7 +826,7 @@ grad_surgery:
     binary: [churn_signal, will_acquire_deposits, will_acquire_investments,
              will_acquire_accounts, will_acquire_lending, will_acquire_payments,
              top_mcc_shift]
-    multiclass: [nba_primary, segment_prediction, next_mcc]
+    multiclass: [nba_primary, next_mcc]
     regression: [product_stability, cross_sell_count, mcc_diversity_trend]
 ```
 

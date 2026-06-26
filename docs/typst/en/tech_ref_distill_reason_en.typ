@@ -803,7 +803,7 @@ PLE-adaTT Teacher (training)
         |-> Lambda FallbackRouter
             |-> Layer 1: LGBM ONNX (primary)
             |-> Layer 2: PLE SageMaker Endpoint (failover)
-            |-> Layer 3: Rule Engine (13 tasks, Financial DNA routing)
+            |-> Layer 3: Rule Engine (12 tasks, Financial DNA routing)
           |-> FD-TVS Scoring (4-Stage)
             |-> Feature Grounding (IG -> Reverse Mapping -> Context Assembly)
               |-> Recommendation Reason
@@ -870,17 +870,17 @@ The Lambda serving layer implements a `FallbackRouter` that selects among three 
   [*Layer*], [*Mechanism*], [*Produces*],
   [Layer 1: Distilled LGBM], [ONNX model via Lambda; Platt-calibrated per task], [`scores`, `contributing_features` (IG top-5)],
   [Layer 2: Direct PLE], [SageMaker Endpoint; activated if LGBM SKIP or Lambda cold-start failure], [`scores`, `contributing_features` (IG top-5)],
-  [Layer 3: Rule Engine], [Python rule set: 13 task-specific rules + Financial DNA feature routing], [`scores` (heuristic), `contributing_features` (rule-based)],
+  [Layer 3: Rule Engine], [Python rule set: 12 task-specific rules + Financial DNA feature routing], [`scores` (heuristic), `contributing_features` (rule-based)],
 )
 
 All three layers produce `contributing_features` to maintain explanation compliance under AI Basic Act Art. 34 and Financial Consumer Protection Act Art. 19, even in degraded-mode serving.
 
 === Rule Engine Design
 
-The rule engine implements 13 task-specific rules organized around Financial DNA feature routing:
+The rule engine implements 12 task-specific rules organized around Financial DNA feature routing:
 
 - *DNA routing:* permanent income customers ($"CV" < 0.2$) → long-term product rules; transitory customers ($"CV" >= 0.5$) → short-term, low-commitment rules
-- *Task rules:* each of the 13 tasks has a heuristic score function based on 3--5 interpretable features (e.g., churn rule uses recency + frequency + support call count)
+- *Task rules:* each of the 12 tasks has a heuristic score function based on 3--5 interpretable features (e.g., churn rule uses recency + frequency + support call count)
 - *contributing_features:* the rule selects the top-3 features that triggered the rule and returns them as `contributing_features` for the reason generation pipeline
 
 == LLM Distillation: Gemini Teacher $arrow$ Qwen Student (QLoRA)

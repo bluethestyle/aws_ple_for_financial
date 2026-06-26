@@ -169,7 +169,7 @@
 )[
   #text(weight: "bold", fill: anthropic-accent)[설계 vs 구현 참고.]
   본 문서는 풀뱅크 설계(734D)를 기준으로 작성되었습니다.
-  현재 Santander 벤치마크 구현은 1205D 입력 (17 feature groups, 2026-04-28)이며, Causal expert 129D, OT expert 95D입니다. 실제 라우팅 인덱스는 `outputs/phase0/feature_schema.json` 참조.
+  현재 Santander 벤치마크 구현은 1211D 입력 (17 feature groups, 2026-04-28)이며, Causal expert 129D, OT expert 95D입니다. 실제 라우팅 인덱스는 `outputs/phase0/feature_schema.json` 참조.
 ]
 
 #v(0.5em)

@@ -490,10 +490,10 @@ The EU AI Act is likely to classify financial AI recommendation systems as *high
     All recommendation outputs automatically include AI usage labeling],
     [Explain system operation], [2-Layer recommendation rationale (L1 Template + L2 LLM)\
     3-Agent pipeline (Feature Selector $arrow$ Reason Generator $arrow$ Safety Gate)],
-    [Disclose input data specification], [Feature schema auto-documentation (~349D input / 403D post-Phase-0 current / 734D full-bank design)\
+    [Disclose input data specification], [Feature schema auto-documentation (1211D model input / 403D post-Phase-0 raw columns / 734D full-bank design)\
     Training data source, scope, and pseudonymization status recorded],
     [Disclose performance level], [Model card auto-generation (architecture, performance, feature importance)\
-    Per-task independent metric tracking (13 tasks: avg_auc binary / avg_f1_macro multiclass / avg_mae regression)],
+    Per-task independent metric tracking (12 tasks: avg_auc binary / avg_f1_macro multiclass / avg_mae regression)],
     [Log generation obligation], [HMAC + hash chain audit log (S3 Object Lock WORM)\
     Full recommendation history Parquet archiving],
   )
@@ -711,7 +711,7 @@ The 3-layer fallback architecture ensures that service never completely stops --
   [Layer], [Mechanism], [When Active],
   [Layer 1 (Primary)], [Distilled LGBM Student via Lambda + FallbackRouter], [Normal operation],
   [Layer 2 (Failover)], [Direct PLE Teacher inference (SageMaker Endpoint)], [Student degraded or unavailable],
-  [Layer 3 (Safety Net)], [Rule-based engine: 13-task rules + Financial DNA routing], [Both model layers unavailable],
+  [Layer 3 (Safety Net)], [Rule-based engine: 12-task rules + Financial DNA routing], [Both model layers unavailable],
 )
 
 *Regulatory significance:* Even under CRITICAL kill-switch activation, Layer 3 guarantees customers receive rule-based product guidance --- preventing a complete service blackout. All three layers produce `contributing_features` for explanation compliance.
@@ -1068,7 +1068,7 @@ On-premises agents use the *same rule engine, checklist, and tool catalog* as AW
   stroke: 0.5pt,
   [*Feature*], [*On-Premises*], [*AWS*],
   [Checklist evaluation], [Identical (48 items)], [Identical],
-  [Consensus mechanism], [2-Round hybrid (Qwen 14B × 5+2)], [Independent voting (Bedrock Claude Sonnet 4.6 × 3 in parallel). *Unanimous PASS* required; any dissent → WARN + minority_report preserved],
+  [Consensus mechanism], [2-Round hybrid (Qwen 14B × 5+2)], [Independent voting (Bedrock Claude Sonnet 4.6 × 3, run sequentially / parallel=False). *Unanimous PASS* required; any dissent → WARN + minority_report preserved],
   [Minority report], [Identical — locked at Round 1], [Identical — all dissent preserved],
   [Operator dialog], [Not available — structured reports only], [Sonnet Tool Use conversation],
   [Case store], [Identical (LanceDB)], [Identical],

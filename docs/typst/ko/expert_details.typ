@@ -159,7 +159,7 @@
   - 각 전문가의 수학적 배경, 입력 피처 구성, 출력 차원(64D 균일), 금융 도메인 적용
   - FeatureRouter: `feature_groups.yaml`의 `target_experts`로 서브셋 입력 (deepfm=977D, temporal=116D, hgcn=58D, perslay=32D, causal=129D, lightgcn=955D, ot=95D — 7 shared experts. mlp=57D 는 PLE CGC 의 task-specific tower 로 별도)
   - Task basket: 1개 MLP 전문가 (총 7 shared + 1 task)
-  - 13 task에서의 adaTT 활성, GradSurgery는 실험했으나 개선 미확인 + VRAM 부하로 비채택
+  - 12 task에서의 adaTT 활성, GradSurgery는 실험했으나 개선 미확인 + VRAM 부하로 비채택
 ]
 
 #v(1em)
@@ -741,7 +741,7 @@ $ cal(L)_"BPR" = -sum_((u, i^+, i^-)) log sigma(hat(y)_(u i^+) - hat(y)_(u i^-))
 교란 변수(confounder)에 의한 것일 수 있다 --- 카드가 보험 가입을 _야기_하는 것이 아니다.
 
 A/B 테스트는 gold standard이지만 규모 확장이 불가능하다
-(13개 태스크 $times$ $N$개 전략 = 실행 불가), 느리고 (수 주 소요),
+(12개 태스크 $times$ $N$개 전략 = 실행 불가), 느리고 (수 주 소요),
 집단 수준 ATE만 제공한다.
 
 == 대안 비교
@@ -1008,9 +1008,9 @@ $ w_(i arrow j) = "softmax"(bold(R)_(i,j) / T) $
     columns: (auto, auto, auto, auto),
     stroke: 0.5pt,
     [*Group*], [*Tasks*], [*Intra-strength*], [*Business Meaning*],
-    [engagement], [has\_nba, engagement\_score, cross\_sell\_count,\ will\_acquire\_deposits, will\_acquire\_investments,\ will\_acquire\_accounts, will\_acquire\_lending,\ will\_acquire\_payments], [0.8], [고객 관여/전환],
-    [lifecycle], [churn\_signal, product\_stability,\ tenure\_stage, segment\_prediction], [0.7], [고객 생애주기],
-    [value], [income\_tier, spend\_level, nba\_primary], [0.6], [고객 가치/행동],
+    [engagement], [cross\_sell\_count, will\_acquire\_deposits,\ will\_acquire\_investments, will\_acquire\_accounts,\ will\_acquire\_lending, will\_acquire\_payments], [0.8], [고객 관여/전환],
+    [lifecycle], [churn\_signal, product\_stability,\ segment\_prediction], [0.7], [고객 생애주기],
+    [value], [nba\_primary], [0.6], [고객 가치/행동],
     [consumption], [next\_mcc, mcc\_diversity\_trend, top\_mcc\_shift], [0.7], [소비 패턴],
   ),
   caption: [adaTT 태스크 그룹 정의. Inter-group strength: 0.3.],
@@ -1083,7 +1083,7 @@ $tau_"neg" = -0.1$ (0이 아님)로 약한 음의 상관(noise 가능성)을 허
 - Hypernetworks (Ha et al., 2017)의 경량 변형: 학습된 task embedding 대신 관측된 gradient를
   conditioning signal로 사용하여 변화하는 태스크 관계에 zero-delay 적응.
 - `detect_negative_transfer()` API가 각 태스크의 적대적 태스크 목록을 반환
-  (예: `{"churn_signal": ["has_nba", "nba_primary"]}`).
+  (예: `{"churn_signal": ["will_acquire_lending", "nba_primary"]}`).
 
 #pagebreak()
 
