@@ -2100,6 +2100,53 @@ def main() -> None:
         start_time, epochs, ple_config,
     )
 
+    # ---- 7b. Expert Redundancy (CCA) analysis — config-gated ----
+    # Wires core.evaluation.expert_redundancy into the training job so each
+    # run emits expert_redundancy.json (mean canonical correlation between
+    # shared experts) next to eval_metrics. Gated on the existing
+    # analysis.expert_redundancy.enabled flag. Best-effort: an analysis
+    # failure never fails the training run. This is the measurement half of
+    # the OCP (orthogonal-complement residual recovery) loop — it lets us
+    # compare expert representation overlap across the cgc/complement/
+    # orthogonal fusion variants.
+    _redund_cfg = config.get("analysis", {}).get("expert_redundancy", {})
+    if _redund_cfg.get("enabled", False):
+        try:
+            from core.evaluation.expert_redundancy import ExpertRedundancyAnalyzer
+
+            _analyzer = ExpertRedundancyAnalyzer(
+                model,
+                n_components=int(_redund_cfg.get("n_components", 10)),
+                min_samples=int(_redund_cfg.get("min_samples", 256)),
+            )
+            _redund = _analyzer.analyze(
+                val_loader,
+                max_batches=int(_redund_cfg.get("max_batches", 20)),
+            )
+            if _redund is not None:
+                logger.info("Expert redundancy (CCA):\n%s", _redund.summary())
+                _redund_payload = _redund.to_dict()
+                _redund_payload["fusion_type"] = getattr(
+                    getattr(model, "extraction_layers", [None])[0],
+                    "fusion_type", "unknown",
+                )
+                for _d in {output_dir, model_dir}:
+                    os.makedirs(_d, exist_ok=True)
+                    with open(os.path.join(_d, "expert_redundancy.json"), "w") as _f:
+                        json.dump(_redund_payload, _f, indent=2)
+                logger.info("Saved expert_redundancy.json (%d experts)",
+                            len(_redund.expert_names))
+            else:
+                logger.warning(
+                    "Expert redundancy analysis returned None "
+                    "(need >=2 shared experts and >=%d samples); skipped",
+                    int(_redund_cfg.get("min_samples", 256)),
+                )
+        except Exception:  # best-effort — never fail training on analysis
+            logger.exception(
+                "Expert redundancy (CCA) analysis failed; continuing"
+            )
+
     # ---- 8. Audit log — training completed (optional, non-blocking) ----
     _audit_cfg = config.get("monitoring", {}).get("audit", {})
     if _audit_cfg.get("enabled", False):

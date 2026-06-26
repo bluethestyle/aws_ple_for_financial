@@ -272,7 +272,9 @@ class CGCLayer(nn.Module):
         self._neas_store: bool = False
         self._neas_last_state: Dict[int, Tuple[torch.Tensor, torch.Tensor]] = {}
 
-        _valid_fusion = ("cgc", "adatt_sp", "residual_complement", "eceb")
+        _valid_fusion = (
+            "cgc", "adatt_sp", "residual_complement", "residual_orthogonal", "eceb",
+        )
         if fusion_type not in _valid_fusion:
             raise ValueError(
                 f"fusion_type must be one of {_valid_fusion}, got {fusion_type!r}"
@@ -289,8 +291,11 @@ class CGCLayer(nn.Module):
 
         # Residual recovery (Paper 3): recover signal from experts *not*
         # selected by the gate, within the same task. Mutually exclusive
-        # with adatt_sp at this layer.
-        if fusion_type == "residual_complement":
+        # with adatt_sp at this layer.  Both the ``complement`` (gate-inverse
+        # full residual) and ``orthogonal`` (OCP — gate-inverse residual with
+        # the primary direction projected out) methods use the same learnable
+        # scalar mixing weight ``α``.
+        if fusion_type in ("residual_complement", "residual_orthogonal"):
             self.residual_recovery_weight = nn.Parameter(
                 torch.tensor(float(native_residual_weight_init))
             )
@@ -448,6 +453,28 @@ class CGCLayer(nn.Module):
                 # Avoid division by zero when the gate saturates.
                 complement = complement / (complement_sum + 1e-6)
                 residual = (complement.unsqueeze(-1) * all_outs).sum(dim=1)
+                gated = gated + self.residual_recovery_weight * residual
+
+            # Orthogonal-complement projection --- OCP (Paper 3).
+            # Like residual_complement, but before aggregating the gate-
+            # inverse residual we project each expert's output onto the
+            # *orthogonal complement* of the gated primary direction:
+            #   e_perp = e - (<e, p> / <p, p>) p,   p = gated primary.
+            # The residual therefore carries only the part of the down-
+            # weighted experts that is NOT already represented by the
+            # primary (genuinely new signal), whereas residual_complement
+            # adds the full complement including the redundant component.
+            elif self.fusion_type == "residual_orthogonal":
+                primary = gated  # (batch, hidden) — the gate-selected direction
+                pp = (primary * primary).sum(dim=-1, keepdim=True)  # (batch, 1)
+                # <e_k, p> for every expert k: (batch, num_total)
+                dot = (all_outs * primary.unsqueeze(1)).sum(dim=-1)
+                coef = dot / (pp + 1e-6)  # (batch, num_total)
+                # Project the primary direction out of every expert output.
+                all_perp = all_outs - coef.unsqueeze(-1) * primary.unsqueeze(1)
+                complement = (1.0 - gate_weights).clamp(min=0.0)  # (batch, num_total)
+                complement = complement / (complement.sum(dim=-1, keepdim=True) + 1e-6)
+                residual = (complement.unsqueeze(-1) * all_perp).sum(dim=1)  # (batch, hidden)
                 gated = gated + self.residual_recovery_weight * residual
 
             # ECEB (Paper 3 MV): uncertainty-conditioned task-agnostic

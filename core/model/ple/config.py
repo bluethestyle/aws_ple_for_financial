@@ -219,11 +219,13 @@ class ResidualRecoveryConfig:
       - ``complement``: primary = gated sum; residual = weighted sum with
         (1 - gate) weights renormalised over the expert axis; output =
         primary + α * residual (α learnable scalar).
-      - ``orthogonal``: project each expert's output onto the complement
-        of the primary direction before aggregating as residual (Paper 3
-        future extension).
+      - ``orthogonal``: OCP — project each expert's output onto the
+        orthogonal complement of the gated primary direction
+        (``e_perp = e - (<e, p>/<p, p>) p``) before aggregating the
+        (1 - gate) residual, so only the component *not* already captured
+        by the primary is added back. Implemented (Paper 3).
       - ``dualgate``: learn a second per-task gate explicitly for residual
-        weighting (Paper 3 future extension).
+        weighting (Paper 3 future extension; not yet implemented).
 
     Mutually exclusive with AdaTT-sp at the CGC gate layer.
     """
