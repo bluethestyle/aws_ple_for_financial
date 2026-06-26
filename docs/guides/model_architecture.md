@@ -30,12 +30,14 @@ multi-task learning architecture that solves the "seesaw" problem in multi-task
 learning -- where improving one task degrades another.
 
 ```
-                Input Features (~349D raw; 403D after Phase 0 log-transform)
+                Input Features (full santander tensor = 1211D, 17 feature groups;
+                txn_lag_tensor=800D dominant. The legacy ~349D/403D figures are
+                the v1 reduced config without the lag/multi-hot groups.)
                                |
                     FeatureRouter [ACTIVE]
                     (auto-built from feature_groups.yaml target_experts)
           /         |         |        |         |         |         \
-      [109D]     [129D]     [27D]    [32D]    [103D]   [100D]     [69D]   [~349D]
+      [v1:109D]  [v1:129D]  [27D]   [32D]   [v1:103D] [100D]    [v1:69D]  [full tensor]
         |           |         |        |         |         |         |       |
    +--------+  +------+  +------+  +------+  +------+  +------+  +------+ +-----+
    | DeepFM |  |Temp. |  | HGCN |  |Pers- |  |Causal|  |Light-|  | OT   | | MLP |
@@ -64,9 +66,9 @@ learning -- where improving one task degrades another.
 | `PLEConfig` | `core/model/ple/config.py` | All model hyperparameters — constructed exclusively by `config_builder.py` (single source of truth) |
 | `build_ple_config()` | `core/model/config_builder.py` | Single source of truth for PLEConfig assembly — train.py calls only this function |
 | `PLEModel` | `core/model/ple/model.py` | Main model class |
-| `CGCLayer` | `core/model/ple/gating.py` | Customized Gate Control (softmax gate) |
+| `CGCLayer` | `core/model/ple/experts.py` | Customized Gate Control (softmax gate). NOTE: `core/model/ple/gating.py` holds the separate, unused `SoftmaxGate`/`AttentionGate`/`MLPGate` classes, not `CGCLayer`. |
 | `GradSurgery` | `core/model/ple/grad_surgery.py` | Alternative to adaTT; tested but not adopted (see §GradSurgery or Paper 1 §5.4) |
-| `AdaTT` | `core/model/ple/adatt.py` | Adaptive Task Transfer (disabled at 13-task scale; 156-pair instability) |
+| `AdaTT` | `core/model/ple/adatt.py` | Adaptive Task Transfer (disabled at 12-task scale; 132-pair instability) |
 | `FeatureRouter` | `core/model/ple/feature_router.py` | Expert input routing — **active**, auto-built from `feature_groups.yaml` `target_experts`; routes heterogeneous input dims per expert |
 | `ExpertRegistry` | `core/model/experts/registry.py` | Expert plugin system |
 | `TaskRegistry` | `core/task/registry.py` | Task head plugin system |
@@ -86,7 +88,7 @@ Expert outputs are projected to a common `output_dim` (default 64) before the
 CGC gate concatenates them, so gating arithmetic remains dimension-agnostic.
 
 **Paper 1 finding**: **Softmax gating outperforms sigmoid in heterogeneous MTL settings.**
-With 13 tasks spanning 7 binary, 3 multiclass, and 3 regression types, softmax provides
+With 12 tasks spanning 7 binary, 2 multiclass, and 3 regression types, softmax provides
 protective isolation of minority-type tasks from majority-type gradient corruption.
 This reverses the conventional preference for sigmoid found in homogeneous-task literature.
 Use `gate_type: softmax` (default); `sigmoid` is available for ablation only.
@@ -121,15 +123,57 @@ multiple experts rather than collapsing to a single one:
 L_entropy = -entropy_lambda * sum(gate_weights * log(gate_weights))
 ```
 
+### Fusion family (CGC gate variants)
+
+The CGC gate supports a family of mutually exclusive `fusion_type` options,
+selected at the gate. All are **default-off except `cgc`**:
+
+| `fusion_type` | Description | Default |
+|---|---|---|
+| `cgc` | Customized Gate Control softmax fusion (production default) | **on** |
+| `adatt_sp` | adaTT structured-prior fusion variant | off |
+| `residual_complement` | M1 — complementary residual recovery | off |
+| `residual_orthogonal` | **OCP** — orthogonal-complement residual recovery (직교여공간 잔차 복원) | off |
+| `eceb` | Expert-conditioned ensemble blending | off |
+
+These are mutually exclusive at the gate — exactly one is active per run.
+**OCP** (`residual_orthogonal`) was committed in `50b02b6` (2026-06-26) in
+`core/model/ple/experts.py`; it recovers the residual that survives projection
+onto the orthogonal complement of the fused expert subspace. Select it with
+`residual_recovery.enabled: true` + `method: orthogonal`. Alongside it, the CCA
+`ExpertRedundancyAnalyzer` is wired into `containers/training/train.py`
+(config-gated `analysis.expert_redundancy.enabled`, default-on, emits
+`expert_redundancy.json`). Ablation scripts: `scripts/run_sagemaker_ocp.py`
+(3-way Spot ablation baseline/M1/OCP), `scripts/run_expert_redundancy.py`
+(standalone CCA).
+
+The active fusion variant is resolved at the CGC gate via the `fusion_type`
+constructor argument (one of `cgc | adatt_sp | residual_complement |
+residual_orthogonal | eceb`). For the residual-recovery family it is driven by
+the `model.residual_recovery` config block (HP overrides:
+`use_residual_recovery=true`, `residual_method=orthogonal`):
+
+```yaml
+model:
+  residual_recovery:
+    enabled: false              # set true to select a residual-recovery fusion
+    method: complement          # complement (M1) | orthogonal (OCP) | dualgate
+    weight_init: 0.5
+```
+
+Set `enabled: true` + `method: orthogonal` to run OCP; `method: complement`
+runs M1.
+
 ---
 
 ## Adaptive Task Transfer (adaTT)
 
-> **Status (Paper 1 finding, revised 2026-04-17)**: At 13-task scale the
+> **Status (Paper 1 finding, revised 2026-04-17)**: At 12-task scale the
 > loss-level adaTT mechanism is **null** after correcting five
 > implementation bugs — ΔAUC = −0.001 vs PLE-only baseline, within
-> single-seed measurement noise. An earlier draft reported −0.019 and
-> attributed it to algorithmic instability; the corrected measurements
+> single-seed measurement noise. An earlier draft reported −0.019 in the
+> 13-task heterogeneous setting and attributed it to algorithmic
+> instability; the corrected measurements
 > locate the cause in the implementation rather than the mechanism.
 > **GradSurgery was evaluated as an alternative and was *not* adopted**
 > either — it matched adaTT within noise and added non-trivial VRAM
@@ -151,13 +195,13 @@ between related tasks while blocking negative transfer.
 4. **Negative transfer detection**: If affinity drops below
    `negative_transfer_threshold`, transfer is zeroed out.
 
-### Why adaTT fails at 13-task scale
+### Why adaTT fails at 12-task scale
 
-With 13 tasks, there are $13 \times 12 = 156$ directed transfer pairs.
+With 12 tasks, there are $12 \times 11 = 132$ directed transfer pairs.
 Given only 7 active affinity-measurement epochs (10 total minus 3 warmup),
 each pair receives insufficient gradient samples, producing noisy affinity
 estimates that corrupt transfer. The root cause is a scaling mismatch: the
-original adaTT paper validated on 2–4 tasks, not 13.
+original adaTT paper validated on 2–4 tasks, not 12.
 
 ### Configuration
 
@@ -183,8 +227,9 @@ model:
         members: [churn_signal, top_mcc_shift]
         intra_strength: 0.7
       lifecycle:
-        members: [segment_prediction, will_acquire_deposits, will_acquire_cards,
-                  will_acquire_loans, will_acquire_funds, will_acquire_insurance]
+        members: [will_acquire_deposits, will_acquire_investments,
+                  will_acquire_accounts, will_acquire_lending,
+                  will_acquire_payments]
         intra_strength: 0.7
       value:
         members: [nba_primary, cross_sell_count]
@@ -203,8 +248,8 @@ model:
 > are from the ablation study; production deployment uses PLE softmax
 > without GradSurgery or adaTT.
 
-GradSurgery was evaluated as an alternative to adaTT at 13-task scale. Instead
-of estimating all 156 pair-wise affinities, it groups tasks into 3 task-type
+GradSurgery was evaluated as an alternative to adaTT at 12-task scale. Instead
+of estimating all 132 pair-wise affinities, it groups tasks into 3 task-type
 buckets (binary / multiclass / regression) and projects conflicting gradients
 between these groups using PCGrad-style cosine projection. The experiment showed
 no meaningful AUC/F1 improvement over the PLE-only baseline while incurring
@@ -214,8 +259,8 @@ significant VRAM overhead due to the retained computation graph.
 
 | | adaTT (post-bugfix) | GradSurgery |
 |---|---|---|
-| Transfer pairs | 156 (13×12), loss-level hybrid | 3 (task-type groups), gradient-level PCGrad |
-| Stability at 13 tasks | Acceptable after 5 impl bug fixes | Stable |
+| Transfer pairs | 132 (12×11), loss-level hybrid | 3 (task-type groups), gradient-level PCGrad |
+| Stability at 12 tasks | Acceptable after 5 impl bug fixes | Stable |
 | Ablation result (AUC) | −0.001 vs PLE-softmax (within noise) | within noise vs PLE-softmax |
 | VRAM overhead | Low | Non-trivial (`retain_graph`) |
 | Warmup required | 10 epochs | None |
@@ -231,7 +276,7 @@ model:
       binary:   [churn_signal, will_acquire_deposits, will_acquire_investments,
                  will_acquire_accounts, will_acquire_lending, will_acquire_payments,
                  top_mcc_shift]
-      multiclass: [nba_primary, segment_prediction, next_mcc]
+      multiclass: [nba_primary, next_mcc]
       regression: [product_stability, cross_sell_count, mcc_diversity_trend]
     projection_strength: 1.0   # 1.0 = full PCGrad projection (ablation reproduction only)
 
@@ -748,12 +793,20 @@ tasks:
 ```yaml
 model:
   # Global dimensions
-  input_dim: 403               # Total feature dim after Phase 0 (349D raw + 54 log-transform copies).
+  input_dim: 1211              # Full santander feature tensor (17 groups;
+                               # txn_lag_tensor=800D dominant). Derived
+                               # dynamically from feature_schema.json — never
+                               # hardcoded. (403D = raw column count after the
+                               # Phase 0 preprocessing step, a different
+                               # quantity; legacy ~349D is stale.)
                                # With FeatureRouter active, each expert receives a
-                               # routed subset: deepfm=109D, temporal_ensemble=129D,
-                               # hgcn=27D, perslay=32D, causal=103D, lightgcn=100D,
-                               # optimal_transport=69D.
-                               # input_dim is derived dynamically from feature_schema.json.
+                               # routed subset. The canonical full-config routed
+                               # dims are tabulated in feature_engineering.md
+                               # (deepfm/lightgcn carry the 800D lag tensor). The
+                               # per-expert figures below — deepfm=109D,
+                               # temporal_ensemble=129D, hgcn=27D, perslay=32D,
+                               # causal=103D, lightgcn=100D, optimal_transport=69D —
+                               # are the v1 / reduced-config view (no lag tensor).
   task_expert_output_dim: 32
 
   # Task definitions

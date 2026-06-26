@@ -208,7 +208,7 @@ if not result.passed:
 ### Per-Task Loss 계산 흐름
 
 ```
-Task Towers (13개 출력)
+Task Towers (12개 출력)
     ↓
 ┌──────────────────────────────────────────────────┐
 │ Per-task loss 계산                                 │
@@ -221,7 +221,7 @@ Task Towers (13개 출력)
 │   "churn_signal": 0.567,     # focal(alpha=0.85)  │
 │   "product_stability": 1.23, # huber              │
 │   "nba_primary": 0.890,      # ce(auto weights)   │
-│   ...                         # 13 tasks total     │
+│   ...                         # 12 tasks total     │
 │ }                                                  │
 ├──────────────────────────────────────────────────┤
 │ Auxiliary losses                                    │
@@ -324,7 +324,7 @@ training:
 ## Knowledge Distillation (Stage 9)
 
 ```
-PLE Teacher (GPU, 13 tasks)
+PLE Teacher (GPU, 12 tasks)
     ↓ Forward pass on full dataset
     ↓ Soft labels (temperature=5.0) + hard labels
     ↓ S3에 저장
@@ -631,7 +631,7 @@ run = sagemaker.experiments.Run(..., sagemaker_session=Session(boto_session=boto
   "completed_stages": ["adapter", "temporal_prep", "schema", "encryption", "features", "labels", "leakage", "sequences", "dataloader", "training"],
   "artifacts": {
     "features": {"path": "features.parquet", "rows": 941132, "dim": 512},
-    "labels": {"path": "labels.parquet", "tasks": 13},
+    "labels": {"path": "labels.parquet", "tasks": 12},
     "training": {"best_val_loss": 0.234, "epochs": 50}
   },
   "start_time": "2026-03-20T23:07:04"
@@ -832,7 +832,7 @@ ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
 | 2-Phase | trainer.py 내부 로직 | SageMaker Job 2개 분리 | 각 Phase 독립 재실행 가능 |
 | 데이터 로딩 | TensorDataset + PLEDataset 이중 | **PyArrow zero-copy** + cross-sectional auto-detect split | pandas 없음, 자동 split 감지 |
 | 학습 루프 | 인라인 루프 + PLETrainer 이중 | **PLETrainer 단일** (AMP/callbacks/체크포인트) | 일관성 |
-| 태스크 수 | 16개 | **13개** (has_nba → nba_primary 통합; Tier 5 txn-based NBA 포함) | 거래 시퀀스 활용, 중복 제거 |
+| 태스크 수 | 16개 | **12개** (has_nba → nba_primary 통합, segment_prediction 제거; Tier 5 txn-based NBA 포함) | 거래 시퀀스 활용, 중복 제거 |
 | Loss 함수 | 코드 내 하드코딩 | **build_loss() + focal_alpha calibrated** | positive rate 반영 |
 | Loss 가중치 | 불확실성 (미활성화) | **Uncertainty weighting 활성화** | 자동 밸런싱 |
 | 모델 구조 | PLE + adaTT | **+ 7 heterogeneous experts + Evidential + SAE + AMP FP32 loss** | 불확실성 + 해석 가능성 |

@@ -26,21 +26,22 @@ python -m venv .venv
 source .venv/bin/activate      # Linux / macOS
 # .venv\Scripts\activate       # Windows
 
-# Core install (CPU, no AWS SDK)
+# Core install — bundles the AWS SDK (boto3, sagemaker) and dev tools
 pip install -e ".[dev]"
 
-# With AWS support
-pip install -r requirements-aws.txt
-
 # With GPU support (cuDF / CUDA)
-pip install -r requirements-gpu.txt
+pip install -e ".[gpu]"
 ```
+
+AWS dependencies (`boto3`, `sagemaker`) ship in the core install — there is
+no separate `requirements-aws.txt`. The SageMaker training overlay is
+`requirements.txt`, baked into the training container image.
 
 Key packages:
 
 | Package | Purpose |
 |---|---|
-| `torch` | PLE model, 7 expert networks, loss functions |
+| `torch` | PLE model, 7 shared + 1 task expert networks, loss functions |
 | `duckdb` | Primary DataFrame backend — fast columnar Parquet I/O |
 | `lightgbm` | Distilled student model (CPU inference) |
 | `pandas`, `numpy`, `scikit-learn` | Small-scale utilities, final tensor conversion |
@@ -65,8 +66,10 @@ Output lands in `data/benchmark/`.
 
 ## 3. Phase 0 — Feature Engineering
 
-Phase 0 reads raw Parquet files, runs 10 feature generators (TDA, HMM, HGCN,
-Mamba, etc.), applies 3-stage normalization, and writes training-ready tensors.
+Phase 0 reads raw Parquet files, runs the 11 feature generators referenced in
+the santander config (16 generator classes are registered overall — TDA, HMM,
+HGCN, Mamba, etc.), applies 3-stage normalization, and writes training-ready
+artifacts.
 
 DuckDB is the data backend throughout this phase — no pandas for large-scale
 loads.
@@ -74,9 +77,9 @@ loads.
 The adapter only converts raw data to a standardized DataFrame (CLAUDE.md §1.2);
 Phase 0 as a whole is driven by `PipelineRunner` (`core/pipeline/runner.py`),
 which runs preprocessing → feature generation → label derivation →
-3-stage normalization → tensor save. Trigger Phase 0 through the training
+3-stage normalization → artifact save. Trigger Phase 0 through the training
 entry point with `--phase0-only`, or let `train.py` execute it implicitly
-when `outputs/phase0/*.pt` is missing:
+when the Phase 0 artifacts under `outputs/phase0/` are missing:
 
 ```bash
 PYTHONPATH=. python containers/training/train.py \
@@ -85,31 +88,38 @@ PYTHONPATH=. python containers/training/train.py \
   --phase0-only
 ```
 
-Phase 0 produces:
+Phase 0 produces (real `PipelineRunner` artifacts):
 
 ```
 outputs/phase0/
-  train.pt / val.pt / test.pt   # Training-ready tensors
-  feature_stats.json            # Per-feature statistics (zero-variance, NaN %)
-  label_stats.json              # Class balance + positive rates
-  feature_schema.json           # Column names, group ranges, scaler state
+  features.parquet     # Post-normalization feature matrix (one row per customer)
+  labels.parquet       # Derived task labels
+  sequences.npy        # Padded transaction sequence tensor
+  seq_lengths.npy      # Per-customer sequence lengths
+  label_schema.json    # Task names, types, and class counts
+  feature_schema.json  # Column names, group ranges, scaler state, expert routing
 ```
 
 Before continuing, verify the output:
 
 ```bash
-# Check for zero-variance columns and label distribution
+# Check feature width and task list
 python -c "
 import json, pathlib
-stats = json.loads(pathlib.Path('outputs/phase0/feature_stats.json').read_text())
-labels = json.loads(pathlib.Path('outputs/phase0/label_stats.json').read_text())
-print('Features after Phase 0:', stats.get('n_features'))   # expect ~403
-print('Tasks:', list(labels.keys()))                         # expect 13 tasks
+import duckdb
+schema = json.loads(pathlib.Path('outputs/phase0/feature_schema.json').read_text())
+labels = json.loads(pathlib.Path('outputs/phase0/label_schema.json').read_text())
+n_cols = duckdb.sql(\"SELECT count(*) FROM (DESCRIBE SELECT * FROM 'outputs/phase0/features.parquet')\").fetchone()[0]
+print('Feature columns after Phase 0:', n_cols)          # full santander tensor is 1211D
+print('Tasks:', list(labels.keys()))                      # expect 12 tasks
 "
 ```
 
-Expected: ~349 input features, ~403 after Phase 0 (log-transform copies added
-by 3-stage normalization), 13 tasks.
+Expected: the full santander feature tensor is **1211D** (17 feature groups,
+`txn_lag_tensor`=800D dominant); the **12** active tasks are listed in
+`label_schema.json`. (Note: 403D refers only to the raw column count after the
+Phase 0 preprocessing step, a different quantity from the 1211D normalized
+feature tensor.)
 
 ---
 
@@ -138,8 +148,8 @@ Default training settings (merged from `pipeline.yaml` + `datasets/santander.yam
 | `batch_size` | 5632 |
 | `lr` | 0.0005 |
 | `AMP (FP16)` | enabled |
-| `Tasks` | 13 |
-| `Experts` | 7 (DeepFM, Temporal, HGCN, PersLay, Causal, LightGCN, OT) |
+| `Tasks` | 12 |
+| `Experts` | 7 shared (DeepFM, Temporal, HGCN, PersLay, Causal, LightGCN, OT) + 1 task expert (MLP) |
 
 Training logs GPU memory, data shape/dtype/NaN rates, label distribution, and
 feature schema before the first epoch.
@@ -254,24 +264,26 @@ Do **not** hardcode values in Python scripts. See
 Customer Data (Parquet via DuckDB)
     |
     v
-[Phase 0]  10 Feature Generators — ~349 in → ~403 out
-           TDA · HGCN · Mamba · HMM · Chemical Kinetics · SIR · ...
+[Phase 0]  11 Feature Generators (referenced in santander config; 16 registered)
+           TDA, HGCN, Mamba, HMM, Multidisciplinary, GMM, ... → 1211D tensor
     |
     v
-[Train]    PLE + 7 Heterogeneous Experts + 13 Tasks
-           DeepFM | Temporal | HGCN | PersLay | LightGCN | Causal | OT
-           batch_size=5632 · lr=0.0005 · AMP FP16
+[Train]    PLE + 7 Shared Experts + 1 Task Expert + 12 Tasks
+           DeepFM | Temporal | HGCN | PersLay | LightGCN | Causal | OT (+ MLP task)
+           batch_size=5632, lr=0.0005, AMP FP16
     |
     v
-[Distill]  Knowledge Distillation → 13 LightGBM students (CPU inference)
+[Distill]  Knowledge Distillation → 12 LightGBM students (CPU inference)
     |
     v
-[Serve]    AWS Lambda · 3 serving agents · 2 ops/audit agents
+[Serve]    AWS Lambda, 3 serving agents, 2 ops/audit agents
 ```
 
-The 13 tasks span binary classification (product holding, churn, NBA),
-multiclass classification (risk tier, channel preference), and regression
-(spend volume, CLV).
+The 12 tasks split by metric bucket: binary/AUC (churn_signal,
+will_acquire_deposits, will_acquire_investments, will_acquire_accounts,
+will_acquire_lending, will_acquire_payments, top_mcc_shift), multiclass/F1-macro
+(nba_primary, next_mcc), and regression/MAE (product_stability, cross_sell_count,
+mcc_diversity_trend).
 
 ---
 
@@ -281,8 +293,8 @@ multiclass classification (risk tier, channel preference), and regression
 aws_ple_for_financial/
   configs/santander/        pipeline.yaml + feature_groups.yaml (config-driven)
   core/model/ple/           PLE architecture (CGC gate, adaTT, gating)
-  core/model/experts/       7 expert implementations
-  core/feature/generators/  10 feature generators
+  core/model/experts/       11 expert implementations (7 shared + MLP task in production basket)
+  core/feature/generators/  16 registered generator classes (11 referenced in santander config)
   core/pipeline/            Phase 0: preprocessing, normalization, label derivation
   core/training/            Trainer, evaluator, callbacks
   core/recommendation/      Scoring, reason generation, compliance

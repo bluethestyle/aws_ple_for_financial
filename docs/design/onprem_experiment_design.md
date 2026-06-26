@@ -130,9 +130,9 @@ for batch in val_loader:
 
 | 유형 | 태스크 예시 | Primary | Secondary |
 |------|-----------|---------|-----------|
-| Binary | churn, has_nba, will_acquire_* | **AUC** | F1 (optimal threshold) |
-| Multiclass | nba_primary, segment_prediction, next_mcc | **F1 macro** | Accuracy |
-| Regression | product_stability, engagement | **MAE** | RMSE |
+| Binary | churn_signal, top_mcc_shift, will_acquire_* | **AUC** | F1 (optimal threshold) |
+| Multiclass | nba_primary, next_mcc | **F1 macro** | Accuracy |
+| Regression | product_stability, mcc_diversity_trend | **MAE** | RMSE |
 
 ### 비교 방법
 - **Aggregate**: 전체 AUC, F1m avg, MAE avg

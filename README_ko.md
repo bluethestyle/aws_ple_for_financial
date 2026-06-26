@@ -22,7 +22,7 @@
 
 | 질문 | 답 |
 |----------|--------|
-| **무엇을** | 체크카드 상품을 위한 13-태스크 멀티태스크 추천 |
+| **무엇을** | 체크카드 상품을 위한 12-태스크 멀티태스크 추천 |
 | **어떻게** | 7개의 구조적으로 상이한 AI 전문가가 각자 다른 렌즈로 고객을 본다 |
 | **왜 중요한가** | 전문가 게이트 가중치 자체가 설명이 된다 -- "소비 트렌드 35% + 상품 적합도 28%" |
 | **규제** | 금융위 「금융분야 인공지능 가이드라인」(2026.6.22 시행, 7대 원칙), EU AI Act, AI 기본법 정합 설계 |
@@ -36,13 +36,13 @@
 고객 데이터 (은행/카드 거래)
     |
     v
-[Phase 0] santander config 에 사용된 11개 generator 종류 (core/feature/generators/ 에 14개 구현) → 17개 피처 그룹, 1211차원
+[Phase 0] santander config 에 사용된 11개 generator 종류 (core/feature/generators/ 에 16개 구현) → 17개 피처 그룹, 1211차원
     |       TDA, Hyperbolic GCN, Mamba, HMM, LagExtractor, RollingStats, TopN MultiHot, ...
     v
-[Phase 1-3] PLE + 7개 이종 전문가 + 13개 태스크
+[Phase 1-3] PLE + 7개 이종 전문가 + 12개 태스크
     |         DeepFM | Temporal | HGCN | PersLay | LightGCN | Causal | OT
     v
-[Phase 4] 지식 증류 -> LGBM (태스크별 13개, CPU 추론)
+[Phase 4] 지식 증류 -> LGBM (태스크별 12개, CPU 추론)
     |
     v
 [Phase 5] Lambda 서빙 + 3-에이전트 추천사유 생성 + 안전 게이트
@@ -59,7 +59,7 @@
 |--------|-------------|----------------|
 | **DeepFM** | 피처 교차 | 소득 x 상품 x 채널 상호작용 |
 | **Temporal** (Mamba+LNN+Transformer) | 시간 패턴 | 월간 추세 + 일간 급증 + 휴면 구간 |
-| **Hyperbolic GCN** | 가맹점 계층 | MCC 카테고리 트리를 Poincaré 공간에 (27D) |
+| **Hyperbolic GCN** | 가맹점 계층 | MCC 카테고리 트리를 Poincaré 공간에 (20D 하이퍼볼릭 + 27D 가맹점 = 47D 입력) |
 | **PersLay/TDA** | 행동 형상 | 소비 주기, 소비 위상구조 |
 | **LightGCN** | 소셜 그래프 | "비슷한 고객이 이 상품도 보유" |
 | **Causal** | 원인-결과 | "소비 증가가 카드 업그레이드 관심을 *유발*" |
@@ -102,8 +102,8 @@ PYTHONPATH=. python scripts/run_local_ablation.py
 
 ```
 core/model/ple/          PLE 아키텍처, CGC 게이트, adaTT
-core/model/experts/      7개 전문가 구현
-core/feature/generators/ 14개 생성기 구현 (santander config 에서 11개 종류 사용 → 17 그룹 → 1211차원)
+core/model/experts/      11개 전문가 구현 (프로덕션 공유 바스켓 7개)
+core/feature/generators/ 16개 생성기 구현 (santander config 에서 11개 종류 사용 → 17 그룹 → 1211차원)
 core/pipeline/           Phase 0: 전처리, 레이블 파생, 정규화
 core/training/           Trainer, evaluator, callbacks, config
 core/recommendation/     점수화, 추천사유 생성, 규제 준수
@@ -232,7 +232,7 @@ paper/                   연구 논문 (Typst)
 | [CLAUDE.md](CLAUDE.md) | 모든 세션이 로드하는 프로젝트 규칙 세트 |
 | [`docs/typst/en/ai_collaboration_guide_en.pdf`](docs/typst/en/ai_collaboration_guide_en.pdf) | 방법론 전체 문서 (EN) |
 | [`docs/typst/en/development_story_en.pdf`](docs/typst/en/development_story_en.pdf) | 3.5개월 빌드의 서사 |
-| [`configs/pipeline.yaml`](configs/santander/pipeline.yaml) | §1.1 config-driven 규칙을 강제하는 설정 |
+| [`configs/pipeline.yaml`](configs/pipeline.yaml) | §1.1 config-driven 규칙을 강제하는 설정 |
 | [Paper 1 §5 (Ablation)](paper/typst/paper1.pdf) | adaTT/GradSurgery 음성 결과의 정직한 기록 |
 | [`core/agent/`](core/agent/) | 프로덕션 에이전트 파이프라인 코드 |
 
@@ -246,7 +246,7 @@ paper/                   연구 논문 (Typst)
 
 본 시스템의 모든 코드 — 아키텍처 설계, 7-전문가 모델, 에이전트 기반 추천사유 생성 파이프라인, 규제 준수 모듈, 260개 이상의 기술 문서, 그리고 두 개의 Zenodo 프리프린트 — 는 3인 팀이 **[Claude Code](https://claude.com/claude-code) (Anthropic)** 를 개인 구독 기반의 주요 개발 파트너로 삼아 구축하였습니다.
 
-**제약 조건**: 기관 자금 없음, 전용 ML 인프라 없음, 단일 소비자용 GPU (RTX 4070, 12GB VRAM), 저녁·주말만 활용. **결과**: 규제 수준 감사 인프라를 갖춘 13-태스크 멀티태스크 학습 시스템, 두 개의 Zenodo 프리프린트와 함께 오픈소스화.
+**제약 조건**: 기관 자금 없음, 전용 ML 인프라 없음, 단일 소비자용 GPU (RTX 4070, 12GB VRAM), 저녁·주말만 활용. **결과**: 규제 수준 감사 인프라를 갖춘 12-태스크 멀티태스크 학습 시스템, 두 개의 Zenodo 프리프린트와 함께 오픈소스화.
 
 ---
 

@@ -112,7 +112,7 @@ recommendation:
   reason_generation:
     strategy: template_llm     # template_only | template_llm | llm_only
     llm_provider: bedrock      # bedrock | openai | local_vllm
-    llm_model: anthropic.claude-sonnet-4-20250514
+    llm_model: global.anthropic.claude-sonnet-4-6
     self_check: true
     compliance_rules: configs/compliance_rules.yaml
 ```
@@ -282,7 +282,7 @@ reason_generation:
     enabled: true
     strategy: template_llm
     llm_provider: bedrock          # AWS Bedrock (관리형)
-    llm_model: anthropic.claude-sonnet-4-20250514
+    llm_model: global.anthropic.claude-sonnet-4-6
     # 또는 local_vllm (SageMaker Endpoint에 배포)
     batch_size: 1000
     priority: [rich, moderate]     # sparse는 L1만
@@ -312,6 +312,10 @@ AWS:      Bedrock (Claude Sonnet 4) → 요청당 과금, 서버 없음
     ≈ $6.5k/월 입력 + $3.9k/월 출력 ≈ ~$10k/월 (풀 L2a 대상 시)
   실제 운영: 5% 샘플(47K/주) + 캐시 적중 → 실 청구 ~$210~$250/월
   → 서버 관리 불필요 + 샘플링·캐시로 온프렘 GPU 비용과 동등 수준
+
+  ※ 위 1K 토큰당 단가는 2026-04 당시 Sonnet/Haiku 티어 기준 예시 추정치다.
+    외부 인용 전에 현행 Bedrock 단가(global.anthropic.claude-sonnet-4-6 /
+    claude-haiku-4-5)로 반드시 재산출해야 한다.
 
 모델 선정 배경: 2026-04-15 Solar Mini → Claude Sonnet 으로 전환. Sonnet 은 한국어
 금융 도메인 유창도, 지침 준수, 안전 검증 통과율이 높아 규제 준수 민감 응답에

@@ -352,7 +352,7 @@ C2 Airflow DAG 는 AWS SageMaker managed orchestration 로 대체 (이식 불필
 - `tests/test_promotion_gate_tracker.py` — 194줄
 - `tests/test_metadata_archive_sources.py` — 321줄
 
-**누적 테스트 (2026-06-10 갱신, PR #1~#3 + §1.7 group-range rebuild + rights 신규분 + normalizer 계약 수정 반영)**: 447 + 34 (audit+tracker+archive) + 75 (metadata aggregator + live wiring) + 50 (기타 regression) + 14 (feature_group_ranges rebuild regression) + rights/normalizer 증가분 = **639/639 PASS**.
+**누적 테스트 (2026-06-10 갱신, PR #1~#3 + §1.7 group-range rebuild + rights 신규분 + normalizer 계약 수정 반영)**: 447 + 34 (audit+tracker+archive) + 75 (metadata aggregator + live wiring) + 50 (기타 regression) + 14 (feature_group_ranges rebuild regression) + rights/normalizer 증가분 = **639/639 PASS** (이후 OCP/CCA 트랙 반영 시 831 passed — 최신은 aws_work_plan 참조).
 
 **운영 전환 체크리스트** (`compliance.promotion_gate.enabled: true` 를 프로덕션 활성화하기 전):
 1. ✅ **완료 (2026-06-10 실효화)** — `monitoring.fairness.archive_parquet_path` 가 S3 경로로 설정됨 (commit 51149f3, 2026-04-21). **단, 쓰기(`fairness_monitor._flush_parquet`)·읽기(`build_fairness_archive_source`)가 `pathlib.Path` 기반이라 `s3://` URI 를 깨뜨려 실제로는 항상 0.5 fallback 이었음** (2026-06-10 감사 확인). `core/monitoring/parquet_io.py` (pyarrow.fs 기반 s3-aware helper) 로 양쪽을 교체하여 비로소 `fairness_risk` 차원이 S3 아카이브를 실제로 읽는다. 드리프트(S8)도 동일 helper 로 교체 + `monitoring.drift.archive_parquet_path` 추가. 회귀: `tests/test_parquet_io.py`.

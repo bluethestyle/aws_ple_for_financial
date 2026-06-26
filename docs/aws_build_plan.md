@@ -10,7 +10,7 @@
 > - **Phase 3 Could** — C1/C3/C4/C5 완료, C2 는 Won't (SageMaker managed orchestration 네이티브)
 > - **PR #1~#3 PromotionGate Live Wiring (2026-04-21)** — `core/compliance/metadata_aggregator.py` + 6 evidence source + audit trail + SageMakerComplianceTracker artifact 연결. `compliance.promotion_gate.enabled: true` 가 pipeline.yaml 기본값으로 전환됨 (commit `51149f3`/`9426162`/`ec8587b`).
 > - **Phase 0 schema audit + Mamba precompute (2026-04-26~28, local main, 미푸시)** — Phase 0 invariant 위반 6종 차단 + Mamba GPU precompute 분리. 상세는 §11.
-> - **현재 테스트**: 639/639 PASS (2026-06-10, test_normalizer output_columns 계약 정합 수정 후)
+> - **2026-06-10 시점 테스트**: 639/639 PASS (test_normalizer output_columns 계약 정합 수정 후). 본 문서는 역사적 Build Plan 이므로 이 수치는 그 시점 스냅샷이며, **라이브 테스트 현황은 `docs/aws_work_plan.md` 상단 "진행 현황" 블록을 단일 진실 공급원으로 참조**하십시오 (2026-06-26 기준 831/831).
 >
 > 실시간 진행 현황과 최근 3~7일 변경사항은 `docs/aws_work_plan.md` 상단 "진행 현황" 블록 및 `docs/pipeline_comparison_matrix.md §5.10` 을 참조하십시오. 본 문서는 **역사적 Build Plan** 으로 유지되며 Sprint 설계 원칙을 추적하고자 할 때 사용하십시오.
 >

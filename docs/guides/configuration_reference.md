@@ -109,8 +109,8 @@ cp -r configs/santander configs/my_bank
 # edit configs/my_bank/feature_groups.yaml
 
 # Step 4 — implement adapter
-cp src/adapters/santander.py src/adapters/my_bank.py
-# edit my_bank.py: raw → standardized DataFrame
+cp adapters/santander_adapter.py adapters/my_bank_adapter.py
+# edit my_bank_adapter.py: raw → standardized DataFrame
 
 # Step 5 — run
 python containers/training/train.py \
@@ -153,7 +153,8 @@ features:
 
 ## feature_groups.yaml
 
-**File:** `configs/feature_groups.yaml`
+**File:** `configs/{dataset}/feature_groups.yaml` (e.g. `configs/santander/feature_groups.yaml`), selected per-dataset via `feature_groups_file` in the dataset config.
+**Note:** A top-level `configs/feature_groups.yaml` exists only as a **legacy** path and is not the one loaded for the santander pipeline; always declare the dataset-scoped file.
 **Loaded by:** `core.feature.group_config.load_feature_groups()`
 
 Defines every feature group in the pipeline. This is the single source of truth
@@ -472,7 +473,10 @@ tasks:
     #   source_col  — column the label is derived from. NOT auto-excluded
     #                 from features because some sources are legitimate
     #                 features in their own right (e.g.
-    #                 `segment_prediction.derive.source_col == "segment"`).
+    #                 `next_mcc.derive.source_col == "txn_mcc_seq"`, the
+    #                 transaction-MCC sequence the lag/multi-hot generators
+    #                 also consume; the leakage guard is the
+    #                 `truncate_seq_last` drop, not source exclusion).
     #   filter_col  — boolean/0-1 mask column. Excluded from the feature
     #                 matrix automatically because it leaks the label
     #                 (e.g. `nba_primary.derive.filter_col == "has_nba"`).
@@ -764,7 +768,7 @@ reason:
 llm_provider:
   backend: dummy                      # "bedrock" | "openai" | "dummy"
   bedrock:
-    model_id: us.anthropic.claude-haiku-4-5-20251001-v1:0   # cross-region inference profile
+    model_id: global.anthropic.claude-haiku-4-5-20251001-v1:0   # cross-region inference profile
     region: ap-northeast-2
     max_tokens: 512
     temperature: 0.0
@@ -1178,13 +1182,17 @@ training:
 ```yaml
 model:
   # Global dimensions
-  input_dim: 349                      # Set by FeatureGroupPipeline.total_dim (full feature tensor)
+  input_dim: 1211                     # Set by FeatureGroupPipeline.total_dim — the full santander
+                                      # feature tensor (17 groups; txn_lag_tensor=800D dominant).
                                       # NOTE: With FeatureRouter active, each expert receives a
-                                      # per-expert subset — NOT the full 349D. The global input_dim
+                                      # per-expert subset — NOT the full 1211D. The global input_dim
                                       # represents the total feature tensor fed to FeatureRouter,
                                       # which then slices per-expert views via feature_group_ranges.
-                                      # Per-expert dims (canonical v1): deepfm=168D, temporal_ensemble=139D,
-                                      # hgcn=27D, perslay=32D, causal=161D, lightgcn=100D, ot=127D.
+                                      # The canonical full-config routed dims are tabulated in
+                                      # feature_engineering.md. The per-expert dims here —
+                                      # deepfm=168D, temporal_ensemble=139D, hgcn=27D, perslay=32D,
+                                      # causal=161D, lightgcn=100D, ot=127D — are the v1 / reduced-config
+                                      # view (no lag tensor) and do not include txn_lag_tensor.
   task_expert_output_dim: 32
 
   # Task definitions
@@ -1229,7 +1237,7 @@ model:
     subhead_output_dim: 32
 
   # adaTT (Adaptive Task Transfer, loss-level TAG+GradNorm hybrid).
-  # STATUS: loss-level adaTT has a null effect at 13-task scale
+  # STATUS: loss-level adaTT has a null effect at 12-task scale
   # (ΔAUC ≈ -0.001, within single-seed noise) after five implementation
   # bugs were corrected. Kept behind `enabled` for ablation comparison,
   # NOT enabled in production. Task groups below are the canonical four
@@ -1237,7 +1245,7 @@ model:
   # rule-based fallback layer's template selection; they do NOT gate
   # the CGC router directly (routing is per-task via the CGC gate).
   adatt:
-    enabled: false                    # Production default for 13-task benchmark
+    enabled: false                    # Production default for 12-task benchmark
     transfer_lambda: 0.1
     temperature: 1.0
     warmup_epochs: 10
@@ -1254,8 +1262,9 @@ model:
         members: [churn_signal, top_mcc_shift]
         intra_strength: 0.7
       lifecycle:
-        members: [segment_prediction, will_acquire_deposits, will_acquire_cards,
-                  will_acquire_loans, will_acquire_funds, will_acquire_insurance]
+        members: [will_acquire_deposits, will_acquire_investments,
+                  will_acquire_accounts, will_acquire_lending,
+                  will_acquire_payments]
         intra_strength: 0.7
       value:
         members: [nba_primary, cross_sell_count]
@@ -1383,11 +1392,11 @@ Declares model assignments per pipeline stage. Each key is a role; the value is 
 
 ```yaml
 models:
-  reason_generation: us.anthropic.claude-sonnet-4-5-20251101-v1:0  # L2a reason rewrite + critique (Bedrock cross-region profile)
-  reason_critique:   us.anthropic.claude-sonnet-4-5-20251101-v1:0  # Self-critique (generator <= critic model principle)
-  factuality_check:  us.anthropic.claude-haiku-4-5-20251001-v1:0   # Factuality check (fast and low-cost)
-  agent_dialog:      us.anthropic.claude-sonnet-4-5-20251101-v1:0  # Ops/Audit inter-agent dialog/negotiation
-  agent_consensus:   us.anthropic.claude-sonnet-4-5-20251101-v1:0  # Multi-agent consensus (x agents count)
+  reason_generation: global.anthropic.claude-sonnet-4-6  # L2a reason rewrite + critique (Bedrock cross-region profile)
+  reason_critique:   global.anthropic.claude-sonnet-4-6  # Self-critique (generator <= critic model principle)
+  factuality_check:  global.anthropic.claude-haiku-4-5-20251001-v1:0   # Factuality check (fast and low-cost)
+  agent_dialog:      global.anthropic.claude-sonnet-4-6  # Ops/Audit inter-agent dialog/negotiation
+  agent_consensus:   global.anthropic.claude-sonnet-4-6  # Multi-agent consensus (x agents count)
   deep_audit:        claude-opus    # Deep audit (quarterly, high-cost)
   embeddings:        titan-embed-v2 # AWS Titan Embeddings V2
 ```

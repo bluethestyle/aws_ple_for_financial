@@ -94,6 +94,11 @@ EventBridge (스케줄 또는 S3 이벤트 트리거)
 │     · audit log (HMAC + chain) 매 판정마다 기록                  │
 │        ├── bootstrap / promote / force_promote → promoted=True  │
 │        └── reject → promoted=False (등록만 유지)                 │
+│   ⚠️ 인적 게이트는 운영자 submit_pipeline.py 경로에서만 보장.       │
+│      자동 Step Functions 경로는 auto_promote:true 를 전달해        │
+│      pipeline.yaml auto_promote=false 게이트를 우회함              │
+│      (training_pipeline.json:156, register_model.py:52 기본 True). │
+│      → FSC ③ 보조수단성 / ⑤ 금융안정성 미해결 교정 항목.           │
 │                                                                 │
 │   스크립트:                                                      │
 │   · run_sagemaker_teacher.py  — 3-시나리오 Spot 병렬 학습 제출    │
@@ -149,7 +154,7 @@ EventBridge (스케줄 또는 S3 이벤트 트리거)
       "Next": "RegisterModel"
     },
     "RegisterModel": {
-      "Comment": "submit_pipeline._decide_promotion: 4-step short-circuit ladder — (1) --force-promote → promote (trigger=manual), (2) no champion → bootstrap, (3) fidelity_summary.failed>0 → reject (Competition skipped), (4) ModelCompetition.evaluate → promote/reject. All outcomes (bootstrap/promote/reject/force_promote) recorded by AuditLogger.log_model_promotion (HMAC + hash-chain) AND by SageMakerComplianceTracker as promotion_gate_verdict artifact. Production posture: pipeline.yaml forces serving.competition.auto_promote=false (EU AI Act Art.14, SR 11-7) — gate-passing challengers still require --force-promote for actual promotion.",
+      "Comment": "submit_pipeline._decide_promotion: 4-step short-circuit ladder — (1) --force-promote → promote (trigger=manual), (2) no champion → bootstrap, (3) fidelity_summary.failed>0 → reject (Competition skipped), (4) ModelCompetition.evaluate → promote/reject. All outcomes (bootstrap/promote/reject/force_promote) recorded by AuditLogger.log_model_promotion (HMAC + hash-chain) AND by SageMakerComplianceTracker as promotion_gate_verdict artifact. Production posture: pipeline.yaml forces serving.competition.auto_promote=false (EU AI Act Art.14, SR 11-7) — gate-passing challengers still require --force-promote for actual promotion. ⚠️ CAVEAT: this human-gate guarantee holds ONLY on the operator-driven scripts/submit_pipeline.py path. The automated Step Functions path passes auto_promote:true (aws/stepfunctions/templates/training_pipeline.json:156, and containers/lambda/register_model.py:52 defaults the flag to True), which BYPASSES the pipeline.yaml auto_promote=false human gate. Closing this Step Functions bypass is an OPEN FSC ③(보조수단성)/⑤(금융안정성) remediation item.",
       "Type": "Task",
       "Resource": "arn:aws:lambda:...:register-and-evaluate",
       "Next": "CheckPromotion"

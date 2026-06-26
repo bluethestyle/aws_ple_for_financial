@@ -355,7 +355,7 @@ docker push 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/ple-training:latest
 | `scripts/package_source.py` | Stage source directory → build tarball → upload to S3 (reused by all Jobs) |
 | `scripts/build_mamba_image_codebuild.sh` | One-time AWS CodeBuild of the Mamba GPU precompute image (cu122-torch2.1 wheels) → ECR |
 | `scripts/submit_pipeline.py` | Unified submission entry point. Modes: `--mamba-precompute` (GPU embedding cache), `--phase0-only` / `--phase0-split` (CPU feature engineering), `--mode training --features-uri ...` (training against an existing Phase 0 output). Supports `--dry-run` for every mode. |
-| `scripts/run_sagemaker_teacher.py` | Submit teacher Spot training Jobs in parallel. The default benchmark runs the 23-scenario ablation grid (14 joint feature+expert + 9 structure cross, tasks_13 row). Earlier drafts cited a 3-scenario baseline/gradsurgery/adaTT comparison; GradSurgery was experimentally evaluated in 2026-04-15 and **not adopted** (no task-metric gain, VRAM overhead from `retain_graph` — see CLAUDE.md `feedback_gradsurgery`). loss-level adaTT is disabled by default at the 13-task scale (ΔAUC ≈ -0.001, within single-seed noise) and retained only for ablation comparison. |
+| `scripts/run_sagemaker_teacher.py` | Submit teacher Spot training Jobs in parallel. The default benchmark runs the 23-scenario ablation grid (14 joint feature+expert + 9 structure cross, tasks_13 row). Earlier drafts cited a 3-scenario baseline/gradsurgery/adaTT comparison; GradSurgery was experimentally evaluated in 2026-04-15 and **not adopted** (no task-metric gain, VRAM overhead from `retain_graph` — see CLAUDE.md `feedback_gradsurgery`). loss-level adaTT is disabled by default at the 12-task scale (ΔAUC ≈ -0.001, within single-seed noise) and retained only for ablation comparison. |
 | `scripts/run_sagemaker_eval.py` | Submit evaluation Job (uses `containers/evaluation/eval_entry.py` as entry point) |
 
 ```bash
@@ -823,7 +823,7 @@ The platform deploys a **5-agent architecture**: 3 serving agents and 2 ops/audi
 | Reason Generator | Serving | Produces human-readable recommendation rationales |
 | Safety Gate | Serving | Filters outputs against regulatory and fairness constraints |
 | OpsAgent | Ops/Audit | Monitors pipeline health, drift, and SLA adherence |
-| AuditAgent | Ops/Audit | Performs compliance checks across the 13-task output space |
+| AuditAgent | Ops/Audit | Performs compliance checks across the 12-task output space |
 
 ### Prerequisites
 
@@ -866,11 +866,11 @@ Requests are classified by context richness rather than customer tier:
 
 | Agent | Model |
 |---|---|
-| Reason Generator | Claude Sonnet 4.6 (`us.anthropic.claude-sonnet-4-5-20251101-v1:0`) |
+| Reason Generator | Claude Sonnet 4.6 (`global.anthropic.claude-sonnet-4-6`) |
 | Safety Gate | Claude Sonnet 4.6 (self-critique; factuality check uses Haiku 4.5) |
-| OpsAgent | Claude Sonnet 4.6 (`us.anthropic.claude-sonnet-4-5-20251101-v1:0`) |
+| OpsAgent | Claude Sonnet 4.6 (`global.anthropic.claude-sonnet-4-6`) |
 | AuditAgent | Claude Sonnet 4.6 (dialog) / Claude Opus (quarterly deep audit) |
-| Factuality Check | Claude Haiku 4.5 (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) |
+| Factuality Check | Claude Haiku 4.5 (`global.anthropic.claude-haiku-4-5-20251001-v1:0`) |
 | Embeddings | Titan Embeddings V2 |
 
 **On-Premises:**
@@ -882,11 +882,11 @@ Requests are classified by context richness rather than customer tier:
 
 ### Task Coverage
 
-The 13 production tasks covered by the audit pipeline:
+The 12 production tasks covered by the audit pipeline:
 
-- **Binary (AUC)**: churn, default, fraud, cross_sell, upsell, reactivation, nba_primary
-- **Multiclass (F1-macro)**: segment, product_affinity, channel_preference
-- **Regression (MAE)**: clv, revenue_30d, nba_score
+- **Binary (AUC)**: churn_signal, will_acquire_deposits, will_acquire_investments, will_acquire_accounts, will_acquire_lending, will_acquire_payments, top_mcc_shift
+- **Multiclass (F1-macro)**: nba_primary, next_mcc
+- **Regression (MAE)**: product_stability, cross_sell_count, mcc_diversity_trend
 
 Metrics are aggregated by task type (avg_auc / avg_f1_macro / avg_mae). Cross-type averaging is not used.
 

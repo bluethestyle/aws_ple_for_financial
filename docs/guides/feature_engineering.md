@@ -16,7 +16,7 @@ group requires editing only the YAML configuration; all downstream systems
 
 1. [Architecture Overview](#architecture-overview)
 2. [Built-in Transformers (7 types)](#built-in-transformers)
-3. [Built-in Generators (13 types)](#built-in-generators)
+3. [Built-in Generators (11 referenced; 16 registered)](#built-in-generators)
 4. [Creating a Custom Generator](#creating-a-custom-generator)
 5. [Creating a Custom Transformer](#creating-a-custom-transformer)
 6. [FeatureGroup Config Reference](#featuregroup-config-reference)
@@ -47,14 +47,16 @@ group requires editing only the YAML configuration; all downstream systems
                                |
                     FeatureGroupPipeline
                      .fit_transform(df)
-                     (~349D input -> 403D after Phase 0)
+                     (17 santander feature groups -> 1211D feature tensor;
+                      txn_lag_tensor=800D dominant)
                                |
                     +----------+----------+-----------+
                     |          |          |           |
                expert_routing  |    interpretation   distillation_config
                (PLE model,     |    (ReasonGenerator)  (Distill pipeline)
-               7 experts,      |
-               13 tasks)  total_dim
+               7 shared + 1    |
+               task expert,    |
+               12 tasks)  total_dim
                           group_ranges
                           (IG attribution)
 ```
@@ -289,8 +291,11 @@ feature_groups:
 
 ## Built-in Generators
 
-Thirteen generator families ship with the platform, spanning 11 academic disciplines.
-All are registered in `core/feature/generators/` via `@FeatureGeneratorRegistry.register()`.
+Eleven generator families are referenced by the santander config (16 generator
+classes are registered in `core/feature/generators/` overall; the TDA module
+registers 3: `tda`/`tda_global`/`tda_local`). All are registered via
+`@FeatureGeneratorRegistry.register()`. The sections below document the families
+exercised by the santander pipeline.
 
 Generators **create entirely new feature columns** from raw data. They produce
 a DataFrame containing only the newly generated columns; the
@@ -302,17 +307,19 @@ a DataFrame containing only the newly generated columns; the
 
 Topological Data Analysis -- extracts persistent homology features from
 customer transaction time series. Captures the "shape" of financial
-behaviour that traditional statistics miss.
+behaviour that traditional statistics miss. In the santander config TDA is
+split into two groups (`tda_global`, `tda_local`), each **16D**, routed to the
+`perslay` expert.
 
 ```yaml
-- name: tda_topology
+- name: tda_global
   type: generate
-  generator: tda_extractor
+  generator: tda_global
   generator_params:
     short_window_days: 90
     long_window_days: 365
-  output_dim: 70
-  target_experts: [temporal]
+  output_dim: 16        # real santander dim (tda_local is likewise 16D)
+  target_experts: [perslay]
 ```
 
 **Parameters:**
@@ -322,8 +329,9 @@ behaviour that traditional statistics miss.
 | `short_window_days` | `int` | `90` | Short-window lookback (days) |
 | `long_window_days` | `int` | `365` | Long-window lookback (days) |
 
-**Output:** 70 features representing persistence diagrams, Betti numbers, and
-topological summary statistics across two time windows.
+**Output:** 16 features per TDA group (persistence-diagram statistics, Betti
+numbers, and topological summaries). `tda_global` + `tda_local` = 32D total to
+`perslay`.
 
 ### 2. HMM Triple Mode (`hmm_triple_mode`)
 
@@ -339,8 +347,9 @@ captures a different aspect of customer dynamics.
   generator_params:
     modes: [journey, lifecycle, behavior]
     state_dim: 16
-  output_dim: 48
-  target_experts: [temporal]
+  output_dim: 25        # real santander dim; the 3×16 formula below is the
+                        # generator's illustrative template default
+  target_experts: [temporal_ensemble]
 ```
 
 **Parameters:**
@@ -366,14 +375,14 @@ Embeds hierarchical category/product/region structures into hyperbolic
 angular position captures semantic similarity.
 
 ```yaml
-- name: graph_embeddings
+- name: product_hierarchy
   type: generate
-  generator: hyperbolic_embedding
+  generator: graph                  # hyperbolic/Poincaré mode
   generator_params:
     hierarchy_sources: [category, product, region]
     curvature: 1.0
-  output_dim: 20
-  target_experts: []     # broadcast to all experts
+  output_dim: 34        # real santander product_hierarchy dim
+  target_experts: [lightgcn, causal]
 ```
 
 **Parameters:**
@@ -383,7 +392,9 @@ angular position captures semantic similarity.
 | `hierarchy_sources` | `list[str]` | `[]` | Column names with hierarchical structure |
 | `curvature` | `float` | `1.0` | Poincare ball curvature |
 
-**Output:** 20 features (embedding coordinates in hyperbolic space).
+**Output (santander):** `product_hierarchy` = 34D; the collaborative-filtering
+variant (`graph_collaborative`) = 66D. The `20` shown in earlier drafts was an
+illustrative template value, not a santander dim.
 
 ### 4. Multidisciplinary (`multidisciplinary`)
 
@@ -568,11 +579,12 @@ product columns.
     embedding_dim: 64
     use_poincare: false
     prefix: graph_collab
-  output_dim: 64
+  output_dim: 66        # real santander graph_collaborative dim
   target_experts: [lightgcn]
 ```
 
-**Output:** 64 LightGCN embedding dimensions.
+**Output:** 66D (LightGCN embedding dimensions plus collaborative summary
+columns) in the santander config.
 
 ### 10. Temporal Pattern (`temporal_pattern`)
 
@@ -1124,6 +1136,9 @@ Every field of `FeatureGroupConfig` (defined in `core/feature/group.py`):
 
 ### Complete YAML Example
 
+(Illustrative field-shape example; `output_dim: 70` is a placeholder, not a real
+santander dim — the live `tda_global`/`tda_local` groups are 16D each.)
+
 ```yaml
 feature_groups:
   - name: tda_topology
@@ -1226,14 +1241,21 @@ Feature Groups (17):               Expert Networks (8):
    | `optimal_transport` | demographics, product_holdings, txn_behavior, derived_temporal, gmm, txn_rolling | ~115D |
    | `hgcn` | merchant_hierarchy, mcc_top30_multihot | ~58D |
 
-   Note: dims shown are pre-normalization (post-normalization `_log` copies
-   may increase them by the count of power-law columns in each routed group).
+   Note: this is the **canonical routed-dims table** for the current santander
+   config — it sums the full 17-group, 1211D routing map shown above (so
+   `deepfm` and `lightgcn` carry the 800D `txn_lag_tensor` and run large). The
+   smaller per-expert figures quoted in `configuration_reference.md` and
+   `model_architecture.md` are the earlier **v1 / reduced-config** view (no lag
+   tensor) and are scoped as such there. Dims shown are pre-normalization
+   (post-normalization `_log` copies may increase them by the count of
+   power-law columns in each routed group).
    The routing map is persisted in `feature_schema.json::expert_routing`
    (group-name list) and `expert_routing_indices` (integer slice indices)
    after Phase 0.
 
 4. If `target_experts` is empty, the group is broadcast to all experts
-   (equivalent to the pre-routing uniform ~349D behaviour).
+   (equivalent to the pre-routing uniform full-tensor behaviour — 1211D in the
+   santander config).
 
 ### Accessing the routing map
 
@@ -1289,7 +1311,7 @@ distillation pipeline. The `distill_weight` controls relative importance.
 
 ```python
 distill_config = pipeline.distillation_config
-# [{"name": "tda_topology", "dim_range": (4, 74), "weight": 0.5, "output_dim": 70}]
+# [{"name": "tda_global", "dim_range": (.., ..), "weight": 0.5, "output_dim": 16}]
 ```
 
 ### 3. Dimension tracking
@@ -1298,10 +1320,12 @@ The pipeline automatically computes contiguous dimension ranges for each group:
 
 ```python
 ranges = pipeline.group_ranges
-# {"base_profile": (0, 4), "tda_topology": (4, 74), ...}
+# {"demographics": (0, 11), "tda_global": (..), "txn_lag_tensor": (..), ...}
 
 total = pipeline.total_dim
-# 196 (sum of all enabled group output_dim)
+# 1211 for the santander config (sum of all 17 enabled group output_dim;
+# txn_lag_tensor=800D dominant). The 196 figure in earlier drafts was a
+# reduced-config example, not the live santander total.
 ```
 
 These ranges are essential for Integrated Gradients attribution (slicing the

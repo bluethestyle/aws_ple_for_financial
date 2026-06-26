@@ -677,10 +677,13 @@ CloudWatch 대시보드:
 | | **§35 (FRIA 사전 영향평가)** | **`KoreanFRIAAssessor`** (`core/compliance/fria_assessment.py`, 7-차원, 5-년 retention) |
 | **금소법 (KFCPA)** | §17 (적합성 원칙) | **`SuitabilityFilter`** (`core/recommendation/constraint_engine.py`): 고령 ≥65세 / 저소득 <30M KRW hard cap (CLAUDE.md §1.12) |
 | | §19 (설명의무) | 피처 역매핑 + 태스크별 해석 |
-| **금융분야 AI 가이드라인 7대 원칙** | ② 합법성 | 36항목 자동 점검 (A-18 + GAP-18) |
+| **금융분야 AI 가이드라인 7대 원칙** | ① 거버넌스 | `AIRiskClassifier` + `KoreanFRIAAssessor` + 거버넌스 리포트 |
+| | ② 합법성 | 규제 36항목 자동 점검 (`RegulatoryComplianceChecker`) |
 | | ③ 보조수단성 | 킬스위치 + 인시던트 보고 |
-| | ④ 신뢰성 | 드리프트 감시 + 자동 재학습 |
-| | ⑤ 금융안정성 | 공정성 DI/SPD/EOD + 쏠림 탐지 |
+| | ④ 신뢰성 | 학습 성능지표 + 증류 품질 게이트 + 공정성 모니터(DI/SPD/EOD) + CEH/IG 귀인 |
+| | ⑤ 금융안정성 | `auto_promote=false` 차단 + KillSwitch(3-level) + 드리프트(PSI) + 쏠림(HHI/Gini/Entropy) + 인시던트 보고 |
+| | ⑥ 신의성실 | `SuitabilityFilter` + 연락 보호 |
+| | ⑦ 보안성 | PII SHA256 해시 + `AISecurityChecker` |
 | **EU AI Act** | **Art. 9 (위험관리 시스템)** | **`FRIAEvaluator`** (`core/monitoring/fria_evaluator.py`, 5-차원) — 한국 §35 FRIA 와 **법적 기반이 달라 별도 class, 리포트 통합 시에도 내부 저장 분리** (CLAUDE.md §1.11) |
 | | **Art. 11 (기술문서)** | **`AnnexIVMapper`** (`core/compliance/annex_iv_mapper.py`): 12 Annex IV 섹션별 증거 소스 resolve + coverage rate 자동 추적 |
 | | **Art. 13 (투명성)** | 추천 사유 3계층 + CEH per-prediction 감사 트레일 (Paper 3 Finding 9) |

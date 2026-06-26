@@ -1,9 +1,9 @@
 # 규제 정합성 — 코드 개선 가능 항목 (Quick Wins)
 
-> 작성: 2026-06-08 · 출처: FSS supplementary 자료(`outreach/04_fss_supplementary.typ`) 규제 매핑 정합성 점검
+> 작성: 2026-06-08 · 최종 갱신: 2026-06-26 (50b02b6) · 원 출처: FSS supplementary 자료(`outreach/04_fss_supplementary.typ`) 규제 매핑 정합성 점검 · 현 기준 출처: `outreach/05_fsc_supplementary.typ` (FSC 7대원칙 3단계 점검)
 > 범위: 규제 매핑상 코드가 **미지원**이나 **단기 코드 작업으로 충족 가능**한 항목만. 연구·검증 단계 또는 조직 결정 사항은 마지막 §에 분리.
 
-정합성 점검 결과, 규제 인용·대부분의 시스템 대응은 코드와 일치했습니다. 아래 2건이 "코드 미지원 → 단기 개선 가능"으로 확인된 quick win 입니다.
+정합성 점검에서 규제 인용과 다수의 시스템 대응이 코드와 일치했고, 아래 2건이 "코드 미지원 → 단기 개선 가능"으로 확인된 quick win 입니다. 다만 이 문서는 **완전한 갭 인벤토리가 아닙니다.** 금융분야 AI 가이드라인 7대 원칙의 전체 상태(live / ◐ wired-incomplete / ○ absent)와 알려진 서빙측 fail-open(opt-out fail-open `predict.py:436-441`, PII-salt fail-open, Step Functions `auto_promote:true` bypass)는 `outreach/05_fsc_supplementary.typ`에서 별도로 추적합니다.
 
 ---
 
@@ -26,6 +26,8 @@
 ## 2. 신용정보법 §36의2 **전용 설명 요소** 미구분 — ✅ 해결 (2026-06-09)
 
 > **해결**: cloud `RequestType.CREDIT_EXPLANATION` 분기 + `CreditExplanationElements` dataclass(평가 실시 여부·결과·주요 기준·기초정보 lineage 구조화) + `OptOutManager.request_credit_explanation()` / `build_credit_explanation_elements()`. `mark_explanation_provided()`가 두 설명 유형 모두 처리(sla_name 분기). 온프렘은 `ai_decision_opt_out.py`의 `LayeredExplanationResponse`(`personal_info_mapping`=피처→원천, `decision_factors`=주요 기준)로 이미 구조화돼 있었음. 테스트 `TestCreditExplanation` 추가.
+>
+> **잔여 노트**: `list_pending_explanations()`(`opt_out.py:433`)가 `EXPLANATION` 유형만 필터링하여 `CREDIT_EXPLANATION` pending 요청은 미반환 — 필터 확장 필요.
 
 | | |
 |---|---|
@@ -45,7 +47,7 @@
 
 - **CEH(인과 설명 head) · Evidential 불확실성 · Causal Guardrail 활성화** — config로 켤 수 있으나 운영 적용에는 연구·검증이 선행되어야 함(현재 기본 비활성/연구 단계). 코드 추가가 아니라 **검증 과제**.
 - **S3 버킷 레벨 Object Lock(COMPLIANCE 모드) + 버저닝 IaC** — put-object 단위 retention은 코드에 있으나 버킷 레벨 프로비저닝(완전 불변)이 IaC에 없음. **인프라 코드(CDK/CloudFormation) 작업** — 중간 규모, 별도 트랙.
-- **금융분야 AI 가이드라인 7대 원칙 ① 거버넌스 위원회 공식 설치** (가이드라인 2026.6.22 시행 — 거버넌스 원칙 §1.1) — **조직 결정** 사항(코드 무관).
+- **금융분야 AI 가이드라인 7대 원칙 ① 거버넌스 위원회 공식 설치** (가이드라인 2026.6.22 시행 — 거버넌스 원칙 §1.1) — **조직 결정** 사항(코드 무관). 단, 원칙 ①에는 순수 조직 결정과 별개로 **코드측 ◐ 항목**도 있음: `AIRiskClassifier`/`KoreanFRIAAssessor`가 승급(promotion) 시점에만 실행되고 risk store가 volatile in-memory라, 상시 거버넌스 추적 측면에서 미완(자세한 3단계 상태는 `outreach/05_fsc_supplementary.typ` 참조).
 
 ---
 

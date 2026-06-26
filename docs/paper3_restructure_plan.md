@@ -16,7 +16,7 @@
 | **독립 척추 (silent-failure 서사)** | F1(침묵 버그) → F6(체크포인트·attention 병리) → F8(decorative DAG) → F14(충실도 바닥) | 헤드라인. 단일 논지로 묶음. |
 | 척추 보강 (Paper1 인용 귀속) | F2, F3, F4, F5 | 서사 내 증거로 유지, 중복 수치는 Paper1 인용. |
 | 음성결과 (독립 유지) | F13 (attribution target 민감도) | 방법론 caution으로 유지. |
-| 가이드라인 강등 | F7 (9-way fusion, 노이즈바닥·버전 verdict flip) | "발견"→실무 가이드 박스. |
+| 가이드라인 강등 | F7 (9-way fusion, 노이즈바닥·버전 verdict flip) | "발견"→실무 가이드 박스. **2026-06-19: v14 3-way(§7)가 M1 부호 취약성($+$0.0006 → $-$0.0010)을 독립 재현 → 강등 근거 보강(버그 아님).** |
 | **Paper2-bridge enhancement** | F9(CEH), F10·F11(CG) | "optional forensic enhancement, not prerequisite"로 명시 재라벨. |
 | **future-work 컷** | F12 (CCP / Pearl Rung 3) | 본문 결과에서 빼고 viability signal로 future-work 언급. (타 논문 미인용 → 컷 안전) |
 
@@ -56,12 +56,39 @@
 
 > 참고: EN Paper2도 Discussion 'Finding 5: ...closes the gap' 헤딩을 'adds per-decision forensic depth'로 톤다운(원래 3곳 계획 → EN/KO 각 4곳으로 확장).
 
+## 5. 키스톤 voice 샘플
+
+Layer 1 첫 편집은 "Relationship to Companion Papers" 절 + Conclusion 인과 문단(재구성이 가장 집약되는 두 선언 지점). 사용자 voice 승인 후 나머지 전파.
+
 ## 6. 남은 것 = Layer 2 (운영데이터 도착 시)
 
 - 표에 운영기준 수치 컬럼 추가, 한계 절 갱신
 - Paper 1/2/3 동시 V2 재발행 (Zenodo 새 버전) + Paper 3 첫 DOI 발급 후 Paper 1/2에 역주입
 - E1/E2(F2 cross-seed)는 "DOI 기록" 목적상 불필요 판정 — 단일시드·합성 한계는 한계 절에 명시 유지
 
-## 5. 키스톤 voice 샘플
+## 7. OCP (직교여공간보정) + CCA 측정 — 2026-06-19 추가, 2026-06-26 커밋(50b02b6) (Layer 2 후보, paper3 표 미반영)
 
-Layer 1 첫 편집은 "Relationship to Companion Papers" 절 + Conclusion 인과 문단(재구성이 가장 집약되는 두 선언 지점). 사용자 voice 승인 후 나머지 전파.
+> OCP = orthogonal-complement residual recovery. `residual_orthogonal` fusion: gate primary 방향을 각 expert 출력에서 사영 제거 후 (1−gate) residual 합산. M1(complement)이 전체 complement를 더하는 것과 대비 — primary와 직교하는 새 신호만. 구현·테스트·런칭·커밋 완료(commit 50b02b6, [[project-ocp-experiment]] 메모리).
+
+**구현/인프라 (커밋됨 50b02b6, 수치 무관 — Layer 1 성격):**
+- OCP `residual_orthogonal` 커밋됨 (이전 docstring "future extension" → 실구현, `core/model/ple/experts.py`). 활성화: `residual_recovery.enabled=true`(기본 false) + `residual_method='orthogonal'` 둘 다 필요.
+- CCA `ExpertRedundancyAnalyzer`가 이전엔 호출부 0건 dead code였으나 `train.py` eval에 config-gated(flag default-on) 배선·커밋됨 → 모든 학습 job이 실제로 `expert_redundancy.json` 산출. dead→live.
+
+**3-way 결과 (provenance: phase0_v14, 15ep, batch2048, seed 42 단일, N=40960, 7 shared experts):**
+
+| variant | mean ρ (CCA) | aggregate | avgAUC(7) | avgF1mac(2) | avgMAE(3) |
+|---|---|---|---|---|---|
+| baseline cgc | 0.1982 | 0.8228 | 0.8228 | 0.1280 | 0.3202 |
+| M1 complement | 0.1973 | 0.8219 | 0.8219 | 0.1306 | 0.3178 |
+| OCP orthogonal | **0.1927** | 0.8219 | 0.8219 | **0.1317** | **0.3121** |
+
+- expert가 baseline에서 이미 직교(ρ 0.198, 대부분 LOW, perslay·OT≈0). OCP가 직교화 최대(−0.0055, M1의 6×)하나 헤드룸 작아 task 이득 미미. AUC −0.001(paper3 residual-recovery null 일관), minority task(F1/MAE)만 OCP 소폭 최고.
+
+**⚠ paper3.typ 표 미반영 사유 (provenance/무결성):**
+- 기존 §multi-mechanism 표의 M1 = avgAUC **0.8240**, Δ**+0.0006**(상승)인데, 본 run의 M1 = **0.8219**, baseline 대비 **−0.0010**(하락). **부호까지 반대** — struct_13 별도 run vs phase0_v14 run, 직접 병합 시 내부 모순.
+- F7(9-way fusion)은 §1 분류상 "실무 가이드 박스" 강등 중이고, 본 run의 M1 부호 뒤집힘은 그 강등 근거인 "버전별 verdict flip"을 **독립 재현·corroborate**한다(버그 아님, §1 표 참조). 단일 seed.
+- → OCP 수치는 **multi-seed + matched-provenance run 전까지 paper3 표에 넣지 않음.**
+
+**Layer 2 통합 후보 (운영데이터/multi-seed 후):**
+- (P1) §CGC Gate Design "non-redundant" 전제를 CCA 측정(baseline mean ρ 0.198)으로 백업 — 각주. *EN+KO 동기화.* (단일 seed caveat 명시) — **본 작업에서 paper1 로컬 작업본에 footnote 선반영, Zenodo 미발행.**
+- (P3) F7 가이드 박스에 OCP 1줄: "직교화 최대지만 task 이득 없음 — expert 이미 직교라 헤드룸 부재" (multi-seed 확정 후).

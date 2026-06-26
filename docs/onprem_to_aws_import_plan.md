@@ -38,9 +38,14 @@
 | PORT-13 | quality_gate degenerate 가드 + schema_changed 경고 게이트 | P3 | — | ✅ 완료 | fd9d434 |
 | PORT-11 | 충족도 매트릭스 문서 | P3 | — | ⏸ 별도 트랙 (V2 publish/outreach) | — |
 | PORT-15 | kill_switch TTL 캐시 | P3 | — | ⛔ 보류 — fail-closed 의미론 충돌 검토 전 도입 금지 | — |
+| TRACK-C | CCA expert_redundancy.py dead→live (train.py step 7b, emits expert_redundancy.json, config-gated default-on) | P2 | OCP/CCA 트랙 | ✅ 완료 | 50b02b6 |
 
 상태 갱신 규칙: 항목 완료 시 이 표의 상태/커밋 칼럼만 갱신한다. 세부 구현 설명은
 각 커밋 메시지가 단일 진실 공급원.
+
+도구 노트 (OCP/CCA 트랙, 커밋 50b02b6): `scripts/run_expert_redundancy.py` (standalone
+CCA ExpertRedundancyAnalyzer), `scripts/run_sagemaker_ocp.py` (3-way Spot ablation —
+baseline / M1 residual_complement / OCP residual_orthogonal).
 
 보류 (표 외 추적): quality_gate `version_diff` producer 배선 — 데이터 적재 단계에서
 `DatasetRegistry.diff()` 결과를 `QualityGate.evaluate(version_diff=...)` 로 공급하는
@@ -86,9 +91,10 @@ LLM 비용 옵트인 env (전부 기본 off):
 
 ## 4. 검증 기준
 
-- 시작 베이스라인: 698 passed / 0 fail (2026-06-12). 모든 Phase 커밋 후 전체
-  테스트 무회귀 확인. 트랙 완료 시점 785 passed / 0 fail (2026-06-12 실측,
-  본 트랙 신규 테스트 73건 + 동시 진행 세션 추가분 포함).
+- 시작 베이스라인: 698 passed / 0 fail (2026-06-12 시점). 모든 Phase 커밋 후 전체
+  테스트 무회귀 확인. 본 에이전트 트랙 완료 시점 785 passed (2026-06-12 실측,
+  본 트랙 신규 테스트 73건 + 동시 진행 세션 추가분 포함). 이후 OCP residual_orthogonal
+  트랙을 포함해 831 passed / 831 collected (커밋, 50b02b6) 까지 누적.
 - 신규 LLM 기능은 전부 env 옵트인 기본 off (위 표) — CI/dry-run 에서 Bedrock
   호출 0.
 - `scripts/agent_healthcheck.py` 기본 모드가 도구 스키마↔구현↔라우팅 정합을

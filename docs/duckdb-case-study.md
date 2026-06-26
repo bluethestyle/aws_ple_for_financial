@@ -70,7 +70,7 @@ through training:
 │  [1] DuckDB: read_parquet() ─────── Adapter                │
 │  [2] DuckDB: SQL transforms ─────── Feature generators      │
 │  [3] DuckDB: POSITIONAL JOIN ─────── Merge features         │
-│  [4] DuckDB: SQL CASE/COALESCE ──── Label derivation (13×)  │
+│  [4] DuckDB: SQL CASE/COALESCE ──── Label derivation (12×)  │
 │  [5] DuckDB: register()+fetchnumpy() ─ 3-stage normalization│
 │  [6] DuckDB: POSITIONAL JOIN ─────── Combine features+labels│
 │  [7] .df() or .arrow() ─────────── → numpy → torch tensor  │
@@ -115,10 +115,10 @@ con.execute(f"COPY {table_name} TO '{path}' (FORMAT PARQUET, COMPRESSION ZSTD)")
 
 ---
 
-## Pattern 2: SQL Replaces 13 × groupby().apply(lambda)
+## Pattern 2: SQL Replaces 12 × groupby().apply(lambda)
 
-The pipeline derives 13 labels (binary, multiclass, regression) from raw features.
-The original pandas implementation ran 13 sequential `.apply(lambda)` calls
+The pipeline derives 12 labels (binary, multiclass, regression) from raw features.
+The original pandas implementation ran 12 sequential `.apply(lambda)` calls
 over 941K rows — each holding the full DataFrame in memory and serializing
 row by row through Python.
 
@@ -141,7 +141,7 @@ sql = """
 series = con.execute(sql).df()["result"]
 ```
 
-We implemented **10 derivation types** as DuckDB SQL functions:
+We implemented **11 derivation types** as DuckDB SQL functions:
 
 | Type | SQL Feature Used |
 |---|---|
@@ -150,6 +150,7 @@ We implemented **10 derivation types** as DuckDB SQL functions:
 | `weighted_sum` | Arithmetic on `COALESCE`d columns |
 | `string_map` | `CASE WHEN` string matching |
 | `list_first` | `list[1]` indexing |
+| `list_first_group` | `CASE WHEN` group-membership mapping of `list[1]` |
 | `list_length` | `len(list)` |
 | `list_intersect` | `list_intersect()` + `len()` |
 | `sequence_last` | Negative list indexing `list[-1]` |
@@ -205,7 +206,7 @@ merged = con.execute(
 ).arrow()
 ```
 
-The same pattern combines the 403-column feature matrix with the 13-column
+The same pattern combines the 403-column feature matrix with the 12-column
 label matrix before DataLoader construction, with `pa.Table.take(indices)`
 replacing `df.iloc[indices]` for train/val/test splits:
 
@@ -457,11 +458,12 @@ no column names be hard-coded in Python.
 ## Benchmarks
 
 Measured on the AWS benchmark synthetic dataset (941K × 403 columns,
-Phase 0 output from benchmark_v12) on the local development workstation
-(RTX 4070, 64 GB RAM) — the same machine used for all development
-before submitting to SageMaker. Production-scale benchmarks (12M × 734)
-on the on-premises workstation (128 GB RAM) will be added when the
-on-premises codebase is publicly released.
+Phase 0 output from benchmark_v12) on the local AWS-benchmark development
+machine (RTX 4070, 64 GB RAM) — the same machine used for all AWS-benchmark
+development before submitting to SageMaker. This is a different box from the
+128 GB on-premises production workstation described earlier; production-scale
+benchmarks (12M × 734) on that 128 GB on-premises workstation will be added
+when the on-premises codebase is publicly released.
 Reproducible with `scripts/benchmark_duckdb_vs_pandas.py`.
 
 ### Speed
@@ -470,7 +472,7 @@ Reproducible with `scripts/benchmark_duckdb_vs_pandas.py`.
 |---|---|---|---|
 | Group-by aggregation (COUNT/SUM/AVG/STDDEV) | 17.8 s | 57.6 ms | **310×** |
 | Filter + aggregate (temporal split) | 18.7 s | 52.7 ms | **355×** |
-| 13-label derivation (full pipeline) | ~40 min | ~2 min | **~20×** |
+| 12-label derivation (full pipeline) | ~40 min | ~2 min | **~20×** |
 | Feature matrix POSITIONAL JOIN (.arrow()) | 2.07 s | 1.08 s | **1.9×** |
 | 1M-customer synth data generation | ~20 min | ~30 s | **~40× (vectorized numpy, not DuckDB SQL)** |
 | Parquet full read (SELECT *) | 13.2 s | 176 s | **0.1× (pandas wins)** |
@@ -504,7 +506,7 @@ it is the difference between "the pipeline runs" and "the pipeline OOM-kills."
 ### What pandas Could Not Do on This Machine
 
 - **941K × 403 sequential pipeline** — pandas requires the full DataFrame
-  in memory for every operation. With 13 label derivations + feature merging
+  in memory for every operation. With 12 label derivations + feature merging
   + normalization happening in sequence, peak memory exceeds 40 GB.
   DuckDB's columnar engine keeps each operation under 2 MB, leaving headroom
   for the PyTorch training that follows in the same process.
@@ -543,8 +545,9 @@ Specific rules:
 - All aggregation and transformation go through SQL.
 - `.df()` or `.fetchnumpy()` is called only at the tensor construction boundary.
 
-The pandas fallback is retained for approximately 2 of 10 label derivation
-types not yet ported to SQL, and for `<10K` row paths in unit tests.
+The pandas path is a per-label runtime fallback (used if DuckDB execution fails
+for a given label) and for `<10K`-row unit-test paths; all 11 derivation types
+have native DuckDB implementations.
 
 ---
 

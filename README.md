@@ -22,7 +22,7 @@
 
 | Question | Answer |
 |----------|--------|
-| **What** | 13-task multi-task recommendation for check card products |
+| **What** | 12-task multi-task recommendation for check card products |
 | **How** | 7 structurally different AI experts, each seeing the customer through a different lens |
 | **Why it matters** | Expert gate weights *are* the explanation -- "35% spending trend + 28% product fit" |
 | **Regulation** | Aligned with Korea's FSC Financial-Sector AI Guideline (effective 2026-06-22, 7 principles), EU AI Act, and AI Basic Act |
@@ -36,13 +36,13 @@
 Customer Data (bank/card transactions)
     |
     v
-[Phase 0] 11 generator types referenced in santander config (14 generator implementations available in core/feature/generators/) → 17 feature groups, 1211D
+[Phase 0] 11 generator types referenced in santander config (16 generator implementations available in core/feature/generators/) → 17 feature groups, 1211D
     |       TDA, Hyperbolic GCN, Mamba, HMM, LagExtractor, RollingStats, TopN MultiHot, ...
     v
-[Phase 1-3] PLE + 7 Heterogeneous Experts + 13 Tasks
+[Phase 1-3] PLE + 7 Heterogeneous Experts + 12 Tasks
     |         DeepFM | Temporal | HGCN | PersLay | LightGCN | Causal | OT
     v
-[Phase 4] Knowledge Distillation -> LGBM (x13 tasks, CPU inference)
+[Phase 4] Knowledge Distillation -> LGBM (x12 tasks, CPU inference)
     |
     v
 [Phase 5] Lambda Serving + 3-Agent Reason Generation + Safety Gate
@@ -59,7 +59,7 @@ Customer Data (bank/card transactions)
 |--------|-------------|----------------|
 | **DeepFM** | Feature crosses | Income x product x channel interactions |
 | **Temporal** (Mamba+LNN+Transformer) | Time patterns | Monthly trends + daily bursts + dormancy gaps |
-| **Hyperbolic GCN** | Merchant hierarchy | MCC category tree in Poincaré space (27D) |
+| **Hyperbolic GCN** | Merchant hierarchy | MCC category tree in Poincaré space (20D hyperbolic + 27D merchant = 47D input) |
 | **PersLay/TDA** | Behavioral shape | Spending cycles, consumption topology |
 | **LightGCN** | Social graph | "Similar customers also hold this product" |
 | **Causal** | Cause-effect | "Spending increase *causes* card upgrade interest" |
@@ -110,7 +110,7 @@ PYTHONPATH=. python scripts/run_local_ablation.py
 
 ```
 core/model/ple/          PLE architecture, CGC gate, adaTT
-core/model/experts/      7 expert implementations
+core/model/experts/      11 expert implementations (7 in production shared basket)
 core/feature/generators/ 11 feature generators (17 groups → 1211D)
 core/pipeline/           Phase 0: preprocessing, label derivation, normalization
 core/training/           Trainer, evaluator, callbacks, config
@@ -240,7 +240,7 @@ Three points in the *running system* (not just development) use Claude via AWS B
 | [CLAUDE.md](CLAUDE.md) | Project ruleset loaded by every session |
 | [`docs/typst/en/ai_collaboration_guide_en.pdf`](docs/typst/en/ai_collaboration_guide_en.pdf) | Full methodology write-up (EN) |
 | [`docs/typst/en/development_story_en.pdf`](docs/typst/en/development_story_en.pdf) | Narrative of the 3.5-month build |
-| [`configs/pipeline.yaml`](configs/santander/pipeline.yaml) | The config that enforces §1.1 config-driven rule |
+| [`configs/pipeline.yaml`](configs/pipeline.yaml) | The config that enforces §1.1 config-driven rule |
 | [Paper 1 §5 (Ablation)](paper/typst/paper1.pdf) | Honest record of adaTT/GradSurgery negative results |
 | [`core/agent/`](core/agent/) | Production agent pipeline code |
 
@@ -254,7 +254,7 @@ The patterns above are validated twice — in this public AWS benchmark codebase
 
 Every line of this system — architecture design, 7-expert model, agentic reason generation pipeline, regulatory compliance modules, 260+ technical documents, and both Zenodo preprints — was built by a 3-person team using **[Claude Code](https://claude.com/claude-code) (Anthropic)** as the primary development partner on personal subscriptions.
 
-**The constraint**: no institutional funding, no dedicated ML infrastructure, a single consumer GPU (RTX 4070, 12GB VRAM), evenings and weekends only. **The result**: a 13-task multi-task learning system with regulatory-grade audit infrastructure, open-sourced with two Zenodo preprints.
+**The constraint**: no institutional funding, no dedicated ML infrastructure, a single consumer GPU (RTX 4070, 12GB VRAM), evenings and weekends only. **The result**: a 12-task multi-task learning system with regulatory-grade audit infrastructure, open-sourced with two Zenodo preprints.
 
 | Tool | Role in this project | Share |
 |------|----------------------|-------|

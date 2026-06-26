@@ -45,15 +45,18 @@ PLE 증류(Layer 1)와 LGBM 직접 학습(Layer 2)이 모두 열화되었을 때
 - **활용 피처**: GMM cluster (동일 클러스터 고객 상품 보유 패턴), LightGCN collaborative (유사 고객 그래프 → 다음 상품), economics PIH (항상소득 기반 여유자금 → 상품 적합성)
 - **추천 사유 예시**: "현재 입출금과 적금을 잘 활용하고 계시네요, 투자 펀드로 자산을 키워보는 건 어떨까요?"
 
-#### segment_prediction (고객 세그먼트)
-- **룰**: 3축 규칙 기반 분류
+#### ~~segment_prediction (고객 세그먼트)~~ — DEPRECATED (2026-05-01, commit 541a982)
+
+> **DEPRECATED**: `segment_prediction`은 deterministic leakage로 인해 2026-05-01(commit 541a982) 모델 태스크에서 **제거**되었다. 더 이상 학습/서빙 태스크가 아니며, 따라서 Layer 3 폴백 룰의 대상도 아니다. 세분화가 여전히 필요하면 이는 **GMM 파생 산출물(GMM cluster ID)로만** 제공되며 별도 예측 태스크로 복원되지 않는다. 아래 룰 정의는 이력 보존용이며 활성 폴백이 아니다.
+
+- **(구) 룰**: 3축 규칙 기반 분류
   - 축 1: 평균 잔액 구간 (하위/중위/상위)
   - 축 2: 월 거래 빈도 (저활성/활성/고활성)
   - 축 3: 보유 상품 수 (1/2-3/4+)
   - 조합 → 4 세그먼트 (Growth / Stable / Premium / At-risk)
-- **이론**: CLV Tiered Model — 상위 20% 고객이 수익의 80% (파레토 법칙)
-- **활용 피처**: GMM cluster ID (이미 계산된 세그먼트), HMM behavior (행동 패턴 상태), TDA global (거래의 위상적 요약)
-- **추천 사유 예시**: "고객님은 자산 성장 단계에 계십니다, 이 단계에 적합한 상품을 추천드립니다"
+- **(구) 이론**: CLV Tiered Model — 상위 20% 고객이 수익의 80% (파레토 법칙)
+- **(구) 활용 피처**: GMM cluster ID (이미 계산된 세그먼트), HMM behavior (행동 패턴 상태), TDA global (거래의 위상적 요약)
+- **(구) 추천 사유 예시**: "고객님은 자산 성장 단계에 계십니다, 이 단계에 적합한 상품을 추천드립니다"
 
 #### will_acquire_deposits (예금 상품 구매)
 - **룰**: Propensity 스코어링 — 잔액 안정성 + 만기 도래 체크

@@ -22,7 +22,7 @@ Numbered design documents describing each architectural layer. These are the sou
 |---|----------|--------|
 | 00 | [architecture_overview](design/00_architecture_overview.md) | System-wide architecture |
 | 01 | [data_layer](design/01_data_layer.md) | Ingestion, adapters, benchmark |
-| 02 | [feature_engineering](design/02_feature_engineering.md) | Phase 0, 10 generators, normalization |
+| 02 | [feature_engineering](design/02_feature_engineering.md) | Phase 0, 11 generators, normalization |
 | 03 | [model_architecture](design/03_model_architecture.md) | PLE, 7 experts, CGC gate |
 | 04 | [training_pipeline](design/04_training_pipeline.md) | Training loop, champion-challenger promotion |
 | 05 | [serving_and_testing](design/05_serving_and_testing.md) | Lambda serving, 3-layer fallback |

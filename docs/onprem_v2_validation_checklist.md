@@ -39,7 +39,7 @@
 ### 1.2 Distillation smoke test
 | 항목 | 측정 | Pass 기준 |
 |---|---|---|
-| Teacher threshold gating | 각 task 의 DISTILL/DIRECT/SKIP 라우팅 | 모든 13 task 라우팅 결정 기록 |
+| Teacher threshold gating | 각 task 의 DISTILL/DIRECT/SKIP 라우팅 | 모든 12 task 라우팅 결정 기록 |
 | LGBM student 학습 | distill 완료 후 per-task AUC | Teacher 대비 gap < 0.05 on DISTILL tasks |
 | 3-layer fallback | Layer 3 rule engine 동작 | SKIP 태스크 가 Layer 3 로 routing |
 
