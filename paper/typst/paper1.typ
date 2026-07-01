@@ -74,7 +74,7 @@
   Both GradSurgery (AUC 0.673, F1-macro 0.203) and the corrected adaTT implementation (sigmoid+adaTT AUC 0.672) maintain baseline performance; neither provides a gain.
   The operational motivation --- consolidating 13 individual models into a single MTL model
   for unified training, serving, and monitoring --- is validated:
-  the shared-bottom baseline already exceeds per-task XGBoost ceilings,
+  the shared-bottom baseline already exceeds per-task XGBoost ceilings (on the synthetic benchmark; a comparison against a simple GBM under the skewed operational distribution is untested --- see @operational-teacher),
   and PLE provides additional gains on ranking metrics without sacrificing classification performance.
 
   #v(0.3em)
@@ -111,7 +111,7 @@ If each expert in a multi-task model captures a _different kind of "why"_ ---
 temporal trends, hierarchical product structure, causal pathways, collaborative patterns ---
 then the gating mechanism itself becomes an explanation:
 "This recommendation is driven primarily by your spending trend (Temporal, 35%)
-and product category fit (HGCN, 28%)."
+and product category fit (HGCN, 28%)."#footnote[This three-expert decomposition is an idealized example for tasks with a dominant expert. On operational data the gate is more uniform (normalized entropy 0.67--0.97), so such crisp decompositions materialize only for the few tasks with a dominant expert (@operational-teacher).]
 
 This principle motivates the architecture proposed in this work.
 
@@ -929,6 +929,7 @@ and thus approaches Level 2 (intervention) reasoning.
 When the Causal expert's gate weight is high for a prediction,
 it indicates not merely correlation but that _structural causal relationships_
 contributed to the recommendation --- a qualitatively stronger form of explanation.
+How sharply this perspective-level decomposition materializes, however, is data- and task-dependent: on operational data the routing is more uniform, so crisp attribution to 1--2 experts is limited to tasks with a dominant expert, while most tasks default to multi-factor explanation (@operational-teacher).
 
 *Mechanism.* The CGC (Customized Gate Control) module computes
 an attention over the $K$ experts for each task $t$.
@@ -950,6 +951,8 @@ $w_(t,k)$ carries business meaning without additional interpretation:
     #h(1em) Others (0.15)
   ]
 ]
+
+This example is an idealized profile for tasks with a dominant expert. On operational data (@operational-teacher), routing for most tasks is more uniform (normalized entropy 0.67--0.97), so such sharp 3--4-expert decompositions appear only for a subset of tasks.
 
 *What gate weights do and do not explain.*
 Gate weights answer "which analytical perspective mattered most" ---
@@ -1418,9 +1421,9 @@ the longer training budget.
 
 == Explainability Analysis (RQ5)
 
-The CGC gate produces interpretable routing weights that enable direct attribution of "which expert contributed how much" per task. Under the recommended softmax configuration, weights sum to one, making relative contributions directly comparable. We examine per-task gate weight distributions across all 13 tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition (e.g., temporal expert weighted highly for churn prediction, causal expert for intervention-sensitive tasks).
+The CGC gate produces interpretable routing weights that enable direct attribution of "which expert contributed how much" per task. Under the recommended softmax configuration, weights sum to one, making relative contributions directly comparable. We examine per-task gate weight distributions across all 13 tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition. This alignment is task- and data-dependent, however: in operational observations, merchant_affinity and channel weight the Temporal expert highly and balance_util weights the Causal expert, loosely matching intuition, but a specific mapping such as "the temporal expert for churn prediction" does not hold (@operational-teacher).
 
-Gate weights from the CGC extraction layers provide per-task expert utilization profiles. Tasks with low entropy ratio (e.g., top_mcc_shift at 0.347) concentrate on 1--2 experts, providing clear attribution: the recommendation is driven primarily by the dominant expert's feature group. Tasks with high entropy (e.g., will_acquire_payments at 0.882) leverage diverse experts, requiring multi-factor explanation. This entropy-based explainability directly maps to the Financial DNA task groups and enables the rule-based fallback (Layer 3) to select appropriate explanation templates per task.
+Gate weights from the CGC extraction layers provide per-task expert utilization profiles. Tasks with low entropy ratio (e.g., top_mcc_shift at 0.347) concentrate on 1--2 experts, providing clear attribution: the recommendation is driven primarily by the dominant expert's feature group. Tasks with high entropy (e.g., will_acquire_payments at 0.882) leverage diverse experts, requiring multi-factor explanation. This entropy-based explainability directly maps to the Financial DNA task groups and enables the rule-based fallback (Layer 3) to select appropriate explanation templates per task. On operational data, however, routing is more uniform, so the set of tasks for which such crisp single-expert attribution holds is limited (@operational-teacher).
 
 _Detailed per-task gate weight profiles and dominant expert assignments are provided in the Gate Entropy Analysis (RQ6) below, which jointly addresses both routing collapse and task-expert specialization._
 
@@ -1445,6 +1448,7 @@ CGC layer gate weights show meaningful task-level specialization
 with entropy ratios ranging from 0.33 to 0.88 across the 13 tasks and 2 CGC layers (@tab:gate-entropy).
 This confirms that routing collapse has not occurred:
 all tasks engage multiple experts, while distinct tasks show distinct routing patterns.
+Re-measured on the operational teacher (K=6, 12 tasks), the normalized entropy is 0.67--0.97 --- more uniform than synthetic, with 7 of 12 tasks exceeding 0.90; the no-collapse conclusion holds on both, but crisp dominant-expert specialization is confined to a few tasks (@operational-teacher).
 Low-entropy tasks concentrate on 1--2 experts; high-entropy tasks draw broadly across the expert basket.
 CGC attention weights remain perfectly uniform across all tasks, indicating that expert selection operates at the extraction layer, not at the attention aggregation layer.
 
@@ -1558,7 +1562,7 @@ The most robust configuration remains PLE softmax without transfer mechanisms.
 
 *Operational motivation validated.*
 The shared-bottom baseline (AUC 0.6711, NDCG\@3 0.7014) already exceeds
-per-task XGBoost ceilings on all 13 tasks,
+per-task XGBoost ceilings on all 13 tasks (on the synthetic benchmark),
 validating the operational motivation for MTL consolidation:
 a single model replaces 13 individual models with no performance penalty,
 enabling unified training, serving, and monitoring.
@@ -1740,6 +1744,45 @@ This stands in contrast to model ensemble approaches
 where each model is a separate management point with its own
 training pipeline, serving endpoint, and monitoring dashboard.
 
+== Preliminary Operational Teacher (Research-Only)
+<operational-teacher>
+
+To check whether the synthetic-benchmark conclusions hold directionally in a real deployment, we take a preliminary observation of the on-premise teacher model (June 2026, full-expert `best_composite` checkpoint) on operational data. *This observation is a research comparison, not a promotion candidate* --- it is excluded from production promotion by data-availability gating. It differs from the synthetic benchmark in task composition (12 operational vs.~13 synthetic), number of live experts (operational K=6 with LightGCN inactive vs.~synthetic K=7), and label distribution, so *absolute numbers are not directly comparable --- only signs and patterns are cited.*
+
+*Independent reproduction of no expert collapse.* Forwarding the operational teacher with side-band inputs wired, all six heterogeneous experts retain non-degenerate outputs (output std 0.051--0.333, weakest is HGCN). Per-task gate entropy ratios span 0.67--0.97; no task collapses onto a single expert (@tab:operational-teacher). The core RQ6 conclusion --- no collapse --- reproduces independently on both synthetic and operational data. However, operational routing is more uniform than synthetic (0.33--0.88): 7 of 12 tasks exceed 0.90, so crisp attribution to 1--2 experts is limited to the few tasks with a dominant expert (spending_category with PersLay, merchant_affinity with Temporal, life_stage with PersLay).
+
+#figure(
+  placement: top,
+  scope: "parent",
+  {
+    set text(size: 8pt)
+    table(
+      columns: (1.4fr, 1fr, 0.7fr, 0.7fr),
+      inset: 4pt,
+      align: (left, left, right, right),
+      stroke: 0.5pt,
+      table.header(
+        [*Task*], [*Top expert*], [*Gate wt.*], [*$H_t \/ log K$*],
+      ),
+      [spending_category], [PersLay], [0.590], [0.673],
+      [merchant_affinity], [Temporal], [0.534], [0.768],
+      [life_stage], [PersLay], [0.427], [0.825],
+      [balance_util], [Causal], [0.370], [0.862],
+      [channel], [Temporal], [0.329], [0.875],
+      [retention], [DeepFM], [0.331], [0.901],
+      [spending_bucket], [DeepFM], [0.375], [0.917],
+      [engagement], [HGCN], [0.281], [0.924],
+      [churn], [DeepFM], [0.338], [0.926],
+      [nba], [DeepFM], [0.294], [0.931],
+      [consumption_cycle], [OT], [0.259], [0.943],
+      [timing], [PersLay], [0.235], [0.973],
+    )
+  },
+  caption: [Operational teacher (research-only, K=6, 12 tasks): per-task top expert and gate entropy ratio. All six experts non-degenerate (output std 0.051--0.333). Entropy 0.67--0.97 shows no collapse but is more uniform than synthetic (0.33--0.88). Task names do not map 1:1 to synthetic @tab:gate-entropy, so this is a separate table and absolute numbers are not directly compared.],
+) <tab:operational-teacher>
+
+*High absolute metrics reflect task easiness, not architectural superiority.* Some operational metrics appear high (e.g., churn AUC 0.89), but this is attributable to a narrow, skewed operational distribution and extreme label imbalance: the churn positive rate is 0.54%, and the majority class of the multiclass tasks accounts for 97--99%. The large AUC--PR-AUC gap (churn AUC 0.89 vs.~PR-AUC 0.47) and high calibration error (ECE 0.31) corroborate this. Where customer patterns are predictable and the distribution is concentrated, a simple GBM baseline may already match or exceed the seven-expert PLE; indeed, in the operational gate, the generated-feature DeepFM ranks top for most tasks (churn, retention, nba, spending_bucket). This operational observation is therefore liveness evidence --- no collapse, all experts active --- not a performance-superiority claim. A per-task GBM comparison and a stress test on minority-class signals under the operational distribution remain future work.
+
 == Limitations
 
 *Synthetic benchmark only.*
@@ -1752,11 +1795,21 @@ In particular, the formula-based label generation may understate
 the benefit of expert specialization ---
 real data where temporal patterns, graph structures, and causal pathways
 carry genuinely different signals may amplify PLE's advantage over shared-bottom.
-Validation on proprietary financial data is planned for a subsequent version
-but is not included here due to regulatory data access constraints.
-That validation will target labels defined under the forward-transition criterion of @leakage-prevention
+A *preliminary* validation on proprietary financial data was performed on the operational teacher (@operational-teacher),
+but that teacher is a research comparison excluded from production promotion by data-availability gating,
+and its extreme label imbalance (churn positive rate 0.54%) demands caution in metric interpretation.
+Full production validation remains future work.
+That future validation will target labels defined under the forward-transition criterion of @leakage-prevention
 (label windows opening strictly after the feature cutoff),
 so that reported operational gains cannot be inflated by label-definition-internal leakage.
+
+*Skewed operational distribution and untested GBM baseline.*
+The high absolute metrics seen in the operational observation (e.g., churn AUC 0.89) stem from a narrow, skewed
+distribution and extreme label imbalance (majority class 97--99% on multiclass tasks), indicating low task difficulty
+rather than architectural superiority. Under such distributions a simple GBM baseline may already match or exceed the
+seven-expert PLE (in the operational gate the generated-feature DeepFM ranks top for most tasks), and a per-task GBM
+comparison under the operational distribution has not yet been run. The synthetic-benchmark result that "MTL exceeds
+XGBoost ceilings" should not be assumed to transfer to the skewed operational distribution.
 
 *adaTT evaluation at limited epoch budget.*
 The corrected adaTT implementation's null effect may be partly attributable to the 10-epoch training budget:
@@ -1775,7 +1828,7 @@ introducing latency and cost trade-offs (detailed in companion paper).
 
 == Ethics and Data Statement
 
-All experiments in this version use *fully synthetic benchmark data* generated via Gaussian Copula with a fixed random seed (seed=42). No real customer data is included in this version. Validation on production data is planned for a subsequent revision. The benchmark data generator and all configuration files are publicly available in the repository. The system is designed for deployment on low-risk check card products only; investment and insurance recommendations are explicitly excluded from the operational scope (see companion paper, Section 6.3).
+All *quantitative benchmark* experiments in this version use *fully synthetic benchmark data* generated via Gaussian Copula with a fixed random seed (seed=42). The preliminary observation of the operational teacher (@operational-teacher) reports only aggregate metrics and gate statistics as a research-only comparison, and includes no raw customer data or personally identifying information. Full real-data validation is planned for a subsequent revision. The benchmark data generator and all configuration files are publicly available in the repository. The system is designed for deployment on low-risk check card products only; investment and insurance recommendations are explicitly excluded from the operational scope (see companion paper, Section 6.3).
 
 == Future Work: Scaling Considerations
 
