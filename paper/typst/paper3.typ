@@ -3,7 +3,7 @@
 // ============================================================
 
 #set document(
-  title: "Scaling Multi-Task Learning Beyond Homogeneous Tasks: Loss Dynamics and Gate Selection in 13-Task Financial Recommendation",
+  title: "Scaling Multi-Task Learning Beyond Homogeneous Tasks: Loss Dynamics and Gate Selection in 12-Task Financial Recommendation",
   author: ("Seonkyu Jeong", "Euncheol Sim", "Youngchan Kim"),
 )
 
@@ -26,7 +26,7 @@
   #text(size: 14.5pt, weight: "bold")[
     Scaling Multi-Task Learning Beyond Homogeneous Tasks: \
     Loss Dynamics and Gate Selection in \
-    13-Task Financial Recommendation
+    12-Task Financial Recommendation
   ]
 
   #v(0.8em)
