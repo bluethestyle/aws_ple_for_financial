@@ -79,7 +79,7 @@
   wiring it into the served path is future work.
   We evaluate distillation quality (v13 baseline: AUC gap $<$ 3.6 percentage points across 7 binary tasks, mean 2.6 pp; the v14 re-run after the fidelity-gate fixes analysed in the Discussion (Section 8) reduces the mean gap to 0.58 pp),
   reason generation quality via automated compliance validation
-  (L1 template coverage 100%, 13/13 tasks; compliance rules applied: suitability, consent, opt-out, profiling, disclosure),
+  (L1 template coverage 100%, 12/12 tasks; compliance rules applied: suitability, consent, opt-out, profiling, disclosure),
   and Safety Gate reliability (5 PII patterns, 5 validation categories).
   The system targets low-risk products (check cards, deposits); investment and insurance recommendations are excluded from the deployment scope.
   The system achieves 120ms warm latency on AWS Lambda (L1 predict + 13 tasks)
@@ -116,7 +116,7 @@ Existing explanation approaches are insufficient:
 
 We propose a full-chain solution from prediction to persuasion:
 
-+ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (13 tasks, 7 experts, 1211 features --- 1210 after the v14 preprocessing revision; see companion paper for architecture and ablation) is distilled into per-task LGBM students via adaptive threshold gating that routes each task to DISTILL (soft labels), DIRECT (hard labels), or SKIP (rule engine) based on teacher quality assessment. This enables CPU-only serving while a three-layer fallback guarantees service continuity under any model failure scenario.
++ *Knowledge Distillation*: A heterogeneous-expert PLE teacher (12 tasks --- 13 before segment_prediction's exclusion in the v13 revision ---, 7 experts, 1211 features --- 1210 after the v14 preprocessing revision; see companion paper for architecture and ablation) is distilled into per-task LGBM students via adaptive threshold gating that routes each task to DISTILL (soft labels), DIRECT (hard labels), or SKIP (rule engine) based on teacher quality assessment. This enables CPU-only serving while a three-layer fallback guarantees service continuity under any model failure scenario.
 
 + *Multi-Agent Reason Generation*: Three specialized LLM agents collaborate in a pipeline --- Feature Selector chooses explanation-worthy features, Reason Generator produces natural-language narratives, and Safety Gate validates regulatory compliance.
 
@@ -124,7 +124,7 @@ We propose a full-chain solution from prediction to persuasion:
 
 == Contributions
 
-+ *Adaptive Distillation with Three-Layer Fallback*: Teacher threshold gating automatically routes each of the 13 tasks to DISTILL (soft labels, 7 tasks), DIRECT (hard labels, 3 tasks), or SKIP (rule engine, 3 tasks) based on teacher quality relative to a 2x random baseline, ensuring service continuity per SR 11-7 model risk management requirements. Feature selection uses LGBM gain importance, consistent with the serving model perspective.
++ *Adaptive Distillation with Three-Layer Fallback*: Teacher threshold gating automatically routes each task to DISTILL (soft labels, 7 tasks), DIRECT (hard labels, 3 tasks), or SKIP (rule engine, 3 tasks) based on teacher quality relative to a 2x random baseline, ensuring service continuity per SR 11-7 model risk management requirements (the reported routing split is from the 13-task distillation round, before segment_prediction's exclusion). Feature selection uses LGBM gain importance, consistent with the serving model perspective.
 
 + *Feature Business Reverse-Mapping*: A systematic interpretation registry that maps every feature to a business-interpretable description, enabling grounded explanation generation.
 
@@ -270,10 +270,10 @@ enabling independent improvement of each component.
       edge(<rule>, <serve>, "->"),
     )
   },
-  caption: [Teacher-student distillation architecture with threshold-gated three-way task routing.],
+  caption: [Teacher-student distillation architecture with threshold-gated three-way task routing. The task counts shown (13 Task, 7/3/3 split) reflect the 13-task distillation round before segment_prediction's exclusion; the current benchmark task set is 12.],
 ) <fig:distillation>
 
-The teacher model (PLE with 7 heterogeneous experts, 13 tasks, 1211 features;
+The teacher model (PLE with 7 heterogeneous experts, 12 tasks --- 13 before the v13 revision ---, 1211 features;
 see companion paper for architecture details)
 produces soft probability outputs that serve as training targets
 for per-task LGBM @ke2017lightgbm students.
@@ -294,15 +294,15 @@ while others fall back to direct hard-label training or the rule engine,
 ensuring the soft-label signal is only applied where it genuinely adds value.
 
 The key design decision is _per-task distillation_:
-rather than a single student model for all 13 tasks,
-we train 13 independent LGBM models, each learning one task's soft labels.
+rather than a single student model for all 12 tasks,
+we train 12 independent LGBM models, each learning one task's soft labels.
 This enables:
 (1) per-task feature selection (different tasks benefit from different features),
 (2) independent retraining (if one task drifts, only its student is re-distilled),
 (3) interpretable feature importance per task (LGBM's built-in feature importance
 aligns with the business reverse-mapping for explanation generation).
 
-Five tasks were excluded from the task set during development. Four (income tier, tenure stage, spend level, engagement score) represent deterministic feature transformations --- for instance, income tier is simply a quantile bucket of the raw income feature, which is already a model input. A student model can perfectly reconstruct such labels from its input features, making the distillation trivially solvable and uninformative. The fifth, has\_nba (binary "will acquire any product?"), was folded into nba\_primary class 0 --- predicting _which_ product to recommend subsumes predicting _whether_ to recommend. The remaining 13 tasks represent genuine prediction objectives where the label cannot be deterministically derived from input features.
+Six tasks were excluded from the task set during development. Four (income tier, tenure stage, spend level, engagement score) represent deterministic feature transformations --- for instance, income tier is simply a quantile bucket of the raw income feature, which is already a model input. A student model can perfectly reconstruct such labels from its input features, making the distillation trivially solvable and uninformative. The fifth, has\_nba (binary "will acquire any product?"), was folded into nba\_primary class 0 --- predicting _which_ product to recommend subsumes predicting _whether_ to recommend. The sixth, segment\_prediction (4-class segment), was excluded in the v13 preprocessing revision as a leakage risk given its strong feature--label correlation (the segmentation signal is instead carried by nba\_primary's 7-class distribution). The remaining 12 tasks represent genuine prediction objectives where the label cannot be deterministically derived from input features.
 
 *Lifecycle separation*:
 - *Teacher*: retrained weekly/monthly on SageMaker (GPU required, comprehensive).
@@ -538,7 +538,7 @@ This avoids conflating metrics with incompatible semantics across task types.
     [mcc\_diversity\_trend], [R²=0.031#super[R]], [MAE 0.025#super[E]], [n/a], [R² < 0.05 → DIRECT],
     [cross\_sell\_count (R²)], [0.008], [—], [—], [R² < floor → SKIP (L3)],
   ),
-  caption: [Distillation results per task. Binary tasks use AUC gap (evaluation metric). Multiclass tasks use F1-macro as the _routing_ metric (threshold: $2\/K$); NDCG\@K is reported separately in per-task analysis. Regression tasks use R² as the _routing_ metric (superscript R) and MAE as the _evaluation_ metric (superscript E); gap is marked n/a when routing and evaluation metrics differ. DIRECT-routed tasks show hard-label LGBM results; SKIP-routed tasks are served by the Layer 3 rule engine. *Note: Teacher AUC values (0.63--0.72) reflect the v13 phase0 teacher; the v14 SageMaker re-run with HMM mode-split + GMM K=14 + probability-column normaliser fix lifts the teacher's per-task AUC into the 0.82+ range (see Paper 1 joint-ablation and epoch-budget tables). The fidelity gap and student-teacher agreement percentages above are expected to remain in the same magnitude because Platt scaling and gain-importance feature selection are scale-invariant; LGBM distillation on the v14 teacher is deferred to a follow-up release.*],
+  caption: [Distillation results per task. Binary tasks use AUC gap (evaluation metric). Multiclass tasks use F1-macro as the _routing_ metric (threshold: $2\/K$); NDCG\@K is reported separately in per-task analysis. Regression tasks use R² as the _routing_ metric (superscript R) and MAE as the _evaluation_ metric (superscript E); gap is marked n/a when routing and evaluation metrics differ. DIRECT-routed tasks show hard-label LGBM results; SKIP-routed tasks are served by the Layer 3 rule engine. *Note: these results are from the distillation round run on the 13-task configuration before segment_prediction's exclusion; Teacher AUC values (0.63--0.72) reflect the v13 phase0 teacher; the v14 SageMaker re-run with HMM mode-split + GMM K=14 + probability-column normaliser fix lifts the teacher's per-task AUC into the 0.82+ range (see Paper 1 joint-ablation and epoch-budget tables). The fidelity gap and student-teacher agreement percentages above are expected to remain in the same magnitude because Platt scaling and gain-importance feature selection are scale-invariant; LGBM distillation on the v14 teacher is deferred to a follow-up release.*],
 ) <tab:distill-results>
 
 // ============================================================
@@ -612,7 +612,7 @@ The reverse-mapping layer is integrated as Level RM, so glossary value-substitut
       edge-stroke: 0.7pt + luma(80),
       node-corner-radius: 3pt,
 
-      node((1, 0), [*Model Predictions* \ #text(size: 8pt)[13 tasks × top-K products]], width: 55mm, fill: gray-fill, name: <pred>),
+      node((1, 0), [*Model Predictions* \ #text(size: 8pt)[12 tasks × top-K products]], width: 55mm, fill: gray-fill, name: <pred>),
 
       node((1, 1.0), [*Feature Selector* \ #text(size: 8pt)[SHAP contribution + business mapping richness] \ #text(size: 8pt)[Customer context-based selection]], width: 70mm, fill: agent-fill, name: <a1>),
 
@@ -847,7 +847,7 @@ Model version changes are tracked at Lambda cold start: when the champion model 
 The OpsAgent does not make promotion decisions ---
 it surfaces the information a human needs to make one.
 When all metrics are within normal bounds, the report is brief
-("All 13 tasks within tolerance; no action required").
+("All 12 tasks within tolerance; no action required").
 When anomalies are detected, the report identifies _which_ tasks and _which_ experts
 are affected, providing actionable context rather than raw numbers.
 
@@ -1490,7 +1490,7 @@ label derivation $arrow.r$ normalization $arrow.r$ tensor storage)
 produces two audit artifacts at every run:
 The feature statistics file records per-column NaN ratios, zero-variance flags,
 distribution statistics, and generated feature counts;
-the label statistics file records class balance and positive rates for all 13 tasks.
+the label statistics file records class balance and positive rates for all 12 tasks.
 These artifacts constitute a verifiable data quality record
 that an external auditor can inspect without executing any code.
 
@@ -1556,7 +1556,7 @@ rather than causing catastrophic failure,
 proving that no single component is a critical point of failure.
 Uncertainty weighting @kendall2018 prevents any single task
 from dominating the multi-task objective,
-ensuring robust performance across all 13 tasks simultaneously.
+ensuring robust performance across all 12 tasks simultaneously.
 Drift monitoring (PSI-based) is designed to provide continuous robustness verification once deployed.
 
 === Bias Monitoring (Art. 10.2f)
@@ -1721,7 +1721,7 @@ satisfying both SR 11-7 expectations and EU AI Act Art. 9 risk management requir
 
 == Distillation Experiments
 
-Binary tasks achieved AUC gaps of 0.018--0.036 (mean 2.6 percentage points), with ranking correlation above 0.96 across all 7 tasks. These figures are from the v13 run; the v14 re-run, after the two distillation fixes analysed in the Discussion, reduces the mean binary AUC gap to 0.58 pp, and the fidelity gate now reports its verdict in two tiers (Tier 1 blocking / operational, Tier 2 informational / architecture-inherent) as detailed there. The primary failure mode was calibration gap (0.08--0.10), addressed by post-hoc Platt scaling for probability-critical tasks. Two multiclass tasks (nba_primary, segment_prediction) fell below the 2× random teacher threshold and were routed to direct hard-label training; next_mcc (50-class) was routed to SKIP (Layer 3 rule engine). One regression task (mcc_diversity_trend) achieved an MAE gap of 0.025 via direct training. The other two (product_stability, cross_sell_count) were routed to SKIP due to near-zero teacher R².
+Binary tasks achieved AUC gaps of 0.018--0.036 (mean 2.6 percentage points), with ranking correlation above 0.96 across all 7 tasks. These figures are from the v13 round, run on the 13-task configuration before segment_prediction's exclusion; the v14 re-run, after the two distillation fixes analysed in the Discussion, reduces the mean binary AUC gap to 0.58 pp, and the fidelity gate now reports its verdict in two tiers (Tier 1 blocking / operational, Tier 2 informational / architecture-inherent) as detailed there. The primary failure mode was calibration gap (0.08--0.10), addressed by post-hoc Platt scaling for probability-critical tasks. Two multiclass tasks (nba_primary, segment_prediction) fell below the 2× random teacher threshold and were routed to direct hard-label training; next_mcc (50-class) was routed to SKIP (Layer 3 rule engine). One regression task (mcc_diversity_trend) achieved an MAE gap of 0.025 via direct training. The other two (product_stability, cross_sell_count) were routed to SKIP due to near-zero teacher R².
 
 == Reason Generation Quality
 
@@ -1736,7 +1736,7 @@ Human evaluation is planned for production deployment; automated compliance vali
     align: (left, left, right),
     stroke: 0.5pt,
     [*Metric*], [*Description*], [*Result*],
-    [L1 template coverage], [Tasks with template-based reason generation], [100% (13/13)],
+    [L1 template coverage], [Tasks with template-based reason generation], [100% (12/12)],
     [Template variants], [Distinct templates (6 categories × 5 variants)], [30],
     [PII detection patterns], [Regex-based PII check rules], [5],
     [Compliance rules applied], [Suitability, consent, opt-out, profiling, disclosure], [5],
@@ -1844,7 +1844,7 @@ First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the 
   caption: [Serving latency breakdown on warm Lambda (serverless, no GPU). LanceDB grounding uses accumulated recommendation cases per customer.],
 ) <tab:serving>
 
-Of the 13 tasks served by the production Lambda: 10 tasks are served by Layer 2 LGBM
+Of the 13 tasks served by the production Lambda (as measured, on the 13-task stack): 10 tasks are served by Layer 2 LGBM
 (7 tasks from distillation + 3 from direct hard-label training) and 3 tasks are served
 by the Layer 3 rule engine (next\_mcc, product\_stability, cross\_sell\_count).
 The DynamoDB audit trail records every prediction event:
@@ -1854,7 +1854,7 @@ providing a verifiable history of serving decisions for regulatory inspection.
 
 The entire teacher training and distillation cycle runs on SageMaker Spot instances,
 with GPU (ml.g4dn.xlarge) for teacher training and CPU (ml.m5.4xlarge) for LGBM distillation;
-distillation was moved up from ml.m5.2xlarge after the 13-task soft-label workload exceeded
+distillation was moved up from ml.m5.2xlarge after the full soft-label workload exceeded
 its memory, and a representative spot run completed in 62 minutes at \$0.30.
 Spot pricing reduces compute cost by approximately 70% versus on-demand;
 interruption risk is managed by automatic checkpointing and job resume.
@@ -2197,7 +2197,7 @@ between model prediction and human persuasion in financial product recommendatio
 
 Five key contributions define this work:
 
-+ *Adaptive knowledge distillation with three-layer fallback*: teacher threshold gating routes each of 13 tasks to DISTILL (7), DIRECT (3), or SKIP (3) based on teacher quality, ensuring service continuity per SR 11-7 model risk management. LGBM gain-based feature selection aligns with the serving model perspective, replacing OOM-prone teacher IG attribution.
++ *Adaptive knowledge distillation with three-layer fallback*: teacher threshold gating routes each task to DISTILL (7), DIRECT (3), or SKIP (3) based on teacher quality (split from the 13-task round, before segment_prediction's exclusion), ensuring service continuity per SR 11-7 model risk management. LGBM gain-based feature selection aligns with the serving model perspective, replacing OOM-prone teacher IG attribution.
 
 + *3-agent recommendation reason generation pipeline* (Feature Selector → Reason Generator → Safety Gate) produces natural-language explanations grounded in business-mapped feature attributions, with role separation enabling independent improvement and audit logging.
 

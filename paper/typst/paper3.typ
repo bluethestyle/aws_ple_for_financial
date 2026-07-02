@@ -56,14 +56,17 @@
   We report empirical findings from scaling PLE to *13 heterogeneous tasks*
   --- 7 binary, 3 multiclass, 3 regression ---
   in a financial product recommendation system with 7 structurally distinct experts
-  and 1M synthetic customers.
+  and 1M synthetic customers
+  (the final v14 benchmark uses 12 of these --- 7 binary, 2 multiclass, 3 regression ---
+  after a leakage-motivated removal of segment_prediction; each finding's task
+  composition follows the run it reports).
   Fourteen findings organize around one thread --- *what silently
   fails when MTL is pushed past the homogeneous-task regime, and the
   measurement discipline needed to catch it* --- across four themes.
   *Loss dynamics and gating* (Findings 1--6): an uncertainty-weighting implementation bug silently suppresses minority-type tasks (+0.018 NDCG\@3 when fixed); softmax gating outperforms sigmoid for heterogeneous task mixes, *reversing* the homogeneous-setting advantage; learned uncertainty weights converge identically across architectures; shared-bottom baselines overfit extended epoch budgets that gated PLE variants absorb without regularisation; GroupTaskExpert pre-gating degrades multiclass performance in mixed-type groups; gate entropy analysis shows extraction-layer specialization (entropy ratios 0.33--0.88) while attention-level aggregation collapses to uniform averaging (ratio 1.00), and composite val-loss is an unreliable checkpoint signal once regression tasks are present.
   *Fusion augmentation trade-offs* (Finding 7): a 9-way comparison isolates two positive recipes on disjoint axes --- output-space boosting with gradient isolation (BRP-detached, hard-task rescue) and inverse-gate auxiliary supervision (NEAS, aggregate-AUC gain) --- that do *not* compose additively.
   *Causal expert reinterpretation* (Findings 8--13): the causal expert's adjacency matrix $bold(W)$ collapses to zero in every trained checkpoint examined, rendering its forward equivalent to a plain MLP; a two-part patch (NOTEARS reconstruction loss + initialisation rescale) restores DAG learning at zero task-metric cost; routing the functional DAG into consumable outputs yields a Causal Explainability Head (CEH, per-sample attribution, Pearl Rung 1) and a Causal Guardrail (CG, z-space-Mahalanobis OOD detection at 100% TPR / 5% FPR on three synthetic probes); W-amplification via init $0.1 arrow 0.3$ + $lambda_"recon" 0.5 arrow 2.0$ grows the adjacency matrix $14 times$ in Frobenius norm with zero primary-task cost, establishing that the "decorative DAG" is a training-choice artefact, not an architectural constraint; and a counterfactual probe (CCP, Pearl Rung 3) shows that at baseline W scale the DAG carries $0.16%$ of the counterfactual effect but at the amplified scale the mediation ratio rises to $32%$ at median and $61%$ at the 95th percentile --- a preliminary signal, which we flag as future work rather than a validated result, that Pearl's Rung 3 may be viable on the amplified teacher; and a CEH v3 variant replacing the causal-encoder-output target with a specific task-logit gradient target is an honest negative result --- the head re-collapses to a global importance pattern despite training signal, showing that target design for attribution is more sensitive than the v1$arrow$v2 pivot suggested.
-  *Serving-side distillation control* (Finding 14): distilling the 13-task teacher into per-task gradient-boosted students passes operational gates (AUC gap $<= 0.0125$, student calibration error $<= 0.0114$) while behavioural similarity shows a structural floor (teacher--student agreement $0.75$--$0.82$, ranking correlation $0.78$--$0.91$ across all seven distilled tasks) that is invariant across three generations of gate semantics scored on identical predictions; a single-tier gate over both metric families therefore always fails --- and an always-failing gate invites bypass --- so the control splits into a blocking operational tier and an informational behavioural-diagnostic tier.
+  *Serving-side distillation control* (Finding 14): distilling the 12-task teacher into per-task gradient-boosted students passes operational gates (AUC gap $<= 0.0125$, student calibration error $<= 0.0114$) while behavioural similarity shows a structural floor (teacher--student agreement $0.75$--$0.82$, ranking correlation $0.78$--$0.91$ across all seven distilled tasks) that is invariant across three generations of gate semantics scored on identical predictions; a single-tier gate over both metric families therefore always fails --- and an always-failing gate invites bypass --- so the control splits into a blocking operational tier and an informational behavioural-diagnostic tier.
   We distill these observations into practical guidelines for
   practitioners scaling MTL beyond the homogeneous-task regime.
 
@@ -121,7 +124,7 @@ homogeneous-task regime.
 
 *Position relative to companion papers.*
 This work sits between two companion papers that share the same
-13-task benchmark, the same 7-expert PLE backbone, and the same v14
+12-task benchmark, the same 7-expert PLE backbone, and the same v14
 phase0 data pipeline. Its own thread is narrow and deliberate: *what
 silently fails when MTL is pushed past the homogeneous-task regime, and
 the measurement discipline that catches it.*
@@ -131,7 +134,7 @@ architecture and a system-level summary of the principal ablation
 findings; the present paper is the *detailed empirical companion* to that summary, reporting (a) full
 hypothesis discrimination across A--E (signal cleaning, epoch
 budget, ensemble, gate overfitting, regularisation) and per-task v14
-numbers across all 13 tasks (Findings 1--6) --- where these coincide with Paper 1 we cite its figures rather than re-deriving them --- (b) a 9-way fusion-
+numbers across all 12 tasks (Findings 1--6) --- where these coincide with Paper 1 we cite its figures rather than re-deriving them --- (b) a 9-way fusion-
 mechanism comparison that isolates the design space of "what kinds of
 fusion-augmentation work on top of CGC" (Finding 7), (c) a
 causal expert reinterpretation arc that has no counterpart in
@@ -401,15 +404,18 @@ Tasks are organized into 4 Financial DNA groups:
     stroke: 0.5pt,
     table.header([*Group*], [*Tasks*], [*Type mix*]),
     [Engagement], [next\_mcc, top\_mcc\_shift], [1 mc, 1 bin],
-    [Lifecycle], [churn\_signal, product\_stability, segment\_prediction], [1 bin, 1 reg, 1 mc],
+    [Lifecycle], [churn\_signal, product\_stability, segment\_prediction#super[†]], [1 bin, 1 reg, 1 mc#super[†]],
     [Value], [mcc\_diversity\_trend], [1 reg],
     [Consumption], [nba\_primary, cross\_sell\_count, will\_acquire\_\* (5 tasks)], [1 mc, 1 reg, 5 bin],
   ),
   caption: [Financial DNA task grouping for AdaTT transfer, per
-  `task_groups` in `configs/santander/pipeline.yaml` --- the 13-task
-  configuration (7 binary, 3 multiclass, 3 regression) used in every
-  run reported here. A later leakage scan removed `segment_prediction`
-  from the live config; all runs in this paper predate that removal.],
+  `task_groups` in `configs/santander/pipeline.yaml`. The 13-task
+  configuration shown (7 binary, 3 multiclass, 3 regression) is the one
+  used by the v12-era runs (Findings 1--3, 5, and the gate-entropy
+  analyses). A leakage scan in the v13 preprocessing revision removed
+  `segment_prediction` (†) from the live config; the v13/v14 runs
+  (Findings 4, 6--7, and the Finding 14 distillation round) therefore
+  use the remaining 12 tasks (7 binary, 2 multiclass, 3 regression).],
 ) <tab:taskgroups>
 
 AdaTT @li2023 learns intra-group and inter-group transfer strengths.
@@ -419,7 +425,10 @@ and a regression task --- a design that becomes relevant in Section 4.5.
 = Results and Analysis
 
 All experiments share the *benchmark_v12* synthetic generation schema:
-1M customers, 13 tasks (7 binary, 3 multiclass, 3 regression). Three
+1M customers; the generation schema defines 13 tasks (7 binary, 3 multiclass,
+3 regression). From the v13 preprocessing revision onward, `segment_prediction`
+is excluded as a leakage risk, so v13/v14 runs train on 12 tasks
+(7 binary, 2 multiclass, 3 regression). Three
 version labels recur in this paper and are easily conflated, so we fix
 their referents here. *benchmark_v12* names the data *generation*
 schema. *Phase 0 v3/v4* names the *feature-engineering build* version
@@ -730,7 +739,8 @@ $E_t = 0$ means a single expert captures all weight.
     [will\_acquire\_payments], [0.882], [---], [Full expert utilization],
   ),
   caption: [CGC gate entropy ratios by task and PLE layer (teacher model,
-  30 epochs). Low entropy ($E_t < 0.45$) indicates 1--2 experts dominate;
+  30 epochs --- the v12-era 13-task configuration, before `segment_prediction`'s removal).
+  Low entropy ($E_t < 0.45$) indicates 1--2 experts dominate;
   high entropy ($E_t > 0.80$) indicates all 7 experts contribute meaningfully.],
 ) <tab:gate-entropy>
 
@@ -917,7 +927,7 @@ than as the primary stopping criterion.
 == Finding 7: Two Positive Fusion Recipes on Disjoint Axes, Non-Additive Under Composition <find7>
 
 After Finding 2 established that the loss-level `adaTT` variant does not
-affect aggregate AUC at the 13-task scale ($Delta = -0.001$, null),
+affect aggregate AUC at the 12-task scale ($Delta = -0.001$, null),
 eight further mechanisms were evaluated on the same benchmark to map out
 which forms of fusion augmentation (if any) can extract useful signal
 beyond CGC's gated selection. The nine-way comparison resolves into
@@ -1007,7 +1017,7 @@ injects a residual nor modifies the primary output.
 additivity. Both are enabled with their standalone settings; no other
 modification.
 
-Results on the 13-task benchmark are reported as a v14 SageMaker
+Results on the 12-task benchmark are reported as a v14 SageMaker
 re-run (15 epochs, ml.g4dn.2xlarge, fp32 DuckDB-stream pipeline, seed=42)
 for all nine scenarios; the original 9-way comparison was conducted on
 v13 phase0 (HMM duplication, GMM K=20 dead clusters, prob-column scaler
@@ -1068,7 +1078,7 @@ than the converged weight.
 Aggregate deltas are at noise level ($<= 0.005$) across all variants, but
 a per-task breakdown reveals three regimes:
 
-- *Gate-saturated tasks* (segment_prediction, top_mcc_shift,
+- *Gate-saturated tasks* (top_mcc_shift,
   mcc_diversity_trend) have low gate entropy (ratio $< 0.55$) and are
   insensitive to every recovery mechanism ($abs(Delta) <= 0.003$).
 - *Gate-distributed tasks with a strong primary* (churn_signal,
@@ -1080,7 +1090,7 @@ a per-task breakdown reveals three regimes:
   in absolute terms; we attribute it to the near-floor starting point
   rather than to a genuine recovery effect.
 
-The remaining 8 tasks fall within noise ($abs(Delta) <= 0.005$).
+The remaining 7 tasks fall within noise ($abs(Delta) <= 0.005$).
 
 === Gate Entropy Correlation: Weak Signal
 
@@ -1153,7 +1163,7 @@ per-task pattern:
     [will_acquire_deposits (AUC)],    [0.6534], [0.6493],   [0.6536],   [restored],
     [will_acquire_investments (AUC)], [0.6754], [0.6719],   [0.6764],   [restored],
     [next_mcc (F1 macro)],            [0.0100], [*0.0440*], [*0.0356*], [retained (+256%)],
-    [remaining 8 tasks],              [---],    [$plus.minus 0.002$], [$plus.minus 0.002$], [unchanged],
+    [remaining 7 tasks],              [---],    [$plus.minus 0.002$], [$plus.minus 0.002$], [unchanged],
   ),
   caption: [Per-task comparison of BRP and BRP-detached versus CGC on the
   subset of tasks where BRP materially changed the metric. Detaching
@@ -1177,7 +1187,7 @@ creates gradient pressure on every shared expert to remain predictive
 even when the task-level gate concentrates. The effect is a training-
 time regulariser against expert collapse. NEAS's trajectory rises
 monotonically through all 10 epochs, and its per-task lift is spread
-across 11 of 13 tasks (six of seven binaries improve by $+$0.0004 to
+across 11 of 12 tasks (six of seven binaries improve by $+$0.0004 to
 $+$0.0029; nba_primary lifts F1 by $+0.0056$). Unlike BRP, NEAS does
 not produce a large rescue on any single hard task --- next_mcc's F1
 moves only from 0.0100 to 0.0107 under NEAS alone, against $+$0.0256
@@ -2147,7 +2157,7 @@ honest closed branch of the target-design search space.
 
 == Finding 14: Behavioural-Similarity Floor in Cross-Architecture Distillation, and the Two-Tier Fidelity Gate <find14>
 
-The serving stack distils the 13-task PLE teacher into per-task
+The serving stack distils the 12-task PLE teacher into per-task
 LightGBM students --- a *cross-architecture* pair: a smooth
 mixture-of-experts teacher against a tree ensemble whose decision
 boundaries are axis-aligned step functions --- and validates each
@@ -2500,7 +2510,8 @@ $arrow.r$ LightGBM) on one benchmark. The two-tier control principle
 generalises; the numeric floor does not.
 
 *Deterministic-task re-injection not yet measured*: the 13-task
-configuration descends from an 18-task draft whose deterministic
+configuration (12 after `segment_prediction`'s later removal)
+descends from an 18-task draft whose deterministic
 tasks were removed as label-leakage risks. Whether re-injecting them
 would contaminate MTL training (gradient domination, gate
 distortion) is an open experimental question requiring a new
@@ -2643,7 +2654,7 @@ future work rather than as a validated result, since it rests on a
 single post-hoc analysis of synthetic interventions.
 
 *Serving-side distillation control* (Finding 14): cross-architecture
-distillation of the 13-task teacher into per-task gradient-boosted
+distillation of the 12-task teacher into per-task gradient-boosted
 students passes every operational quality check (AUC gap
 $<= 0.0125$, student calibration error $<= 0.0114$) while
 teacher--student behavioural similarity sits at a structural floor
