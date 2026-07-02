@@ -57,14 +57,14 @@
   share a common basket with a FeatureRouter assigning each expert its designated feature groups,
   providing a structural guarantee against expert collapse and inherent explainability
   through business-interpretable gate weights.
-  *Second*, ablation on a 13-task benchmark (7 binary + 3 multiclass + 3 regression, 1M customers)
+  *Second*, ablation on a 12-task benchmark (7 binary + 2 multiclass + 3 regression, 1M customers)
   shows that our _loss-level_ inter-task transfer mechanism (a TAG + GradNorm hybrid retained under the "adaTT" label, distinct from the representation-level adaTT of @li2023)
   has a *null effect* at this scale: after correcting five implementation bugs inherited from the on-prem port, the AUC difference with vs.~without adaTT shrinks to $-$0.001, indistinguishable from single-seed measurement noise.
   The single largest improvement instead comes from correcting a subtle uncertainty-weighting
   implementation gap where per-task loss weights were silently ignored.
   *Third*, we experiment with _GradSurgery_, a task-type gradient projection method
   that replaces loss-level transfer with gradient-level conflict resolution,
-  reducing the 156 task-pair problem to 3 task-type-group projections.
+  reducing the 132 task-pair problem to 3 task-type-group projections.
   However, GradSurgery shows no meaningful advantage over the PLE-only baseline
   while requiring significantly more VRAM (due to the retained computation graph), and is not adopted for production.
   In the ablation study, PLE with softmax gating achieves the best NDCG\@3 (0.714)
@@ -72,7 +72,7 @@
   Softmax also outperforms sigmoid in this heterogeneous setting,
   reversing findings from the homogeneous-task literature.
   Both GradSurgery (AUC 0.673, F1-macro 0.203) and the corrected adaTT implementation (sigmoid+adaTT AUC 0.672) maintain baseline performance; neither provides a gain.
-  The operational motivation --- consolidating 13 individual models into a single MTL model
+  The operational motivation --- consolidating 12 individual models into a single MTL model
   for unified training, serving, and monitoring --- is validated:
   the shared-bottom baseline already exceeds per-task XGBoost ceilings (on the synthetic benchmark; a comparison against a simple GBM under the skewed operational distribution is untested --- see @operational-teacher),
   and PLE provides additional gains on ranking metrics without sacrificing classification performance.
@@ -143,15 +143,15 @@ demand this shift toward structurally transparent explanations
 
 + *FeatureRouter: Heterogeneous Architecture × Heterogeneous Input*: Beyond architectural diversity, each expert receives only its designated feature groups (declared via expert routing declarations at the feature group level), not the full 1211D input. This "heterogeneous architecture × heterogeneous input" design eliminates irrelevant features per expert (per-expert dims: 32D--977D), reducing model parameters substantially (V1 baseline at 349D schema: 2.70M measured; V2 1211D schema: 0.97M across the seven routed shared experts vs.~2.96M for the same basket with routing disabled, measured) while strengthening each expert's specialization.
 
-+ *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), Customized Gate Control (CGC) gate weights directly yield business-interpretable explanations without post-hoc attribution methods.
++ *Inherent Explainability*: Because each expert encodes a named mathematical operation (not a generic MLP), Customized Gate Control (CGC) gate weights directly yield business-interpretable explanations without post-hoc attribution methods. Crisp attribution to 1--2 experts, however, is limited to tasks with a dominant expert; most tasks default to multi-factor explanation (Section 5.5, @operational-teacher).
 
 + *Multi-disciplinary Feature Engineering*: Features derived from eleven academic disciplines --- including unconventional applications of chemical kinetics (spending activation rate), epidemic modeling (product adoption diffusion), criminological Routine Activity Theory (transaction regularity), and wave interference (spending periodicity) --- serve dual roles as learning signals and recommendation context that is reverse-mapped to business language for customer-facing explanations.
 
-+ *Financial DNA Task Grouping*: Four task groups (engagement, lifecycle, value, consumption) aligned with the two-axis decomposition (Financial DNA $times$ Data Modality). Expert selection itself operates _per-task_ via the CGC gate (13 independent routing decisions); the task groups provide semantic structure for post-hoc interpretation and for the rule-based fallback layer's template selection rather than gating the router directly.
++ *Financial DNA Task Grouping*: Four task groups (engagement, lifecycle, value, consumption) aligned with the two-axis decomposition (Financial DNA $times$ Data Modality). Expert selection itself operates _per-task_ via the CGC gate (12 independent routing decisions); the task groups provide semantic structure for post-hoc interpretation and for the rule-based fallback layer's template selection rather than gating the router directly.
 
-+ *Gate Type Analysis for Heterogeneous MTL*: We demonstrate that softmax gating outperforms sigmoid in 13-task heterogeneous settings (7 binary + 3 multiclass + 3 regression), reversing the conventional preference from homogeneous-task literature @tang2020 @sigmoid_moe2024. The reversal is attributed to softmax's protective isolation of minority-type tasks from majority-type gradient corruption.
++ *Gate Type Analysis for Heterogeneous MTL*: We demonstrate that softmax gating outperforms sigmoid in 12-task heterogeneous settings (7 binary + 2 multiclass + 3 regression), reversing the conventional preference from homogeneous-task literature @tang2020 @sigmoid_moe2024. The reversal is attributed to softmax's protective isolation of minority-type tasks from majority-type gradient corruption.
 
-+ *Loss-Level vs.~Gradient-Level Transfer*: Our loss-level inter-task transfer mechanism (a TAG @fifty2021tag + GradNorm @chen2018gradnorm hybrid, retained under the internal "adaTT" label but distinct from the representation-level adaTT of @li2023 --- see @task-grouping) has a null effect at 13-task scale after correcting five implementation bugs: the AUC change with adaTT vs.~without is $-$0.001, within single-seed measurement noise. An earlier draft reported $-$0.019, attributed at the time to algorithmic instability; the corrected measurements locate the cause in the implementation rather than in the loss-level mechanism per se (see Section 5.4 table caption). We additionally experiment with GradSurgery (gradient-level projection between 3 task-type groups), which also shows no gain and incurs VRAM overhead from the retained computation graph; GradSurgery is not adopted for production either.
++ *Loss-Level vs.~Gradient-Level Transfer*: Our loss-level inter-task transfer mechanism (a TAG @fifty2021tag + GradNorm @chen2018gradnorm hybrid, retained under the internal "adaTT" label but distinct from the representation-level adaTT of @li2023 --- see @task-grouping) has a null effect at 12-task scale after correcting five implementation bugs: the AUC change with adaTT vs.~without is $-$0.001, within single-seed measurement noise. An earlier draft reported $-$0.019, attributed at the time to algorithmic instability; the corrected measurements locate the cause in the implementation rather than in the loss-level mechanism per se (see Section 5.4 table caption). We additionally experiment with GradSurgery (gradient-level projection between 3 task-type groups), which also shows no gain and incurs VRAM overhead from the retained computation graph; GradSurgery is not adopted for production either.
 
 + *Uncertainty Weighting Correction*: We identify and fix a subtle implementation gap where per-task loss weights were silently ignored under uncertainty weighting --- yielding the single largest performance improvement ($+$0.018 NDCG\@3, $+$0.031 F1-macro), larger than any architectural change.
 
@@ -438,7 +438,7 @@ Four principles guide the architecture:
   so CGC gate weights are directly interpretable without post-hoc methods.
 + *Expert Contribution Diagnostics*: The heterogeneous design enables per-expert contribution analysis --- identifying which inductive biases are beneficial vs.\ harmful in a given data regime. Homogeneous experts would show uniform, uninformative degradation.
 + *Flexible Extensibility*: New features, tasks, or experts are added via YAML configuration,
-  not code changes. The system has been extended from 4 to 13 tasks without architectural modification.#footnote[The flexibility runs in both directions: in the operational deployment, one task whose label coverage fell below the viability threshold was removed by config-level label-viability gating, leaving 15 tasks in production --- likewise a configuration change, not a code change.]
+  not code changes. The system has been extended from 4 to 12 tasks without architectural modification.#footnote[The flexibility runs in both directions: in the operational deployment, one task whose label coverage fell below the viability threshold was removed by config-level label-viability gating, leaving 15 tasks in production --- likewise a configuration change, not a code change.]
 + *Unified Manageability*: The entire pipeline (feature engineering → training → distillation → serving → monitoring)
   is controlled by a split-config of three YAML files (`pipeline.yaml` + `feature_groups.yaml` + `configs/datasets/{name}.yaml`),
   reducing operational overhead for teams with limited ML engineering resources.
@@ -520,7 +520,7 @@ The complete data-axis-to-expert-to-feature-generator mapping is shown in @tab:m
       node((5, 6), [*Consume*], width: 19mm, fill: task-fill, name: <tg4>),
 
       // === Row 6: Task Towers ===
-      node((3, 7), [*13 Task Towers* → Predictions], width: 50mm, fill: gray-fill, name: <towers>),
+      node((3, 7), [*12 Task Towers* → Predictions], width: 50mm, fill: gray-fill, name: <towers>),
 
       // === Row 7: Knowledge Distillation ===
       node((3, 8), [*Knowledge Distillation* → LGBM ×13], width: 50mm, fill: gray-fill, name: <kd>),
@@ -566,7 +566,7 @@ The complete data-axis-to-expert-to-feature-generator mapping is shown in @tab:m
       edge(<towers>, <kd>, "->"),
       edge(<kd>, <serve>, "->"),
 
-      // adaTT arrows removed — adaTT degrades at 13-task scale (Section 5.4)
+      // adaTT arrows removed — adaTT has a null effect at 12-task scale (Section 5.4)
 
 
     )
@@ -750,7 +750,7 @@ before normalization, allowing multiple experts to receive high weight simultane
 The theoretical expectation is that sigmoid benefits heterogeneous experts
 by preserving non-redundant signals.
 However, our structure ablation (Section 5.4) reveals a surprising reversal:
-softmax *outperforms* sigmoid in the 13-task heterogeneous setting,
+softmax *outperforms* sigmoid in the 12-task heterogeneous setting,
 because its competitive allocation *protects* minority-type tasks
 (multiclass, regression) from gradient corruption by the majority type (binary).
 This finding challenges the theoretical prediction and highlights
@@ -884,7 +884,7 @@ This departure from @li2023 was motivated by two heterogeneous-expert considerat
 (1) representation-level transfer requires matching hidden dimensions across experts whose native outputs differ in shape and semantics (on-prem H-GCN produces 128D, the remainder 64D#footnote[In the on-prem deployment the H-GCN module was later converted to an embedding-only component --- 128D embeddings consumed without a per-task prediction head; the dimensional-heterogeneity argument applies unchanged.]), making cross-expert fusion architecturally cumbersome;
 (2) loss-level transfer is architecturally orthogonal to the PLE layer and can be toggled without modifying the expert routing; gradient-cosine affinity is additionally interpretable ("tasks that help each other move gradients in the same direction"), which matters for regulated MRM documentation.
 
-_Note._ After correcting five implementation bugs in the on-prem port (gradient-extraction frequency, adaTT config loader, `freeze_epoch` wiring, uncertainty-weighting ordering, and `warmup_epochs` default), our ablation (Section 5.4) shows that this loss-level variant has a *null effect* at the 13-task scale: AUC changes by only $-$0.001 with adaTT vs.~without, well within single-seed measurement noise. An earlier draft reported a $-$0.019 AUC degradation; that result turned out to be driven by the five implementation bugs rather than by any intrinsic scalability problem of loss-level transfer. We preserve this note for transparency about the investigative process: it is easy for a paper to publish an "algorithmic finding" that is in fact an implementation artefact, and we believe reporting the correction is more useful than retrofitting a cleaner narrative. GradSurgery (Section 5.4) was tested as a gradient-level alternative but likewise shows no gain over the PLE-only baseline and is not adopted.
+_Note._ After correcting five implementation bugs in the on-prem port (gradient-extraction frequency, adaTT config loader, `freeze_epoch` wiring, uncertainty-weighting ordering, and `warmup_epochs` default), our ablation (Section 5.4) shows that this loss-level variant has a *null effect* at the 12-task scale: AUC changes by only $-$0.001 with adaTT vs.~without, well within single-seed measurement noise. An earlier draft reported a $-$0.019 AUC degradation; that result turned out to be driven by the five implementation bugs rather than by any intrinsic scalability problem of loss-level transfer. We preserve this note for transparency about the investigative process: it is easy for a paper to publish an "algorithmic finding" that is in fact an implementation artefact, and we believe reporting the correction is more useful than retrofitting a cleaner narrative. GradSurgery (Section 5.4) was tested as a gradient-level alternative but likewise shows no gain over the PLE-only baseline and is not adopted.
 
 == Logit Transfer
 
@@ -1073,12 +1073,12 @@ but with a novel _variance budget_ mechanism for controllable difficulty:
     align: (left, left, right, right, right),
     stroke: 0.5pt,
     [*Tier*], [*Labels*], [$f_"obs"$], [$f_"noise"$], [*XGB AUC*],
-    [Easy], [segment#footnote[segment\_prediction uses a 4-class customer lifecycle label derived from behavioral clustering, not a deterministic feature transformation. The high XGBoost ceiling reflects strong feature-label correlation but the label requires non-trivial multi-feature interaction to predict, unlike the removed deterministic labels (income\_tier, tenure\_stage).]], [determ.], [n/a], [0.95--1.0],
+    [Easy], [segment#footnote[segment\_prediction is a 4-class customer lifecycle label derived from behavioral clustering. It is part of the benchmark generation schema and was used as a task through the v12 experiments, but the strong feature--label correlation its XGB ceiling (0.95--1.0) implies led to its exclusion from the final training task set in the v13 revision (the segmentation signal is instead carried by nba\_primary's 7-class distribution); it is not part of this paper's 12-task results.]], [determ.], [n/a], [0.95--1.0],
     [Core], [churn_signal], [0.04], [0.68], [0.58--0.65],
     [Hard], [will_acquire\_\*], [0.03], [0.72], [0.50--0.56],
     [V.Hard], [next_mcc, top_mcc_shift], [0.02], [0.78], [0.50--0.51],
   ),
-  caption: [Variance budget per label tier (benchmark v4 per-tier allocation). XGB AUC ceiling validates difficulty control. The final generation schema (v12), shared by all results in this paper, uses a unified global allocation (obs\_frac=0.15, lat\_frac=0.35, noise\_frac=0.50) with 3rd--5th order multiplicative label interactions, producing meaningful class distributions across all 13 tasks (described in the paragraph below).],
+  caption: [Variance budget per label tier (benchmark v4 per-tier allocation). XGB AUC ceiling validates difficulty control. The final generation schema (v12), shared by all results in this paper, uses a unified global allocation (obs\_frac=0.15, lat\_frac=0.35, noise\_frac=0.50) with 3rd--5th order multiplicative label interactions, producing meaningful class distributions across all generated tasks (13 at the time; 12 after segment\_prediction was excluded in the v13 revision --- described in the paragraph below).],
 ) <tab:variance-budget>
 
 The benchmark underwent several iterations (v2 through v14; see Appendix F for version history).
@@ -1091,7 +1091,7 @@ Situations modulate transaction sequence patterns (temporal spacing, amount tren
 MCC distribution shifts, product acquisition rates) without altering static demographic features,
 creating signals recoverable only through Phase 0 generators (Mamba, TDA, HGCN, GMM).
 Label interactions use 3rd--5th order continuous multiplicative terms with obs_frac=0.15,
-producing meaningful class distributions for all 13 tasks.
+producing meaningful class distributions for all generated tasks.
 
 _Version terminology._ v12 froze the data _generation_ schema; later revisions did not change how the benchmark data is generated.
 v13 and v14 are _phase0 preprocessing_ revisions applied to v12-generated data:
@@ -1116,17 +1116,17 @@ The ablation validates whether each expert provides a distinct "why" for differe
 confirming that heterogeneous experts are not merely a performance trick
 but a structural requirement for multi-faceted persuasion.
 
-- *Data*: 1M customers, 1211 features (1210 after the v14 preprocessing revision; Phase 0 over the v12 generation schema, 17 groups; preprocessing revision per table caption), 13 tasks.
+- *Data*: 1M customers, 1211 features (1210 after the v14 preprocessing revision; Phase 0 over the v12 generation schema, 17 groups; preprocessing revision per table caption), 12 tasks (7 binary + 2 multiclass + 3 regression; segment\_prediction was excluded in the v13 revision for leakage risk).
 - *Hardware*: NVIDIA RTX 4070 (12GB VRAM, 64GB RAM) local.
 - *Training*: 10 epochs, batch 5632, lr 0.0005, AMP (FP16), warmup 3 epochs (cosine annealing), no early stopping. adaTT scenarios use warmup=3 epochs, grad\_interval=10. GradSurgery scenarios use warmup=2 epochs, conflict\_threshold=0.0.#footnote[Reproducibility note: scheduler and optimizer hyperparameters resolve with a fixed three-tier precedence --- explicit hyperparameter arguments override YAML configuration, which overrides library defaults --- so the values reported here are the values actually applied.]
 - *Loss weighting*: Uncertainty weighting (Kendall et al.) with per-task loss weights applied on top of learned precision --- matching the on-premise reference formula.
 - *Metrics*: Selected to match each task's production semantics.
   Binary classification uses AUC (threshold-independent and imbalance-robust).
-  Multiclass classification (segment_prediction, 4 classes) uses F1-macro.
-  Multiclass recommendation (nba_primary with 7 product groups, next_mcc with top-50 merchant categories)
-  uses NDCG\@K and top-K accuracy @jarvelin2002ndcg, following standard recommendation evaluation practice.
+  The multiclass tasks (nba_primary with 7 product groups, next_mcc with top-50 merchant categories)
+  use F1-macro for classification quality and NDCG\@K with top-K accuracy @jarvelin2002ndcg for ranking quality ---
+  both tasks play a dual classification/recommendation role, and each table caption states which metric it reports.
   Regression uses MAE.
-  All metrics are reported per task type; a global average across all 13 tasks is avoided
+  All metrics are reported per task type; a global average across all 12 tasks is avoided
   because metrics have incompatible semantics across types.
 
 == Joint Feature + Expert Ablation (RQ1 + RQ2)
@@ -1256,18 +1256,18 @@ Three findings emerge from the structure ablation.
 *Finding 1: PLE softmax outperforms sigmoid in heterogeneous MTL.*
 This reverses the conventional wisdom from homogeneous-task PLE literature @tang2020,
 where sigmoid gates are preferred for their non-competitive expert weighting.
-In our 13-task setting with 7 binary + 3 multiclass + 3 regression tasks,
+In our 12-task setting with 7 binary + 2 multiclass + 3 regression tasks,
 softmax's competitive selection _protects_ minority-type tasks (multiclass)
 by isolating expert assignments, preventing binary-task gradients
 from corrupting multiclass-relevant experts.
 Crucially, the uncertainty weights converge to identical values (nba\_primary: 0.335)
 under both gate types, confirming that the improvement is purely structural.
 
-*Finding 2: adaTT loss-level transfer has a null effect at 13-task scale.*
+*Finding 2: adaTT loss-level transfer has a null effect at 12-task scale.*
 After correcting the five porting bugs listed in the table caption,
-adding adaTT changes AUC by only $-$0.001 (sigmoid+adaTT 0.6717 vs.~sigmoid-alone 0.6728; softmax+adaTT 0.6722 vs.~softmax-alone 0.6730) and does not shift any other metric beyond single-seed measurement noise.
+adding adaTT changes AUC by only $-$0.001 (sigmoid+adaTT 0.6717 vs.~sigmoid-alone 0.6728; softmax+adaTT 0.6722 vs.~softmax-alone 0.6729) and does not shift any other metric beyond single-seed measurement noise.
 The pre-correction $-$0.019 AUC drop reported in an earlier draft is now attributed to these implementation bugs rather than to an algorithmic property of loss-level transfer, which was the previously hypothesised cause.
-Our loss-level gradient-cosine variant therefore neither helps nor meaningfully hurts at 13-task scale: the auxiliary loss weighting produces transfer signal that is *indistinguishable from zero* relative to PLE-only baselines.
+Our loss-level gradient-cosine variant therefore neither helps nor meaningfully hurts at 12-task scale: the auxiliary loss weighting produces transfer signal that is *indistinguishable from zero* relative to PLE-only baselines.
 This should not be generalised as a negative result for representation-level adaTT @li2023, which we do not evaluate; that mechanism learns fusion weights end-to-end on expert activations rather than from gradient cosine statistics and is a distinct algorithm (see @task-grouping). A direct comparison is deferred to follow-up work.
 
 *Finding 3: Correcting uncertainty weighting yields larger gains than architecture changes.*
@@ -1323,7 +1323,7 @@ softmax (0.7980) on aggregate AUC, contradicting the v13 prototype's
 PLE-favoured narrative.  Three competing hypotheses were considered:
 *(A) signal-cleaning made gate-routing redundant*,
 *(B) PLE+CGC gates need more than 10 epochs to converge*, and
-*(D) the gate parameters overfit faster than they help*.
+*(C) the gate parameters overfit faster than they help*.
 A SageMaker re-run of four core scenarios (shared\_bottom, PLE-softmax,
 PLE-full = sigmoid+CGC+GTE+LT+HMM-projectors, PLE-full+adaTT) at both
 10 and 15 epochs on ml.g4dn.2xlarge --- identical hardware, identical
@@ -1349,11 +1349,12 @@ the local fp64 pq.read\_table baseline and the SageMaker fp32 pipeline.
   caption: [Epoch-budget sensitivity, v14 phase0 (1M rows). _Local 10ep_: RTX 4070 fp64 pq.read\_table.  _SM 10ep / 15ep_: ml.g4dn.2xlarge fp32 DuckDB-stream.  ΔAUC compares matched 15$-$10 on SageMaker.  All four PLE variants plateau between 10 and 15 epochs ($|$ΔAUC$|<$0.002), while shared\_bottom drops $-$0.0182 — the architecture-class signature of this dataset.],
 ) <tab:epoch-budget>
 
-The matched-pair comparison rejects *Hypothesis B*.  At 10 epochs on
+The matched-pair comparison rejects *Hypotheses A and B*.  At 10 epochs on
 SageMaker, PLE softmax (0.8233) already exceeds shared\_bottom (0.8197)
-by $+$0.0036 AUC; the local-10ep ordering was an artefact of the
-fp64 pq.read\_table path, not an epoch-convergence deficit of PLE.
-What @tab:epoch-budget does reveal is *Hypothesis D* (overfitting
+by $+$0.0036 AUC, so signal-cleaning did not make gate-routing redundant (A);
+and the local-10ep ordering was an artefact of the
+fp64 pq.read\_table path, not an epoch-convergence deficit of PLE (B).
+What @tab:epoch-budget does reveal is *Hypothesis C* (overfitting
 asymmetry): shared\_bottom drops $-$0.0182 AUC moving 10 → 15 epochs
 with val\_loss climbing 16.58 → 17.64, while PLE softmax stays flat
 ($+$0.0016 AUC, val\_loss 16.04 → 17.09).  Three implications follow.
@@ -1421,7 +1422,7 @@ the longer training budget.
 
 == Explainability Analysis (RQ5)
 
-The CGC gate produces interpretable routing weights that enable direct attribution of "which expert contributed how much" per task. Under the recommended softmax configuration, weights sum to one, making relative contributions directly comparable. We examine per-task gate weight distributions across all 13 tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition. This alignment is task- and data-dependent, however: in operational observations, merchant_affinity and channel weight the Temporal expert highly and balance_util weights the Causal expert, loosely matching intuition, but a specific mapping such as "the temporal expert for churn prediction" does not hold (@operational-teacher).
+The CGC gate produces interpretable routing weights that enable direct attribution of "which expert contributed how much" per task. Under the recommended softmax configuration, weights sum to one, making relative contributions directly comparable. We examine per-task gate weight distributions across all tasks to identify (a) which experts dominate which task types, and (b) whether the learned routing aligns with domain intuition. This alignment is task- and data-dependent, however: in operational observations, merchant_affinity and channel weight the Temporal expert highly and balance_util weights the Causal expert, loosely matching intuition, but a specific mapping such as "the temporal expert for churn prediction" does not hold (@operational-teacher).
 
 Gate weights from the CGC extraction layers provide per-task expert utilization profiles. Tasks with low entropy ratio (e.g., top_mcc_shift at 0.347) concentrate on 1--2 experts, providing clear attribution: the recommendation is driven primarily by the dominant expert's feature group. Tasks with high entropy (e.g., will_acquire_payments at 0.882) leverage diverse experts, requiring multi-factor explanation. This entropy-based explainability directly maps to the Financial DNA task groups and enables the rule-based fallback (Layer 3) to select appropriate explanation templates per task. On operational data, however, routing is more uniform, so the set of tasks for which such crisp single-expert attribution holds is limited (@operational-teacher).
 
@@ -1443,7 +1444,7 @@ to facilitate comparison across different numbers of experts.
 
 === CGC Layer Gate Specialization
 
-Measured on the PLE-softmax checkpoint,
+Measured on the PLE-softmax checkpoint (v12 phase0, i.e.~the 13-task configuration prior to the exclusion of segment_prediction; later revisions shrink only the task set to 12, with the gate structure unchanged),
 CGC layer gate weights show meaningful task-level specialization
 with entropy ratios ranging from 0.33 to 0.88 across the 13 tasks and 2 CGC layers (@tab:gate-entropy).
 This confirms that routing collapse has not occurred:
@@ -1470,7 +1471,7 @@ CGC attention weights remain perfectly uniform across all tasks, indicating that
     [will\_acquire\_payments],  [0.882], [0.688], [Diverse expert usage],
     [CGC Attention (all tasks)], [1.000], [1.000], [Uniform (undifferentiated)],
   ),
-  caption: [Per-task CGC gate entropy ratios ($H_t \/ log K$; higher = more uniform).],
+  caption: [Per-task CGC gate entropy ratios ($H_t \/ log K$; higher = more uniform). Measured on the v12 phase0 13-task checkpoint (segment\_prediction was excluded from the task set from v13 onward).],
 ) <tab:gate-entropy>
 
 The divergence between extraction-layer and attention-layer routing
@@ -1503,7 +1504,7 @@ The ablation experiments yield the following principal findings. The
 five claims below summarise the system-level outcomes; readers seeking
 the full hypothesis discrimination across A--E (signal cleaning, epoch
 budget, ensemble, gate overfitting, regularisation), per-task v14
-phase0 numbers across all 13 tasks, the 9-way fusion-mechanism
+phase0 numbers across all 12 tasks, the 9-way fusion-mechanism
 comparison (BRP-detached, NEAS, M1 complement, ECEB, AdaTT-sp), and
 the 30-epoch loss--metric decoupling diagnostic should consult the
 companion Paper 3 (Findings 1--7) where each is reported with the
@@ -1523,7 +1524,7 @@ _getting the loss weighting right_ matters more than architectural sophisticatio
 *Softmax gating outperforms sigmoid in heterogeneous MTL.*
 This finding contradicts the conventional preference for sigmoid gating
 in PLE literature @tang2020 and recent sigmoid MoE work @sigmoid_moe2024.
-In our 13-task setting (7 binary + 3 multiclass + 3 regression),
+In our 12-task setting (7 binary + 2 multiclass + 3 regression),
 softmax's competitive expert selection _protects_ multiclass tasks
 by assigning dedicated experts, while sigmoid's cooperative blending
 allows binary-task gradients to corrupt multiclass-relevant representations.
@@ -1534,11 +1535,11 @@ when all tasks share the same loss type (as in prior work),
 cooperative blending is beneficial;
 when loss types differ fundamentally, competitive isolation is protective.
 
-*Loss-level transfer (adaTT) provides no measurable benefit at 13-task scale.*
+*Loss-level transfer (adaTT) provides no measurable benefit at 12-task scale.*
 After correcting the five porting bugs in the caption of Table @tab:structure-ablation, the AUC change with adaTT vs.~without is $-$0.001 across both gate types (sigmoid and softmax) --- within single-seed measurement noise.
 The mechanism --- adding weighted auxiliary losses $L_i^"adaTT" = L_i + lambda sum_(j eq.not i) w_(i arrow.r j) L_j$ with $w_(i arrow.r j)$ estimated from gradient cosine similarity --- produces transfer signal that is *not distinguishable from zero* relative to PLE-only baselines.
-An earlier draft reported a $-$0.019 AUC drop and attributed it to a 156 task-pair affinity estimation limit; with the bug-fixed implementation, the effect vanishes, so the attribution is no longer supported by our data.
-The honest conclusion is operational: at 13-task heterogeneous scale, the gradient-cosine loss-level variant (TAG @fifty2021tag + GradNorm @chen2018gradnorm in spirit) neither helps nor hurts, adds compute cost, and can be disabled without loss.
+An earlier draft reported a $-$0.019 AUC drop and attributed it to a 132 task-pair affinity estimation limit; with the bug-fixed implementation, the effect vanishes, so the attribution is no longer supported by our data.
+The honest conclusion is operational: at 12-task heterogeneous scale, the gradient-cosine loss-level variant (TAG @fifty2021tag + GradNorm @chen2018gradnorm in spirit) neither helps nor hurts, adds compute cost, and can be disabled without loss.
 The representation-level adaTT of @li2023 is a distinct mechanism that learns fusion weights end-to-end on expert activations and is not directly evaluated here; we leave that comparison to follow-up work.
 A 9-way comparison that places loss-level adaTT alongside seven other fusion-augmentation mechanisms (AdaTT-sp, M1 complement, ECEB, BRP-MV, BRP-detached, NEAS, NEAS+BRP-detached) is reported in companion Paper 3, Finding 7; the v14 verdict isolates only two non-trivial recipes (M1 complement, NEAS) on disjoint axes and confirms the null verdict for loss-level adaTT.
 
@@ -1546,7 +1547,7 @@ A 9-way comparison that places loss-level adaTT alongside seven other fusion-aug
 To address the loss-level transfer limitation,
 we tested task-type gradient surgery (GradSurgery),
 which replaces loss-level transfer with gradient-level conflict resolution.
-Instead of estimating 156 pair-wise affinities,
+Instead of estimating 132 pair-wise affinities,
 GradSurgery aggregates task gradients into 3 type-groups
 (binary, multiclass, regression) and applies PCGrad-style projection
 only between conflicting groups.
@@ -1562,9 +1563,9 @@ The most robust configuration remains PLE softmax without transfer mechanisms.
 
 *Operational motivation validated.*
 The shared-bottom baseline (AUC 0.6711, NDCG\@3 0.7014) already exceeds
-per-task XGBoost ceilings on all 13 tasks (on the synthetic benchmark),
+per-task XGBoost ceilings (on the synthetic benchmark; a comparison against a simple GBM under the skewed operational distribution is untested --- see @operational-teacher),
 validating the operational motivation for MTL consolidation:
-a single model replaces 13 individual models with no performance penalty,
+a single model replaces 12 individual models with no performance penalty,
 enabling unified training, serving, and monitoring.
 PLE softmax provides incremental gains (NDCG\@3 +0.013)
 at no additional serving cost.
@@ -1719,7 +1720,7 @@ outside of LLM inference.
 
 Our architecture demonstrates that the same GPU hardware
 already deployed for LLM serving can simultaneously support
-13-task MTL training, requiring only 12GB VRAM
+12-task MTL training, requiring only 12GB VRAM
 on a single consumer-grade GPU (RTX 4070).
 This extends the return on existing GPU investments
 without additional procurement ---
@@ -1747,7 +1748,7 @@ training pipeline, serving endpoint, and monitoring dashboard.
 == Preliminary Operational Teacher (Research-Only)
 <operational-teacher>
 
-To check whether the synthetic-benchmark conclusions hold directionally in a real deployment, we take a preliminary observation of the on-premise teacher model (June 2026, full-expert `best_composite` checkpoint) on operational data. *This observation is a research comparison, not a promotion candidate* --- it is excluded from production promotion by data-availability gating. It differs from the synthetic benchmark in task composition (12 operational vs.~13 synthetic), number of live experts (operational K=6 with LightGCN inactive vs.~synthetic K=7), and label distribution, so *absolute numbers are not directly comparable --- only signs and patterns are cited.*
+To check whether the synthetic-benchmark conclusions hold directionally in a real deployment, we take a preliminary observation of the on-premise teacher model (June 2026, full-expert `best_composite` checkpoint) on operational data. *This observation is a research comparison, not a promotion candidate* --- it is excluded from production promotion by data-availability gating. It differs from the synthetic benchmark in task composition (both have 12 tasks, but the task definitions and naming are entirely different), number of live experts (operational K=6 with LightGCN inactive vs.~synthetic K=7), and label distribution, so *absolute numbers are not directly comparable --- only signs and patterns are cited.*
 
 *Independent reproduction of no expert collapse.* Forwarding the operational teacher with side-band inputs wired, all six heterogeneous experts retain non-degenerate outputs (output std 0.051--0.333, weakest is HGCN). Per-task gate entropy ratios span 0.67--0.97; no task collapses onto a single expert (@tab:operational-teacher). The core RQ6 conclusion --- no collapse --- reproduces independently on both synthetic and operational data. However, operational routing is more uniform than synthetic (0.33--0.88): 7 of 12 tasks exceed 0.90, so crisp attribution to 1--2 experts is limited to the few tasks with a dominant expert (spending_category with PersLay, merchant_affinity with Temporal, life_stage with PersLay).
 
@@ -1813,7 +1814,7 @@ XGBoost ceilings" should not be assumed to transfer to the skewed operational di
 
 *adaTT evaluation at limited epoch budget.*
 The corrected adaTT implementation's null effect may be partly attributable to the 10-epoch training budget:
-with 50+ epochs, affinity estimation may stabilize sufficiently for 156 task pairs and potentially produce a measurable positive effect.
+with 50+ epochs, affinity estimation may stabilize sufficiently for 132 task pairs and potentially produce a measurable positive effect.
 The 10-epoch budget reflects practical constraints
 (ablation throughput on a single GPU) and is sufficient
 for convergence of non-transfer variants.
@@ -1850,9 +1851,9 @@ Notably, scaling the expert basket size (adding more expert types) is less promi
 = Conclusion
 
 We presented Heterogeneous Expert PLE, a multi-task learning architecture
-for financial product recommendation that consolidates 13 heterogeneous tasks
-(7 binary + 3 multiclass + 3 regression) into a single model,
-replacing 13 individual models while maintaining or exceeding per-task performance.
+for financial product recommendation that consolidates 12 heterogeneous tasks
+(7 binary + 2 multiclass + 3 regression) into a single model,
+replacing 12 individual models while maintaining or exceeding per-task performance.
 
 Three contributions emerge from this work.
 *First*, the heterogeneous expert basket --- seven architecturally distinct experts
@@ -1860,8 +1861,11 @@ with FeatureRouter-based input specialization ---
 provides structural collapse resistance and inherent explainability
 through business-interpretable gate weights,
 without reliance on post-hoc attribution methods.
+Collapse resistance reproduces independently on both synthetic and operational data (@operational-teacher);
+crisp single-expert attribution, however, holds for the few tasks with a dominant expert,
+while most tasks require multi-factor explanation.
 
-*Second*, ablation at 13-task scale reveals that
+*Second*, ablation at 12-task scale reveals that
 loss-level inter-task transfer (adaTT) has a null effect
 once five implementation bugs inherited from the on-prem port are corrected
 ($-$0.001 AUC change, within single-seed noise),
@@ -2005,7 +2009,7 @@ and 6 top-down scenarios (full minus one of the same 6 experts).
 Nine structural variants --- shared-bottom, PLE-softmax, PLE-sigmoid (no inter-task transfer);
 shared-bottom+adaTT, PLE-softmax+adaTT, PLE-sigmoid+adaTT (loss-level transfer);
 and three GradSurgery variants (shared-bottom+GradSurgery, softmax+GradSurgery, sigmoid+GradSurgery) ---
-all using the full 13 tasks and 7 heterogeneous experts with 10 epochs.
+all using the full 12 tasks and 7 heterogeneous experts with 10 epochs.
 
 #heading(numbering: none, level: 3)[C. Benchmark Data Generation]
 
@@ -2047,7 +2051,7 @@ The benchmark generation schema underwent four major iterations before convergin
 - *v2*: Uniform-random MCC codes and fixed transaction amounts across personas, producing near-random labels for MCC-dependent tasks.
 - *v3*: Persona-weighted MCC distributions (4--5× boost) with temporal stickiness (30%), persona-dependent transaction amounts, and quantile-based spend\_level boundaries. Improved MCC task signal but still yielded near-uniform label distributions for acquisition tasks.
 - *v4*: Sharpened persona MCC preferences (8--12× boost), increased temporal stickiness to 60%, raised per-product acquisition rates (8--12%), and widened top\_mcc\_shift detection window to 30 transactions.
-- *v12* (final generation schema): Financial DNA axis-aligned situation variables, 3rd--5th order continuous multiplicative label interactions with obs\_frac=0.15, producing meaningful class distributions for all 13 tasks. The generation schema is frozen here; v13 and v14 below modify preprocessing only.
+- *v12* (final generation schema): Financial DNA axis-aligned situation variables, 3rd--5th order continuous multiplicative label interactions with obs\_frac=0.15, producing meaningful class distributions for all generated tasks (13 at the time). The generation schema is frozen here; v13 and v14 below modify preprocessing only (segment\_prediction was excluded from the task set in v13, so subsequent experiments use 12 tasks).
 - *v13* (phase0 preprocessing): first preprocessing revision over the frozen v12 schema; basis of the structure ablation (@tab:structure-ablation).
 - *v14* (phase0 preprocessing): HMM mode-split fitting, GMM $K=14$ dead-cluster removal, probability columns excluded from standard scaling, plus a streaming-memory refactor for SageMaker 1M-row training; basis of @tab:joint-ablation, @tab:degradation, and @tab:epoch-budget.
 
