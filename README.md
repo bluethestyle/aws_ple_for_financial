@@ -3,7 +3,7 @@
 **English** · [한국어](README_ko.md)
 
 [![Paper 1 DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19621884.svg)](https://doi.org/10.5281/zenodo.19621884)
-[![Paper 2 DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19622052.svg)](https://doi.org/10.5281/zenodo.19622052)
+[![Paper 2 DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19622051.svg)](https://doi.org/10.5281/zenodo.19622051)
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC_BY_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
 [![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-8B5CF6)](https://claude.com/claude-code)
 [![DuckDB](https://img.shields.io/badge/Data_Engine-DuckDB-FFF000)](https://duckdb.org/)
@@ -13,7 +13,7 @@
 
 **Preprints on Zenodo:**
 - Paper 1 — [Heterogeneous Expert PLE: Architecture & Ablation](https://doi.org/10.5281/zenodo.19621884) ([local PDF](paper/typst/paper1.pdf))
-- Paper 2 — [From Prediction to Persuasion: Agentic Reason Generation & Compliance](https://doi.org/10.5281/zenodo.19622052) ([local PDF](paper/typst/paper2.pdf))
+- Paper 2 — [From Prediction to Persuasion: Agentic Reason Generation & Compliance](https://doi.org/10.5281/zenodo.19622051) ([local PDF](paper/typst/paper2.pdf))
 - Paper 3 — [Loss Dynamics (work in progress)](paper/typst/paper3.pdf)
 
 ---
@@ -127,7 +127,7 @@ paper/                   Research papers (Typst)
 
 | Category | Documents |
 |----------|-----------|
-| **Papers** | [Paper 1: Architecture (Zenodo DOI)](https://doi.org/10.5281/zenodo.19621884) · [local EN](paper/typst/paper1.pdf) · [KO](paper/typst/paper1_ko.pdf) · [Paper 2: Serving & Ops (Zenodo DOI)](https://doi.org/10.5281/zenodo.19622052) · [local EN](paper/typst/paper2.pdf) · [KO](paper/typst/paper2_ko.pdf) · [Paper 3: Loss Dynamics (WIP)](paper/typst/paper3.pdf) |
+| **Papers** | [Paper 1: Architecture (Zenodo DOI)](https://doi.org/10.5281/zenodo.19621884) · [local EN](paper/typst/paper1.pdf) · [KO](paper/typst/paper1_ko.pdf) · [Paper 2: Serving & Ops (Zenodo DOI)](https://doi.org/10.5281/zenodo.19622051) · [local EN](paper/typst/paper2.pdf) · [KO](paper/typst/paper2_ko.pdf) · [Paper 3: Loss Dynamics (WIP)](paper/typst/paper3.pdf) |
 | **Architecture** | [Overview](docs/typst/en/architecture_overview_en.pdf) · [Expert Details](docs/typst/en/expert_details_en.pdf) · [Pipeline Guide](docs/typst/en/pipeline_guide_en.pdf) |
 | **Technical Refs** | [PLE/adaTT](docs/typst/en/tech_ref_ple_adatt_en.pdf) · [Features](docs/typst/en/tech_ref_features_en.pdf) · [Causal/OT](docs/typst/en/tech_ref_causal_ot_en.pdf) · [Temporal](docs/typst/en/tech_ref_temporal_en.pdf) · [Distillation/Reason](docs/typst/en/tech_ref_distill_reason_en.pdf) |
 | **Regulatory** | [Compliance Summary](docs/typst/en/regulatory_summary_en.pdf) · [Full Framework](docs/typst/en/regulatory_framework_en.pdf) |
@@ -160,8 +160,8 @@ If you use this work, please cite the preprints:
   year         = {2026},
   publisher    = {Zenodo},
   version      = {1.0},
-  doi          = {10.5281/zenodo.19622052},
-  url          = {https://doi.org/10.5281/zenodo.19622052}
+  doi          = {10.5281/zenodo.19622051},
+  url          = {https://doi.org/10.5281/zenodo.19622051}
 }
 ```
 
@@ -231,7 +231,7 @@ Three points in the *running system* (not just development) use Claude via AWS B
 - **Safety Gate** — Sonnet validates every customer-facing reason against regulatory, suitability, hallucination, tone, and factuality criteria before the response leaves the Lambda handler.
 - **Reason Generator** — Sonnet rewrites template-level L1 reasons into natural financial-honorific Korean at L2a, with DynamoDB caching for 6 ms cache-hit latency.
 
-[Paper 2](https://doi.org/10.5281/zenodo.19622052) documents the full 5-agent architecture (3 serving + 2 ops/audit) with SR 11-7 model-risk-management mapping.
+[Paper 2](https://doi.org/10.5281/zenodo.19622051) documents the full 5-agent architecture (3 serving + 2 ops/audit) with SR 11-7 model-risk-management mapping.
 
 ### Reproducing the workflow
 

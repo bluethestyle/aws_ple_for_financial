@@ -3,7 +3,7 @@
 [English](README.md) · **한국어**
 
 [![Paper 1 DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19621884.svg)](https://doi.org/10.5281/zenodo.19621884)
-[![Paper 2 DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19622052.svg)](https://doi.org/10.5281/zenodo.19622052)
+[![Paper 2 DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19622051.svg)](https://doi.org/10.5281/zenodo.19622051)
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC_BY_4.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
 [![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-8B5CF6)](https://claude.com/claude-code)
 [![DuckDB](https://img.shields.io/badge/Data_Engine-DuckDB-FFF000)](https://duckdb.org/)
@@ -13,7 +13,7 @@
 
 **Zenodo 프리프린트:**
 - 논문 1 — [이종 전문가 PLE: 아키텍처 및 어블레이션](https://doi.org/10.5281/zenodo.19621884) ([로컬 PDF](paper/typst/paper1_ko.pdf))
-- 논문 2 — [예측에서 설득으로: 에이전트 기반 추천사유 생성과 규제 준수](https://doi.org/10.5281/zenodo.19622052) ([로컬 PDF](paper/typst/paper2_ko.pdf))
+- 논문 2 — [예측에서 설득으로: 에이전트 기반 추천사유 생성과 규제 준수](https://doi.org/10.5281/zenodo.19622051) ([로컬 PDF](paper/typst/paper2_ko.pdf))
 - 논문 3 — [Loss Dynamics (작성 중)](paper/typst/paper3.pdf)
 
 ---
@@ -119,7 +119,7 @@ paper/                   연구 논문 (Typst)
 
 | 분류 | 문서 |
 |----------|-----------|
-| **논문** | [논문 1: 아키텍처 (Zenodo DOI)](https://doi.org/10.5281/zenodo.19621884) · [로컬 EN](paper/typst/paper1.pdf) · [KO](paper/typst/paper1_ko.pdf) · [논문 2: 서빙 & 운영 (Zenodo DOI)](https://doi.org/10.5281/zenodo.19622052) · [로컬 EN](paper/typst/paper2.pdf) · [KO](paper/typst/paper2_ko.pdf) · [논문 3: Loss Dynamics (WIP)](paper/typst/paper3.pdf) |
+| **논문** | [논문 1: 아키텍처 (Zenodo DOI)](https://doi.org/10.5281/zenodo.19621884) · [로컬 EN](paper/typst/paper1.pdf) · [KO](paper/typst/paper1_ko.pdf) · [논문 2: 서빙 & 운영 (Zenodo DOI)](https://doi.org/10.5281/zenodo.19622051) · [로컬 EN](paper/typst/paper2.pdf) · [KO](paper/typst/paper2_ko.pdf) · [논문 3: Loss Dynamics (WIP)](paper/typst/paper3.pdf) |
 | **아키텍처** | [개요](docs/typst/ko/architecture_overview.pdf) · [전문가 상세](docs/typst/ko/expert_details.pdf) · [파이프라인 가이드](docs/typst/ko/pipeline_guide.pdf) |
 | **기술 레퍼런스** | [PLE/adaTT](docs/typst/ko/tech_ref_ple_adatt.pdf) · [피처](docs/typst/ko/tech_ref_features.pdf) · [Causal/OT](docs/typst/ko/tech_ref_causal_ot.pdf) · [Temporal](docs/typst/ko/tech_ref_temporal.pdf) · [증류/추천사유](docs/typst/ko/tech_ref_distill_reason.pdf) |
 | **규제** | [준수 요약](docs/typst/ko/regulatory_summary.pdf) · [전체 프레임워크](docs/typst/ko/regulatory_framework.pdf) |
@@ -152,8 +152,8 @@ paper/                   연구 논문 (Typst)
   year         = {2026},
   publisher    = {Zenodo},
   version      = {1.0},
-  doi          = {10.5281/zenodo.19622052},
-  url          = {https://doi.org/10.5281/zenodo.19622052}
+  doi          = {10.5281/zenodo.19622051},
+  url          = {https://doi.org/10.5281/zenodo.19622051}
 }
 ```
 
@@ -223,7 +223,7 @@ paper/                   연구 논문 (Typst)
 - **Safety Gate** — Sonnet 이 모든 고객 대상 추천 사유를 규제·적합성·환각·어조·사실성 기준으로 검증, Lambda 핸들러를 떠나기 전 관문.
 - **Reason Generator** — Sonnet 이 L1 템플릿 수준 사유를 L2a 의 자연스러운 금융 경어체 한국어로 재작성, DynamoDB 캐싱으로 cache-hit 6 ms 레이턴시.
 
-[Paper 2](https://doi.org/10.5281/zenodo.19622052) 에 SR 11-7 모델 리스크 관리 매핑이 포함된 전체 5-에이전트 아키텍처 (3 서빙 + 2 ops/audit) 문서화.
+[Paper 2](https://doi.org/10.5281/zenodo.19622051) 에 SR 11-7 모델 리스크 관리 매핑이 포함된 전체 5-에이전트 아키텍처 (3 서빙 + 2 ops/audit) 문서화.
 
 ### 워크플로우 재현
 

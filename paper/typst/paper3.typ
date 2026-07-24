@@ -144,7 +144,7 @@ governance counterpart --- audit-trail semantics and operator-override
 risk --- is treated in Paper 2's discussion of fidelity-gate
 semantics.
 Paper 2 (From Prediction to Persuasion: Agentic Recommendation Reason
-Generation for Regulatory-Compliant Financial AI)#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19622052")[10.5281/zenodo.19622052]] is
+Generation for Regulatory-Compliant Financial AI)#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19622051")[10.5281/zenodo.19622051]] is
 self-contained: its GDPR Art.~22 / EU AI Act Art.~13 argument is
 carried by the distilled student's SHAP attributions, a three-agent
 reason pipeline, and an HMAC-signed hash-chained audit log, and does

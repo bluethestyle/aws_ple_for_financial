@@ -177,7 +177,7 @@ Paper 1을 인용한다 --- (b) "CGC 위에서 어떤 종류의
 이 게이트의 거버넌스 대응물 --- 감사 추적 의미론과 운영자 override
 리스크 --- 는 Paper 2의 fidelity-gate 의미론 논의에서 다룬다.
 Paper 2 (From Prediction to Persuasion: Agentic Recommendation Reason
-Generation for Regulatory-Compliant Financial AI)#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19622052")[10.5281/zenodo.19622052]] 는
+Generation for Regulatory-Compliant Financial AI)#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19622051")[10.5281/zenodo.19622051]] 는
 자립적이다: 그 GDPR 제22조 / EU AI Act 제13조 논증은 증류된 학생의
 SHAP attribution, 3-에이전트 추천사유 파이프라인, 그리고 HMAC 서명
 해시 체인 감사 로그가 떠받치며, 본 논문의 어떤 출력에도 의존하지 않는다.

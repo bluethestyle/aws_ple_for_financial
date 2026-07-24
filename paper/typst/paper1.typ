@@ -1953,7 +1953,7 @@ of minority-type tasks (multiclass) from majority-type gradients (binary).
 
 The architecture, benchmark data, and ablation framework are released as open source.#footnote[https://github.com/bluethestyle/aws\_ple\_for\_financial]
 Two companion papers address the remaining scope.
-*Paper 2*#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19622052")] covers the downstream serving pipeline: knowledge
+*Paper 2*#footnote[DOI: #link("https://doi.org/10.5281/zenodo.19622051")] covers the downstream serving pipeline: knowledge
 distillation @hinton2015 to LGBM @ke2017lightgbm, the two-tier
 fidelity gate semantics under cross-architecture distillation,
 multi-agent recommendation reason generation, regulatory compliance
