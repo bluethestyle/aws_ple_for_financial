@@ -125,7 +125,7 @@ homogeneous-task regime.
 *Position relative to companion papers.*
 This work sits between two companion papers that share the same
 12-task benchmark, the same 7-expert PLE backbone, and the same v14
-phase0 data pipeline. Its own thread is narrow and deliberate: *what
+phase0 data pipeline.#footnote["12 tasks" and "7 experts" here refer to the synthetic v14 benchmark. The operational deployment uses a separate task naming scheme with an active-task count that shifts with label availability (11 as of the July 2026 run), and runs a 6-expert variant that absorbs LightGCN's signal into the unified HGCN input --- see Paper 1's preliminary operational validation section.] Its own thread is narrow and deliberate: *what
 silently fails when MTL is pushed past the homogeneous-task regime, and
 the measurement discipline that catches it.*
 Paper 1 (Heterogeneous Expert PLE: An Explainable Multi-Task
@@ -741,7 +741,11 @@ $E_t = 0$ means a single expert captures all weight.
   caption: [CGC gate entropy ratios by task and PLE layer (teacher model,
   30 epochs --- the v12-era 13-task configuration, before `segment_prediction`'s removal).
   Low entropy ($E_t < 0.45$) indicates 1--2 experts dominate;
-  high entropy ($E_t > 0.80$) indicates all 7 experts contribute meaningfully.],
+  high entropy ($E_t > 0.80$) indicates all 7 experts contribute meaningfully.
+  This entropy pattern (0.33--0.88) is specific to the synthetic benchmark ---
+  Paper 1's re-measurement on operational real data found a more uniform
+  distribution (0.67--0.97, with few dominant-expert tasks). The no-collapse
+  conclusion itself holds on both.],
 ) <tab:gate-entropy>
 
 The entropy ratios reveal three behaviorally distinct task clusters:
@@ -1343,7 +1347,7 @@ contribution via $partial bold(z)_"hat" slash partial bold(W)$ and
 the NOTEARS reconstruction gradient (when added) are proportional to
 $bold(W)$ itself:
 
-$ (partial) / (partial bold(W)) "trace" ((bold(W) dot.o bold(W))^k)
+$ (partial) / (partial bold(W)) "trace" ((bold(W) dot.circle bold(W))^k)
     thin prop thin bold(W) $
 
 Any near-zero initialisation produces a near-zero gradient, so
@@ -1470,7 +1474,7 @@ $"input_dim"$-wide attribution vector, and is trained via MSE to
 align with the gradient $times$ input saliency baseline of the
 expert's own scalar output w.r.t. the input:
 
-$ cal(L)_"attr" = "mean"(abs("head"("output") - (gradient_x "output".sum() dot.o x))^2) $
+$ cal(L)_"attr" = "mean"(abs("head"("output") - (gradient_x "output".sum() dot.circle x))^2) $
 
 Gradient $times$ input is computed with one extra forward pass on a
 cloned, `requires_grad=True` copy of the input, so the main forward
@@ -1771,7 +1775,7 @@ $d_i = sum_j ((z_(i,j) - mu_j) / sigma_j)^2$.
     columns: (auto, auto, auto),
     align: (left, right, right),
     stroke: 0.5pt,
-    [*Probe*], [*TPR @ ID p95*], [*FPR @ ID p95*],
+    [*Probe*], [*TPR \@ ID p95*], [*FPR \@ ID p95*],
     [Uniform random], [$100.0%$], [$5.0%$],
     [Column-permuted], [$100.0%$], [$5.0%$],
     [Extreme-tail], [$100.0%$], [$5.0%$],
@@ -1879,7 +1883,7 @@ does increase but does not approach v2's ceiling:
     columns: (auto, auto, auto),
     align: (left, right, right),
     stroke: 0.5pt,
-    [*Probe*], [*Baseline TPR @ ID p95*], [*W-amp TPR @ ID p95*],
+    [*Probe*], [*Baseline TPR \@ ID p95*], [*W-amp TPR \@ ID p95*],
     [Uniform random], [$6.8%$], [$22.7%$],
     [Column-permuted], [$8.1%$], [$18.6%$],
     [Extreme-tail], [$0.0%$], [$0.0%$],

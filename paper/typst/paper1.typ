@@ -74,7 +74,7 @@
   Both GradSurgery (AUC 0.673, F1-macro 0.203) and the corrected adaTT implementation (sigmoid+adaTT AUC 0.672) maintain baseline performance; neither provides a gain.
   The operational motivation --- consolidating 12 individual models into a single MTL model
   for unified training, serving, and monitoring --- is validated:
-  the shared-bottom baseline already exceeds per-task XGBoost ceilings (on the synthetic benchmark; a comparison against a simple GBM under the skewed operational distribution is untested --- see @operational-teacher),
+  the shared-bottom baseline already exceeds per-task XGBoost ceilings (on the synthetic benchmark; in a clean OOT measurement on operational real data, a raw-feature LGBM outperforms the teacher on 10 of 11 active tasks, so the operational value of consolidation lies in unified training, representation, and explanation rather than per-task predictive superiority --- see @operational-teacher),
   and PLE provides additional gains on ranking metrics without sacrificing classification performance.
 
   #v(0.3em)
@@ -523,7 +523,7 @@ The complete data-axis-to-expert-to-feature-generator mapping is shown in @tab:m
       node((3, 7), [*12 Task Towers* → Predictions], width: 50mm, fill: gray-fill, name: <towers>),
 
       // === Row 7: Knowledge Distillation ===
-      node((3, 8), [*Knowledge Distillation* → LGBM ×13], width: 50mm, fill: gray-fill, name: <kd>),
+      node((3, 8), [*Knowledge Distillation* → LGBM ×12], width: 50mm, fill: gray-fill, name: <kd>),
 
       // === Row 8: Serving ===
       node((3, 9), [*Lambda Serving* + Reason Generation], shape: fletcher.shapes.pill, width: 50mm, fill: gray-fill, name: <serve>),
@@ -928,7 +928,10 @@ The exception is the Causal expert, which learns a NOTEARS DAG
 and thus approaches Level 2 (intervention) reasoning.
 When the Causal expert's gate weight is high for a prediction,
 it indicates not merely correlation but that _structural causal relationships_
-contributed to the recommendation --- a qualitatively stronger form of explanation.
+contributed to the recommendation --- a qualitatively stronger form of explanation,
+valid only for checkpoints whose learned $W$ passes health checks
+($||W||_F$ in range, active edges present) at evaluation time
+(see the $W$-observability limitation and @operational-teacher).
 How sharply this perspective-level decomposition materializes, however, is data- and task-dependent: on operational data the routing is more uniform, so crisp attribution to 1--2 experts is limited to tasks with a dominant expert, while most tasks default to multi-factor explanation (@operational-teacher).
 
 *Mechanism.* The CGC (Customized Gate Control) module computes
@@ -1092,6 +1095,12 @@ MCC distribution shifts, product acquisition rates) without altering static demo
 creating signals recoverable only through Phase 0 generators (Mamba, TDA, HGCN, GMM).
 Label interactions use 3rd--5th order continuous multiplicative terms with obs_frac=0.15,
 producing meaningful class distributions for all generated tasks.
+This is a design guarantee of the synthetic benchmark and does not
+transfer automatically to real data: the default state of operational
+labels was degeneration and extreme imbalance (single-value labels,
+missing class coverage --- @operational-teacher), so label-viability
+gating (class count, coverage, and variance checks) is a mandatory
+pre-training stage.
 
 _Version terminology._ v12 froze the data _generation_ schema; later revisions did not change how the benchmark data is generated.
 v13 and v14 are _phase0 preprocessing_ revisions applied to v12-generated data:
@@ -1450,6 +1459,7 @@ with entropy ratios ranging from 0.33 to 0.88 across the 13 tasks and 2 CGC laye
 This confirms that routing collapse has not occurred:
 all tasks engage multiple experts, while distinct tasks show distinct routing patterns.
 Re-measured on the operational teacher (K=6, 12 tasks), the normalized entropy is 0.67--0.97 --- more uniform than synthetic, with 7 of 12 tasks exceeding 0.90; the no-collapse conclusion holds on both, but crisp dominant-expert specialization is confined to a few tasks (@operational-teacher).
+Operational deployment also demonstrated two failure modes distinct from routing collapse: (i) zero-fed regressions, where a modality input wiring regression pins an expert's input to the zero vector and its output goes constant (observed historically for Temporal, PersLay, and HGCN), and (ii) degeneration of an expert's internal parameters (the Causal $W$ global collapse, Section 3.4). The heterogeneous design's "structural collapse guarantee" therefore holds only conditional on continuous verification of input wiring integrity and monitoring of expert-internal parameter health.
 Low-entropy tasks concentrate on 1--2 experts; high-entropy tasks draw broadly across the expert basket.
 CGC attention weights remain perfectly uniform across all tasks, indicating that expert selection operates at the extraction layer, not at the attention aggregation layer.
 
@@ -1563,12 +1573,23 @@ The most robust configuration remains PLE softmax without transfer mechanisms.
 
 *Operational motivation validated.*
 The shared-bottom baseline (AUC 0.6711, NDCG\@3 0.7014) already exceeds
-per-task XGBoost ceilings (on the synthetic benchmark; a comparison against a simple GBM under the skewed operational distribution is untested --- see @operational-teacher),
+per-task XGBoost ceilings (on the synthetic benchmark),
 validating the operational motivation for MTL consolidation:
 a single model replaces 12 individual models with no performance penalty,
 enabling unified training, serving, and monitoring.
 PLE softmax provides incremental gains (NDCG\@3 +0.013)
 at no additional serving cost.
+This superiority relationship did not transfer to the operational
+distribution, however: in a clean OOT measurement on operational real
+data, raw-feature hard-label LGBM outperformed the teacher on 10 of 11
+active tasks (@operational-teacher). The synthetic "exceeds XGB
+ceilings" result should be read as a product of the label-generation
+design, which embeds deep nonlinear interactions; the verified
+operational value of MTL consolidation lies not in per-task predictive
+superiority but in unified training, representation, and explanation
+plus two-tier serving --- the teacher anchoring distillation,
+explanation, and monitoring while tree models serve as the adopted
+students.
 
 == Training Dynamics: Loss--Metric Decoupling and Epoch Selection
 
@@ -1617,6 +1638,13 @@ We recommend selecting the best checkpoint using a composite metric
 rather than minimum val\_loss.
 In our setting, this corresponds to selecting epoch 10 over epoch 30,
 recovering +0.4pp AUC and +3.0pp NDCG\@3.
+Adopting a composite metric also requires defining a fallback rule for
+missing constituent metrics: in an operational run, every component of
+the composite happened to depend on one task's (nba) metrics, and when
+that label went missing the composite degenerated to $-oo$, silently
+falling back to the previous best checkpoint (@operational-teacher).
+Explicit weight renormalization or promotion of a next-priority metric
+must be defined for the missing-component case.
 
 == Practical Implications
 
@@ -1748,9 +1776,9 @@ training pipeline, serving endpoint, and monitoring dashboard.
 == Preliminary Operational Teacher (Research-Only)
 <operational-teacher>
 
-To check whether the synthetic-benchmark conclusions hold directionally in a real deployment, we take a preliminary observation of the on-premise teacher model (June 2026, full-expert `best_composite` checkpoint) on operational data. *This observation is a research comparison, not a promotion candidate* --- it is excluded from production promotion by data-availability gating. It differs from the synthetic benchmark in task composition (both have 12 tasks, but the task definitions and naming are entirely different), number of live experts (operational K=6 with LightGCN inactive vs.~synthetic K=7), and label distribution, so *absolute numbers are not directly comparable --- only signs and patterns are cited.*
+To check whether the synthetic-benchmark conclusions hold directionally in a real deployment, we performed two operational observations: (i) a *June 2026 preliminary probe* --- gate and liveness measurements of the deployed on-premise teacher (full-expert `best_composite` checkpoint); and (ii) a *July 2026 integrated run* --- the v9 teacher, re-running the full pipeline from preprocessing through teacher training on a two-month operational window (real contract schema with a 4,035-dimension input, training on the 2026-01 snapshot of 17.8M rows, validation/test on 2026-02, six shared experts, 11 active tasks, phase 1 for 15 + phase 2 for 8 epochs). *Both observations are research comparisons, not promotion candidates* --- v9 failed the performance gate and was recorded as candidate-only, with the blocking reason being nba label availability rather than performance (itself live evidence that the manual-approval promotion gate works as designed). They differ from the synthetic benchmark in task composition (task definitions and naming are entirely different, and the active count itself shifts --- 12 in the June probe, 11 in the July run), number of live experts (operational K=6 --- LightGCN's signal absorbed into the unified HGCN input --- vs.~synthetic K=7), and label distribution, so *absolute numbers are not directly comparable --- only signs and patterns are cited.*
 
-*Independent reproduction of no expert collapse.* Forwarding the operational teacher with side-band inputs wired, all six heterogeneous experts retain non-degenerate outputs (output std 0.051--0.333, weakest is HGCN). Per-task gate entropy ratios span 0.67--0.97; no task collapses onto a single expert (@tab:operational-teacher). The core RQ6 conclusion --- no collapse --- reproduces independently on both synthetic and operational data. However, operational routing is more uniform than synthetic (0.33--0.88): 7 of 12 tasks exceed 0.90, so crisp attribution to 1--2 experts is limited to the few tasks with a dominant expert (spending_category with PersLay, merchant_affinity with Temporal, life_stage with PersLay).
+*Independent reproduction of no expert collapse (June probe).* Forwarding the operational teacher with side-band inputs wired, all six heterogeneous experts retain non-degenerate outputs (output std 0.051--0.333, weakest is HGCN). Per-task gate entropy ratios span 0.67--0.97; no task collapses onto a single expert (@tab:operational-teacher). The core RQ6 conclusion --- no collapse --- reproduces independently on both synthetic and operational data. However, operational routing is more uniform than synthetic (0.33--0.88): 7 of 12 tasks exceed 0.90, so crisp attribution to 1--2 experts is limited to the few tasks with a dominant expert (spending_category with PersLay, merchant_affinity with Temporal, life_stage with PersLay).
 
 #figure(
   placement: top,
@@ -1779,10 +1807,14 @@ To check whether the synthetic-benchmark conclusions hold directionally in a rea
       [timing], [PersLay], [0.235], [0.973],
     )
   },
-  caption: [Operational teacher (research-only, K=6, 12 tasks): per-task top expert and gate entropy ratio. All six experts non-degenerate (output std 0.051--0.333). Entropy 0.67--0.97 shows no collapse but is more uniform than synthetic (0.33--0.88). Task names do not map 1:1 to synthetic @tab:gate-entropy, so this is a separate table and absolute numbers are not directly compared.],
+  caption: [Operational teacher (research-only, June 2026 probe, K=6, 12 tasks): per-task top expert and gate entropy ratio. All six experts non-degenerate (output std 0.051--0.333). Entropy 0.67--0.97 shows no collapse but is more uniform than synthetic (0.33--0.88). Task names do not map 1:1 to synthetic @tab:gate-entropy, so this is a separate table and absolute numbers are not directly compared.],
 ) <tab:operational-teacher>
 
-*High absolute metrics reflect task easiness, not architectural superiority.* Some operational metrics appear high (e.g., churn AUC 0.89), but this is attributable to a narrow, skewed operational distribution and extreme label imbalance: the churn positive rate is 0.54%, and the majority class of the multiclass tasks accounts for 97--99%. The large AUC--PR-AUC gap (churn AUC 0.89 vs.~PR-AUC 0.47) and high calibration error (ECE 0.31) corroborate this. Where customer patterns are predictable and the distribution is concentrated, a simple GBM baseline may already match or exceed the seven-expert PLE; indeed, in the operational gate, the generated-feature DeepFM ranks top for most tasks (churn, retention, nba, spending_bucket). This operational observation is therefore liveness evidence --- no collapse, all experts active --- not a performance-superiority claim. A per-task GBM comparison and a stress test on minority-class signals under the operational distribution remain future work.
+*The July integrated run's OOT measurements (v9).* With OOT labels (2026-03) only partially generated, out-of-time evaluation was possible for just 3 of the 11 active tasks: churn AUC 0.9422 (PR-AUC 0.7214), balance_util R² 0.7360, and merchant_affinity R² 0.1485. Churn's calibration error is ECE 0.2485, uncalibrated --- calibration is mandatory before any downstream use of the probabilities. Training ran under a per-epoch batch cap of 969 (roughly an 11% subsample of train), leaving undertraining a possibility, and the wall-clock from preprocessing through teacher was about 87 hours (fully reproduced through the Airflow DAG path).
+
+*High absolute metrics reflect task easiness, not architectural superiority --- now confirmed by a measured tree comparison.* Some operational metrics appear high (June probe churn AUC 0.89; July v9 0.9422), but this is attributable to a narrow, skewed operational distribution and extreme label imbalance: the churn positive rate is below 1% (0.54% in the June observation), and the majority class of the multiclass tasks accounts for 96--99%. The large AUC--PR-AUC gap (June: 0.89 vs.~0.47) and high calibration error (ECE 0.25--0.31) corroborate this. The June-era hypothesis that "a simple GBM baseline may already match or exceed" was confirmed by measurement in the July integrated run: in a clean OOT evaluation, raw-feature hard-label per-task LGBM models outperformed the teacher on 10 of 11 active tasks (11/11 when restricted to active segments), and stacking with teacher logits added no gain. The sparsity structure --- 93--94% of customers dormant --- also produced Simpson reversals, where aggregate and fine-grained segment verdicts flip; the synthetic benchmark does not reproduce this environmental factor. Indeed, in the operational gate, the generated-feature DeepFM ranks top for most tasks (churn, retention, nba, spending_bucket). This operational observation is therefore liveness evidence --- no collapse, all experts active --- not a performance-superiority claim; the operational value of MTL consolidation lies in unified training, representation, and explanation plus two-tier serving (Section 6.1). Gate-type comparison (softmax vs.~sigmoid), the adaTT ablation, and GradSurgery were not re-run on operational data, so those conclusions remain scoped to the synthetic benchmark.
+
+*Label availability governs the task portfolio.* The default state of real-data labels was degeneration and extreme imbalance: engagement degenerated to a single distinct value; merchant_affinity had 2 distinct values at 6.1% coverage; nba observed only 5 of 12 classes (majority class 96.1%); life_stage shrank from 6 to 3 classes. Campaign collection ending (2026-03-10) extinguished the ctr/cvr task sources, and retention auto-deactivated as churn's inverse. What determines the task portfolio is thus label-source availability, not architectural capacity, and label-viability gating (class count, coverage, variance checks) is a mandatory pre-training stage. Distillation-related operational measurements --- confidence compression in $T=5$ soft-label storage, the fidelity gate's degenerate-pass blind spot (high fidelity achievable by constant imitation), and monotonic clean-OOT degradation as the soft-label weight grows --- are detailed in the companion Paper 2's operational observations section. Access to the operational environment ended with this observation window, so no further operational measurements are possible --- the measurements in this section constitute the final operational evidence for this system.
 
 == Limitations
 
@@ -1797,20 +1829,44 @@ the benefit of expert specialization ---
 real data where temporal patterns, graph structures, and causal pathways
 carry genuinely different signals may amplify PLE's advantage over shared-bottom.
 A *preliminary* validation on proprietary financial data was performed on the operational teacher (@operational-teacher),
-but that teacher is a research comparison excluded from production promotion by data-availability gating,
-and its extreme label imbalance (churn positive rate 0.54%) demands caution in metric interpretation.
+but that teacher is a candidate excluded from production promotion by label-availability gating;
+the observation window spans only two months (training 2026-01, validation/test 2026-02),
+OOT evaluation covers just 3 of 11 active tasks, so generalization across seasonality
+and regime shifts is unverified; training ran under a per-epoch batch cap of 969
+(~11% subsample), leaving undertraining a possibility;
+and extreme label imbalance (churn positive rate 0.54%) demands caution in metric interpretation.
 Full production validation remains future work.
 That future validation will target labels defined under the forward-transition criterion of @leakage-prevention
 (label windows opening strictly after the feature cutoff),
 so that reported operational gains cannot be inflated by label-definition-internal leakage.
 
-*Skewed operational distribution and untested GBM baseline.*
-The high absolute metrics seen in the operational observation (e.g., churn AUC 0.89) stem from a narrow, skewed
-distribution and extreme label imbalance (majority class 97--99% on multiclass tasks), indicating low task difficulty
-rather than architectural superiority. Under such distributions a simple GBM baseline may already match or exceed the
-seven-expert PLE (in the operational gate the generated-feature DeepFM ranks top for most tasks), and a per-task GBM
-comparison under the operational distribution has not yet been run. The synthetic-benchmark result that "MTL exceeds
-XGBoost ceilings" should not be assumed to transfer to the skewed operational distribution.
+*Skewed operational distribution and measured tree superiority.*
+The high absolute metrics seen in the operational observation (churn AUC 0.89/0.9422) stem from a narrow, skewed
+distribution and extreme label imbalance (majority class 96--99% on multiclass tasks), indicating low task difficulty
+rather than architectural superiority. Indeed, in the clean OOT measurement, raw-feature hard-label LGBM outperformed
+the teacher on 10 of 11 active tasks (in the operational gate the generated-feature DeepFM ranks top for most tasks).
+The synthetic-benchmark result that "MTL exceeds XGBoost ceilings" does not transfer to the skewed operational
+distribution. Per-expert leave-one-out retraining has not been run, however, so operational evidence for per-expert
+contribution also remains incomplete.
+
+*Label-quality defects contaminate metrics.*
+Degenerate labels --- engagement (distinct=1), merchant_affinity (6.1% coverage), nba (5 of 12 classes observed) ---
+limit the interpretability of those tasks' metrics. The ctr/cvr family is unreproducible after collection ended
+(2026-03-10), and retention, as churn's inverse, shrinks the effective count of independent tasks.
+
+*Uncalibrated probabilities.*
+The operational teacher's churn ECE is 0.2485 (June probe: 0.31), uncalibrated. Calibration is mandatory before
+any downstream use of probabilities (threshold decisions, expected-value scoring).
+
+*W observability gap.*
+The Causal expert's $W$-health indicators ($||W||_F$, active edges) are absent from the evaluation report and were
+confirmed only via a separate probe (the v9 $W$ is frozen at $||W||_F approx 0.17$ with 7 edges). Wiring them in as
+mandatory evaluation-report fields is future work.
+
+*Scope of operational reproduction; no absolute comparisons.*
+The gate-type comparison, adaTT, and GradSurgery conclusions were not re-run on operational data (synthetic-only).
+Absolute-number comparisons between synthetic and real data are artifacts of the difficulty-design difference and are
+invalid (signs and patterns only).
 
 *adaTT evaluation at limited epoch budget.*
 The corrected adaTT implementation's null effect may be partly attributable to the 10-epoch training budget:
@@ -1829,7 +1885,7 @@ introducing latency and cost trade-offs (detailed in companion paper).
 
 == Ethics and Data Statement
 
-All *quantitative benchmark* experiments in this version use *fully synthetic benchmark data* generated via Gaussian Copula with a fixed random seed (seed=42). The preliminary observation of the operational teacher (@operational-teacher) reports only aggregate metrics and gate statistics as a research-only comparison, and includes no raw customer data or personally identifying information. Full real-data validation is planned for a subsequent revision. The benchmark data generator and all configuration files are publicly available in the repository. The system is designed for deployment on low-risk check card products only; investment and insurance recommendations are explicitly excluded from the operational scope (see companion paper, Section 6.3).
+All *quantitative benchmark* experiments in this version use *fully synthetic benchmark data* generated via Gaussian Copula with a fixed random seed (seed=42). The preliminary observations of the operational teacher (@operational-teacher --- the June 2026 probe and the July 2026 integrated run) report only aggregate metrics and gate statistics as a research-only comparison, and include no raw customer data or personally identifying information. Full production-promotion validation remains future work. The benchmark data generator and all configuration files are publicly available in the repository. The system is designed for deployment on low-risk check card products only; investment and insurance recommendations are explicitly excluded from the operational scope (see companion paper, Section 6.3).
 
 == Future Work: Scaling Considerations
 
@@ -1853,7 +1909,9 @@ Notably, scaling the expert basket size (adding more expert types) is less promi
 We presented Heterogeneous Expert PLE, a multi-task learning architecture
 for financial product recommendation that consolidates 12 heterogeneous tasks
 (7 binary + 2 multiclass + 3 regression) into a single model,
-replacing 12 individual models while maintaining or exceeding per-task performance.
+replacing 12 individual models while maintaining or exceeding per-task performance
+(on the synthetic benchmark; for its position under the skewed operational
+distribution and the realigned value of consolidation, see @operational-teacher).
 
 Three contributions emerge from this work.
 *First*, the heterogeneous expert basket --- seven architecturally distinct experts

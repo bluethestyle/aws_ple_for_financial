@@ -77,14 +77,15 @@
   by the reason-generation pipeline and SHAP-based audit log; the
   per-prediction causal audit currently runs on the PLE teacher, so
   wiring it into the served path is future work.
-  We evaluate distillation quality (v13 baseline: AUC gap $<$ 3.6 percentage points across 7 binary tasks, mean 2.6 pp; the v14 re-run after the fidelity-gate fixes analysed in the Discussion (Section 8) reduces the mean gap to 0.58 pp),
+  We evaluate distillation quality (v13 baseline: AUC gap $<$ 3.6 percentage points across 7 binary tasks, mean 2.6 pp; the v14 re-run after the fidelity-gate fixes analysed in the Discussion (Section 8) reduces the mean gap to 0.58 pp --- though the sign of this gap is environment-dependent: in a clean OOT evaluation on operational real data, hard-label LGBM outperforms the teacher on 10 of 11 active tasks, see @operational-note),
   reason generation quality via automated compliance validation
   (L1 template coverage 100%, 12/12 tasks; compliance rules applied: suitability, consent, opt-out, profiling, disclosure),
   and Safety Gate reliability (5 PII patterns, 5 validation categories).
   The system targets low-risk products (check cards, deposits); investment and insurance recommendations are excluded from the deployment scope.
   The system achieves 120ms warm latency on AWS Lambda (L1 predict + 13 tasks)
   at a fraction of the cost of dedicated GPU inference servers,
-  with cold start ~6s (S3 model download) and L2a cache hit at 6ms (DynamoDB).
+  with cold start ~6s (S3 model download) and L2a cache hit at 6ms (DynamoDB)
+  (serving figures are specific to the AWS synthetic-benchmark variant; the on-premise deployment performs no real-time inference, serving instead from batch-generated stores).
 
   #v(0.3em)
   #text(weight: "bold")[Keywords:]
@@ -459,7 +460,7 @@ All three layers are integrated into a unified Lambda serving path:
 )
 
 Key integration properties:
-- `FallbackRouter` auto-routes each task to its appropriate layer based on availability and metric thresholds; the caller is unaware of which layer served the prediction.
+- `FallbackRouter` auto-routes each task to its appropriate layer based on availability and metric thresholds; the caller is unaware of which layer served the prediction. The on-premise reference system wires the same default thresholds; a July 2026 operational validation run confirmed, within contract-test coverage, 10 tasks routing to Layer 1 and the Layer 3 rule engine live in production (@operational-note).
 - Calibrated probabilities (Platt scaling) are applied on Layer 1/2 outputs for probability-critical binary classification tasks where raw LGBM probabilities are systematically biased. The calibration-enabled task set is declared per dataset under the distillation configuration (e.g. `distillation.calibration.tasks`) so that probability-consuming downstream logic (thresholding, expected-value scoring, risk budgeting) is correctly calibrated regardless of benchmark. Ranking-oriented binary tasks that only require a consistent score ordering, and regression tasks routed to Layer 3 (rule engine), do not receive Platt scaling.
 - For Layer 3, `contributing_features` from rule firings are injected directly into the reason pipeline. This enables interpretable reasons even when no model is available, using the same 3-agent interface as Layer 1/2.
 - All three layers produce an identical response schema --- prediction, probability, contributing features, reason text, audit token --- ensuring the API contract is transparent to callers regardless of which layer served the request.
@@ -538,7 +539,7 @@ This avoids conflating metrics with incompatible semantics across task types.
     [mcc\_diversity\_trend], [R²=0.031#super[R]], [MAE 0.025#super[E]], [n/a], [R² < 0.05 → DIRECT],
     [cross\_sell\_count (R²)], [0.008], [—], [—], [R² < floor → SKIP (L3)],
   ),
-  caption: [Distillation results per task. Binary tasks use AUC gap (evaluation metric). Multiclass tasks use F1-macro as the _routing_ metric (threshold: $2\/K$); NDCG\@K is reported separately in per-task analysis. Regression tasks use R² as the _routing_ metric (superscript R) and MAE as the _evaluation_ metric (superscript E); gap is marked n/a when routing and evaluation metrics differ. DIRECT-routed tasks show hard-label LGBM results; SKIP-routed tasks are served by the Layer 3 rule engine. *Note: these results are from the distillation round run on the 13-task configuration before segment_prediction's exclusion; Teacher AUC values (0.63--0.72) reflect the v13 phase0 teacher; the v14 SageMaker re-run with HMM mode-split + GMM K=14 + probability-column normaliser fix lifts the teacher's per-task AUC into the 0.82+ range (see Paper 1 joint-ablation and epoch-budget tables). The fidelity gap and student-teacher agreement percentages above are expected to remain in the same magnitude because Platt scaling and gain-importance feature selection are scale-invariant; LGBM distillation on the v14 teacher is deferred to a follow-up release.*],
+  caption: [Distillation results per task. Binary tasks use AUC gap (evaluation metric). Multiclass tasks use F1-macro as the _routing_ metric (threshold: $2\/K$); NDCG\@K is reported separately in per-task analysis. Regression tasks use R² as the _routing_ metric (superscript R) and MAE as the _evaluation_ metric (superscript E); gap is marked n/a when routing and evaluation metrics differ. DIRECT-routed tasks show hard-label LGBM results; SKIP-routed tasks are served by the Layer 3 rule engine. *Note: these results are from the distillation round run on the 13-task configuration before segment_prediction's exclusion; Teacher AUC values (0.63--0.72) reflect the v13 phase0 teacher; the v14 SageMaker re-run with HMM mode-split + GMM K=14 + probability-column normaliser fix lifts the teacher's per-task AUC into the 0.82+ range (see Paper 1 joint-ablation and epoch-budget tables). The fidelity gap and student-teacher agreement percentages above are expected to remain in the same magnitude because Platt scaling and gain-importance feature selection are scale-invariant; LGBM distillation on the v14 teacher is deferred to a follow-up release. Note also that the sign of the teacher--student gap in this table is a property of the synthetic-benchmark environment --- in a clean OOT evaluation on operational real data the sign reverses, with hard-label LGBM outperforming the teacher on 10 of 11 active tasks (@operational-note).*],
 ) <tab:distill-results>
 
 // ============================================================
@@ -719,7 +720,7 @@ Upstream of the 3-agent pipeline, the constraint engine applies eligibility and 
 Customer-facing recommendation reasons require natural, professional Korean text. The optimal model differs by deployment environment:
 
 #list(tight: true,
-  [*On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.],
+  [*On-premises (air-gapped)*: Exaone 3.5 7.8B (LG AI Research, Apache 2.0) --- Korean-specialized training produces more natural financial honorific tone than same-class models (Llama, Qwen). Runs on RTX 4070 12GB.#footnote[In the deployed on-premise system as measured in June--July 2026, reason rewriting uses the lighter Exaone 3.5 2.4B at 0.63s per item (zero hallucinations in the LLM benchmark), with Qwen3 14B reserved for escalation-only deliberation. The candidate Solar 10.7B was excluded after a 0% safety-gate pass rate (@operational-note).]],
   [*Cloud (AWS)*: L2a rewriting uses Bedrock Claude Sonnet --- natural Korean generation with Bedrock-native availability (no Marketplace onboarding required). L2b self-critique also uses Claude Sonnet (generator $<=$ critic model principle). The self-check layer's factuality scoring uses Claude Haiku. Ops/Audit agents use Claude Sonnet. All invocations use cross-region inference profiles (`us.anthropic.*`).],
 )
 Bedrock ensures that input/output data is never transmitted to model providers (Anthropic) and is never used for model training. VPC PrivateLink enables invocation without traversing the public internet. Cross-region inference profiles (e.g., `us.anthropic.*`) route requests to the geographically optimal endpoint while Bedrock guarantees that _customer data in the API payload_ is processed within the caller's contracted data boundary and is not persisted by the provider. Financial customer identifiers (account numbers, resident IDs) are stripped by `PIIEncryptor` before any data enters the LLM prompt, so the prompt contains only anonymized behavioral features. This layered approach --- PII stripping at the application boundary plus Bedrock's provider-side data isolation --- is designed to support the data governance requirements of the Korean FSC AI guidelines (Financial Sector AI Guidelines, §7 security) and the Personal Information Protection Act.
@@ -767,9 +768,9 @@ Recommendation reasons are served via a 3-layer asynchronous architecture:
   Korean Financial Consumer Protection Act Art.19 equal-explanation obligation
   (on-prem v3.0.0, 2026). This design transition is continuously monitored
   under AV1 (fairness) of the audit agent.
-]
+] Live-serving validation of the sparse case surfaced a theoretical hole --- no behavioral evidence can be narrated for customers with no behavioral history --- corrected by a triple fix: neutral reason templates, a generation constraint forbidding behavioral claims, and product-metadata key lookup (21 regression tests passing).
 
-+ *L2b (Quality Validation)*: applies a 5-stage safety gate to L2a output --- (1) prompt sanitizer, (2) PII detection (Korean resident registration number, card numbers, etc.), (3) self-check layer (compliance + injection + factuality), (4) grounding verification (number cross-check), (5) 5% human review sampling. Pass promotes to L2b; failure falls back to L1.
++ *L2b (Quality Validation)*: applies a 5-stage safety gate to L2a output --- (1) prompt sanitizer, (2) PII detection (Korean resident registration number, card numbers, etc.), (3) self-check layer (compliance + injection + factuality), (4) grounding verification (number cross-check), (5) 5% human review sampling. Pass promotes to L2b; failure falls back to L1. In a small on-premise live run the gate fallback rate measured 75% (9 of 12 items fell back to L1), showing that gate strictness vs.~L2a reach is an operational tuning trade-off (the richness-based L2a-eligible queue holds about 1.14M customers, @operational-note).
 
 Caching uses a dual backend (in-memory + DynamoDB) with composite key `customer_id + product_id + task_name` and TTL-based auto-expiry. Of 941K customers, L2a targets (~5% sample, ~47K items) are processed by 5 parallel Claude Sonnet workers in ~8 minutes at ~\$0.21 cost (47K × 500 input + 200 output tokens at Claude Sonnet pricing).
 
@@ -784,7 +785,7 @@ Two modules enforce this at the serving boundary:
 
 - *`PromptSanitizer` (outbound)*: scrubs PII from generated recommendation reason text before it is returned to the customer interface. Additionally, `PromptSanitizer` classifies prompt sensitivity into three tiers --- HIGH (contains financial identifiers or account-level data), MEDIUM (contains behavioral patterns), LOW (generic recommendation context) --- and routes accordingly: HIGH prompts are sent exclusively to Amazon Bedrock (data stays within the AWS region), MEDIUM and LOW may be routed to alternative providers (e.g., Gemini) only after PII has been stripped and the prompt contains no customer-identifiable information. This tiered routing applies to _prompt context_, not to raw customer data, which never leaves the Bedrock boundary. Controlled via `SECURITY_PII_SCRUB=true` environment variable.
 
-This two-layer boundary ensures that neither raw PII nor LLM-generated outputs that contain PII can escape the serving perimeter, designed to align with the data minimization principle of GDPR and Korean PIPA.
+This two-layer boundary is designed so that neither raw PII nor LLM-generated outputs containing PII can escape the serving perimeter, aligning with the data minimization principle of GDPR and Korean PIPA. Both modules, however, are environment-variable *opt-ins whose deployment default is off* --- a June 2026 operational audit found this path dormant, prompting live-wiring fixes to the prompt-injection guard and a new output PII redactor, while always-on activation remains an operational decision pending measured performance overhead. The distinction between 'designed' and 'live' is consolidated in the Limitations section.
 
 // ============================================================
 = Operational Agent Pipeline
@@ -1047,7 +1048,7 @@ so we split the process into two rounds:
   [*Round 2 (sequential deliberation, 2 agents)*: two additional agents read the full Round 1 output, strengthen the arguments for each position (majority and minority alike), and produce a final structured verdict. Round 2 improves argument quality without overwriting the minority view preserved from Round 1.],
 )
 
-For each checkpoint, Round 1 runs its five votes sequentially under the single-GPU constraint and Round 2 adds two deliberation passes; only items flagged WARN or FAIL by the rule engine enter consensus (typically 5--10 per inspection). With the 2.4B consensus model, per-vote latency is well below the earlier 14B Q4 configuration (which required ~45 minutes per inspection cycle), keeping a full cycle comfortably within operational tolerance for a batch-only, post-DAG process.
+For each checkpoint, Round 1 runs its five votes sequentially under the single-GPU constraint and Round 2 adds two deliberation passes; only items flagged WARN or FAIL by the rule engine enter consensus (typically 5--10 per inspection). With the 2.4B consensus model, per-vote latency is well below the earlier 14B Q4 configuration (which required ~45 minutes per inspection cycle), keeping a full cycle comfortably within operational tolerance for a batch-only, post-DAG process. This configuration (Round 1 five votes + Round 2 two deliberations, Exaone 3.5 2.4B) has been confirmed live in deployment: it correctly detected a 7:0 unanimous FAIL at the distillation-fidelity checkpoint, with post-hoc root-cause analysis confirming a real defect (@operational-note). A subsequent redesign introducing an asymmetric quorum and a syndrome layer (an error-localization tier) passed 111 regression tests.
 
 This hybrid design is chosen over pure Delphi for four reasons:
 (1) _minority preservation_ --- secured by Round 1 independence and structurally unmodifiable thereafter;
@@ -1084,8 +1085,7 @@ while the majority, anchored to familiar patterns, overlooks them.
 
 @tab:ops-consensus and @tab:audit-consensus report the consensus outcomes
 from a production test run on the live Lambda serving pipeline (AWS 3-agent variant).
-On-prem 2-Round results are not reported here because the on-prem deployment is an operational
-fallback target rather than a benchmark configuration.
+Live results from the on-prem 2-Round variant are summarized at the end of Section 5.9.2 and in @operational-note --- the representative case being the correct detection of a 7:0 unanimous FAIL at the distillation-fidelity checkpoint.
 The verdict rule is: *PASS requires unanimous (3/3)*; any dissent yields WARN;
 any FAIL vote yields FAIL verdict regardless of majority.
 
@@ -1225,7 +1225,7 @@ enabling operators to discuss the impact assessment interactively.
 
 The GDPR/KFCPA compliance obligations listed above are enforced through a pipeline of four modules connected to the Lambda handler and `RecommendationService`:
 
-- *`ConsentManager`*: verifies that the customer has granted AI recommendation consent before any prediction is executed. Absence of consent short-circuits the pipeline and returns a compliant blocked response without logging feature data.
+- *`ConsentManager`*: verifies that the customer has granted AI recommendation consent before any prediction is executed. Absence of consent short-circuits the pipeline and returns a compliant blocked response without logging feature data. Live deployment also exposed this design's blind spot: a keyspace mismatch (split-brain) --- the prediction store keyed on encrypted integer customer keys while the consent store used raw identifiers --- drove the consent join to zero rows, and the outcome surfaced not as a 'blocked response' but as a *silent skip*, becoming the root cause of a zero-recommendation output (@operational-note). The lesson is that fail-closed alone is insufficient; consent joins must be *fail-loud* --- a zero-row consent join is an alert-worthy anomaly distinct from a legitimate block.
 
 - *`AIDecisionOptOut`*: implements GDPR Article 22 and Korean Personal Information Protection Act (PIPA) right to refuse AI profiling. When a customer's opt-out flag is set, the handler returns a blocked response immediately, before any model inference occurs.
 
@@ -1448,7 +1448,7 @@ The FSC guideline's auxiliary-means principle (§3) makes human oversight
 mandatory for high-risk AI --- final responsibility rests with staff rather
 than the model --- and EU AI Act Art. 14 imposes the parallel requirement.#footnote[The FSC guideline illustrates this auxiliary-means principle with a frontier-AI misbehavior example drawn from Anthropic's Claude system card (the "Mythos" episode) @koreafsc2024. This paper's serving path itself invokes Claude (via Bedrock) only under the human-in-the-loop controls described here, consistent with that example's lesson that frontier models remain assistive tools subject to human oversight.]
 The system implements this at multiple levels:
-- *Reason sampling review*: Periodic human review of generated reasons.
+- *Reason sampling review*: Periodic human review of generated reasons. In the on-premise deployment, wiring up to queue ingestion is confirmed (853 items actually enqueued), while the loop that consumes review outcomes remains unimplemented (@operational-note).
 - *Model replacement approval*: The offline Champion-Challenger gate computes the promotion verdict; under the shipped `auto_promote: false` posture, promotion additionally requires explicit operator sign-off (`--force-promote`), so no model reaches production on statistical significance alone. Every decision is recorded to an HMAC-signed, hash-chained audit log.
 - *Incident escalation*: Automated anomaly detection triggers human investigation.
 - *Fairness review*: Periodic human audit of fairness metrics.
@@ -1721,7 +1721,7 @@ satisfying both SR 11-7 expectations and EU AI Act Art. 9 risk management requir
 
 == Distillation Experiments
 
-Binary tasks achieved AUC gaps of 0.018--0.036 (mean 2.6 percentage points), with ranking correlation above 0.96 across all 7 tasks. These figures are from the v13 round, run on the 13-task configuration before segment_prediction's exclusion; the v14 re-run, after the two distillation fixes analysed in the Discussion, reduces the mean binary AUC gap to 0.58 pp, and the fidelity gate now reports its verdict in two tiers (Tier 1 blocking / operational, Tier 2 informational / architecture-inherent) as detailed there. The primary failure mode was calibration gap (0.08--0.10), addressed by post-hoc Platt scaling for probability-critical tasks. Two multiclass tasks (nba_primary, segment_prediction) fell below the 2× random teacher threshold and were routed to direct hard-label training; next_mcc (50-class) was routed to SKIP (Layer 3 rule engine). One regression task (mcc_diversity_trend) achieved an MAE gap of 0.025 via direct training. The other two (product_stability, cross_sell_count) were routed to SKIP due to near-zero teacher R².
+Binary tasks achieved AUC gaps of 0.018--0.036 (mean 2.6 percentage points), with ranking correlation above 0.96 across all 7 tasks. These figures are from the v13 round, run on the 13-task configuration before segment_prediction's exclusion; the v14 re-run, after the two distillation fixes analysed in the Discussion, reduces the mean binary AUC gap to 0.58 pp, and the fidelity gate now reports its verdict in two tiers (Tier 1 blocking / operational, Tier 2 informational / architecture-inherent) as detailed there. The primary failure mode was calibration gap (0.08--0.10), addressed by post-hoc Platt scaling for probability-critical tasks. On operational real data the uncalibrated gap measured far larger (teacher churn ECE $approx 0.25$), so we fix the post-hoc calibrator as a *mandatory* post-distillation stage rather than an option (@operational-note). Two multiclass tasks (nba_primary, segment_prediction) fell below the 2× random teacher threshold and were routed to direct hard-label training; next_mcc (50-class) was routed to SKIP (Layer 3 rule engine). One regression task (mcc_diversity_trend) achieved an MAE gap of 0.025 via direct training. The other two (product_stability, cross_sell_count) were routed to SKIP due to near-zero teacher R².
 
 == Reason Generation Quality
 
@@ -1762,7 +1762,7 @@ and L2a Bedrock rewrite pipeline, reporting four automated quality dimensions.
     [Bias DI], [Disparate Impact across all protected groups], [1.0 (no bias detected)],
     [Domestic compliance (KFCPA)], [Rules checked (suitability, consent, opt-out, profiling, disclosure)], [5 checked, 0 violations],
   ),
-  caption: [AuditAgent automated reason quality assessment. Grounding score 0.33 = 1/3 sampled tasks had verifiable keyword matches; readability 1.00 confirms no template rendering failures.],
+  caption: [AuditAgent automated reason quality assessment. Grounding score 0.33 = 1/3 sampled tasks had verifiable keyword matches; readability 1.00 confirms no template rendering failures. Grounding weakness also reproduced in the operational real-data deployment, though through a different mechanism --- absent attribution yielded non-personalized reasons, and per-customer contribution injection (`pred_contrib`) is the corrective path (@operational-note).],
 ) <tab:audit-quality>
 
 === L1 Template Reason Examples
@@ -1841,7 +1841,7 @@ First-call latency is 2.4s (Bedrock Sonnet on-demand); subsequent calls for the 
     [Cold start], [~6s], [—], [S3 model download; amortized],
     [LanceDB case search], [< 100ms], [< \$0.01], [Cold-start grounding; past recommendation cases],
   ),
-  caption: [Serving latency breakdown on warm Lambda (serverless, no GPU). LanceDB grounding uses accumulated recommendation cases per customer.],
+  caption: [Serving latency breakdown on warm Lambda (serverless, no GPU). LanceDB grounding uses accumulated recommendation cases per customer. Figures in this table are specific to the AWS synthetic-benchmark variant --- the on-premise deployment performs no real-time inference (batch generation, then store lookup), and the production stack differs in scale: 15 tasks and a 4,035-dimension input (11 teacher-active) (@operational-note).],
 ) <tab:serving>
 
 Of the 13 tasks served by the production Lambda (as measured, on the 13-task stack): 10 tasks are served by Layer 2 LGBM
@@ -1906,6 +1906,9 @@ tree models learn from the absolute values and ordering of soft labels,
 not from gradient flow through tail probabilities.
 The temperature hyperparameter, designed for neural student backpropagation,
 is unnecessary --- and harmful --- for split-based learners.
+An operational real-data run independently reconfirmed this design choice:
+soft labels stored at $T=5$ exhibited confidence compression (churn probability std 0.0263, value range 0.43--0.53),
+with the distribution recovering under un-flattening and ranking information surviving (@operational-note).
 
 *Finding 2: LGBM gain-based feature selection preserves explanation quality.*
 Selecting features by cumulative LGBM gain (95% threshold, 40--80 features per task)
@@ -1915,6 +1918,11 @@ Features like the HMM lifecycle growth-probability feature and the synthetic mon
 carry high gain for lifecycle and engagement tasks respectively,
 and also provide the narrative anchors
 ("growth stage," "spending pattern") that ground LLM-generated explanations.
+Operational deployment also demonstrated the failure mode when this is absent:
+in an early run with no per-customer attribution wired, all 92 sampled recommendations
+received the identical L1 phrasing, and reasons became genuinely personalized only after
+per-customer top-5 contributions via LGBM `pred_contrib` were wired in (@operational-note) ---
+attribution is a precondition for personalization, not a decoration on explanation quality.
 
 *Finding 3: The Safety Gate is essential, not optional.*
 Template-based fallback without LLM validation
@@ -2010,14 +2018,21 @@ gradually enriches the designed causal structure.
 Note: in the companion paper's synthetic data ablation, the Causal expert showed negative transfer
 on the segment classification task, attributed to input routing overlap with DeepFM
 (both receive the full feature vector) rather than a fundamental limitation of causal discovery.
-Validation on production data with genuine causal structure is required to assess the expert's
-contribution to both predictive performance and explanation quality.
+Validation on operational data has now been attempted, and the current result is negative:
+with the deployed teacher's NOTEARS $W$ in global collapse, the discovered pathway could not be substantiated
+(the guardrail's OOD discrimination was at chance, the counterfactual probe fell below criterion, and the CEH quality gate scored 2/4 ---
+see the companion loss-dynamics paper's Findings 8--13).
+A reconstruction-loss repair reproduced a live-$W$ revival, but it is not reflected in the serving checkpoint
+($norm(W)_F approx 0.17$, 7 active edges, frozen).
+The discovered-pathway regulatory narrative is therefore scoped not as an unconditional claim but as a
+*conditional claim premised on promoting a checkpoint with verified $W$-health* (@operational-note).
 
 == Practical Deployment Considerations
 
 - *LLM selection*: On-premises LLM vs API (latency, cost, data residency).
 - *Reason quality maintenance*: Periodic human review + automated quality scoring.
 - *Regulatory updates*: Architecture supports adding new compliance checks without redesign.
+- *Code existing $eq.not$ code live*: a 20K-customer live serving completion on real data (2026-06-30--07-01) finished recommendation and reason generation for all tasks with success status and passed output-join verification 12/12 --- but reaching completion first required fixing seven latent bugs (@operational-note). Even when modules exist and unit tests pass, end-to-end liveness must be treated as its own verification stage.
 
 == Fidelity Gate Semantics under Cross-Architecture Distillation
 
@@ -2133,10 +2148,19 @@ to block on its own. A separate audit metric for *cross-
 architecture* runs (Tier 2 *delta vs.~the historical floor*) is a
 natural follow-up but not adopted here.
 
+== Preliminary Operational Real-Data Observations (Research-Only)
+<operational-note>
+
+Under the same principles as the companion architecture paper's operational teacher validation --- a research comparison that is not a promotion candidate, with no direct comparison of absolute numbers between synthetic and real data --- we summarize the operational real-data observations (June--July 2026) that bear on this paper's distillation, serving, and agent claims. The data is a real-customer contract schema (4,035-dimension input); training uses the 2026-01 snapshot (17.8M rows), validation/test the 2026-02 snapshot, and OOT labels (2026-03) were only partially generated, so only 3 of the 11 active tasks admit OOT evaluation. The observation window is two months, so generalization across seasonality and regime shifts is unverified. All cited figures come from a teacher recorded as candidate-only after failing the performance gate (the blocking reason being nba label availability rather than performance --- itself live evidence that the offline promotion gate works as designed).
+
+*Distillation: the fidelity gate passed, but fidelity is not performance.* Soft-label distillation ($alpha$=0.3) passed strict validation on all 11 active tasks (fidelity: nba 0.98, channel 0.98, spending_category 0.97, life_stage 0.68; correlation-based metrics churn 0.31, timing 0.17). Yet in the clean OOT evaluation, a raw-feature LGBM trained on hard labels alone outperformed the teacher on 10 of 11 tasks (11/11 when restricted to active segments), and performance degraded monotonically as the soft-label weight $alpha$ increased. We also observed a Simpson reversal --- verdicts flipping between aggregate and fine-grained segments --- driven by a sparsity structure in which 93--94% of customers are dormant, an environment the synthetic benchmark does not reproduce. The sign of the teacher--student gap is therefore environment-dependent, and the verified value of distillation lies not in performance compression but in (i) transfer of ranking information, (ii) service continuity from CPU-only serving with the 3-layer fallback, and (iii) consistency of the explanation and audit surface anchored on a single teacher. The storage-temperature trap was also measured: soft labels stored at $T=5$ compressed confidence (churn std 0.0263, nba maxprob mean 0.40), and engagement became effectively constant --- its fidelity of 0.87 achievable by *constant imitation*, a degenerate-pass blind spot of the fidelity gate. Preserving logits or $T=1$ should be the storage default.
+
+*Serving and agents live.* The 20K-customer live serving completion (all-task recommendation and reason generation success, output join 12/12) first required fixing seven latent bugs. The FallbackRouter is wired live with the same default thresholds as in the text, routing 10 tasks to Layer 1 in the validation run with the Layer 3 rule engine live. With no attribution wired, all 92 sampled recommendations received identical phrasing; personalization was confirmed after wiring per-customer `pred_contrib` top-5. The silent zero-row consent join caused by a keyspace mismatch (root cause of a zero-recommendation output), the 75% measured L2a gate fallback rate, the 853 items actually enqueued to the HITL queue (consumption loop unimplemented), and the on-prem 2-Round consensus correctly detecting a 7:0 unanimous FAIL are each reflected in their respective sections. The operational daily audit detects anomalies of similar magnitude to the synthetic examples in the text: distillation-fidelity checkpoint YELLOW (max gap 0.2407, exceeded on 6 tasks) and data-quality checkpoint RED (4 zero-variance features). One further qualification: the latest completion evidence for the reason-generation stage (2026-06-30--07-01) and the teacher/distillation measurements (2026-07) come from different points in time. Access to the operational environment ended with this observation window, so no further operational measurements are possible --- the figures in this section constitute the final operational evidence for this system.
+
 == Limitations
 
 - LLM dependency introduces cost, latency, and residual hallucination risk.
-- Human evaluation scale limited by expert availability.
+- Human evaluation scale limited by expert availability. Grounding evaluation likewise remains a small-sample keyword-matching automated check; a human evaluation pass aligned with internal reason-quality acceptance criteria (hallucination rate, etc.) is needed.
 - Korean/EU regulatory focus; other jurisdictions not yet analyzed.
 - Template fallback quality is inherently limited.
 - *Per-prediction causal audit runs on the PLE teacher, not the
@@ -2158,6 +2182,27 @@ natural follow-up but not adopted here.
   with domain-expert expectations or with alternative attribution
   methods (Integrated Gradients, DAG-path traversal) has not been
   assessed. A human-evaluation pass is planned.
+- *Time window and evidence dates of the operational observations.*
+  The real-data results in @operational-note come from a two-month
+  window (training 2026-01, validation/test 2026-02), with OOT
+  evaluation on only 3 of 11 active tasks. Generalization across
+  seasonality and regime shifts is unverified, and the
+  reason-generation and teacher/distillation stages have evidence
+  from different dates.
+- *Label availability collapse.* Campaign collection ended on
+  2026-03-10, extinguishing the ctr/cvr label sources and opening an
+  nba label gap --- a period in which the "all tasks always trainable"
+  premise did not hold. The task portfolio is governed by label-source
+  availability, not by the architecture.
+- *Domain sparsity structure.* A real-data structure in which 93--94%
+  of customers are dormant, with approved-contract padding, actually
+  produced Simpson reversals. The synthetic benchmark does not
+  reproduce this environmental factor.
+- *Code existing $eq.not$ code live.* Multiple paths --- the security
+  gates (injection guard, output PII redactor), the HITL consumption
+  loop, on-prem consensus escalation --- are opt-in default-off or
+  partially wired (pre-production static state). Per-section liveness
+  annotations in the text mark this distinction.
 
 == Future Work
 
@@ -2179,9 +2224,9 @@ natural follow-up but not adopted here.
 
 == Ethics and Data Statement
 
-All experiments in this version use *synthetic benchmark data* (1M customers generated
+All *quantitative benchmark* experiments in this version use *synthetic benchmark data* (1M customers generated
 via Gaussian Copula + latent variable variance budget with fixed seed).
-No real customer data is included in this version. Validation on production data is planned for a subsequent revision.
+The preliminary operational real-data observations (@operational-note) report only aggregate metrics and liveness status as a research-only comparison, and include no raw customer data or personally identifying information. Full production-promotion validation remains future work.
 The production system design targets low-risk check card products only;
 investment and insurance product recommendations are explicitly excluded
 from the deployment scope (Section 6.3.1).
